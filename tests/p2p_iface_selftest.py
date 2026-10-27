@@ -109,7 +109,7 @@ def golden(src):
                         res = {"changed": 0, "errors": []}
                         b.cmds[:] = []
                         mm._ensure_p2p(w, mech, {}, res)
-                        st = {k: v for k, v in mm._P2P.items() if k not in ("ih", "route_devs", "route_down")}   # per-route bookkeeping (backlog F48): new, not a datapath change
+                        st = {k: v for k, v in mm._P2P.items() if k not in ("ih", "route_devs", "route_down", "fwd")}   # per-route bookkeeping (backlog F48), the devices forwarded (S12): new, not a datapath change
                         trace.append([[(a, i) for a, i in b.cmds], res, st])
                     out["ensure|%s|%s|ih%d|rt%d" % (wn, mn, ih, bool(rt))] = _h(trace)
     for via in ("wgx9", "swg_q"):

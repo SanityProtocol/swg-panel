@@ -45,7 +45,7 @@ PLANTS = {   # name: (file, old text, planted text)
     "node-first-only": ("node", '    ps = _ports_spans({"proto": "both", "list": v.replace(" ", "")}) if isinstance(v, str) else None',
                         '    ps = (lambda r: (r[0], r[1][:1]) if r else r)(_ports_spans({"proto": "both", "list": v.replace(" ", "")})) if isinstance(v, str) else None'),
     "node-hard":    ("node", '"  set portok { typeof th dport; flags interval; elements = { %s } }" % portok,', '"  set portok { typeof th dport; flags interval; elements = { %s } }" % _P2P_PORTOK,'),
-    "node-unread":  ("node", '                portok=(smart or {}).get("p2p_portok"))', '                portok=None)'),
+    "node-unread":  ("node", '                portok=(smart or {}).get("p2p_portok"),', '                portok=None,'),
     "node-nodefault": ("node", '_P2P_PORTOK = "1194, 3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200, 51820"',
                        '_P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"'),
     "panel-twin":   ("panel", 'P2P_PORTOK_DEFAULT = ["1194", "3478-3481",', 'P2P_PORTOK_DEFAULT = ["3478-3481",'),

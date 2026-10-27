@@ -452,7 +452,9 @@ class State:
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
                         "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else [],
                         # the torrent policy the node RUNS ({state, mode, route}) — a Route it could not lower runs as block
-                        "p2p": _snap_p2p(snap)}
+                        "p2p": _snap_p2p(snap),
+                        # the devices' incoming torrent ports it forwards, by interface ({addr, taken}, Part C)
+                        "p2p_fwd": snap.get("p2p_fwd") if isinstance(snap.get("p2p_fwd"), dict) else {}}
         return out
 
 
@@ -715,6 +717,19 @@ def torrents_allowed(nodes, describe, t):
     if pol == "iface" and rec.get("egress_mode") == "forward":   # follows the interface: forwarded whole to that node
         return _p2p_runs(nodes, describe, rec.get("egress_node"), arrivals=True)
     return True
+
+
+def _p2p_fwd_of(p, tg, describe):
+    """{p2p_port, p2p_addr} — the device's incoming torrent port on this deployment — only where its node reports
+    forwarding this interface (swg-noded `p2p_fwd`), the port is not taken there, and this is the one target on that node
+    the panel forwards: its primary, else the first by interface name (the panel's p2p_fwd_for_node, twinned). {} else."""
+    port, fw = p.get("p2p_port"), (describe.get(tg.get("node")) or {}).get("p2p_fwd") or {}
+    e = fw.get(tg.get("iface"))
+    if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") or ()):
+        return {}
+    mine = min(((_role_of(t) != "primary", str(t.get("iface") or "")) for t in (p.get("targets") or [])
+                if isinstance(t, dict) and t.get("node") == tg.get("node") and str(t.get("iface") or "") in fw), default=None)
+    return {"p2p_port": port, "p2p_addr": str(e.get("addr") or "")} if mine and mine[1] == tg.get("iface") else {}
 
 
 def _role_of(t):
@@ -985,6 +1000,7 @@ def read_data(state, token):
             for tg in tgts:   # torrents may leave by it → the page's client-setting line; absent otherwise (old pages ignore it)
                 if torrents_allowed(nodes, describe, tg):
                     tg["p2p"] = True
+                    tg.update(_p2p_fwd_of(p, tg, describe))
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
                           "disabled": bool(p.get("disabled")), "expired": _exp})
     # active peers first (A-Z by title, untitled by IP), then blocked/expired at the bottom (also A-Z). The sub page

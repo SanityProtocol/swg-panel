@@ -401,7 +401,8 @@ export function suggestPort(node, kind, extra) {
   // makes a fresh node suggest the documented default, the same as a node with no interfaces at all.
   const mineUser = mine.filter(q => !inMesh(q));
   let p = mineUser.length ? Math.max(...mineUser) + 1 : (kind === "turn" ? 56002 : 51821);
-  while ((used.has(p) || reserved.has(p) || inMesh(p)) && p < 65535) p++;
+  // …and the devices' incoming torrent ports (P2P_PORT_POOL), which the server refuses for a new listener too.
+  while ((used.has(p) || reserved.has(p) || inMesh(p) || (p >= 20000 && p <= 29999)) && p < 65535) p++;
   return p;
 }
 // Client-side port-collision check (mirrors the server's _node_ports). Returns a human label of whatever

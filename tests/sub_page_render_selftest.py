@@ -45,7 +45,9 @@ Fixture — node q-node, three deployments per device:
       OS and in both languages, carries the torrent marker in its badge row, labelled with the client setting for full speed
       (in the page's language); a tap opens that text in a bubble and a second tap closes it; Boris's awg1 cell carries none
       while his csqtt1 cell does; Anna's blocked device's page carries none. The plain-mode turtle (a cacggghp proxy) opens its
-      own text in the same bubble on a tap; the connection picker shows both icons, as icons, not buttons
+      own text in the same bubble on a tap; the connection picker shows both icons, as icons, not buttons. The device's own
+      incoming port (S12, Part C): where q-node reports forwarding awg0, Anna's AmneziaWG cells' bubble opens with port 20016
+      and the address peers reach (in both languages); her WireGuard cell (wg0, not forwarded) and Boris's cells carry none
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -74,6 +76,8 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their marker buttons → RED on [12]
      --perturb-pickshort  serves a sub.js whose picker icons show the short label as their tooltip → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
+     --perturb-p2pport    serves a sub.js whose torrent bubble leaves out the device's incoming port → RED on [12]
+     --perturb-subport    runs a swg-sub that never puts the device's incoming port on a deployment → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -102,11 +106,13 @@ P_LINE = "--perturb-line" in sys.argv
 P_OWNLINE = "--perturb-ownline" in sys.argv
 P_CHIPLINE = "--perturb-chipline" in sys.argv
 P_P2PALL = "--perturb-p2pall" in sys.argv
+P_P2PPORT = "--perturb-p2pport" in sys.argv
+P_SUBPORT = "--perturb-subport" in sys.argv
 P_PICKMARK = "--perturb-pickmark" in sys.argv
 P_PICKSHORT = "--perturb-pickshort" in sys.argv
 P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
 P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
-PERTURB = (P_P2PALL or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+PERTURB = (P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
@@ -189,7 +195,7 @@ VK = ["https://vk.ru/call/join/AAAAbbbbCCCCddddEEEEffffGGGGhhhh1234567890", "htt
 J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"},
                            "u4": {"name": "Dana", "vk_links": VK[:1]}},
                  "peers": {
-                     "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt",
+                     "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt", "p2p_port": 20016,
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "wdtt1", "type": "wdtt"},
                                         {"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.2/32"},
@@ -227,7 +233,8 @@ J("stats/stats-n1.json", {"interfaces": {
                      {"service": "vk-turn-proxy-cacggghp-4", "listen": "0.0.0.0:56104", "connect": "127.0.0.1:51830", "wrap_key": "", "version": "v1.0.0"},
                      # [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ, hidden 2026-10-14)
                      {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64, "version": "v4.0.3"}],
-    "net_carried": ["192.168.50.0/24"]})
+    "net_carried": ["192.168.50.0/24"],
+    "p2p_fwd": {"awg0": {"addr": "203.0.113.7", "taken": []}}})   # [12] S12: q-node forwards awg0's devices' own ports
 
 SEAL = r"""
 const [k, pt] = process.argv.slice(1);
@@ -284,6 +291,8 @@ if P_PICKSHORT:
     perturbed_web('icon.title = x.getAttribute("data-note") || ', 'icon.title = ', "the picker icon's tooltip being the whole note")
 if P_PICKMARK:
     perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
+if P_P2PPORT:
+    perturbed_web("      var fp = it.tgt.p2p_port, fd", "      var fp = 0, fd", "the device's incoming port in the torrent bubble")
 if P_P2PALL:
     perturbed_web("      var srv = it.tgt.p2p && cc.el", "      var srv = true && cc.el", "the torrent marker only where torrents are allowed")
 if P_CHIPLINE:
@@ -321,6 +330,12 @@ if P_XXSUB:
     }
 """, "a WDTT fork's own app as its default")
 
+if P_SUBPORT:   # the page's own copy of swg-sub, the port's wiring removed
+    _ss = open(SUB).read()
+    if _ss.count("                    tg.update(_p2p_fwd_of(p, tg, describe))\n") != 1:
+        print("PERTURB FAILED — the incoming port's wiring: its anchor is not in swg-sub exactly once"); sys.exit(1)
+    SUB = os.path.join(D, "swg-sub")
+    open(SUB, "w").write(_ss.replace("                    tg.update(_p2p_fwd_of(p, tg, describe))\n", ""))
 sock = socket.socket(); sock.bind(("127.0.0.1", 0)); PORT = sock.getsockname()[1]; sock.close()
 env = dict(os.environ, SWG_SUB_FLEET=D + "/fleet.json", SWG_SUB_WEB=WEB, SWG_SUB_HOST="127.0.0.1", SWG_SUB_PORT=str(PORT),
            SWG_SUB_TLS_DIR=D + "/no-tls")
@@ -351,6 +366,7 @@ READ = r"""(() => {
       cells: [...pg.querySelectorAll(".scell")].map(c => ({
         tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
         payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent, p2p: (x => x ? x.getAttribute("aria-label") : null)(c.querySelector(".scell-p2p")),
+        note: (x => x ? x.getAttribute("data-note") : null)(c.querySelector(".scell-p2p")),
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
@@ -482,6 +498,13 @@ try:
         live = [c for p in r["pages"] if p["mode"] not in ("nets", "dead") for c in p["cells"]]
         check("[12] %s/%s: every one of Anna's cells carries the torrent marker, labelled in the page's language" % (os_, lang),
               live and all(P2P_WORDS[lang] in (c["p2p"] or "") for c in live), [(c["tag"], (c["p2p"] or "")[:40]) for c in live])
+    PORT_WORDS = {"en": "Incoming port 20016", "ru": "Входящий порт 20016"}
+    for (os_, lang), r in sorted(renders.items()):
+        got = [(p["mode"], PORT_WORDS[lang] in (c["note"] or "") and "203.0.113.7:20016" in (c["note"] or ""))
+               for p in r["pages"] if p["mode"] in ("awg", "wg") for c in p["cells"]]
+        check("[12] %s/%s: Anna's AmneziaWG cell's torrent note opens with her incoming port and the address peers reach; her "
+              "WireGuard cell's (not forwarded) carries none" % (os_, lang),
+              ("awg", True) in got and all(v == (m == "awg") for m, v in got), got)
     dead = [p for p in renders[("android", "en")]["pages"] if p["mode"] == "dead"]
     check("[12] …and her blocked device's page none", len(dead) == 1 and dead[0]["p2pn"] == 0, [(p["mode"], p["p2pn"]) for p in dead])
     awg1 = [c for p in rb["pages"] if p["mode"] == "awg" for c in p["cells"]]
@@ -505,6 +528,10 @@ try:
     tab.ev("document.body.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); true"); time.sleep(0.2)
     out = tab.ev(NB)
     check("[12] Escape closes it, and so does a press anywhere else", esc == "" and out == "", (esc, out))
+    nport = tab.ev("(() => { const m = document.querySelector('section.ppage[data-mode=awg] .scell-p2p'); if (!m) return 'no marker';"
+                   " m.click(); return [...document.querySelectorAll('.note-bubble .note-port b')].map(b => b.textContent); })()")
+    time.sleep(0.2); tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); true"); time.sleep(0.2)
+    check("[12] the bubble of Anna's AmneziaWG cell (forwarded) shows the port as one number of its own", nport == ["20016"], nport)
     tab.ev(TAP); time.sleep(0.3)
     inner = tab.ev("(() => { const b=document.querySelector('.note-bubble'); b.style.maxHeight='30px'; b.scrollTop=20;"
                    " b.dispatchEvent(new Event('scroll')); return !!document.querySelector('.note-bubble') })()"); time.sleep(0.2)

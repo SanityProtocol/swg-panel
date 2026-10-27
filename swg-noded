@@ -8051,7 +8051,7 @@ P2P_NFT_TABLE = "swg_p2p"
 P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI marks keep 0x999x in their low 16 bits
 P2P_RULE_PRI = 6880           # BELOW the band: a whole-interface forward's `from S lookup T` (pref T) must not outrank it
 _P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": "", "route_devs": [], "route_down": [],
-        "detail": "", "nolog": False}   # rule/tbl: None = not yet looked · detail: why a load was refused · nolog: see _ensure_p2p
+        "detail": "", "nolog": False, "fwd": []}   # rule/tbl: None = not yet looked · detail: why a load was refused · nolog: see _ensure_p2p
 # The built-in "never cut" ports — what a node runs when the panel sends no list of its own (S11c: the operator's list,
 # `smart.p2p_portok`). OpenVPN 1194 and WireGuard 51820 since 1.8.11: one device's torrent cut its own corporate VPN.
 _P2P_PORTOK = "1194, 3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200, 51820"   # + STUN/TURN/Teams, IPsec, XMPP, Zoom, Meet, Steam
@@ -8159,7 +8159,7 @@ def _p2p_rule(want, res):
     _P2P["rule"] = bool(on)
 
 
-def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=(), portok=_P2P_PORTOK):
+def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=(), portok=_P2P_PORTOK, fwdin=False):
     """The whole `swg_p2p` table as one atomic script. Two chains:
       cls    prerouting, mangle + 5 (-145): after swg_smart's marks (-150), before the relay divert (-140). Flags users
              (signatures + fan-out), routes Direct, and DROPS what is blocked here — before the divert, so a relayed
@@ -8175,6 +8175,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=(), p
     group's P2P is routed by its mark (the WAN's P2P_BIT for direct, T|P2P_BIT for a route) and may leave only by its
     devices; strict subnets are dropped as in legacy. Other subnets and arrivals are not checked, nor are the node's own
     processes — except a sender from a group's own subnet (the mesh relay's re-dial from the gateway), judged by signature.
+    `fwdin`: under direct, a flow swg_p2pfwd DNATs in from the WAN is not our egress — the guard lets it pass (Part C §4.4);
+    rendered only while devices are forwarded, so a node without one keeps the text it had.
     `logged`: the hit lines go to the kernel log at Info and Debug; below Info the table is rendered with no `log`
     statement at all (docs/LOGS-PLAN.md §1) — those lines carry users' addresses, and Off means nothing is kept.
 
@@ -8331,6 +8333,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=(), p
         L.append("    type filter hook postrouting priority srcnat - 10; policy accept;")
         L.append('    oifname "lo" return')
         L.append("    ct direction reply return")
+        if fwdin and mode == "direct" and oif:
+            L.append("    ct status dnat iifname { %s } return" % ", ".join('"%s"' % d for d in oif))
         L += ["    " + h for h in held]
         L.append("    ip saddr @flag %s %sfib saddr type != local counter name dropped drop" % (_P2P_SHAPE, bad_oif))
         L.append("    ct original packets > 4 return")
@@ -8474,7 +8478,7 @@ def _p2p_groups(p2p, strict):
     return groups
 
 
-def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
+def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None):
     """Reconcile the P2P policy (see the block comment above). Signature-gated like _ensure_mech_block, and the gate asks
     the property that matters — the table is there AND still drops — not only our own memo (the flushed-in-place lesson,
     _ensure_mech_block). Never raises; never touches another table; nothing wanted → only ours is deleted."""
@@ -8490,7 +8494,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
                 if "torrents" in (ids or []) and ipaddress.ip_network(s, strict=False).version == 4:
                     strict.append(str(ipaddress.ip_network(s, strict=False)))
         _P2P["mode"] = mode
-        _P2P.update(route="", route_dev="", route_devs=[], route_down=[])   # never a stale answer if this pass ends early
+        _P2P.update(route="", route_dev="", route_devs=[], route_down=[], fwd=[])   # never a stale answer if this pass ends early
         ent = _p2p_entry(p2p) if mode == "route" else None
         route = None
         if ent:
@@ -8540,7 +8544,8 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
         logged = log_level() >= LOG_INFO and not _P2P["nolog"]
         nofan = _p2p_nofan(node_cfg, routers)
         _pok = _p2p_portok(portok)                            # the operator's never-cut ports, or the built-in list (S11c)
-        text = _p2p_nft(mode, strict, oif, nofan, ih, route, logged=logged, groups=groups, portok=_pok)
+        _P2P["fwd"] = _p2p_fwd_take(fwd, mode, strict, groups)   # the devices given an incoming port (Part C)
+        text = _p2p_nft(mode, strict, oif, nofan, ih, route, logged=logged, groups=groups, portok=_pok, fwdin=bool(_P2P["fwd"]))
         sig = hashlib.sha256(text.encode()).hexdigest()
         cur = ""
         with contextlib.suppress(OSError):
@@ -8561,7 +8566,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
             # nft's log expression, or without a log backend for both IPv4 and IPv6 (nft_log, nf_log_syslog — a minimal kernel,
             # a container host that never loaded them), refuses that rule and with it the WHOLE table, every drop included. The
             # guard matters more than its lines: the same table again without them, and none for the rest of this process.
-            r0, text = r, _p2p_nft(mode, strict, oif, nofan, ih, route, logged=False, groups=groups, portok=_pok)
+            r0, text = r, _p2p_nft(mode, strict, oif, nofan, ih, route, logged=False, groups=groups, portok=_pok, fwdin=bool(_P2P["fwd"]))
             r = run(["nft", "-f", "-"], input_text=text)
             if r.returncode == 0:
                 _P2P["nolog"] = True
@@ -8583,6 +8588,119 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
             res["errors"].append("p2p nft load failed: " + (r.stderr or "").strip()[:160])
     except Exception as e:
         res["errors"].append("p2p: " + str(e)[:120])
+
+P2PFWD_TABLE = "swg_p2pfwd"
+_P2PFWD = {"tbl": None, "report": {}}   # tbl: None = not yet looked · report: snapshot `p2p_fwd`, what is forwarded now
+
+
+def _p2p_fwd_take(fwd, mode, strict, groups):
+    """smart.p2p_fwd's [[ip, port], …] that P2P lets out by this server's own address (P2P-OWN-ADDRESS Part C): under direct
+    a device outside the strict subnets, under iface one inside the Direct group (g_d). v4, ports from 1024, one entry per
+    device and per port — a duplicate `addr . port` key refuses the whole table. None on a bridge-mode Docker node (the
+    host's address is not its own)."""
+    scope = ([g["subnets"] for g in groups if g["name"] == "d"][:1] if mode == "iface" else [None] if mode == "direct" else [])
+    if not scope or NODE_NET == "bridge" or not isinstance(fwd, list):
+        return []
+    inn = [ipaddress.ip_network(n) for n in scope[0] or ()]
+    out = [ipaddress.ip_network(n) for n in strict]
+    ips, ports, keep = set(), set(), []
+    for e in fwd:
+        with contextlib.suppress(Exception):
+            a, p = ipaddress.ip_address(str(e[0])), int(e[1])
+            if (a.version == 4 and 1024 <= p <= 65535 and a not in ips and p not in ports
+                    and (scope[0] is None or any(a in n for n in inn)) and not any(a in n for n in out)):
+                ips.add(a); ports.add(p); keep.append((str(a), p))
+    return keep
+
+
+def _p2pfwd_nft(rows, wan):
+    """`ip swg_p2pfwd` for rows [(device ip, port, address)] (P2P-OWN-ADDRESS §4.3). pre: address:port DNATs to the device,
+    before iptables/Docker's DNAT (-100). rep: the device's replies take the WAN (P2P_BIT → rule 6880 → main) — a
+    whole-interface forward's `from S lookup T` would carry them into the cascade. post: a flow from the device's port
+    leaves from the same port (before the egress SNAT at 100), so the port the swarm learns is the one forwarded."""
+    devs = ", ".join('"%s"' % d for d in wan)
+    return "\n".join([
+        "table ip %s {}" % P2PFWD_TABLE, "delete table ip %s" % P2PFWD_TABLE, "table ip %s {" % P2PFWD_TABLE,
+        "  map in { type ipv4_addr . inet_service : ipv4_addr; elements = { %s } }" % ", ".join("%s . %d : %s" % (a, p, ip) for ip, p, a in rows),
+        "  map out { type ipv4_addr . inet_service : ipv4_addr . inet_service; elements = { %s } }"
+        % ", ".join("%s . %d : %s . %d" % (ip, p, a, p) for ip, p, a in rows),
+        "  set fwds { type ipv4_addr; elements = { %s } }" % ", ".join(sorted({ip for ip, _, _ in rows})),
+        "  chain pre {", "    type nat hook prerouting priority dstnat - 5; policy accept;",
+        "    iifname { %s } meta l4proto { tcp, udp } dnat to ip daddr . th dport map @in" % devs, "  }",
+        "  chain rep {", "    type filter hook prerouting priority mangle + 6; policy accept;",
+        "    ct direction reply ct status dnat ip saddr @fwds meta mark set %#x" % P2P_BIT, "  }",
+        "  chain post {", "    type nat hook postrouting priority srcnat - 5; policy accept;",
+        "    oifname { %s } meta l4proto { tcp, udp } snat to ip saddr . th sport map @out" % devs, "  }", "}"]) + "\n"
+
+
+def _ensure_p2pfwd(fwd, node_cfg, res):
+    """Reconcile `ip swg_p2pfwd` — a table and sig of its own, so a device added or gone never rebuilds swg_p2p (whose
+    rebuild empties @flag). Each device's address is its interface's egress: the `swg-egress:<iface>` SNAT's source, else
+    the MASQUERADE device's, else the WAN's. Never over a listener: a port bound on that address or a wildcard is left out
+    and reported `taken` (in the text, so a listener that appears later converges in one pass). Nothing → table and sig
+    deleted. Never raises."""
+    sigf = os.path.join(GEO_DIR, ".p2pfwd.sig")
+    try:
+        rows, rep, wan = [], {}, _p2p_wan_devs() if fwd else []
+        if wan:
+            nat = (run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout or "").splitlines()
+            v4 = {}
+            for ln in (run(["ip", "-4", "-o", "addr", "show"]).stdout or "").splitlines():
+                m = re.match(r"\d+:\s+([^\s@]+)\S*\s+inet\s+([\d.]+)/", ln)
+                if m:
+                    v4.setdefault(m.group(1), m.group(2))
+            bound = set()
+            for ln in (run(["ss", "-Hlntu"]).stdout or "").splitlines():
+                m = re.match(r"(.*):(\d+)$", (ln.split() + [""] * 5)[4])
+                if m:
+                    bound.add((m.group(1).strip("[]").split("%")[0], int(m.group(2))))
+            subs = []
+            for ifn in (node_cfg.get("interfaces") or {}):
+                with contextlib.suppress(Exception):
+                    subs.append((ifn, ipaddress.ip_network(_iface_subnet(node_cfg, ifn), strict=False)))
+            for ip, p in fwd:
+                ifn = next((i for i, n in subs if ipaddress.ip_address(ip) in n), None)
+                eg = next((ln for ln in nat if _comment_re("swg-egress:%s" % ifn).search(ln)), "") if ifn else ""
+                to, o = re.search(r"--to-source ([\d.]+)", eg), re.search(r"-o (\S+)", eg)
+                addr = to.group(1) if to else v4.get(o.group(1) if o else "") or next((v4[d] for d in wan if d in v4), "")
+                if not ifn or not addr:
+                    continue
+                e = rep.setdefault(ifn, {"addr": addr, "taken": []})
+                if any((h, p) in bound for h in (addr, "0.0.0.0", "*", "::")):
+                    e["taken"].append(p)
+                else:
+                    rows.append((ip, p, addr))
+        text = _p2pfwd_nft(sorted(rows), wan) if rows else ""
+        if not text:                                          # the sig marks a table we loaded: a node that never
+            if _P2PFWD["tbl"] is not False and (_P2PFWD["tbl"] or os.path.exists(sigf)):   # forwarded asks nothing
+                if run(["nft", "delete", "table", "ip", P2PFWD_TABLE]).returncode == 0:
+                    res["changed"] += 1
+                with contextlib.suppress(OSError):
+                    os.unlink(sigf)
+            _P2PFWD["tbl"] = False
+            _P2PFWD["report"] = rep
+            return
+        sig = hashlib.sha256(text.encode()).hexdigest()
+        cur = ""
+        with contextlib.suppress(OSError):
+            cur = open(sigf).read().strip()
+        if cur != sig or run(["nft", "-t", "list", "table", "ip", P2PFWD_TABLE]).returncode != 0:
+            r = run(["nft", "-f", "-"], input_text=text)
+            if r.returncode != 0:                             # the old table would keep forwarding what it held: removed
+                run(["nft", "delete", "table", "ip", P2PFWD_TABLE])
+                with contextlib.suppress(OSError):
+                    os.unlink(sigf)
+                _P2PFWD.update(tbl=None, report={})
+                res["errors"].append("p2pfwd nft load failed: " + (r.stderr or "").strip()[:160])
+                return
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
+            res["changed"] += 1
+        _P2PFWD.update(tbl=True, report=rep)
+    except Exception as e:
+        _P2PFWD["report"] = {}
+        res["errors"].append("p2pfwd: " + str(e)[:120])
+
 
 def reconcile_dial_src(desired_by_iface, res, extra=()):
     """Pin the OUTBOUND source IP for each mesh link that set a dial_src — a /32 route to the peer endpoint
@@ -12776,7 +12894,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _ensure_mech_block(_mech, res, scan_allow=(smart or {}).get("scan_allow") or [])   # FREE traffic/abuse L4/rate drops (smtp/quic/portscan) + scan-sweep guard (never-flag allowlist)
     _ensure_p2p((smart or {}).get("p2p"), _mech, node_cfg, res,   # P2P policy: node-wide, every egress (P2P-POLICY-PLAN P1)
                 routers=(smart or {}).get("p2p_routers") or [],   # router peers: never flagged (S11b)
-                portok=(smart or {}).get("p2p_portok"))           # the operator's never-cut ports (S11c); absent → built-in
+                portok=(smart or {}).get("p2p_portok"),           # the operator's never-cut ports (S11c); absent → built-in
+                fwd=(smart or {}).get("p2p_fwd"))                 # devices' incoming ports (Part C), kept where P2P leaves Direct
+    _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)
     return res
 
 
@@ -18534,6 +18654,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
     if _NET["kept"]:                                  # networks this node routes right now — absent when none (D1)
         snap["net_carried"] = sorted({p for p, _i in _NET["kept"]})
+    if _P2PFWD["report"]:                             # torrents' incoming ports by interface (Part C) — absent when none (D1)
+        snap["p2p_fwd"] = {i: dict(v) for i, v in _P2PFWD["report"].items()}
     _probe = net_probe_status()
     if _probe:                                        # a reachability test's answer, waiting for the panel — absent otherwise (D1)
         snap["net_probe"] = _probe

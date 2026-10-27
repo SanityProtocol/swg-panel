@@ -4076,14 +4076,20 @@ def peer_set(roster, pid, fields, now):
     # share: who may reach them (§15) — and dropping it would silently OPEN them, so `share_clean` never stores a falsy one.
     # private: the owner keeps this device (and the networks behind it) to themselves, whatever the interface says.
     # router: several devices behind this one address; the torrent guard never flags it (S11b). Not `share` (above).
+    # p2p_port: the device's incoming torrent port (P2P-OWN-ADDRESS Part C), given here to a record that has none.
     # ⚠️ PRESERVED HERE OR IT IS LOST. This rebuild is a whitelist, so a field it does not name is dropped by the next
     # unrelated save — an update-target or a rekey would silently un-private a device, which is the direction that opens
     # something. `if v` also means an explicit False clears the key, which is how it is unset.
     for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
-              "routes", "share", "private", "router"):
+              "routes", "share", "private", "router", "p2p_port"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
+    if "p2p_port" not in rec:
+        _used = {q.get("p2p_port") for k, q in roster["peers"].items() if k != pid and isinstance(q, dict)}
+        _free = next((x for x in range(P2P_PORT_POOL[0], P2P_PORT_POOL[1] + 1) if x not in _used), None)
+        if _free:                                             # pool full: no port, nothing forwarded for it
+            rec["p2p_port"] = _free
     roster["peers"][pid] = rec
     return rec
 
@@ -9063,6 +9069,74 @@ def p2p_routers_cached(mark, roster, node_id, arrivals=()):
     return v
 
 
+# Each device's incoming torrent port (P2P-OWN-ADDRESS Part C): stored on the peer, unique across the roster, the same on
+# every node it is deployed to. Below the kernel's ephemeral range (32768-60999), so no outgoing socket of a node holds one.
+P2P_PORT_POOL = (20000, 29999)
+
+
+def p2p_ports_fill(roster, first=()):
+    """Give every peer without a port — or holding one an earlier peer holds, or one outside the pool (a hand edit, a node
+    transfer from another panel) — the lowest free one, in sorted peer-id order (`first`, the peers this panel already
+    held, claim theirs before the rest): the same result every run. True when something changed."""
+    peers, used, todo = roster.get("peers") or {}, set(), []
+    for pid in sorted(peers, key=lambda k: (k not in first, k)):
+        q = peers[pid]
+        v = q.get("p2p_port") if isinstance(q, dict) else None
+        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:
+            used.add(v)
+        elif isinstance(q, dict):
+            todo.append(q)
+    free = (x for x in range(P2P_PORT_POOL[0], P2P_PORT_POOL[1] + 1) if x not in used)
+    changed = False
+    for q in todo:
+        x = next(free, None)
+        if x != q.get("p2p_port"):
+            changed = True
+            q.update(p2p_port=x) if x else q.pop("p2p_port", None)
+    return changed
+
+
+_P2P_FWD = {}   # node id → ((roster mark, scope), its list): recomputed only when either moves
+
+
+def p2p_fwd_for_node(mark, roster, node_id, scope):
+    """smart.p2p_fwd: [[device ip, its port], …] — this node's wg/awg devices where P2P leaves by its own address. `scope`:
+    ("direct", strict subnets) → every device outside them, ("iface", the Direct records' subnets) → those inside, None →
+    none. One per device: its primary target here, else the first by interface name (two would be one duplicate
+    `addr . port` key, which refuses the node's whole table). Sorted; cached on the roster's mark and the scope."""
+    if not scope:
+        return []
+    hit = _P2P_FWD.get(node_id)
+    if mark is not None and hit and hit[0] == (mark, scope):
+        return hit[1]
+    nets, out = [ipaddress.ip_network(x, strict=False) for x in scope[1]], []
+    for p in (roster.get("peers") or {}).values():
+        port = p.get("p2p_port") if isinstance(p, dict) else None
+        ts = []
+        for t in (p.get("targets") or []) if type(port) is int else []:
+            with contextlib.suppress(ValueError, TypeError, AttributeError):
+                a = ipaddress.ip_address(str(t.get("ip") or "").split("/")[0])
+                if (t.get("node") == node_id and not _is_self_contained_target(t) and a.version == 4
+                        and any(a in n for n in nets) == (scope[0] == "iface")):
+                    ts.append((_fp_role(t) != "primary", str(t.get("iface") or ""), a))
+        if ts:
+            out.append((min(ts)[2], port))
+    out = [[str(a), q] for a, q in sorted(out)]
+    if mark is not None:
+        _P2P_FWD[node_id] = ((mark, scope), out)
+    return out
+
+
+def p2p_fwd_scope(node, mech, plan):
+    """Where this node lets P2P out by its own address, for p2p_fwd_for_node: Direct → ("direct", its strict subnets),
+    Each interface decides → ("iface", the subnets whose record chose Direct), anything else → None."""
+    pol = p2p_policy(node)
+    if pol == "direct":
+        return ("direct", tuple(sorted(x for x, ids in (mech or {}).items() if "torrents" in (ids or ()))))
+    d = ((plan or {}).get("_p2pi") or {}).get("direct") if pol == "iface" else None
+    return ("iface", tuple(sorted(set(d)))) if d else None
+
+
 def cut_off_for_node(roster, node_id, snap):
     """{iface: [pubkey]} — this node's peers that are cut off (blocked or expired, `access_cut`) and that its snapshot
     still reports on that interface. They go out in the sync's `remove`, beside the operator's retirements.
@@ -13074,11 +13148,12 @@ def is_system_iface(deps, nodes, node_id, iface):
     return str(iface).startswith(pfx) or str(iface).startswith("swg_")
 
 
-def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None):
+def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None, keep=()):
     """Reject user interfaces / turn-proxies that collide with the mesh's reserved ranges (subnet / port
     band / iface-name prefix) — evaluated against THIS node's EFFECTIVE mesh config (per-node overrides over
     the panel default). Also reserves the /16 around every in-use link subnet across the fleet, so an
-    existing fleet on a different range stays protected. Returns an error string, or None if no conflict."""
+    existing fleet on a different range stays protected. Returns an error string, or None if no conflict.
+    A port in the devices' torrent pool (P2P_PORT_POOL) is refused unless it is one the record already holds (`keep`)."""
     mc = node_mesh_cfg(deps, node)
     prefix = mc.get("iface_prefix") or "swg_"
     if name and str(name).startswith(prefix):
@@ -13104,6 +13179,8 @@ def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None):
         base = mc["port_base"]; span = mc.get("port_span", 100)
         if base <= int(port) < base + span:
             return f"port {port} is in the reserved system mesh range ({base}–{base + span - 1})"
+        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1] and str(port).strip() not in {str(k) for k in keep}:
+            return "Ports 20000–29999 are kept for devices' incoming torrent ports — pick another port."
     return None
 
 
@@ -29784,10 +29861,10 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": "port must be a number", "code": "bad_request"}
                 if not (1 <= p <= 65535):
                     return 400, {"ok": False, "error": "port must be 1–65535", "code": "bad_request"}
-                rc = reserved_conflict(deps, nodes, nodes[nid], port=p)
+                _own = [(((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("listen_port"), ov.get("desired_port")]
+                rc = reserved_conflict(deps, nodes, nodes[nid], port=p, keep=_own + [ov.get("listen_port")])
                 if rc:
                     return 400, {"ok": False, "error": rc, "code": "bad_request"}
-                _own = [(((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("listen_port"), ov.get("desired_port")]
                 _pc = _port_conflict(deps, nodes, nid, p, own=_own)   # not already bound by another interface / turn-proxy / WDTT / mesh link on this node
                 if _pc:
                     return 400, {"ok": False, **perr("port {v1} is already used by {v2} on this node — pick another port", v1=p, v2=_pc), "code": "bad_request"}
@@ -35417,6 +35494,8 @@ class Handler(BaseHTTPRequestHandler):
                                           # router peers here (S11b): never flagged by the torrent guard — only when there are some,
                                           # so a fleet that marks nobody gets the reply it always got
                                           **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))) else {}),
+                                          # devices' incoming torrent ports (Part C): only where P2P leaves by this node's own address
+                                          **({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, nid, p2p_fwd_scope(node, _blk_mech, my_plan))) else {}),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets
@@ -35860,8 +35939,8 @@ class Handler(BaseHTTPRequestHandler):
             # So: this node's targets come from the bundle, every other node's are kept, and the clash test
             # asks the question that actually matters — is this the same peer, or a different one wearing
             # the same id?
-            def _no_targets(rec):
-                return {k: v for k, v in (rec or {}).items() if k != "targets"}
+            def _no_targets(rec):   # (the torrent port too: each panel gives its own — ours is kept below)
+                return {k: v for k, v in (rec or {}).items() if k not in ("targets", "p2p_port")}
             clash = []
             for k, v in ((b.get("users") or {}) if isinstance(b.get("users"), dict) else {}).items():
                 cur_u = roster["users"].get(k)
@@ -35879,6 +35958,7 @@ class Handler(BaseHTTPRequestHandler):
             for uid, u in sorted((b.get("users") or {}).items()):
                 roster["users"][uid] = u; nu += 1
             transfer_merge_groups(roster, b.get("groups"))      # after the users it names (GROUPS-PLAN G9)
+            _had = set(roster["peers"])
             for pid, pr in sorted((b.get("peers") or {}).items()):
                 cur_p = roster["peers"].get(pid)
                 if cur_p is None:
@@ -35886,8 +35966,10 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     kept = [t for t in (cur_p.get("targets") or [])
                             if isinstance(t, dict) and t.get("node") != a_nid]
-                    roster["peers"][pid] = {**pr, "targets": kept + list(pr.get("targets") or [])}
+                    roster["peers"][pid] = {**pr, "targets": kept + list(pr.get("targets") or []),
+                                            **({"p2p_port": cur_p["p2p_port"]} if "p2p_port" in cur_p else {})}
                 np += 1
+            p2p_ports_fill(roster, first=_had)                  # an arriving port this panel already gave out is reassigned
             roster_save(deps["roster_path"], roster)
 
             # ── 4. the escrow, then 5. the blobs. The keyslots are ciphertext wrapped under the SENDING
@@ -37653,6 +37735,10 @@ def main():
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
+    with contextlib.suppress(Exception):               # every device's incoming torrent port (Part C); a no-op once given
+        _r = roster_load(_rp)
+        if p2p_ports_fill(_r):
+            roster_save(_rp, _r)
     _psp = fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json")
     migrate_ru_split(nodes_path)   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
     migrate_tld_rules(nodes_path, _psp)   # legacy `tld` rules -> disabled zone patterns, BEFORE zones ship (§5.1)

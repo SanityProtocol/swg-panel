@@ -66,6 +66,8 @@
       backup: "Backup",
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
       p2pMark: "Torrents work here — the setting for full speed",
+      p2pPortL: "Incoming port",
+      p2pPortD: "Set exactly this port for incoming connections in the torrent client, and turn off the random port at startup (qBittorrent: Options → Connection). Other peers reach you at {addr}:{port}.",
       p2pHint: "Torrents work here. For full speed, set the torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
       rawT: "Faster mode available", rawD: "In the app's settings set the RAW port to {port} and the connection mode to RAW — they live there, not in this link. It drops WireGuard for speed.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
@@ -131,6 +133,8 @@
       backup: "Резерв",
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
       p2pMark: "Торренты здесь работают — настройка для полной скорости",
+      p2pPortL: "Входящий порт",
+      p2pPortD: "Укажите в торрент-клиенте именно этот порт для входящих соединений и выключите случайный порт при запуске (qBittorrent: Настройки → Соединение). Другие участники подключаются к вам по {addr}:{port}.",
       p2pHint: "Торренты здесь работают. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
@@ -921,7 +925,8 @@
     if (_noteBubble && _noteBubble._anchor === anchor) { if (!hover) _noteBubble._hover = false; return; }
     closeNoteBubble();
     if (!hover) closeDlBubble();                       // a click replaces the download list; a pointer passing over does not
-    var b = el("div", "note-bubble", text); b._anchor = anchor; b._hover = !!hover;
+    var b = el("div", "note-bubble", typeof text === "function" ? null : text); b._anchor = anchor; b._hover = !!hover;
+    if (typeof text === "function") b.appendChild(text());   // a bubble with structure (the torrent port) builds its own body
     b.setAttribute("role", "tooltip"); b.id = "note-bubble";
     document.body.appendChild(b);
     anchor.setAttribute("aria-expanded", "true"); anchor.setAttribute("aria-describedby", b.id);
@@ -940,16 +945,16 @@
       window.addEventListener("scroll", _nbScroll, true);
     }, 0);
   }
-  function noteMarker(cls, svg, label, text) {
+  function noteMarker(cls, svg, label, text, body) {   // body: optional builder of the bubble's content (text stays the tooltip)
     var m = el("button", "scell-mark " + cls); m.type = "button";
     m.innerHTML = svg; m.setAttribute("aria-label", label); m.setAttribute("aria-expanded", "false");
     m.setAttribute("data-note", text);   // the picker's copy has no bubble: its icon shows this as a tooltip
     m.onclick = function (e) {
       e.stopPropagation();
       if (_noteBubble && _noteBubble._anchor === m && !_noteBubble._hover) closeNoteBubble();   // pinned → second click closes
-      else openNoteBubble(m, text, false);                                                     // opens, or pins a hover's
+      else openNoteBubble(m, body || text, false);                                             // opens, or pins a hover's
     };
-    m.onmouseenter = function () { if (_canHover && _canHover.matches) openNoteBubble(m, text, true); };
+    m.onmouseenter = function () { if (_canHover && _canHover.matches) openNoteBubble(m, body || text, true); };
     m.onmouseleave = function () { if (_noteBubble && _noteBubble._anchor === m && _noteBubble._hover) closeNoteBubble(); };
     return m;
   }
@@ -2304,7 +2309,16 @@
       // plain-mode turtle sits, and the one client setting that gets them full speed through the tunnel in its bubble
       // (operator, 2026-10-21: an icon, not a line — the line took room from the config on a crowded cell).
       var srv = it.tgt.p2p && cc.el.querySelector(".scell-srv");
-      if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pMark"), t("p2pHint")));
+      // Where the node forwards the device's own port (swg-sub's p2p_port, Part C) the bubble opens with it: the one number
+      // the user must type into the client, then how, then the speed setting.
+      var fp = it.tgt.p2p_port, fd = fp && t("p2pPortD").replace("{addr}", it.tgt.p2p_addr || "").replace("{port}", fp);
+      if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pMark"), fp ? t("p2pPortL") + " " + fp + ". " + fd + " " + t("p2pHint") : t("p2pHint"),
+        fp && function () {
+          var f = document.createDocumentFragment(), row = el("div", "note-port");
+          row.appendChild(el("span", null, t("p2pPortL"))); row.appendChild(el("b", null, String(fp)));
+          f.appendChild(row); f.appendChild(el("p", "note-port-d", fd)); f.appendChild(el("p", "note-port-hint", t("p2pHint")));
+          return f;
+        }));
       srow.appendChild(cc.el); return cc.ctrl;
     });
     page.appendChild(srow);

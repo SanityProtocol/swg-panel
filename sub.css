@@ -454,6 +454,11 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .note-bubble { position: fixed; z-index: 70; max-width: min(300px, calc(100vw - 24px)); background: var(--panel);
   border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 40px rgba(0, 0, 0, .42);
   color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; overflow: auto; }
+/* the torrent port bubble: the number the user types is the one large thing; the speed hint sits under a rule */
+.note-port { display: flex; align-items: baseline; gap: 10px; }
+.note-port b { font-size: 22px; font-weight: 700; color: var(--brand); font-variant-numeric: tabular-nums; user-select: all; }
+.note-port-d { margin: 4px 0 0; }
+.note-port-hint { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--line); color: var(--ink-2); }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }

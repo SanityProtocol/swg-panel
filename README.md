@@ -421,6 +421,7 @@ says. A reboot ends the guard; once the older version runs, this ends both now:
 sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
 sudo systemctl try-restart 'swg-*.service'        # back to the system journal (a reboot moves them too)
 sudo nft delete table inet swg_p2p; while sudo ip rule del pref 6880 2>/dev/null; do :; done   # the torrent guard (a rule per route)
+sudo nft delete table ip swg_p2pfwd 2>/dev/null   # from 1.8.11: the devices' incoming torrent ports
 ```
 From 1.8.11, a server that ran a **SOCKS5 exit** keeps its tunnel and its DNS rules too — the older version can't see
 them, so they stay until a reboot (the tunnel and the table) or until you remove them:
@@ -577,6 +578,13 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   setting changes that. Where torrents get through, the subscription page shows a magnet beside the config's name; tap or
   hover it for the setting to use: TCP only, or µTP-TCP mixed mode *Prefer TCP* (qBittorrent: *Options → Connection* /
   *Advanced*). Where torrents are blocked there is no magnet.
+- **Each device has its own incoming torrent port.** Where torrents leave by the server's own address — a server on
+  *Direct*, or an interface whose own choice is *Direct* — every device gets a fixed port (20000–29999, the same on
+  every server it is on), and the server forwards it from its address to the device: other peers can connect in, which
+  is what seeding and private trackers need. The magnet's bubble then opens with that port; set it as the client's
+  listening port and turn off the random port at startup. A port another program on the server already listens on is
+  not forwarded, and the bubble does not show it. The panel keeps 20000–29999 free for this: a new interface or
+  turn-proxy can't listen there.
 - **In Docker, the panel keeps port 80 for its certificate.** With a Let's Encrypt certificate (for a domain or the
   bare IP), the panel's container holds the server's port 80, so it renews on its own with nothing to set up. Another
   certificate tool on the same server (your own acme.sh or certbot) then can't use port 80: give it hooks that stop the

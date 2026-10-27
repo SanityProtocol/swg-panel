@@ -13,6 +13,7 @@
  *
  * Run: node tests/spa_portsuggest_selftest.mjs
  *      --perturb   restores the seed and skip-set that knew nothing about the band, and expects RED.
+ *      --perturb-pool  the suggestion no longer skips the devices' torrent-port pool (20000-29999, S12) → RED on [6]
  */
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -20,6 +21,7 @@ import path from "node:path";
 import { spa, check, done, ROOT } from "./spa_env.mjs";
 
 const PERTURB = process.argv.includes("--perturb");
+const PERTURB_POOL = process.argv.includes("--perturb-pool");
 
 // ── the band, read from the SERVER, not restated here ────────────────────────────────────────────────
 const PANEL = readFileSync(path.join(ROOT, "swg-panel-server"), "utf8");
@@ -32,11 +34,11 @@ const { Store } = await spa("store.js");
 const model = await spa("model.js");
 let suggestPort = model.suggestPort;
 
-if (PERTURB) {
+if (PERTURB || PERTURB_POOL) {
   // The shipped behaviour: seed off EVERY interface port, skip only the upstream defaults.
   const src = readFileSync(path.join(ROOT, "js", "model.js"), "utf8");
   const before = src;
-  const patched = src
+  const patched = PERTURB_POOL ? src.replace(" || (p >= 20000 && p <= 29999)) && p < 65535) p++;", ") && p < 65535) p++;") : src
     .replace("const mineUser = mine.filter(q => !inMesh(q));", "const mineUser = mine;")
     .replace("while ((used.has(p) || reserved.has(p) || inMesh(p)) && p < 65535) p++;",
              "while ((used.has(p) || reserved.has(p)) && p < 65535) p++;");
@@ -89,4 +91,11 @@ console.log("\n[5] the turn family is seeded from its own ports and is unaffecte
 check("a turn suggestion on a mesh-only node is still 56002", suggestPort("n1", "turn") === 56002,
       suggestPort("n1", "turn"));
 
-done(PERTURB, "the band-unaware seed and skip-set");
+console.log("\n[6] the devices' incoming torrent ports (S12): the server refuses 20000-29999 for a new listener");
+const POOL = /^P2P_PORT_POOL = \((\d+), (\d+)\)/m.exec(PANEL);
+Store.stats.n6 = { interfaces: { wg0: { meta: { listen_port: 19999 } } } };
+const p6 = suggestPort("n6", "iface");
+check("the pool is readable from swg-panel-server", POOL && +POOL[1] === 20000 && +POOL[2] === 29999, POOL && POOL.slice(1));
+check("an interface after 19999 is offered the first port past the pool", p6 === 30000, `suggested ${p6}`);
+
+done(PERTURB || PERTURB_POOL, PERTURB_POOL ? "the pool-unaware skip-set" : "the band-unaware seed and skip-set");

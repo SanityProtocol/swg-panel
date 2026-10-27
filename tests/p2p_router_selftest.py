@@ -44,7 +44,7 @@ PSRC = open(PANEL, encoding="utf-8").read()
 NSRC = base.SRC
 
 PLANTS = {   # name: (file, old text, planted text) — each re-introduces a defect the checks exist for
-    "unpreserved":  ("panel", '              "routes", "share", "private", "router"):', '              "routes", "share", "private"):'),
+    "unpreserved":  ("panel", '              "routes", "share", "private", "router", "p2p_port"):', '              "routes", "share", "private", "p2p_port"):'),
     "store-false":  ("panel", '            changed["router"] = True if body.get("router") is True else None', '            changed["router"] = bool(body.get("router"))'),
     "store-truthy": ("panel", '            changed["router"] = True if body.get("router") is True else None', '            changed["router"] = True if body.get("router") else None'),
     "no-event":     ("panel", '            ev_append(roster_path, "peer", pid, "Marked as a router" if changed["router"] else "Router mark removed",',
