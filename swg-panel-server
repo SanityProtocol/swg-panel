@@ -8998,42 +8998,57 @@ def desired_for_node(roster, node_id, snap=None):
     return out
 
 
-def p2p_routers_for_node(roster, node_id):
+def p2p_routers_for_node(roster, node_id, arrivals=()):
     """The /32s of the peers marked as a router (`router`, S11b), for one node's never-flag set: one device's torrent behind
-    a NAT router no longer cuts every other device's high ports. EVERY marked router's, not only those deployed here: a
-    router's traffic that cascades to this node (an arrival, a rule's exit, a torrent route through a node) keeps its
-    source address, and this node's guard would flag it there (review F1). An address a DIFFERENT, unmarked device holds
-    here is left out — that /32 is someone else on this node. wg/awg targets only (a keyless one is not a router). Sorted,
-    so the reply's bytes are stable; [] when nobody is marked (the key is then left out of the reply)."""
-    peers = [p for p in (roster.get("peers") or {}).values() if isinstance(p, dict)]
-    marked = set()                                            # the marked peers' addresses — nobody marked: one cheap pass, []
-    for p in peers:
-        if p.get("router"):
-            for t in p.get("targets") or []:
-                if isinstance(t, dict) and not _is_self_contained_target(t):
-                    with contextlib.suppress(ValueError):
-                        a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])
-                        if a.version == 4:
-                            marked.add(a)
-    if not marked:
-        return []
-    keys = {str(a) for a in marked}
-    here = {ipaddress.ip_address(ip) for p in peers if not p.get("router") for t in (p.get("targets") or [])
-            if isinstance(t, dict) and t.get("node") == node_id and (ip := (t.get("ip") or "").split("/")[0]) in keys}
-    return ["%s/32" % a for a in sorted(marked - here)]
+    a NAT router no longer cuts every other device's high ports. A router's own nodes, and the nodes its traffic cascades
+    to with its source kept — an arrival, a rule's exit, a torrent route through a node (review F1): `arrivals` is this
+    node's [(subnet, origin node)] (`p2p_arrivals`), and only an address inside a subnet that arrives FROM the router's own
+    node counts — never every node (review F9–F11: a fleet-wide list reloaded every node's guard on one mark, and on
+    overlapping subnets exempted an unrelated device holding the same address elsewhere). wg/awg targets only (a keyless
+    one is not a router). Sorted, so the reply's bytes are stable; [] when nobody is marked (the key is then left out)."""
+    arr = []
+    for S, o in arrivals:
+        with contextlib.suppress(ValueError, TypeError):
+            arr.append((ipaddress.ip_network(S, strict=False), o))
+    out = set()
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict) or not p.get("router"):
+            continue
+        for t in p.get("targets") or []:
+            if not isinstance(t, dict) or _is_self_contained_target(t):
+                continue
+            with contextlib.suppress(ValueError):
+                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])
+                if a.version == 4 and (t.get("node") == node_id or any(o == t.get("node") and a in n for n, o in arr)):
+                    out.add(a)
+    return ["%s/32" % a for a in sorted(out)]
 
 
-_P2P_ROUTERS = {}   # node id → (roster_mark, its list): the roster changes on a save, the sync runs every 5 s per node
+def p2p_arrivals(node, plan):
+    """[(subnet, origin node)] cascading out through this node with its source kept — its plan's exit records, each named by
+    the mesh link it arrives on. A subnet arriving over two links cannot be told apart by source and is left out (the
+    planner's own T15 rule)."""
+    by_dev = {(lk or {}).get("iface"): peer for peer, lk in ((node or {}).get("links") or {}).items() if isinstance(lk, dict)}
+    vias = {}
+    for e in (plan or {}).get("exit") or []:
+        if isinstance(e, dict) and e.get("subnet"):
+            vias.setdefault(e["subnet"], set()).add(e.get("via_iface"))
+    return sorted((S, by_dev[next(iter(vs))]) for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)
 
 
-def p2p_routers_cached(mark, roster, node_id):
-    """p2p_routers_for_node, recomputed only when the roster moved (`mark`, taken before the roster was read)."""
+_P2P_ROUTERS = {}   # node id → ((roster_mark, its arrivals), its list): recomputed only when either moves
+
+
+def p2p_routers_cached(mark, roster, node_id, arrivals=()):
+    """p2p_routers_for_node, recomputed only when the roster moved (`mark`, taken before the roster was read) or the node's
+    arrivals changed."""
+    key = (mark, tuple(arrivals))
     hit = _P2P_ROUTERS.get(node_id)
-    if mark is not None and hit and hit[0] == mark:
+    if mark is not None and hit and hit[0] == key:
         return hit[1]
-    v = p2p_routers_for_node(roster, node_id)
+    v = p2p_routers_for_node(roster, node_id, arrivals)
     if mark is not None:
-        _P2P_ROUTERS[node_id] = (mark, v)
+        _P2P_ROUTERS[node_id] = (key, v)
     return v
 
 
@@ -35301,7 +35316,7 @@ class Handler(BaseHTTPRequestHandler):
                                                   else p2p_iface_wire((my_plan or {}).get("_p2pi"))),
                                           # router peers here (S11b): never flagged by the torrent guard — only when there are some,
                                           # so a fleet that marks nobody gets the reply it always got
-                                          **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid)) else {}),
+                                          **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets

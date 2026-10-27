@@ -11,9 +11,12 @@ by one by signature, but nothing else of it is cut.
     [1] /api/peers/update {router: true} stores `router`, and an event says so; an unrelated save (a title, a target's
         settings) keeps it; false clears the key (stored only when set), and anything but `true` is false; the event
         says the mark was removed; a save that changes nothing logs nothing
-    [2] the sync carries `smart.p2p_routers` — the wg/awg /32s of EVERY marked peer, deployed here or not (its traffic
-        cascades to other nodes with its own source: review F1), but not a keyless (WDTT) target, not an unmarked peer's,
-        and not an address a different, unmarked device holds on THIS node; sorted and once
+    [2] the sync carries `smart.p2p_routers` — the wg/awg /32s of the marked peers deployed on THIS node: not another
+        node's (n2's own 10.8.0.2 is a different device), not a keyless (WDTT) target, not an unmarked peer's
+    [2b] cascades (review F1, F9–F11): a router's address also goes to a node its traffic arrives at — only when the
+        subnet arrives FROM the router's own node (an address in a subnet from another node is someone else); arrivals
+        are the plan's exit records named by their mesh link, a subnet arriving over two links left out; the cache
+        recomputes when the arrivals change, not only the roster
     [3] nobody marked → the key is absent (the reply a fleet that marks nobody always got)
     [4] /api/state carries the mark (the SPA reads it from there)
   THE NODE (the REAL swg-noded)
@@ -47,15 +50,20 @@ PLANTS = {   # name: (file, old text, planted text) — each re-introduces a def
     "no-event":     ("panel", '            ev_append(roster_path, "peer", pid, "Marked as a router" if changed["router"] else "Router mark removed",',
                      '            (lambda *a: 0)(roster_path, "peer", pid, "Marked as a router" if changed["router"] else "Router mark removed",'),
     "event-noop":   ("panel", '        if "router" in changed and bool(changed["router"]) != bool(p.get("router")):', '        if "router" in changed:'),
-    "wire-unmarked": ("panel", '        if p.get("router"):\n            for t in p.get("targets") or []:', '        if True:\n            for t in p.get("targets") or []:'),
-    "wire-here-only": ("panel", '                if isinstance(t, dict) and not _is_self_contained_target(t):\n                    with',
-                       '                if isinstance(t, dict) and not _is_self_contained_target(t) and t.get("node") == node_id:\n                    with'),
-    "wire-stale":   ("panel", '    if mark is not None and hit and hit[0] == mark:', '    if hit:'),
-    "wire-collide": ("panel", '    return ["%s/32" % a for a in sorted(marked - here)]', '    return ["%s/32" % a for a in sorted(marked)]'),
-    "wire-keyless": ("panel", '                if isinstance(t, dict) and not _is_self_contained_target(t):\n                    with', '                if isinstance(t, dict):\n                    with'),
-    "wire-always":  ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid)) else {}),',
-                     '"p2p_routers": p2p_routers_cached(_rmark, roster, nid),'),
-    "wire-unwired": ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid)) else {}),', ''),
+    "wire-unmarked": ("panel", '        if not isinstance(p, dict) or not p.get("router"):\n            continue\n        for t in p.get("targets") or []:\n            if not isinstance(t, dict) or _is_self',
+                      '        if not isinstance(p, dict):\n            continue\n        for t in p.get("targets") or []:\n            if not isinstance(t, dict) or _is_self'),
+    "wire-allnodes": ("panel", 'if a.version == 4 and (t.get("node") == node_id or any(', 'if a.version == 4 and (True or any('),
+    "arr-any-origin": ("panel", 'any(o == t.get("node") and a in n for n, o in arr)', 'any(a in n for n, o in arr)'),
+    "arr-ignored":  ("panel", 'any(o == t.get("node") and a in n for n, o in arr)', 'False'),
+    "arr-dup":      ("panel", 'for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)', 'for S, vs in vias.items() if next(iter(vs)) in by_dev)'),
+    "arr-unwired":  ("panel", 'p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))', 'p2p_routers_cached(_rmark, roster, nid)'),
+    "cache-noarr":  ("panel", '    key = (mark, tuple(arrivals))', '    key = (mark,)'),
+    "wire-stale":   ("panel", '    if mark is not None and hit and hit[0] == key:', '    if hit:'),
+    "wire-keyless": ("panel", '            if not isinstance(t, dict) or _is_self_contained_target(t):\n                continue\n            with contextlib.suppress(ValueError):\n                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])\n                if a.version == 4 and (',
+                     '            if not isinstance(t, dict):\n                continue\n            with contextlib.suppress(ValueError):\n                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])\n                if a.version == 4 and ('),
+    "wire-always":  ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),',
+                     '"p2p_routers": p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan)),'),
+    "wire-unwired": ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),', ''),
     "node-unread":  ("node", '                routers=(smart or {}).get("p2p_routers") or [])', '                routers=[])'),
     "node-dropped": ("node", ' and not any(n.subnet_of(h) for h in have):\n                out.add(str(n))', ' and not any(n.subnet_of(h) for h in have):\n                pass'),
     "node-overlap": ("node", ' and not any(n.subnet_of(h) for h in have):', ':'),
@@ -167,11 +175,11 @@ def panel_checks(src, ok):
         # [2] the wire
         c, r = req("/api/node/sync", {"snapshot": snapshot()}, tok)
         got = (r.get("smart") or {}).get("p2p_routers")
-        ok(got == ["10.8.0.2/32", "10.8.0.9/32", "10.8.0.40/32"],
-           "[2] n1: every marked router's wg/awg /32, n2's deployment too (it may arrive here) — not the keyless one, not the unmarked one (%s)" % got)
+        ok(got == ["10.8.0.2/32", "10.8.0.9/32"],
+           "[2] n1: its marked routers' wg/awg /32s — not n2's deployment, not the keyless one, not the unmarked one (%s)" % got)
         c, r = req("/api/node/sync", {"snapshot": snapshot()}, tok2)
         got2 = (r.get("smart") or {}).get("p2p_routers")
-        ok(got2 == ["10.8.0.9/32", "10.8.0.40/32"], "[2] n2: not 10.8.0.2 — a different, unmarked device holds it there (%s)" % got2)
+        ok(got2 == ["10.8.0.40/32"], "[2] n2: only its own — not 10.8.0.2, a different device there (%s)" % got2)
 
         # [4] the SPA's source
         c, st = req("/api/state")
@@ -288,6 +296,36 @@ def node_checks(src, ok):
     ok(left == ["3", "0"], "[7] the router's OpenVPN flow leaves by the WAN; the flagged client's is cut (left %s)" % left)
 
 
+def arrival_checks(src, ok):
+    m = types.ModuleType("swgpanel_router"); m.__file__ = PANEL
+    exec(compile(src, PANEL, "exec"), m.__dict__)
+    r = roster()
+    r["peers"]["pa"]["router"] = True                         # n1 10.8.0.2 (router), n2's pd 10.8.0.2 (not), pc n1 .9 + n2 .40
+    arr_n2 = [("10.8.0.0/24", "n2")]                          # n3 receives n2's 10.8.0.0/24
+    got = m.p2p_routers_for_node(r, "n3", arr_n2)
+    ok(got == ["10.8.0.40/32"], "[2b] n3, n2's subnet arriving: n2's router .40 — not n1's router .2 (that subnet from n2 holds pd) (%s)" % got)
+    ok(m.p2p_routers_for_node(r, "n3", []) == [], "[2b] n3 with no arrivals: nothing")
+    node = {"links": {"n1": {"iface": "swg_a"}, "n2": {"iface": "swg_b"}}}
+    plan = {"exit": [{"subnet": "10.8.0.0/24", "via_iface": "swg_b"}, {"subnet": "10.8.0.0/24", "via_iface": "swg_b"},
+                     {"subnet": "10.9.0.0/24", "via_iface": "swg_a"}, {"subnet": "10.9.0.0/24", "via_iface": "swg_b"},
+                     {"subnet": "10.7.0.0/24", "via_iface": "wgx9"}]}
+    got = m.p2p_arrivals(node, plan)
+    ok(got == [("10.8.0.0/24", "n2")],
+       "[2b] arrivals: named by their mesh link; a subnet over two links and one over no link left out (%s)" % got)
+    # the real planner: n1's wg0 forwarded to n2 arrives there over n2's link to n1 (p2p_iface_panel_selftest's fleet)
+    import p2p_iface_panel_selftest as F
+    nodes = F.fleet(n1={"wg0": {"egress_mode": "forward", "egress_node": "n2"}})
+    plans = m.cascade_plan(nodes, {"n1": F.SN, "n2": F.SP}, {})
+    got = m.p2p_arrivals(nodes["n2"], plans.get("n2"))
+    ok(("10.8.0.0/24", "n1") in got, "[2b] cascade_plan: n1's forwarded wg0 is an arrival at n2, from n1 (%s)" % got)
+    ok('p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))' in src,
+       "[2b] the sync hands the node's arrivals to the router list")
+    m._P2P_ROUTERS.clear()
+    a1 = m.p2p_routers_cached(("mk",), r, "n3", [])
+    a2 = m.p2p_routers_cached(("mk",), r, "n3", arr_n2)
+    ok(a1 == [] and a2 == ["10.8.0.40/32"], "[2b] the cache recomputes when the arrivals change (%s → %s)" % (a1, a2))
+
+
 def run_checks(psrc, nsrc):
     fails = []
     def ok(cond, what):
@@ -295,6 +333,7 @@ def run_checks(psrc, nsrc):
         if not cond:
             fails.append(what)
     node_checks(nsrc, ok)
+    arrival_checks(psrc, ok)
     panel_checks(psrc, ok)
     return fails
 

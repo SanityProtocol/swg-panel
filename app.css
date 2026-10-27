@@ -3939,7 +3939,7 @@ a.tg:hover{filter:brightness(1.25)}
 .lanfleet-st.warn{color:var(--fault)}
 /* a device its owner keeps to themselves — the reason an audience reads "owner only" rather than "nobody shared it" */
 .tg.tg-priv{border-color:color-mix(in srgb,var(--pending) 45%,var(--line));color:var(--pending)}
-.tg.tg-router{border-color:color-mix(in srgb,var(--brand) 45%,var(--line));color:var(--brand)}   /* S11b: never flagged as a whole */
+.tg.tg-router{border-color:color-mix(in srgb,var(--brand) 45%,var(--line));color:var(--sel-ink)}   /* S11b: never flagged as a whole */
 /* The switch rides the section's own header, right-aligned: it governs the whole subject, so it belongs beside the
    subject's name and not under the list as one more row. `.seclabel` is upper-case and tracked out — the control's
    own label opts out of both, or it reads as another heading. */
