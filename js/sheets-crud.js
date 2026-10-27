@@ -795,7 +795,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const setOptsFor = (k, v) => setTopts(m => ({ ...m, [k]: v }));
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [priv, setPriv] = useState(peer.private === true);
-  const [router, setRouter] = useState(peer.shared === true);   // several devices behind this address (S11b)
+  const [router, setRouter] = useState(peer.router === true);   // several devices behind this address (S11b)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
   const [orig, setOrig] = useState(null);          // the loaded config values — Save stays off until one differs
@@ -837,7 +837,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // values (and, for a user change, walks the operator into a confirm for a no-op).
   const _dirty = (title.trim() !== (peer.title || "").trim())
     || (priv !== (peer.private === true))          // ⚠️ or Save stays disabled: this sheet computes dirty from its OWN
-    || (router !== (peer.shared === true))
+    || (router !== (peer.router === true))
     || ((userId || "") !== (peer.user_id || ""))   //    fields, it does not watch input events
     || (expDate !== expiryInputVal(peer.ownExpiry || 0))
     || (live.targets || []).some(ipChangedFor)
@@ -861,8 +861,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       if (priv !== (peer.private === true)) {
         const r = await api.peerUpdate({ peer_id: peer.id, private: priv }); if (!r.ok) fails++;
       }
-      if (router !== (peer.shared === true)) {
-        const r = await api.peerUpdate({ peer_id: peer.id, shared: router }); if (!r.ok) fails++;
+      if (router !== (peer.router === true)) {
+        const r = await api.peerUpdate({ peer_id: peer.id, router }); if (!r.ok) fails++;
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written

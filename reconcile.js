@@ -352,7 +352,7 @@ function reconcile(roster, stats, now, cfg) {
       // sharing guard never fired and a private device's own sheet showed the switch OFF. The server was right the whole
       // time, which is what made it look like it worked.
       private: p.private === true,      // the owner keeps this device and its networks to themselves (§18.6)
-      shared: p.shared === true,        // a router: several devices behind this address — the torrent guard never flags it (S11b)
+      router: p.router === true,        // a router: several devices behind this address — the torrent guard never flags it (S11b)
       overrides: p.overrides || null,   // peer-wide render overrides (the fallback under each target's own) — see the target field
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,

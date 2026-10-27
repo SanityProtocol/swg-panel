@@ -8,17 +8,18 @@ node's never-flag set (@nofan, what mesh arrivals and bridge sources already get
 by one by signature, but nothing else of it is cut.
 
   THE PANEL (a REAL panel process: temp state, scratch port, no auth; the node is played by POSTing /api/node/sync)
-    [1] /api/peers/update {shared: true} stores `shared`, and an event says so; an unrelated save (a title, a target's
+    [1] /api/peers/update {router: true} stores `router`, and an event says so; an unrelated save (a title, a target's
         settings) keeps it; false clears the key (stored only when set), and anything but `true` is false; the event
         says the mark was removed; a save that changes nothing logs nothing
-    [2] the sync carries `smart.p2p_shared` — this node's wg/awg /32s of the marked peers only: not another node's, not a
-        keyless (WDTT) target, not an unmarked peer's, sorted and once
+    [2] the sync carries `smart.p2p_routers` — the wg/awg /32s of EVERY marked peer, deployed here or not (its traffic
+        cascades to other nodes with its own source: review F1), but not a keyless (WDTT) target, not an unmarked peer's,
+        and not an address a different, unmarked device holds on THIS node; sorted and once
     [3] nobody marked → the key is absent (the reply a fleet that marks nobody always got)
     [4] /api/state carries the mark (the SPA reads it from there)
   THE NODE (the REAL swg-noded)
     [5] _p2p_nofan: the links alone when nothing is marked; a marked /32 added, sorted; v6, a prefix, junk and a /32 a link
         subnet already holds (the set has no auto-merge: an overlap refuses the whole table) left out
-    [6] reconcile_cascade hands `smart.p2p_shared` to _ensure_p2p, and the table it loads carries the /32 in @nofan, which
+    [6] reconcile_cascade hands `smart.p2p_routers` to _ensure_p2p, and the table it loads carries the /32 in @nofan, which
         every flag write reads (`ip saddr != @nofan`)
     [7] on the real kernel (throwaway namespaces, `sudo -n`; said SKIPPED without), Block: two clients each send a DHT
         query, then an OpenVPN-shaped UDP flow to port 1194 — the router's DHT is still caught (dht 2) but it is never
@@ -40,26 +41,26 @@ PSRC = open(PANEL, encoding="utf-8").read()
 NSRC = base.SRC
 
 PLANTS = {   # name: (file, old text, planted text) — each re-introduces a defect the checks exist for
-    "unpreserved":  ("panel", '              "routes", "share", "private", "shared"):', '              "routes", "share", "private"):'),
-    "store-false":  ("panel", '            changed["shared"] = True if body.get("shared") is True else None', '            changed["shared"] = bool(body.get("shared"))'),
-    "store-truthy": ("panel", '            changed["shared"] = True if body.get("shared") is True else None', '            changed["shared"] = True if body.get("shared") else None'),
-    "no-event":     ("panel", '            ev_append(roster_path, "peer", pid, "Marked as a router" if changed["shared"] else "Router mark removed",',
-                     '            (lambda *a: 0)(roster_path, "peer", pid, "Marked as a router" if changed["shared"] else "Router mark removed",'),
-    "event-noop":   ("panel", '        if "shared" in changed and bool(changed["shared"]) != bool(p.get("shared")):', '        if "shared" in changed:'),
-    "wire-unmarked": ("panel", '        if not isinstance(p, dict) or not p.get("shared"):\n            continue\n        for t in p.get("targets") or []:',
-                      '        if not isinstance(p, dict):\n            continue\n        for t in p.get("targets") or []:'),
-    "wire-allnodes": ("panel", 'if isinstance(t, dict) and t.get("node") == node_id and not _is_self_contained_target(t):',
-                      'if isinstance(t, dict) and not _is_self_contained_target(t):'),
-    "wire-keyless": ("panel", 'if isinstance(t, dict) and t.get("node") == node_id and not _is_self_contained_target(t):',
-                     'if isinstance(t, dict) and t.get("node") == node_id:'),
-    "wire-always":  ("panel", '**({"p2p_shared": _shr} if (_shr := p2p_shared_for_node(roster, nid)) else {}),',
-                     '"p2p_shared": p2p_shared_for_node(roster, nid),'),
-    "wire-unwired": ("panel", '**({"p2p_shared": _shr} if (_shr := p2p_shared_for_node(roster, nid)) else {}),', ''),
-    "node-unread":  ("node", '                shared=(smart or {}).get("p2p_shared") or [])', '                shared=[])'),
+    "unpreserved":  ("panel", '              "routes", "share", "private", "router"):', '              "routes", "share", "private"):'),
+    "store-false":  ("panel", '            changed["router"] = True if body.get("router") is True else None', '            changed["router"] = bool(body.get("router"))'),
+    "store-truthy": ("panel", '            changed["router"] = True if body.get("router") is True else None', '            changed["router"] = True if body.get("router") else None'),
+    "no-event":     ("panel", '            ev_append(roster_path, "peer", pid, "Marked as a router" if changed["router"] else "Router mark removed",',
+                     '            (lambda *a: 0)(roster_path, "peer", pid, "Marked as a router" if changed["router"] else "Router mark removed",'),
+    "event-noop":   ("panel", '        if "router" in changed and bool(changed["router"]) != bool(p.get("router")):', '        if "router" in changed:'),
+    "wire-unmarked": ("panel", '        if p.get("router"):\n            for t in p.get("targets") or []:', '        if True:\n            for t in p.get("targets") or []:'),
+    "wire-here-only": ("panel", '                if isinstance(t, dict) and not _is_self_contained_target(t):\n                    with',
+                       '                if isinstance(t, dict) and not _is_self_contained_target(t) and t.get("node") == node_id:\n                    with'),
+    "wire-stale":   ("panel", '    if mark is not None and hit and hit[0] == mark:', '    if hit:'),
+    "wire-collide": ("panel", '    return ["%s/32" % a for a in sorted(marked - here)]', '    return ["%s/32" % a for a in sorted(marked)]'),
+    "wire-keyless": ("panel", '                if isinstance(t, dict) and not _is_self_contained_target(t):\n                    with', '                if isinstance(t, dict):\n                    with'),
+    "wire-always":  ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid)) else {}),',
+                     '"p2p_routers": p2p_routers_cached(_rmark, roster, nid),'),
+    "wire-unwired": ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid)) else {}),', ''),
+    "node-unread":  ("node", '                routers=(smart or {}).get("p2p_routers") or [])', '                routers=[])'),
     "node-dropped": ("node", ' and not any(n.subnet_of(h) for h in have):\n                out.add(str(n))', ' and not any(n.subnet_of(h) for h in have):\n                pass'),
     "node-overlap": ("node", ' and not any(n.subnet_of(h) for h in have):', ':'),
     "node-prefix":  ("node", 'if n.version == 4 and n.prefixlen == 32 and not', 'if n.version == 4 and not'),
-    "node-links":   ("node", '        nofan = _p2p_nofan(node_cfg, shared)\n', '        nofan = _p2p_nofan(node_cfg, shared)[len(_p2p_link_nets(node_cfg)):]\n'),
+    "node-links":   ("node", '        nofan = _p2p_nofan(node_cfg, routers)\n', '        nofan = _p2p_nofan(node_cfg, routers)[len(_p2p_link_nets(node_cfg)):]\n'),
 }
 
 
@@ -71,17 +72,18 @@ NOW = int(time.time())
 
 
 def roster():
-    def peer(pid, ip, targets=None, shared=False):
+    def peer(pid, ip, targets=None, router=False):
         p = {"id": pid, "pubkey": key(pid[1].upper()), "psk": "PSK" + pid + "=", "user_id": "u1", "title": pid,
              "targets": targets or [{"node": "n1", "iface": "wg0", "type": "wg", "ip": ip}],
              "created_at": NOW - 100, "modified_at": NOW - 100}
-        if shared:
-            p["shared"] = True
+        if router:
+            p["router"] = True
         return p
     return {"version": 1, "users": {"u1": {"id": "u1", "name": "carol"}},
             "peers": {"pa": peer("pa", "10.8.0.2"),                                       # marked through the API in [1]
                       "pb": peer("pb", "10.8.0.3"),                                       # never marked
-                      "pc": peer("pc", "", shared=True, targets=[{"node": "n1", "iface": "wg0", "type": "wg", "ip": "10.8.0.9"},
+                      "pd": peer("pd", "", targets=[{"node": "n2", "iface": "wg0", "type": "wg", "ip": "10.8.0.2"}]),   # n2's own 10.8.0.2
+                      "pc": peer("pc", "", router=True, targets=[{"node": "n1", "iface": "wg0", "type": "wg", "ip": "10.8.0.9"},
                                                                  {"node": "n2", "iface": "wg0", "type": "wg", "ip": "10.8.0.40"},
                                                                  {"node": "n1", "iface": "wdtt0", "type": "wdtt", "ip": "10.7.0.5"}])}}
 
@@ -141,41 +143,41 @@ def panel_checks(src, ok):
         tok2 = req("/api/nodes/rotate", {"id": "n2"})[1]["data"]["token"]
 
         # [3] nobody marked yet but pc (another node's /32 and a keyless one only on n1 besides 10.8.0.9) — so first unmark pc
-        c, r = req("/api/peers/update", {"peer_id": "pc", "shared": False})
-        ok(c == 200 and "shared" not in stored("pc"), "[1] false clears the key — stored only when set (%s %s)" % (c, stored("pc").get("shared")))
+        c, r = req("/api/peers/update", {"peer_id": "pc", "router": False})
+        ok(c == 200 and "router" not in stored("pc"), "[1] false clears the key — stored only when set (%s %s)" % (c, stored("pc").get("router")))
         ok(verbs() == ["Router mark removed"], "[1] …and the event says the mark was removed (%s)" % verbs())
         c, r = req("/api/node/sync", {"snapshot": snapshot()}, tok)
         sm = (r.get("smart") or {})
-        ok(c == 200 and "p2p_shared" not in sm, "[3] nobody marked → no p2p_shared on the wire (%s)" % sm.get("p2p_shared"))
+        ok(c == 200 and "p2p_routers" not in sm, "[3] nobody marked → no p2p_routers on the wire (%s)" % sm.get("p2p_routers"))
 
         # [1] the door
-        c, r = req("/api/peers/update", {"peer_id": "pa", "shared": True})
-        ok(c == 200 and stored("pa").get("shared") is True, "[1] true stores the mark (%s %s)" % (c, stored("pa").get("shared")))
+        c, r = req("/api/peers/update", {"peer_id": "pa", "router": True})
+        ok(c == 200 and stored("pa").get("router") is True, "[1] true stores the mark (%s %s)" % (c, stored("pa").get("router")))
         ok(verbs() == ["Router mark removed", "Marked as a router"], "[1] …and an event says so (%s)" % verbs())
-        req("/api/peers/update", {"peer_id": "pa", "shared": True})
+        req("/api/peers/update", {"peer_id": "pa", "router": True})
         ok(verbs() == ["Router mark removed", "Marked as a router"], "[1] a save that changes nothing logs nothing (%s)" % verbs())
         req("/api/peers/update", {"peer_id": "pa", "title": "keenetic"})
         req("/api/peers/update-target", {"peer_id": "pa", "node": "n1", "iface": "wg0", "overrides": {"mtu": 1380}})
-        ok(stored("pa").get("shared") is True and stored("pa").get("title") == "keenetic",
-           "[1] a title save and a target's settings keep the mark (%s)" % stored("pa").get("shared"))
-        c, r = req("/api/peers/update", {"peer_id": "pb", "shared": "yes"})
-        ok(c == 200 and "shared" not in stored("pb"), "[1] anything but true is false (%s)" % stored("pb").get("shared"))
-        req("/api/peers/update", {"peer_id": "pc", "shared": True})
+        ok(stored("pa").get("router") is True and stored("pa").get("title") == "keenetic",
+           "[1] a title save and a target's settings keep the mark (%s)" % stored("pa").get("router"))
+        c, r = req("/api/peers/update", {"peer_id": "pb", "router": "yes"})
+        ok(c == 200 and "router" not in stored("pb"), "[1] anything but true is false (%s)" % stored("pb").get("router"))
+        req("/api/peers/update", {"peer_id": "pc", "router": True})
 
         # [2] the wire
         c, r = req("/api/node/sync", {"snapshot": snapshot()}, tok)
-        got = (r.get("smart") or {}).get("p2p_shared")
-        ok(got == ["10.8.0.2/32", "10.8.0.9/32"],
-           "[2] n1: its own wg/awg /32s of the marked peers — not n2's, not the keyless one, not the unmarked one (%s)" % got)
+        got = (r.get("smart") or {}).get("p2p_routers")
+        ok(got == ["10.8.0.2/32", "10.8.0.9/32", "10.8.0.40/32"],
+           "[2] n1: every marked router's wg/awg /32, n2's deployment too (it may arrive here) — not the keyless one, not the unmarked one (%s)" % got)
         c, r = req("/api/node/sync", {"snapshot": snapshot()}, tok2)
-        got2 = (r.get("smart") or {}).get("p2p_shared")
-        ok(got2 == ["10.8.0.40/32"], "[2] n2: only its own (%s)" % got2)
+        got2 = (r.get("smart") or {}).get("p2p_routers")
+        ok(got2 == ["10.8.0.9/32", "10.8.0.40/32"], "[2] n2: not 10.8.0.2 — a different, unmarked device holds it there (%s)" % got2)
 
         # [4] the SPA's source
         c, st = req("/api/state")
         sp = (((st.get("data") or st).get("roster") or {}).get("peers") or {})
-        ok((sp.get("pa") or {}).get("shared") is True and "shared" not in (sp.get("pb") or {}),
-           "[4] /api/state carries the mark (%s)" % {k: (v or {}).get("shared") for k, v in sp.items()})
+        ok((sp.get("pa") or {}).get("router") is True and "router" not in (sp.get("pb") or {}),
+           "[4] /api/state carries the mark (%s)" % {k: (v or {}).get("router") for k, v in sp.items()})
     finally:
         proc.terminate()
         try:
@@ -256,14 +258,14 @@ def node_checks(src, ok):
         setattr(m2, fn, (lambda *a, **k: ({}, {})) if fn == "_smart_domain_refresh" else (lambda *a, **k: None))
     m2._ensure_smart_nft = lambda *a, **k: {}
     m2._cascade_local_routes = lambda cfg, _proc=None: []
-    m2._ensure_p2p = lambda *a, **k: seen.append(k.get("shared"))
-    m2.reconcile_cascade({"interfaces": {}}, {}, {"entries": [], "p2p": None, "p2p_shared": ["10.8.0.2/32"]})
-    ok(seen == [["10.8.0.2/32"]], "[6] reconcile_cascade hands smart.p2p_shared to _ensure_p2p (%s)" % seen)
+    m2._ensure_p2p = lambda *a, **k: seen.append(k.get("routers"))
+    m2.reconcile_cascade({"interfaces": {}}, {}, {"entries": [], "p2p": None, "p2p_routers": ["10.8.0.2/32"]})
+    ok(seen == [["10.8.0.2/32"]], "[6] reconcile_cascade hands smart.p2p_routers to _ensure_p2p (%s)" % seen)
 
     m3 = base.load(src); b = base.Box()
     m3.run = b.run; m3.GEO_DIR = tempfile.mkdtemp()
     m3._relay_links = lambda cfg: ["swg_n"]; m3._iface_subnet = lambda cfg, ln: "10.255.0.0/31"
-    m3._ensure_p2p(None, {"10.8.0.0/24": ["torrents"]}, {}, {"changed": 0, "errors": []}, shared=["10.8.0.2/32"])
+    m3._ensure_p2p(None, {"10.8.0.0/24": ["torrents"]}, {}, {"changed": 0, "errors": []}, routers=["10.8.0.2/32"])
     text = "".join(i or "" for a, i in b.cmds if a[:2] == ["nft", "-f"])
     ok("set nofan { typeof ip saddr; flags interval; elements = { 10.255.0.0/31, 10.8.0.2/32 } }" in text
        and text.count("ip saddr != @nofan") >= 3,

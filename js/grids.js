@@ -116,7 +116,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
               // layout, so it sits by the title like the networks chip below: in one row with it, the TITLE truncating
               // and the tags never pushed past the cell's edge.
               const priv = p.private ? html`<span class="tg tg-priv" title=${T("Only this user's own devices reach it and the networks behind it")}>${T("tag|private")}</span>` : null;
-              const rtr = p.shared ? html`<span class="tg tg-router" title=${T("Several devices share this address — the torrent guard never cuts it as a whole")}>${T("tag|router")}</span>` : null;
+              const rtr = p.router ? html`<span class="tg tg-router" title=${T("Several devices share this address — the torrent guard never cuts it as a whole")}>${T("tag|router")}</span>` : null;
               // No interface column in this layout, so the networks chip stays by the title too.
               const chip = !loc && !agg && gw ? gw : null;
               return priv || rtr || chip ? html`<span class="namewrap">${nm}${priv}${rtr}${chip}</span>` : nm;

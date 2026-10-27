@@ -167,7 +167,7 @@ export const iTypeOf = (node, iface) => kindOf(node, iface, null);   // by (node
 export const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // by roster TARGET — every protocol tag/colour uses this
 // Can this device be marked a router (S11b)? Only through a wg/awg deployment — a router runs WireGuard / AmneziaWG, and a
 // keyless one (WDTT / csqtt) is an app on one device. A device already marked keeps the switch, so it can be turned off.
-export const routerCapable = p => !!p && (p.shared === true || (p.targets || []).some(t => ["wg", "awg"].includes(targetType(t))));
+export const routerCapable = p => !!p && (p.router === true || (p.targets || []).some(t => ["wg", "awg"].includes(targetType(t))));
 // The port a CLIENT dials for an adoption candidate. For wg/awg that is the interface's own listen port; for a
 // running WDTT server it is NOT — the fork's DTLS listener is what clients dial, and the candidate's listen_port
 // is the tunnel's own internal WG port, which nothing outside ever connects to. Reporting that as "Listen" put a

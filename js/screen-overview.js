@@ -1274,7 +1274,7 @@ export function Protection({ range, bs }) {
   }
   tiles.push({ k: T("Torrents caught"), v: kmb(torrents), n: torrents, sub: torrents ? T("connections · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }), spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent,
     // where the operator finds a router cut by one device's torrent (S11b) — the fix, said beside the offender
-    foot: T("Several devices behind one router? Mark that device as a router — its other traffic is never cut.") });
+    foot: T("Several devices behind one router? Mark that device as a router — one device's torrent then no longer cuts the others.") });
   tiles.push({ k: T("Scanners flagged"), v: kmb(scan), n: scan, sub: scan ? plural(scan, "source") + " · " + rw : T("none flagged"), color: "var(--partial)", who: who.scan });
   // The free port rules, shown only where they are switched on. Deliberately its own tile rather than folded
   // into "Blocked": that one counts content filtering, this one counts SMTP / QUIC / the torrent port-hint, and
