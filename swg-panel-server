@@ -9114,10 +9114,11 @@ def p2p_fwd_for_node(mark, roster, node_id, scope):
         port = p.get("p2p_port") if isinstance(p, dict) else None
         ts = []
         for t in (p.get("targets") or []) if type(port) is int else []:
-            with contextlib.suppress(ValueError, TypeError, AttributeError):
+            if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):
+                continue                                      # (the node first: an address is parsed only for its own)
+            with contextlib.suppress(ValueError, TypeError):
                 a = ipaddress.ip_address(str(t.get("ip") or "").split("/")[0])
-                if (t.get("node") == node_id and not _is_self_contained_target(t) and a.version == 4
-                        and any(a in n for n in nets) == (scope[0] == "iface")):
+                if a.version == 4 and any(a in n for n in nets) == (scope[0] == "iface"):
                     ts.append((_fp_role(t) != "primary", str(t.get("iface") or ""), a))
         if ts:
             out.append((min(ts)[2], port))
