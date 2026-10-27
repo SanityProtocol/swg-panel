@@ -8059,31 +8059,15 @@ _P2P_SHAPE = "meta l4proto { tcp, udp } th dport >= 1024 th dport != @portok ip 
 
 
 def _p2p_portok(v):
-    """The never-cut ports the panel sent (`smart.p2p_portok`, "a-b, c, …"), canonical: 1-65535, ranges merged (an
-    interval set refuses an overlap) and sorted. Absent, empty or anything unreadable → the built-in list — never an
-    empty set (a syntax error) and never "nothing exempt", which no garbled wire means."""
-    if not isinstance(v, str):                                # an empty or blank one fails the parse below → the same
+    """The never-cut ports the panel sent (`smart.p2p_portok`, "a-b, c, …"), read by the port rules' own `_ports_spans`
+    (merged and sorted — an interval set refuses an overlap). Absent or anything it cannot read → the built-in list —
+    never an empty set (a syntax error) and never "nothing exempt", which no garbled wire means."""
+    ps = _ports_spans({"proto": "both", "list": v.replace(" ", "")}) if isinstance(v, str) else None
+    if not ps:                                                # (an empty "both" list does not read either)
         return _P2P_PORTOK
-    spans = []
-    for part in v.split(","):
-        a, _, b = part.strip().partition("-")
-        try:
-            lo, hi = int(a), int(b or a)
-        except ValueError:
-            return _P2P_PORTOK
-        if not 1 <= lo <= hi <= 65535:
-            return _P2P_PORTOK
-        spans.append([lo, hi])
-    if not spans or len(spans) > 64:
-        return _P2P_PORTOK
-    spans.sort()
-    out = [spans[0]]
-    for lo, hi in spans[1:]:
-        if lo <= out[-1][1] + 1:
-            out[-1][1] = max(out[-1][1], hi)
-        else:
-            out.append([lo, hi])
-    return ", ".join(str(lo) if lo == hi else "%d-%d" % (lo, hi) for lo, hi in out)
+    return ", ".join("%d" % a if a == b else "%d-%d" % (a, b) for a, b in ps[1])
+
+
 _P2P_SIGS = (   # (counter, l4, raw-payload match) — exact protocol constants at fixed offsets, one compare each.
     # A kernel compare is at most 16 bytes, so the handshake matches `\x13BitTorrent prot` — still unique.
     ("bt_tcp", "tcp", "@ih,0,128 0x13426974546f7272656e742070726f74"),

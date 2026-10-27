@@ -2129,7 +2129,7 @@ export const STR = {
   "Not a port or a port range (1-65535): {v1}": "Не порт и не диапазон портов (1-65535): {v1}",
   "Keep at least one port, or reset the list to its defaults.": "Оставьте хотя бы один порт или верните список по умолчанию.",
   "Ports on the list: {v1} — encrypted torrents get through on them.": "Портов в списке: {v1} — на них зашифрованные торренты проходят.",
-  "Too many ports — at most {v1} entries.": "Слишком много портов — не больше {v1} записей.",
+  "Too many entries — at most {v1}.": "Слишком много записей — не больше {v1}.",
   "Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты и адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
   "Sites on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
   "Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",

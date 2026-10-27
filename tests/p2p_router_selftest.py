@@ -64,7 +64,7 @@ PLANTS = {   # name: (file, old text, planted text) — each re-introduces a def
     "wire-always":  ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),',
                      '"p2p_routers": p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan)),'),
     "wire-unwired": ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),', ''),
-    "node-unread":  ("node", '                routers=(smart or {}).get("p2p_routers") or [])', '                routers=[])'),
+    "node-unread":  ("node", '                routers=(smart or {}).get("p2p_routers") or [],', '                routers=[],'),
     "node-dropped": ("node", ' and not any(n.subnet_of(h) for h in have):\n                out.add(str(n))', ' and not any(n.subnet_of(h) for h in have):\n                pass'),
     "node-overlap": ("node", ' and not any(n.subnet_of(h) for h in have):', ':'),
     "node-prefix":  ("node", 'if n.version == 4 and n.prefixlen == 32 and not', 'if n.version == 4 and not'),

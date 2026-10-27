@@ -7,8 +7,8 @@ block, pre-filled with the built-ins + 1194 + 51820) and a per-node override. @p
 cut, fan-out count and flagged re-route uses; signatures never read it, so a torrent to an exempt port is still caught.
 
   THE NODE (the REAL swg-noded)
-    [1] _p2p_portok: canonical (merged, sorted); absent, empty, junk, out of range or more than 64 entries → the built-in
-        list — never an empty set (a syntax error) and never "nothing exempt"
+    [1] _p2p_portok — the port rules' own `_ports_spans`: canonical (merged, sorted); absent, empty, junk, out of range or
+        past 32 entries → the built-in list — never an empty set (a syntax error) and never "nothing exempt"
     [2] _ensure_p2p renders `set portok` from the wire; absent → the built-in list
     [3] reconcile_cascade hands `smart.p2p_portok` to _ensure_p2p
     [4] the built-in list is one list in three places: swg-noded, the panel, the SPA (and has 1194 + 51820)
@@ -16,11 +16,13 @@ cut, fan-out count and flagged re-route uses; signatures never read it, so a tor
         source's UDP flow to an exempt port leaves by the WAN, to a port next to it is cut, and a DHT query to the exempt
         port is still dropped (dht counted)
   THE PANEL (a REAL panel process: temp state, scratch port, no auth; the node is played by POSTing /api/node/sync)
-    [6] settings save: stored merged and sorted; the defaults, or null, store no key; a bad entry is refused by name; an
-        empty list is refused
+    [6] settings save — the port rules' grammar (`ports_clean`): stored merged and sorted; an en dash reads as a hyphen; the
+        defaults, or null, store no key; a bad entry is refused by name, a 0 in a JSON list too (never dropped), digits
+        that are not ASCII too; past 32 entries is refused saying so; an empty list is refused
     [7] node save: its own list stored; null clears it; a bad entry refused
     [8] the wire: on the defaults no key (the reply a fleet always got); a fleet list reaches every node; a node's own list
-        reaches only that node; a node whose own list IS the built-in list gets no key even while the fleet's differs
+        reaches only that node; a node whose own list IS the built-in list gets no key even while the fleet's differs; a
+        stored value that is not a list counts as absent
     [9] /api/state carries both (the SPA reads them there; a node field not published is posted back empty by the next save)
 
 Run: python3 tests/p2p_portok_selftest.py     (0 = pass)
@@ -40,23 +42,23 @@ NSRC = base.SRC
 MODEL = open(os.path.join(ROOT, "js", "model.js"), encoding="utf-8").read()
 
 PLANTS = {   # name: (file, old text, planted text)
-    "node-nomerge": ("node", '        if lo <= out[-1][1] + 1:\n            out[-1][1] = max(out[-1][1], hi)\n        else:\n            out.append([lo, hi])\n    return ", ".join(',
-                     '        out.append([lo, hi])\n    return ", ".join('),
-    "node-range":   ("node", '        if not 1 <= lo <= hi <= 65535:\n            return _P2P_PORTOK', '        if False:\n            return _P2P_PORTOK'),
+    "node-first-only": ("node", '    ps = _ports_spans({"proto": "both", "list": v.replace(" ", "")}) if isinstance(v, str) else None',
+                        '    ps = (lambda r: (r[0], r[1][:1]) if r else r)(_ports_spans({"proto": "both", "list": v.replace(" ", "")})) if isinstance(v, str) else None'),
     "node-hard":    ("node", '"  set portok { typeof th dport; flags interval; elements = { %s } }" % portok,', '"  set portok { typeof th dport; flags interval; elements = { %s } }" % _P2P_PORTOK,'),
     "node-unread":  ("node", '                portok=(smart or {}).get("p2p_portok"))', '                portok=None)'),
     "node-nodefault": ("node", '_P2P_PORTOK = "1194, 3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200, 51820"',
                        '_P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"'),
     "panel-twin":   ("panel", 'P2P_PORTOK_DEFAULT = ["1194", "3478-3481",', 'P2P_PORTOK_DEFAULT = ["3478-3481",'),
-    "panel-nomerge": ("panel", '        if lo <= out[-1][1] + 1:\n            out[-1][1] = max(out[-1][1], hi)\n        else:\n            out.append([lo, hi])\n    if len(out) > P2P_PORTOK_MAX:',
-                      '        out.append([lo, hi])\n    if len(out) > P2P_PORTOK_MAX:'),
-    "panel-lax":    ("panel", '        if not m or not 1 <= lo <= hi <= 65535:\n            bad.append(it)', '        if not m:\n            bad.append(it)'),
-    "panel-empty":  ("panel", '    if not items:\n        return None, perr("Keep at least one port', '    if False:\n        return None, perr("Keep at least one port'),
+    "panel-dropzero": ("panel", '        raw = " ".join(str(x) for x in raw)', '        raw = " ".join(str(x) for x in raw if x)'),
+    "panel-noname": ("panel", '    return None, perr("Not a port or a port range (1-65535): {v1}", v1=", ".join(bad[:5]) or str(raw)[:40])',
+                     '    return None, perr("Not a port or a port range (1-65535): {v1}", v1="")'),
+    "panel-empty":  ("panel", '    if canon == "empty":\n        return None, perr("Keep at least one port', '    if canon == "empty":\n        return [], None\n        return None, perr("Keep at least one port'),
     "panel-keepdefault": ("panel", '                if _pok == P2P_PORTOK_DEFAULT:\n                    cur.pop("p2p_portok", None)', '                if False:\n                    cur.pop("p2p_portok", None)'),
     "node-save-unwired": ("panel", '        if "p2p_portok" in body:                # this node\'s own never-cut ports', '        if False:                # this node\'s own never-cut ports'),
     "wire-always":  ("panel", '    return None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)', '    return ", ".join(eff)'),
-    "wire-fleetonly": ("panel", '    eff = (node or {}).get("p2p_portok") or (ps or {}).get("p2p_portok") or P2P_PORTOK_DEFAULT',
-                       '    eff = (ps or {}).get("p2p_portok") or P2P_PORTOK_DEFAULT'),
+    "wire-fleetonly": ("panel", '    eff = own if isinstance(own, list) and own else fleet', '    eff = fleet'),
+    "wire-string":  ("panel", '    eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT',
+                     '    eff = own or fleet or P2P_PORTOK_DEFAULT'),
     "wire-unwired": ("panel", '**({"p2p_portok": _pokw} if (_pokw := p2p_portok_wire(_ps, node)) else {}),', ''),
     "unpublished":  ("panel", '                        "p2p_portok": c.get("p2p_portok") if isinstance(c.get("p2p_portok"), list) else None,\n', ''),
 }
@@ -117,9 +119,9 @@ def node_checks(src, psrc, ok):
     ok(m._p2p_portok("51820, 1194 , 3478-3481, 3480-3500, 7000") == "1194, 3478-3500, 7000, 51820",
        "[1] canonical: merged and sorted (%s)" % m._p2p_portok("51820, 1194 , 3478-3481, 3480-3500, 7000"))
     ok(m._p2p_portok("1194, 1195-1200") == "1194-1200", "[1] adjacent ranges join (%s)" % m._p2p_portok("1194, 1195-1200"))
-    bad = [None, "", "  ", 7, "x", "0", "70000", "9-8", ", ".join(str(2000 + 2 * i) for i in range(65))]
+    bad = [None, "", "  ", 7, "x", "0", "70000", "9-8", ", ".join(str(2000 + 2 * i) for i in range(33))]
     got = [m._p2p_portok(b) for b in bad]
-    ok(all(g == D for g in got), "[1] absent, empty, junk, out of range, reversed or over 64 entries → the built-in list (%s)"
+    ok(all(g == D for g in got), "[1] absent, empty, junk, out of range, reversed or past the port rules' 32 entries → the built-in list (%s)"
        % [b for b, g in zip(bad, got) if g != D][:3])
     # [2]
     def table(portok):
@@ -237,6 +239,15 @@ def panel_checks(src, ok):
            "[6] a bad entry is refused by name, nothing changed (%s %s)" % (c, str(r)[:120]))
         c, r = req("/api/panel/settings", {"p2p_portok": ""})
         ok(c == 400, "[6] an empty list is refused (%s)" % c)
+        c, r = req("/api/panel/settings", {"p2p_portok": [0, 1194]})
+        ok(c == 400 and ps().get("p2p_portok") == ["1194", "3478-3500", "51820"], "[6] a 0 in a JSON list is refused, never dropped (%s)" % c)
+        c, r = req("/api/panel/settings", {"p2p_portok": "\u0661\u0661\u0669\u0664"})
+        ok(c == 400, "[6] digits that are not ASCII are refused, as the browser does (%s)" % c)
+        c, r = req("/api/panel/settings", {"p2p_portok": " ".join(str(2000 + i) for i in range(33))})
+        ok(c == 400 and "32" in json.dumps(r), "[6] past the port rules' 32 entries is refused, saying so (%s %s)" % (c, str(r)[:100]))
+        c, r = req("/api/panel/settings", {"p2p_portok": "1194, 19302\u201319309, 51820"})
+        ok(c == 200 and ps().get("p2p_portok") == ["1194", "19302-19309", "51820"], "[6] an en dash reads as a hyphen (%s %s)" % (c, ps().get("p2p_portok")))
+        req("/api/panel/settings", {"p2p_portok": "51820 1194, 3478-3481 3480-3500"})
         # [7] + [8] the node's own
         c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": "1194, 8443"})
         ok(c == 200 and json.load(open(nodes))["n2"].get("p2p_portok") == ["1194", "8443"], "[7] a node's own list is stored (%s)" % c)
@@ -245,6 +256,9 @@ def panel_checks(src, ok):
            "[9] /api/state publishes the node's own list (%s)" % stnode("n2").get("p2p_portok"))
         req("/api/nodes/update", {"id": "n2", "p2p_portok": ", ".join(["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-8810", "19302-19309", "27000-27200", "51820"])})
         ok(wire(t2) == "ABSENT", "[8] a node whose own list is the built-in one gets no key while the fleet's differs (%s)" % wire(t2))
+        _nd = json.load(open(nodes)); _nd["n1"]["p2p_portok"] = "1194"; json.dump(_nd, open(nodes, "w"))
+        ok(wire(t1) == "1194, 3478-3500, 51820", "[8] a stored value that is not a list (a hand edit) counts as absent — never its characters (%s)" % wire(t1))
+        _nd = json.load(open(nodes)); _nd["n1"].pop("p2p_portok", None); json.dump(_nd, open(nodes, "w"))
         c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": "1194, 0"})
         ok(c == 400, "[7] a bad entry on the node is refused (%s)" % c)
         c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": None})

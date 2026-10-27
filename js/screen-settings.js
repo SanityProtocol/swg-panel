@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokRead, portokSame } from "./model.js";
+import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, PORTS_MAX_TOKENS, portokRead, portokSame } from "./model.js";
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
 } from "./util.js";
@@ -3131,7 +3131,7 @@ const sectionLabel = k => ({
           <p class="hint" style="margin:0 0 8px">${T("A device the torrent filter has flagged keeps its connections to these ports — its VPN, calls, games. Torrents are still blocked by what they send, on every port. A node can keep its own list (Settings → Network → the node → Filters & abuse). Ports and ranges, comma-separated.")}</p>
           <div class="field" style="margin:0"><input class="mono" value=${pok} spellcheck="false" autocomplete="off" onInput=${e => setPok(e.target.value)}/>
             <${PortokHints} text=${pok}/>
-            ${portokSame(portokRead(pok).list, P2P_PORTOK_DEFAULT) ? null
+            ${pok === P2P_PORTOK_DEFAULT.join(", ") ? null
               : html`<div style="margin-top:6px"><button class="btn btn-mini" onClick=${() => setPok(P2P_PORTOK_DEFAULT.join(", "))}>${T("Reset to defaults")}</button></div>`}</div>` : null}
 
           <div class="seclabel" style="margin-top:20px">${T("Update schedule")}</div>
@@ -5491,7 +5491,8 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
 function PortokHints({ text }) {
   const r = portokRead(text);
   return html`${r.bad.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Not a port or a port range (1-65535): {v1}", { v1: r.bad.slice(0, 5).join(", ") })}</div>` : null}
-    ${!r.bad.length && !r.list.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Keep at least one port, or reset the list to its defaults.")}</div>` : null}
+    ${r.tooMany ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Too many entries — at most {v1}.", { v1: PORTS_MAX_TOKENS })}</div>` : null}
+    ${!r.bad.length && !r.tooMany && !r.list.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Keep at least one port, or reset the list to its defaults.")}</div>` : null}
     ${r.ports > PORTOK_WIDE ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Ports on the list: {v1} — encrypted torrents get through on them.", { v1: fmtNum(r.ports) })}</div>` : null}`;
 }
 

@@ -13,6 +13,7 @@
 import { isWdttIface, isCsqttIface, isSelfContainedIface, portOf } from "./util.js";
 import { Store } from "./store.js";
 import { T } from "./i18n.js";
+import { portsClean, PORTS_MAX_TOKENS } from "./rulerows.js";   // the port rules' grammar — the never-cut list reads it too
 
 // ── interface / target taxonomy ──────────────────────────────────────────────────────────────────
 // wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
@@ -166,25 +167,20 @@ export const platformLabel = p => PLATFORM_NAMES[p] || (p ? p.charAt(0).toUpperC
 export const iTypeOf = (node, iface) => kindOf(node, iface, null);   // by (node, iface) — the TargetPicker's one-kind lock + peer-create dispatch key off it
 export const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // by roster TARGET — every protocol tag/colour uses this
 // Ports the torrent filter never cuts (S11c). The built-in list — twinned with the panel's P2P_PORTOK_DEFAULT and the
-// node's _P2P_PORTOK (a gate compares the three). `portokRead` reads what the operator typed the way the panel stores it:
-// "N" / "A-B", 1-65535, ranges merged and sorted; `bad` is what it could not take, `ports` how many ports it covers.
+// node's _P2P_PORTOK (a gate compares the three). `portokRead` reads what the operator typed by the port rules' own grammar
+// (`portsClean`, gated on tests/ports_vectors.json, as the panel stores it): `list` canonical, `bad` the entries it cannot
+// take, `tooMany` past the token limit, `ports` how many ports from 1024 up it covers — below that nothing is ever cut.
 export const P2P_PORTOK_DEFAULT = ["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-8810", "19302-19309", "27000-27200", "51820"];
+export { PORTS_MAX_TOKENS };
 export const PORTOK_WIDE = 1000;   // more ports than this: encrypted torrents get through on a real share of the range
 export function portokRead(text) {
-  const spans = [], bad = [];
-  for (const it of String(text || "").split(/[\s,]+/).filter(Boolean)) {
-    const m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(it);
-    const lo = m ? +m[1] : 0, hi = m ? +(m[2] || m[1]) : 0;
-    if (!m || lo < 1 || hi > 65535 || lo > hi) bad.push(it); else spans.push([lo, hi]);
-  }
-  spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const out = [];
-  for (const [lo, hi] of spans) {
-    if (out.length && lo <= out[out.length - 1][1] + 1) out[out.length - 1][1] = Math.max(out[out.length - 1][1], hi);
-    else out.push([lo, hi]);
-  }
-  return { list: out.map(([lo, hi]) => lo === hi ? String(lo) : lo + "-" + hi), bad,
-           ports: out.reduce((n, [lo, hi]) => n + hi - lo + 1, 0) };
+  const toks = String(text || "").replace(/\u2013/g, "-").split(/[, \t\r\n\u00a0]+/).filter(Boolean);
+  const bad = toks.filter(t => portsClean("both", t).bad);
+  const r = portsClean("both", text == null ? "" : String(text));
+  const list = r.list ? r.list.split(",") : [];
+  const ports = list.reduce((n, s) => { const [a, b] = s.split("-").map(Number); const lo = Math.max(a, 1024), hi = b || a;
+    return n + (hi >= lo ? hi - lo + 1 : 0); }, 0);
+  return { list, bad, tooMany: r.bad === "too_many", ports };
 }
 export const portokSame = (a, b) => (a || []).join(",") === (b || []).join(",");
 

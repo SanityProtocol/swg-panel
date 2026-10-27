@@ -15056,45 +15056,32 @@ P2P_ACTIONS = ("block", "direct", "iface", "exit", "dev")
 # fan-out; signatures still judge every port. The node's own built-in list, twinned (`_P2P_PORTOK` in swg-noded — a gate
 # compares them): absent anywhere = this.
 P2P_PORTOK_DEFAULT = ["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-8810", "19302-19309", "27000-27200", "51820"]
-P2P_PORTOK_MAX = 64
 
 
 def p2p_portok_clean(raw):
-    """(canonical list, error): "N" / "A-B" entries — a list, or one comma/space-separated string — 1-65535, ranges merged
-    and sorted (the node's interval set refuses an overlap). Empty is refused: "nothing exempt" is not what clearing the
-    field means — Reset to defaults is."""
-    items = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw or ""))
-    items = [str(x).strip() for x in items if str(x or "").strip()]
-    if not items:
+    """(canonical list, error): the port-rule grammar (`ports_clean`, gated on tests/ports_vectors.json — commas or spaces,
+    an en dash read as a hyphen, ASCII digits, 1-65535, ranges merged and sorted; the node's interval set refuses an
+    overlap), as a list or one string. Empty is refused: "nothing exempt" is not what clearing the field means — Reset to
+    defaults is. What it cannot take is named."""
+    if isinstance(raw, list):
+        raw = " ".join(str(x) for x in raw)                   # a 0 in a JSON list is an entry, refused below — never dropped
+    proto, canon = ports_clean("both", raw if isinstance(raw, str) else None)
+    if proto is not None:
+        return canon.split(","), None
+    if canon == "empty":
         return None, perr("Keep at least one port, or reset the list to its defaults.")
-    if len(items) > 4 * P2P_PORTOK_MAX:
-        return None, perr("Too many ports — at most {v1} entries.", v1=str(P2P_PORTOK_MAX))
-    spans, bad = [], []
-    for it in items:
-        m = re.fullmatch(r"(\d{1,5})(?:-(\d{1,5}))?", it)
-        lo, hi = (int(m.group(1)), int(m.group(2) or m.group(1))) if m else (0, 0)
-        if not m or not 1 <= lo <= hi <= 65535:
-            bad.append(it)
-        else:
-            spans.append([lo, hi])
-    if bad:
-        return None, perr("Not a port or a port range (1-65535): {v1}", v1=", ".join(bad[:5]))
-    spans.sort()
-    out = [spans[0]]
-    for lo, hi in spans[1:]:
-        if lo <= out[-1][1] + 1:
-            out[-1][1] = max(out[-1][1], hi)
-        else:
-            out.append([lo, hi])
-    if len(out) > P2P_PORTOK_MAX:
-        return None, perr("Too many ports — at most {v1} entries.", v1=str(P2P_PORTOK_MAX))
-    return [str(lo) if lo == hi else "%d-%d" % (lo, hi) for lo, hi in out], None
+    if canon == "too_many":
+        return None, perr("Too many entries — at most {v1}.", v1=str(PORTS_MAX_TOKENS))
+    bad = [t for t in re.split(r"[, \t\r\n\u00a0]+", str(raw or "").replace("\u2013", "-")) if t and ports_clean("both", t)[0] is None]
+    return None, perr("Not a port or a port range (1-65535): {v1}", v1=", ".join(bad[:5]) or str(raw)[:40])
 
 
 def p2p_portok_wire(ps, node):
     """The node's never-cut ports for the sync — its own list, else the fleet's — as the node's "a-b, c" string; None
-    when that is the built-in list (the reply a fleet on the defaults always got)."""
-    eff = (node or {}).get("p2p_portok") or (ps or {}).get("p2p_portok") or P2P_PORTOK_DEFAULT
+    when that is the built-in list (the reply a fleet on the defaults always got). A stored value that is not a list (a
+    hand edit) counts as absent — joined as a string it would exempt its characters."""
+    own, fleet = (node or {}).get("p2p_portok"), (ps or {}).get("p2p_portok")
+    eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT
     return None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)
 
 
@@ -35381,10 +35368,10 @@ class Handler(BaseHTTPRequestHandler):
                                                   else {"action": "route", "entry": (my_plan or {}).get("_p2p")} if _p2pa in ("exit", "dev")
                                                   # iface: each interface's own choice, lowered — None while no record has one
                                                   else p2p_iface_wire((my_plan or {}).get("_p2pi"))),
-                                          # router peers here (S11b): never flagged by the torrent guard — only when there are some,
-                                          # so a fleet that marks nobody gets the reply it always got
                                           # never-cut ports (S11c): only when not the built-in list (byte-identical otherwise)
                                           **({"p2p_portok": _pokw} if (_pokw := p2p_portok_wire(_ps, node)) else {}),
+                                          # router peers here (S11b): never flagged by the torrent guard — only when there are some,
+                                          # so a fleet that marks nobody gets the reply it always got
                                           **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
