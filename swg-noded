@@ -8052,7 +8052,9 @@ P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI 
 P2P_RULE_PRI = 6880           # BELOW the band: a whole-interface forward's `from S lookup T` (pref T) must not outrank it
 _P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": "",
         "detail": "", "nolog": False}   # rule/tbl: None = not yet looked · detail: why a load was refused · nolog: see _ensure_p2p
-_P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"   # STUN/TURN/Teams, IPsec, XMPP, Zoom, Meet, Steam
+# The built-in "never cut" ports — what a node runs when the panel sends no list of its own (S11c: the operator's list,
+# `smart.p2p_portok`). OpenVPN 1194 and WireGuard 51820 since 1.8.11: one device's torrent cut its own corporate VPN.
+_P2P_PORTOK = "1194, 3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200, 51820"   # + STUN/TURN/Teams, IPsec, XMPP, Zoom, Meet, Steam
 _P2P_SHAPE = "meta l4proto { tcp, udp } th dport >= 1024 th dport != @portok ip daddr != @priv"
 _P2P_SIGS = (   # (counter, l4, raw-payload match) — exact protocol constants at fixed offsets, one compare each.
     # A kernel compare is at most 16 bytes, so the handshake matches `\x13BitTorrent prot` — still unique.
