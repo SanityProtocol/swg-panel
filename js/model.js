@@ -165,6 +165,29 @@ export const platformLabel = p => PLATFORM_NAMES[p] || (p ? p.charAt(0).toUpperC
 
 export const iTypeOf = (node, iface) => kindOf(node, iface, null);   // by (node, iface) — the TargetPicker's one-kind lock + peer-create dispatch key off it
 export const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // by roster TARGET — every protocol tag/colour uses this
+// Ports the torrent filter never cuts (S11c). The built-in list — twinned with the panel's P2P_PORTOK_DEFAULT and the
+// node's _P2P_PORTOK (a gate compares the three). `portokRead` reads what the operator typed the way the panel stores it:
+// "N" / "A-B", 1-65535, ranges merged and sorted; `bad` is what it could not take, `ports` how many ports it covers.
+export const P2P_PORTOK_DEFAULT = ["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-8810", "19302-19309", "27000-27200", "51820"];
+export const PORTOK_WIDE = 1000;   // more ports than this: encrypted torrents get through on a real share of the range
+export function portokRead(text) {
+  const spans = [], bad = [];
+  for (const it of String(text || "").split(/[\s,]+/).filter(Boolean)) {
+    const m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(it);
+    const lo = m ? +m[1] : 0, hi = m ? +(m[2] || m[1]) : 0;
+    if (!m || lo < 1 || hi > 65535 || lo > hi) bad.push(it); else spans.push([lo, hi]);
+  }
+  spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out = [];
+  for (const [lo, hi] of spans) {
+    if (out.length && lo <= out[out.length - 1][1] + 1) out[out.length - 1][1] = Math.max(out[out.length - 1][1], hi);
+    else out.push([lo, hi]);
+  }
+  return { list: out.map(([lo, hi]) => lo === hi ? String(lo) : lo + "-" + hi), bad,
+           ports: out.reduce((n, [lo, hi]) => n + hi - lo + 1, 0) };
+}
+export const portokSame = (a, b) => (a || []).join(",") === (b || []).join(",");
+
 // Can this device be marked a router (S11b)? Only through a wg/awg deployment — a router runs WireGuard / AmneziaWG, and a
 // keyless one (WDTT / csqtt) is an app on one device. A device already marked keeps the switch, so it can be turned off.
 export const routerCapable = p => !!p && (p.router === true || (p.targets || []).some(t => ["wg", "awg"].includes(targetType(t))));

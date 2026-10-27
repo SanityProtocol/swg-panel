@@ -25,7 +25,7 @@ by one by signature, but nothing else of it is cut.
     [6] reconcile_cascade hands `smart.p2p_routers` to _ensure_p2p, and the table it loads carries the /32 in @nofan, which
         every flag write reads (`ip saddr != @nofan`)
     [7] on the real kernel (throwaway namespaces, `sudo -n`; said SKIPPED without), Block: two clients each send a DHT
-        query, then an OpenVPN-shaped UDP flow to port 1194 — the router's DHT is still caught (dht 2) but it is never
+        query, then a VPN-shaped UDP flow to port 1195 (one the filter cuts: 1194 is exempt by default since S11c) — the router's DHT is still caught (dht 2) but it is never
         flagged and its OpenVPN flow leaves by the WAN; the unmarked client is flagged and its flow is cut
 
 Run: python3 tests/p2p_router_selftest.py     (0 = pass)
@@ -195,7 +195,7 @@ def panel_checks(src, ok):
 
 
 # [7] the namespace router of p2p_policy_selftest [25]: client 10.9.0.2 (the router) + 10.9.0.3, each a DHT get_peers and then
-# an OpenVPN-shaped UDP flow to 1194; the WAN's postrouting counts what left. None = could not set up.
+# a VPN-shaped UDP flow to 1195 (1194 is a default never-cut port since S11c); the WAN's postrouting counts what left. None = could not set up.
 WIRE_ROUTER = base.WIRE.split("nft add element")[0].replace(
     "ip addr add 10.9.0.2/24 dev vc && ip link set vc up",
     "ip addr add 10.9.0.2/24 dev vc && ip addr add 10.9.0.3/24 dev vc && ip link set vc up") + r'''
@@ -205,8 +205,8 @@ table inet leave {
   counter v3 {}
   chain post {
     type filter hook postrouting priority 300;
-    oifname "eth0" ip saddr 10.9.0.2 udp dport 1194 counter name v2
-    oifname "eth0" ip saddr 10.9.0.3 udp dport 1194 counter name v3
+    oifname "eth0" ip saddr 10.9.0.2 udp dport 1195 counter name v2
+    oifname "eth0" ip saddr 10.9.0.3 udp dport 1195 counter name v3
   }
 }
 EOT
@@ -219,7 +219,7 @@ time.sleep(0.2)
 for src in ("10.9.0.2", "10.9.0.3"):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((src, 40000))
     for i in range(3):
-        s.sendto(b"\x38" + os.urandom(40), ("198.51.100.200", 1194))
+        s.sendto(b"\x38" + os.urandom(40), ("198.51.100.200", 1195))
 '
 sleep 0.3
 pk() { nft list counter inet "$1" "$2" | grep -o "packets [0-9]*" | grep -o "[0-9]*"; }

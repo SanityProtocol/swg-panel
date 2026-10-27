@@ -86,7 +86,9 @@ subscription and no one else sitting in the middle of your traffic.
   list blocks it anywhere, and your routing rules still route it. Addresses leave the address lists on every server; site
   names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated. A device that is a router — several
   devices behind one address — can be marked as one in its settings: one device's torrent then no longer cuts the
-  others' VPNs, calls and games, while torrent connections are still blocked one by one.
+  others' VPNs, calls and games, while torrent connections are still blocked one by one. A device the torrent filter has
+  flagged keeps its connections to the ports you list (Settings → Geo data providers → Blocking; OpenVPN, WireGuard, calls
+  and Steam by default, and a node can keep its own list), while torrents to those ports are still caught.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
