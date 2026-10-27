@@ -88,7 +88,8 @@ subscription and no one else sitting in the middle of your traffic.
   devices behind one address — can be marked as one in its settings: one device's torrent then no longer cuts the
   others' VPNs, calls and games, while torrent connections are still blocked one by one. A device the torrent filter has
   flagged keeps its connections to the ports you list (Settings → Geo data providers → Blocking; OpenVPN, WireGuard, calls
-  and Steam by default, and a node can keep its own list), while torrents to those ports are still caught.
+  and Steam by default, and a node can keep its own list), while torrents to those ports are still caught. A switch to
+  Block applies to new connections; one already open to a peer on a low or never-cut port runs until it closes.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a

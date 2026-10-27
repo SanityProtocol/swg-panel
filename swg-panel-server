@@ -9041,7 +9041,17 @@ _P2P_ROUTERS = {}   # node id → ((roster_mark, its arrivals), its list): recom
 
 def p2p_routers_cached(mark, roster, node_id, arrivals=()):
     """p2p_routers_for_node, recomputed only when the roster moved (`mark`, taken before the roster was read) or the node's
-    arrivals changed."""
+    arrivals changed. `arrivals` may be a function: called only when some peer is marked (s11b F19 — a fleet that marks
+    nobody pays one roster pass per save, nothing per sync)."""
+    if callable(arrivals):
+        anyr = _P2P_ROUTERS.get("") if mark is not None else None
+        if not (anyr and anyr[0] == mark):
+            anyr = (mark, any(isinstance(p, dict) and p.get("router") for p in (roster.get("peers") or {}).values()))
+            if mark is not None:
+                _P2P_ROUTERS[""] = anyr
+        if not anyr[1]:
+            return []
+        arrivals = arrivals()
     key = (mark, tuple(arrivals))
     hit = _P2P_ROUTERS.get(node_id)
     if mark is not None and hit and hit[0] == key:
@@ -9887,7 +9897,13 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("mode") == "block":
         issues.append(perr("the torrent route is unavailable — torrent traffic is blocked until it is"))
     elif _p2pa in ("exit", "dev", "iface") and _p2pn and _p2pn.get("route") == "down":
-        issues.append(perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
+        # under iface the node names the devices down (`down`): the interfaces whose own route leaves by one are said —
+        # one group down is not every routed interface (S11 backlog F48); a node that names none, the line as before
+        _dn = _p2pn.get("down") if _p2pa == "iface" and isinstance(_p2pn.get("down"), list) else None
+        _dr = sorted(rn for _k in ("ifaces", "wdtt", "csqtt") for rn, _r in ((c.get(_k) or {}).items() if isinstance(c.get(_k), dict) else ())
+                     if isinstance(_r, dict) and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []
+        issues.append(perr("torrents on {v1}: their route's way out is down — blocked until it is back", v1=", ".join(_dr)) if _dr
+                      else perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
     # Each interface's own choice (IFACE-P2P-PICK §4.4): a node that does not run it reads `iface` as unknown and checks
     # only the Block interfaces — asked of the node (it reports mode iface while it runs them), as above.
     # `p2p_iface`: the interfaces whose route could not be lowered, when this node is sent choices at all (None: it is not).
@@ -15065,14 +15081,16 @@ def p2p_portok_clean(raw):
     defaults is. What it cannot take is named."""
     if isinstance(raw, list):
         raw = " ".join(str(x) for x in raw)                   # a 0 in a JSON list is an entry, refused below — never dropped
-    proto, canon = ports_clean("both", raw if isinstance(raw, str) else None)
+    if not isinstance(raw, str):                              # a number, an object: named, never read as "empty" (s11c F15)
+        return None, perr("Not a port or a port range (1-65535): {v1}", v1=str(raw)[:40])
+    proto, canon = ports_clean("both", raw)
     if proto is not None:
         return canon.split(","), None
     if canon == "empty":
         return None, perr("Keep at least one port, or reset the list to its defaults.")
     if canon == "too_many":
         return None, perr("Too many entries — at most {v1}.", v1=str(PORTS_MAX_TOKENS))
-    bad = [t for t in re.split(r"[, \t\r\n\u00a0]+", str(raw or "").replace("\u2013", "-")) if t and ports_clean("both", t)[0] is None]
+    bad = [t for t in _ports_toks(raw) if ports_clean("both", t)[0] is None]
     return None, perr("Not a port or a port range (1-65535): {v1}", v1=", ".join(bad[:5]) or str(raw)[:40])
 
 
@@ -15083,6 +15101,19 @@ def p2p_portok_wire(ps, node):
     own, fleet = (node or {}).get("p2p_portok"), (ps or {}).get("p2p_portok")
     eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT
     return None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)
+
+
+def p2p_route_dev(node, p2p):
+    """The device a record's own torrent route leaves by — what the node's iface groups route out of and name in their
+    report's `down` (S11 backlog F48): an exit's device, or the mesh link to the node it routes through. "" when it has none."""
+    a = (p2p or {}).get("action") if isinstance(p2p, dict) else None
+    if a == "dev":
+        return next((str(x.get("device") or "") for x in ((node or {}).get("exits") or []) if isinstance(x, dict)
+                     and str(x.get("id")) == str(p2p.get("exit_id"))), "")
+    if a == "exit":
+        lk = ((node or {}).get("links") or {}).get(p2p.get("node"))
+        return str(lk.get("iface") or "") if isinstance(lk, dict) else ""
+    return ""
 
 
 def p2p_policy(node):
@@ -18890,6 +18921,12 @@ PORTS_PROTOS = ("tcp", "udp", "both")
 PORTS_MAX_TOKENS = 32
 
 
+def _ports_toks(raw):
+    """The port grammar's tokens: commas or spaces between, an en dash read as a hyphen — the SPA's `portsToks`, exactly.
+    One tokenizer for ports_clean and for naming what a list could not take (p2p_portok_clean)."""
+    return [t for t in re.split(r"[, \t\r\n\u00a0]+", (raw or "").replace("\u2013", "-")) if t]
+
+
 def ports_clean(proto, raw):
     """A rule's ports → (proto, canonical list) or (None, why). The list is ports and ranges, any separators of commas and
     spaces, an en dash read as a hyphen; canonical = sorted, overlapping and adjacent ranges merged, joined by "," with no
@@ -18899,7 +18936,7 @@ def ports_clean(proto, raw):
         return None, "proto"
     if raw is not None and not isinstance(raw, str):
         return None, "list"
-    toks = [t for t in re.split(r"[, \t\r\n\u00a0]+", (raw or "").replace("\u2013", "-")) if t]   # the SPA's exact separators
+    toks = _ports_toks(raw)                                      # the SPA's exact separators
     if len(toks) > PORTS_MAX_TOKENS:
         return None, "too_many"
     spans = []
@@ -35372,7 +35409,7 @@ class Handler(BaseHTTPRequestHandler):
                                           **({"p2p_portok": _pokw} if (_pokw := p2p_portok_wire(_ps, node)) else {}),
                                           # router peers here (S11b): never flagged by the torrent guard — only when there are some,
                                           # so a fleet that marks nobody gets the reply it always got
-                                          **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),
+                                          **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))) else {}),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets

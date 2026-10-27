@@ -13,7 +13,7 @@
 import { isWdttIface, isCsqttIface, isSelfContainedIface, portOf } from "./util.js";
 import { Store } from "./store.js";
 import { T } from "./i18n.js";
-import { portsClean, PORTS_MAX_TOKENS } from "./rulerows.js";   // the port rules' grammar — the never-cut list reads it too
+import { portsClean, portsToks, portsSpans } from "./rulerows.js";   // the port rules' grammar — the never-cut list reads it too
 
 // ── interface / target taxonomy ──────────────────────────────────────────────────────────────────
 // wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
@@ -171,15 +171,13 @@ export const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // 
 // (`portsClean`, gated on tests/ports_vectors.json, as the panel stores it): `list` canonical, `bad` the entries it cannot
 // take, `tooMany` past the token limit, `ports` how many ports from 1024 up it covers — below that nothing is ever cut.
 export const P2P_PORTOK_DEFAULT = ["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-8810", "19302-19309", "27000-27200", "51820"];
-export { PORTS_MAX_TOKENS };
 export const PORTOK_WIDE = 1000;   // more ports than this: encrypted torrents get through on a real share of the range
 export function portokRead(text) {
-  const toks = String(text || "").replace(/\u2013/g, "-").split(/[, \t\r\n\u00a0]+/).filter(Boolean);
-  const bad = toks.filter(t => portsClean("both", t).bad);
+  const bad = portsToks(text).filter(t => portsClean("both", t).bad);
   const r = portsClean("both", text == null ? "" : String(text));
   const list = r.list ? r.list.split(",") : [];
-  const ports = list.reduce((n, s) => { const [a, b] = s.split("-").map(Number); const lo = Math.max(a, 1024), hi = b || a;
-    return n + (hi >= lo ? hi - lo + 1 : 0); }, 0);
+  const sp = r.list ? (portsSpans({ proto: "both", list: r.list }) || [])[1] || [] : [];
+  const ports = sp.reduce((n, [a, b]) => n + Math.max(0, b - Math.max(a, 1024) + 1), 0);
   return { list, bad, tooMany: r.bad === "too_many", ports };
 }
 export const portokSame = (a, b) => (a || []).join(",") === (b || []).join(",");

@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, PORTS_MAX_TOKENS, portokRead, portokSame } from "./model.js";
+import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokRead, portokSame } from "./model.js";
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
 } from "./util.js";
@@ -53,7 +53,7 @@ import {
 import { awgFieldCheck } from "./mimic.js";   // a template value a dial-in exit can take: one every app reads
 import { LogViewer } from "./journal.js";   // Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5)
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
-import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
+import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows, PORTS_MAX_TOKENS } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
   TURN_FORKS_DEFAULT, TurnCollectedIps, openRosterCheck, openServerClients, openServerDefaults,
   turnDialFallback, turnForkPlatforms, turnUpdateTarget, turnUpdating,

@@ -66,6 +66,10 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "wire-dups":      ('    out = {k: (sorted(set(pi[k])) if k != "entries"', '    out = {k: (list(pi[k]) if k != "entries"'),
     "card-silent":    ('        issues.append(perr("per-interface torrent choices need a node update', '        (lambda *a: 0)(perr("per-interface torrent choices need a node update'),
     "card-always":    ('    if _p2pa == "iface" and p2p_iface is not None and _srp is not None', '    if _p2pa == "iface" and _srp is not None'),
+    "card-down-all": ('                     if isinstance(_r, dict) and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []',
+                      '                     if isinstance(_r, dict) and _r.get("p2p")) if _dn else []'),
+    "route-dev-link": ('        return str(lk.get("iface") or "") if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy',
+                       '        return ""\n    return ""\n\n\ndef p2p_policy'),
     "card-down-old":  ('    elif _p2pa in ("exit", "dev", "iface") and _p2pn and _p2pn.get("route") == "down":',
                        '    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":'),
     "card-dead":      ('    elif (_p2pa == "iface" and p2p_iface and _srp is not None and _srp.get("p2pi")', '    elif (False'),
@@ -277,6 +281,20 @@ def run_checks(src):
     ok(K6 not in i6d, "[6] …nor on a node never heard from (s11-pick F5) (%s)" % i6d)
     i6c = [i.get("error_key") for i in P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "error", "mode": "iface"}}}, p2p_iface=["wg0"])]
     ok(K6 not in i6c, "[6] …nor where its rules failed to load (not in force) (%s)" % i6c)
+    # [6b] the route's way out down, per interface (backlog F48): the node names the devices down
+    KD, KG = "torrents on {v1}: their route's way out is down — blocked until it is back", "the torrent route's way out is down — torrent traffic is blocked until it is back"
+    C6 = {"p2p": {"action": "iface"}, "exits": [dict(X1)], "links": {"n2": {"iface": "swg_p"}},
+          "ifaces": {"wg9": {"p2p": {"action": "dev", "exit_id": X1["id"]}}, "wg7": {"p2p": {"action": "exit", "node": "n2"}}, "wg0": {}},
+          "wdtt": {"wdtt1": {"p2p": {"action": "exit", "node": "n2"}}}}
+    def card6(rep):
+        return [(i.get("error_key"), (i.get("error_vars") or {}).get("v1")) for i in
+                P._node_issues(C6, {"smartroute": {"p2pi": 1, "p2p": dict({"state": "ok", "mode": "iface"}, **rep)}})]
+    ok((KD, "wg9") in card6({"route": "down", "down": ["wgx0"]}), "[6b] the exit's device down → only the interface routed through it (%s)" % card6({"route": "down", "down": ["wgx0"]}))
+    ok((KD, "wdtt1, wg7") in card6({"route": "down", "down": ["swg_p"]}), "[6b] the link to the node down → the interfaces (and WDTT) routed through it (%s)" % card6({"route": "down", "down": ["swg_p"]}))
+    ok((KG, None) in card6({"route": "down"}), "[6b] a node that names no device → the line as before (%s)" % card6({"route": "down"}))
+    ok(P.p2p_route_dev(C6, {"action": "dev", "exit_id": X1["id"]}) == "wgx0" and P.p2p_route_dev(C6, {"action": "exit", "node": "n2"}) == "swg_p"
+       and P.p2p_route_dev(C6, {"action": "direct"}) == "" and P.p2p_route_dev(C6, {"action": "exit", "node": "gone"}) == "",
+       "[6b] a record's route device: the exit's, or the mesh link's; none for direct or a node not linked")
 
     # [7] the wire
     i0 = src.find('"p2p": ({"action": _p2pa}')

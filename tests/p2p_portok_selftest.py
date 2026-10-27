@@ -49,6 +49,8 @@ PLANTS = {   # name: (file, old text, planted text)
     "node-nodefault": ("node", '_P2P_PORTOK = "1194, 3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200, 51820"',
                        '_P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"'),
     "panel-twin":   ("panel", 'P2P_PORTOK_DEFAULT = ["1194", "3478-3481",', 'P2P_PORTOK_DEFAULT = ["3478-3481",'),
+    "panel-number-empty": ("panel", '    if not isinstance(raw, str):                              # a number, an object: named, never read as "empty" (s11c F15)\n        return None, perr("Not a port or a port range (1-65535): {v1}", v1=str(raw)[:40])\n',
+                           '    raw = raw if isinstance(raw, str) else None\n'),
     "panel-dropzero": ("panel", '        raw = " ".join(str(x) for x in raw)', '        raw = " ".join(str(x) for x in raw if x)'),
     "panel-noname": ("panel", '    return None, perr("Not a port or a port range (1-65535): {v1}", v1=", ".join(bad[:5]) or str(raw)[:40])',
                      '    return None, perr("Not a port or a port range (1-65535): {v1}", v1="")'),
@@ -239,6 +241,9 @@ def panel_checks(src, ok):
            "[6] a bad entry is refused by name, nothing changed (%s %s)" % (c, str(r)[:120]))
         c, r = req("/api/panel/settings", {"p2p_portok": ""})
         ok(c == 400, "[6] an empty list is refused (%s)" % c)
+        c, r = req("/api/panel/settings", {"p2p_portok": 1194})
+        ok(c == 400 and "empty" not in json.dumps(r).lower() and "Keep at least one" not in json.dumps(r) and "1194" in json.dumps(r),
+           "[6] a number (not a list or text) is named, never read as empty (s11c F15) (%s %s)" % (c, str(r)[:120]))
         c, r = req("/api/panel/settings", {"p2p_portok": [0, 1194]})
         ok(c == 400 and ps().get("p2p_portok") == ["1194", "3478-3500", "51820"], "[6] a 0 in a JSON list is refused, never dropped (%s)" % c)
         c, r = req("/api/panel/settings", {"p2p_portok": "\u0661\u0661\u0669\u0664"})

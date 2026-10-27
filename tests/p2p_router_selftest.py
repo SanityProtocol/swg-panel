@@ -56,14 +56,15 @@ PLANTS = {   # name: (file, old text, planted text) — each re-introduces a def
     "arr-any-origin": ("panel", 'any(o == t.get("node") and a in n for n, o in arr)', 'any(a in n for n, o in arr)'),
     "arr-ignored":  ("panel", 'any(o == t.get("node") and a in n for n, o in arr)', 'False'),
     "arr-dup":      ("panel", 'for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)', 'for S, vs in vias.items() if next(iter(vs)) in by_dev)'),
-    "arr-unwired":  ("panel", 'p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))', 'p2p_routers_cached(_rmark, roster, nid)'),
+    "arr-unwired":  ("panel", 'p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))', 'p2p_routers_cached(_rmark, roster, nid)'),
+    "arr-always":   ("panel", '        if not anyr[1]:\n            return []\n        arrivals = arrivals()', '        arrivals = arrivals()'),
     "cache-noarr":  ("panel", '    key = (mark, tuple(arrivals))', '    key = (mark,)'),
     "wire-stale":   ("panel", '    if mark is not None and hit and hit[0] == key:', '    if hit:'),
     "wire-keyless": ("panel", '            if not isinstance(t, dict) or _is_self_contained_target(t):\n                continue\n            with contextlib.suppress(ValueError):\n                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])\n                if a.version == 4 and (',
                      '            if not isinstance(t, dict):\n                continue\n            with contextlib.suppress(ValueError):\n                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])\n                if a.version == 4 and ('),
-    "wire-always":  ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),',
-                     '"p2p_routers": p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan)),'),
-    "wire-unwired": ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))) else {}),', ''),
+    "wire-always":  ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))) else {}),',
+                     '"p2p_routers": p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan)),'),
+    "wire-unwired": ("panel", '**({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))) else {}),', ''),
     "node-unread":  ("node", '                routers=(smart or {}).get("p2p_routers") or [],', '                routers=[],'),
     "node-dropped": ("node", ' and not any(n.subnet_of(h) for h in have):\n                out.add(str(n))', ' and not any(n.subnet_of(h) for h in have):\n                pass'),
     "node-overlap": ("node", ' and not any(n.subnet_of(h) for h in have):', ':'),
@@ -318,8 +319,13 @@ def arrival_checks(src, ok):
     plans = m.cascade_plan(nodes, {"n1": F.SN, "n2": F.SP}, {})
     got = m.p2p_arrivals(nodes["n2"], plans.get("n2"))
     ok(("10.8.0.0/24", "n1") in got, "[2b] cascade_plan: n1's forwarded wg0 is an arrival at n2, from n1 (%s)" % got)
-    ok('p2p_routers_cached(_rmark, roster, nid, p2p_arrivals(node, my_plan))' in src,
+    ok('p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))' in src,
        "[2b] the sync hands the node's arrivals to the router list")
+    m._P2P_ROUTERS.clear()
+    called = []
+    r0 = roster(); r0["peers"]["pc"].pop("router", None)
+    got0 = m.p2p_routers_cached(("mk0",), r0, "n3", lambda: called.append(1) or arr_n2)
+    ok(got0 == [] and not called, "[2b] nobody marked: the arrivals are never built (s11b F19) (%s %s)" % (got0, called))
     m._P2P_ROUTERS.clear()
     a1 = m.p2p_routers_cached(("mk",), r, "n3", [])
     a2 = m.p2p_routers_cached(("mk",), r, "n3", arr_n2)

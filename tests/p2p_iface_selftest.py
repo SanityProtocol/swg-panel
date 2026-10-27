@@ -50,6 +50,9 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "strict-routed":  ('            if any(ipaddress.ip_network(n).overlaps(o) for o in nets):', '            if False:'),
     "nested-strict":  ('                subs.append(n)\n        nets.extend(ipaddress.ip_network(n) for n in subs)', '                subs.append(n); nets.append(ipaddress.ip_network(n))'),
     "local-uncounted": ('                L.append("    meta l4proto %s %s fib saddr type local counter name %s" % (l4, m, c))   # are counted here (pick F6)\n', ''),
+    "probe-first-only": ('        _down = [dev for T, dev in _rts if not _way_out(T)]', '        _down = next(([dev] for T, dev in _rts if not _way_out(T)), [])'),
+    "report-no-down": ('                       **({"down": _dn} if _dn and _P2P["mode"] == "iface" else {}),\n', ''),
+    "report-uncorrected": ('if d in (_P2P.get("route_down") or ()) or _devexit_state(d) != "up"}) if _r else []', 'if d in (_P2P.get("route_down") or ())}) if _r else []'),
     "rule-bound":     ('        for _ in range(len(cur) + 1):                         # every group\'s rule (iface installs one per group)',
                        '        for _ in range(64):                         # every group\'s rule (iface installs one per group)'),
     "v6-empty":       ('        if mode == "iface" and not strict and not groups:', '        if False:'),
@@ -63,7 +66,6 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "sig-local":      ('                L.append("    meta l4proto %s %s jump gsig" % (l4, m))', '                L.append("    meta l4proto %s %s fib saddr type != local jump gsig" % (l4, m))'),
     "group-oif":      ('    goif = lambda g: "oifname != { %s } "', '    goif = lambda g: "" and "oifname != { %s } "'),
     "rule-ordered":   ('all(any(("fwmark %#x lookup %s" % w) in ln for ln in cur) for w in wants)', 'all(("fwmark %#x lookup %s" % w) in ln for ln, w in zip(cur, wants))'),
-    "route-first":    ('            if not _up:\n                break', '            pass'),
     "recon-borrowed": ('    if _pi.get("action") == "iface":                          # …and each', '    if False:                          # …and each'),
 }
 
@@ -107,7 +109,7 @@ def golden(src):
                         res = {"changed": 0, "errors": []}
                         b.cmds[:] = []
                         mm._ensure_p2p(w, mech, {}, res)
-                        st = {k: v for k, v in mm._P2P.items() if k != "ih"}
+                        st = {k: v for k, v in mm._P2P.items() if k not in ("ih", "route_devs", "route_down")}   # per-route bookkeeping (backlog F48): new, not a datapath change
                         trace.append([[(a, i) for a, i in b.cmds], res, st])
                     out["ensure|%s|%s|ih%d|rt%d" % (wn, mn, ih, bool(rt))] = _h(trace)
     for via in ("wgx9", "swg_q"):
@@ -279,18 +281,42 @@ def run_checks(src):
     m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
     ok(not [r for r in b.rules if r.startswith("6880:")], "[5] …and 71 rules there go too: the bound is what is there (s11-pick F7)")
 
-    # [6]
+    # [6] every route group asked; the report names the devices down (backlog F48/F49, pick F12)
+    def rep6(m):
+        run0, dx0 = m.run, m._devexit_state
+        m.run = lambda a, input_text=None, timeout=20: types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        m._devexit_state = lambda dev: "up"
+        st = None
+        with __import__("contextlib").suppress(Exception):
+            st = m.smart_status()
+        m.run, m._devexit_state = run0, dx0
+        return (st or {}).get("p2p") or {}
     m, b = fresh(src)
     b.tables_rt["7005"], b.tables_rt["7003"] = "default dev swg_q scope link\n", "prohibit default metric 4096\n"   # the 2nd group is down
     m._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
-    ok(m._P2P["route"] == "down" and m._P2P["route_dev"] == "wgx0", "[6] the first group with no way out is said (%s %s)" % (m._P2P["route"], m._P2P["route_dev"]))
-    b.tables_rt["7003"] = "default dev wgx0 scope link\n"
+    ok(m._P2P["route"] == "down" and m._P2P["route_down"] == ["wgx0"], "[6] the group with no way out is named (%s %s)" % (m._P2P["route"], m._P2P["route_down"]))
+    r6 = rep6(m)
+    ok(r6.get("route") == "down" and r6.get("down") == ["wgx0"], "[6] the report names only that group's device (%s)" % r6)
+    m, b = fresh(src)
+    b.tables_rt["7005"], b.tables_rt["7003"] = "", ""; b.cmds[:] = []
     m._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
-    ok(m._P2P["route"] == "up", "[6] all up → up")
-    b.tables_rt["7005"] = ""; b.cmds[:] = []
+    ok(m._P2P["route_down"] == ["swg_q", "wgx0"] and sum(1 for a, _ in b.cmds if a[:4] == ["ip", "route", "show", "table"]) == 2,
+       "[6] every route group is asked — both down are named (%s)" % m._P2P["route_down"])
+    ok(rep6(m).get("down") == ["swg_q", "wgx0"], "[6] …and both reported (%s)" % rep6(m))
+    b.tables_rt["7005"], b.tables_rt["7003"] = "default dev swg_q scope link\n", "default dev wgx0 scope link\n"
     m._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
-    ok(m._P2P["route_dev"] == "swg_q" and sum(1 for a, _ in b.cmds if a[:4] == ["ip", "route", "show", "table"]) == 1,
-       "[6] the first group down ends the probe (one `ip route show table`)")
+    r6 = rep6(m)
+    ok(m._P2P["route"] == "up" and r6.get("route") == "up" and "down" not in r6, "[6] all up → up, no `down` key (%s)" % r6)
+    m2, b2 = fresh(src)
+    b2.tables_rt["7005"], b2.tables_rt["7003"] = "default dev swg_q scope link\n", "default dev wgx0 scope link\n"
+    m2._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
+    m2.run = lambda a, input_text=None, timeout=20: types.SimpleNamespace(returncode=1, stdout="", stderr="")
+    m2._devexit_state = lambda dev: "down" if dev == "swg_q" else "up"
+    st = None
+    with __import__("contextlib").suppress(Exception):
+        st = m2.smart_status()
+    r6 = (st or {}).get("p2p") or {}
+    ok(r6.get("route") == "down" and r6.get("down") == ["swg_q"], "[6] a device down since the pass is corrected at report time, by itself (%s)" % r6)
     m._ensure_p2p({"action": "iface", "direct": ["10.69.0.0/24"]}, {}, {}, {"changed": 0, "errors": []})
     ok(m._P2P["route"] == "" and m._P2P["mode"] == "iface", "[6] no route group → no route state")
 

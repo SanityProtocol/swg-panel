@@ -78,10 +78,13 @@ const ruleOn = r => r && r.ports && typeof r.ports === "object" ? r.ports.on ===
    sorted, overlapping and adjacent ranges merged, joined by "," ("443,8000-8100"). Empty = every port of `proto`; `both` with
    none is not a port rule. → {proto, list} or {bad: "proto"|"list"|"too_many"|"empty"}. */
 export const PORTS_MAX_TOKENS = 32;
+/** The grammar's tokens — commas or spaces between, an en dash read as a hyphen (the panel's `_ports_toks`). One tokenizer for
+ *  portsClean and for naming what a list could not take (the never-cut ports field). */
+export const portsToks = raw => String(raw || "").replace(/\u2013/g, "-").split(/[, \t\r\n\u00a0]+/).filter(Boolean);
 export function portsClean(proto, raw) {
   if (!["tcp", "udp", "both"].includes(proto)) return { bad: "proto" };
   if (raw != null && typeof raw !== "string") return { bad: "list" };
-  const toks = String(raw || "").replace(/\u2013/g, "-").split(/[, \t\r\n\u00a0]+/).filter(Boolean);   // the panel's exact separators
+  const toks = portsToks(raw);   // the panel's exact separators
   if (toks.length > PORTS_MAX_TOKENS) return { bad: "too_many" };
   const spans = [];
   for (const t of toks) {
@@ -106,7 +109,7 @@ export function portsClean(proto, raw) {
 export const portsOf = r => r && r.ports && typeof r.ports === "object" ? (({ on, ...p }) => p)(r.ports) : null;
 const ptKey = r => { const p = portsOf(r); return p ? "|pt:" + p.proto + ":" + p.list : ""; };
 /** (proto, [[a, b]…]) of a port spec, or null when it does not read. */
-const portsSpans = p => { const c = portsClean(p && p.proto, p && p.list);
+export const portsSpans = p => { const c = portsClean(p && p.proto, p && p.list);
   return c.bad ? null : [c.proto, c.list ? c.list.split(",").map(t => { const [a, b] = t.split("-").map(Number); return [a, b || a]; }) : []]; };
 /** Do ports `a` take every packet ports `b` take? null = no ports (every port); a spec that does not read takes nothing. The
  *  node's `_ports_cover`, which decides whether a port rule covers a broader name's rule (B.4). */

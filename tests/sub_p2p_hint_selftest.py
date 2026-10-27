@@ -22,6 +22,7 @@ Hermetic. Run: python3 tests/sub_p2p_hint_selftest.py            (0 = pass)
      --perturb-farnode  a Route to a node is allowed whatever that node runs → RED on [2]
      --perturb-own      an interface's own torrent choice is not read under per-interface (S11) → RED on [2]
      --perturb-routedown a routed interface is allowed while the node reports a route down (s11-pick F2) → RED on [2]
+     --perturb-alldown  a named device down blocks every routed interface (backlog F48) → RED on [2]
 """
 import ast, hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -35,7 +36,8 @@ P_REPORT = "--perturb-report" in sys.argv
 P_FAR = "--perturb-farnode" in sys.argv
 P_OWN = "--perturb-own" in sys.argv
 P_RDOWN = "--perturb-routedown" in sys.argv
-PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN or P_RDOWN
+P_ALLDOWN = "--perturb-alldown" in sys.argv
+PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN or P_RDOWN or P_ALLDOWN
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -72,8 +74,11 @@ if P_FAR:
 if P_OWN:
     plant('    _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}', '    _rp = {}', "the record's own choice")
 if P_RDOWN:
-    plant('    if _rp.get("action") in ("exit", "dev") and ((describe.get(nid) or {}).get("p2p") or {}).get("route") == "down":',
+    plant('    if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":',
           '    if False:', "a routed interface while a route is down")
+if P_ALLDOWN:
+    plant('        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:',
+          '        if True:', "the routed interface's own device")
 SUB_PATH = SUB
 if PERTURB:
     fd, SUB_PATH = tempfile.mkstemp(prefix="swg-sub-perturbed-")
@@ -96,6 +101,8 @@ def body(text, fn):
     stmts = f.body[1:] if f.body and isinstance(f.body[0], ast.Expr) and isinstance(getattr(f.body[0], "value", None), ast.Constant) else f.body
     return [ast.dump(s) for s in stmts]
 check("p2p_policy is the panel's, statement for statement", body(src, "p2p_policy") == body(open(PANEL).read(), "p2p_policy"))
+check("_p2p_route_dev is the panel's p2p_route_dev, statement for statement (the node names these devices in `down`)",
+      body(src, "_p2p_route_dev") == body(open(PANEL).read(), "p2p_route_dev"))
 
 # ── [2] torrents_allowed ───────────────────────────────────────────────────────────────────────────────────────────────
 print("[2] torrents_allowed")
@@ -152,6 +159,18 @@ check("S11: per-interface, one interface's route down (the node reports route do
 check("S11 (pick F2): …but a ROUTED one is not (the node names no group; fail closed)",
       not allowed(IF(p2p={"action": "dev", "exit_id": "e1"}), FAR, d1={"mode": "iface", "route": "down"}, tgs=TR)
       and not allowed(IF(p2p={"action": "exit", "node": "n2"}), FAR, d1={"mode": "iface", "route": "down"}, tgs=TR))
+# backlog F48: the node names the devices down (`down`) — only an interface whose own route leaves by one is not allowed
+IF2 = {"p2p": {"action": "iface"}, "links": {"n2": {"iface": "swg_b"}}, "exits": [{"id": "e1", "enabled": True, "device": "wgx-e1"}],
+       "ifaces": {"wgx": {"p2p": {"action": "dev", "exit_id": "e1"}}, "wgn": {"p2p": {"action": "exit", "node": "n2"}}}}
+T2 = [(T("wgx"), None), (T("wgn"), None)]
+check("F48: the exit's device down → the interface routed through it is not allowed, the one through a node is",
+      allowed(IF2, FAR, d1={"mode": "iface", "route": "down", "down": ["wgx-e1"]}, tgs=T2) == [T("wgn")],
+      allowed(IF2, FAR, d1={"mode": "iface", "route": "down", "down": ["wgx-e1"]}, tgs=T2))
+check("F48: the link to the node down → the other way round",
+      allowed(IF2, FAR, d1={"mode": "iface", "route": "down", "down": ["swg_b"]}, tgs=T2) == [T("wgx")],
+      allowed(IF2, FAR, d1={"mode": "iface", "route": "down", "down": ["swg_b"]}, tgs=T2))
+check("F48: a node that names no device → neither (fail closed, as before)",
+      allowed(IF2, FAR, d1={"mode": "iface", "route": "down"}, tgs=T2) == [])
 JUNK = [None, [], "x", {"p2p": {"action": "direct"}, "ifaces": []}, {"p2p": {"action": "direct"}, "ifaces": {"wg0": "x"}},
         {"p2p": {"action": "direct"}, "ifaces": {"wg0": {"block": "torrents"}}}, {"p2p": {"action": "direct"}, "wdtt": None}]
 errs = []

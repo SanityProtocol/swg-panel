@@ -5095,6 +5095,8 @@ export const STR = {
     "Выбрано автоматически: это значение по умолчанию. Выбор «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
   "the torrent route's way out is down — torrent traffic is blocked until it is back":
     "путь для торрентов сейчас не работает — пока он не восстановится, торрент-трафик блокируется",
+  "torrents on {v1}: their route's way out is down — blocked until it is back":
+    "торренты на {v1}: их путь сейчас не работает — пока он не восстановится, они блокируются",
   "Torrent route removed": "Маршрут для торрентов снят",
   "its exit or node is gone — torrent traffic is now blocked": "его выход или нода удалены — торрент-трафик теперь блокируется",
   "the torrent route is unavailable — torrent traffic is blocked until it is":

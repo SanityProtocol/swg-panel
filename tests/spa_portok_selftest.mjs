@@ -17,8 +17,8 @@ import { pathToFileURL } from "node:url";
 import { check, done, ROOT } from "./spa_env.mjs";
 
 const PLANTS = {   // [file under ROOT, old, new] — loaded as a module
-  "--perturb-unnamed": ["js/model.js", "  const bad = toks.filter(t => portsClean(\"both\", t).bad);", "  const bad = [];"],
-  "--perturb-low-ports": ["js/model.js", "const lo = Math.max(a, 1024)", "const lo = a"],
+  "--perturb-unnamed": ["js/model.js", "  const bad = portsToks(text).filter(t => portsClean(\"both\", t).bad);", "  const bad = [];"],
+  "--perturb-low-ports": ["js/model.js", "Math.max(0, b - Math.max(a, 1024) + 1)", "Math.max(0, b - a + 1)"],
   "--perturb-no-toomany": ["js/model.js", "tooMany: r.bad === \"too_many\"", "tooMany: false"],
 };
 const SRC_PLANTS = {   // [file under ROOT, old, new] — read as source

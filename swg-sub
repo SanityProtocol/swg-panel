@@ -662,6 +662,19 @@ def _p2p_runs(nodes, describe, nid, arrivals=False):
     return pol in ("direct", "iface") if arrivals else True
 
 
+def _p2p_route_dev(node, p2p):
+    """The device a record's own torrent route leaves by — the panel's `p2p_route_dev`, twinned (the node names these in
+    its report's `down`): an exit's device, or the mesh link to the node it routes through. "" when it has none."""
+    a = (p2p or {}).get("action") if isinstance(p2p, dict) else None
+    if a == "dev":
+        return next((str(x.get("device") or "") for x in ((node or {}).get("exits") or []) if isinstance(x, dict)
+                     and str(x.get("id")) == str(p2p.get("exit_id"))), "")
+    if a == "exit":
+        lk = ((node or {}).get("links") or {}).get(p2p.get("node"))
+        return str(lk.get("iface") or "") if isinstance(lk, dict) else ""
+    return ""
+
+
 def torrents_allowed(nodes, describe, t):
     """Whether torrents may leave by deployment `t` — the nodes' own rule, strictest wins (P2P-POLICY §2.2): the record `t`
     lands on (its interface, WDTT or csqtt server) does not block "torrents", its node lets P2P out, and where the policy hands
@@ -684,8 +697,12 @@ def torrents_allowed(nodes, describe, t):
     if pol == "exit":                                  # every client subnet's P2P goes to that node
         return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)
     _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}
-    if _rp.get("action") in ("exit", "dev") and ((describe.get(nid) or {}).get("p2p") or {}).get("route") == "down":
-        return False                                   # a route group is down and the node names no group: fail closed (pick F2)
+    _rep = (describe.get(nid) or {}).get("p2p") or {}
+    if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":
+        # the node names the devices down (`down`): only an interface whose own route leaves by one is not allowed (S11
+        # backlog F48); a node that names none — fail closed (pick F2)
+        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:
+            return False
     if _rp.get("action") == "exit":                    # its own route through a node (IFACE-P2P-PICK): a link there, and that
         _q = _rp.get("node")                           # node lets arrivals' P2P out
         return isinstance(cfg.get("links"), dict) and _q in cfg["links"] and _p2p_runs(nodes, describe, _q, arrivals=True)

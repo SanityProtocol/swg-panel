@@ -8050,7 +8050,7 @@ def _retire_swgp(res):
 P2P_NFT_TABLE = "swg_p2p"
 P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI marks keep 0x999x in their low 16 bits
 P2P_RULE_PRI = 6880           # BELOW the band: a whole-interface forward's `from S lookup T` (pref T) must not outrank it
-_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": "",
+_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": "", "route_devs": [], "route_down": [],
         "detail": "", "nolog": False}   # rule/tbl: None = not yet looked · detail: why a load was refused · nolog: see _ensure_p2p
 # The built-in "never cut" ports — what a node runs when the panel sends no list of its own (S11c: the operator's list,
 # `smart.p2p_portok`). OpenVPN 1194 and WireGuard 51820 since 1.8.11: one device's torrent cut its own corporate VPN.
@@ -8490,7 +8490,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
                 if "torrents" in (ids or []) and ipaddress.ip_network(s, strict=False).version == 4:
                     strict.append(str(ipaddress.ip_network(s, strict=False)))
         _P2P["mode"] = mode
-        _P2P.update(route="", route_dev="")                  # never a stale answer if this pass ends early
+        _P2P.update(route="", route_dev="", route_devs=[], route_down=[])   # never a stale answer if this pass ends early
         ent = _p2p_entry(p2p) if mode == "route" else None
         route = None
         if ent:
@@ -8530,11 +8530,13 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None):
         def _way_out(T):
             _rt = run(["ip", "route", "show", "table", str(T)]).stdout or ""
             return any(ln.split()[:1] == ["default"] for ln in _rt.splitlines())
-        for T, dev in ([(ent["table"], ent["via_iface"])] if ent else []) + [(g["table"], g["oif"][0]) for g in groups if g["table"]]:
-            _up = _way_out(T)                                 # iface: the first route group with no way out is the one said
-            _P2P.update(route="up" if _up else "down", route_dev=dev)
-            if not _up:
-                break
+        # Every route group is asked (one table read each, the exits a node has): under iface each interface's own route is
+        # judged by its own device — one group down is not every routed interface (S11 backlog F48/F49, pick F12).
+        _rts = [(ent["table"], ent["via_iface"])] if ent else [(g["table"], g["oif"][0]) for g in groups if g["table"]]
+        _down = [dev for T, dev in _rts if not _way_out(T)]
+        if _rts:
+            _P2P.update(route="down" if _down else "up", route_dev=(_down or [_rts[0][1]])[0], route_devs=[d for _, d in _rts],
+                        route_down=_down)
         logged = log_level() >= LOG_INFO and not _P2P["nolog"]
         nofan = _p2p_nofan(node_cfg, routers)
         _pok = _p2p_portok(portok)                            # the operator's never-cut ports, or the built-in list (S11c)
@@ -13883,9 +13885,15 @@ def smart_status():
             "ports": 1}                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
-        if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,
-            _r = "down"                                         # corrected on EVERY report by the device itself (sysfs + the exit
-        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"], **({"route": _r} if _r else {}),   # judge, no fork)
+        # whether its way out is up — the last pass's answer, corrected on EVERY report by each device itself (sysfs + the
+        # exit judge, no fork). Under iface the devices whose way out is down are named (`down`): the panel and the sub page
+        # judge each interface by its own route (S11 backlog F48).
+        _rd = _P2P.get("route_devs") or ([_P2P["route_dev"]] if _P2P.get("route_dev") else [])   # every route group's device
+        _dn = sorted({d for d in _rd if d in (_P2P.get("route_down") or ()) or _devexit_state(d) != "up"}) if _r else []
+        if _dn:
+            _r = "down"
+        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"], **({"route": _r} if _r else {}),
+                       **({"down": _dn} if _dn and _P2P["mode"] == "iface" else {}),
                        **({"detail": _P2P["detail"]} if _P2P["state"] == "error" else {})}
     # §10.5 item 9. `_XTS_MAXLEN` is a fact about xt_string — it refuses a pattern longer than this outright —
     # and it lived ONLY here, so an over-long operand was accepted by the field, stored, shipped, and dropped
