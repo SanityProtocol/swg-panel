@@ -55,7 +55,8 @@ the release by that source; the earlier `1.5.40` releases were built from the sa
 by him with his support ended. The server carries the swg-panel integration and the downlink half of a speed fix (a
 small-UDP pin that held bulk QUIC traffic on one relay stream); the app carries the uplink half, its own app ID
 (`net.sanityprotocol.csqtt`) and our signature. The server's release holds its exact source archive, from which both
-binaries rebuild bit for bit (its recipe and patch are in that release). The app is the one row whose recipe
+binaries rebuild bit for bit (the patch is in that release; `forks/csqtt/build.sh` builds it with
+`CSQTT_PIN=d02da9b…` and that patch, as `forks/csqtt/2.5/build.sh` did before 2.5.3). The app is the one row whose recipe
 is not in this repository: its release holds the patch against `d02da9b`, `Dockerfile.android` and `build-apk.sh`.
 `csqtt-app-2.1.9` mirrors his 2.1.9 app for 2.1 servers, so subscription pages do not depend on his repository. The
 earlier `csqtt-2.5.0` build (his pre-release source; a GitHub release 2026-10-16…20, never in a panel release) was

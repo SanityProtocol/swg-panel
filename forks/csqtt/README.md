@@ -26,7 +26,7 @@ Bit for bit through `2.5/build.sh`'s git path, in the `csqtt-build:1.97.1` conta
 amd64 `187224d9…`.
 Under the panel it differs from 2.5.1-2 in three ways: an expired password's live sessions are cut within a minute (2.5.1-2
 refused only new ones); headless mode has no scheduled self-restart; and it refuses a `--tun-addr` whose host number is
-.2–.250 (the server's address would be handed to a client) — the panel refuses that subnet where a server meets 2.5. Rig
+.2–.250 (the server's address would be handed to a client) — the panel sends such a server .1 of its /24. Rig
 (`.campaign/rigs/csqtt25.sh` A I X S M R) on the published amd64 bytes `187224d9…`: every result as 2.5.1-2's.
 2.5.1-2 and 2.5.1 stay listed on the line for a rollback.
 

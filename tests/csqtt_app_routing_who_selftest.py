@@ -115,6 +115,9 @@ def git_show(f):
     assert r.returncode == 0, "cannot read %s at %s: %s" % (f, BASE, r.stderr[:200])
     return r.stdout
 P0, N0 = load(git_show("swg-panel-server"), "p0", PANEL), load(git_show("swg-noded"), "n0", NODED)
+# [5] judges exceptions, not the build list: the base names the 2.5 build of its day (2.5.1-2), today's panel the newest
+# (2.5.3, S13a) — the base gets today's list, so a newer published build is not read as a change exceptions made
+P0.CSQTT_LINES = P.CSQTT_LINES
 for m in (P, P0):
     m._turn_hold_get = lambda *a: None
 SNAP = {"csqtt_lines": ["2.1", "2.5"]}

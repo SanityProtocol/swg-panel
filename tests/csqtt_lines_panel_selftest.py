@@ -34,15 +34,15 @@ today csqtt-2.5.1) — until then a stand-in line played 2.5 — and the node's 
   S13a (2026-10-28):
   [14] 2.5.3     the 2.5 line lists 2.5.3 first, 2.5.1-2 and 2.5.1 still offered for a rollback, 2.5.2 not at all; a 2.5
                  server with no hold is asked for 2.5.3, a hold on 2.5.1-2 takes it back there, and 2.1's reply is as before
-  [15] address   2.5.3 does not start on a host number in .2–.250: /api/csqtt/set refuses one where a record meets 2.5 (a
-                 new server, a switch, a typed subnet) and says what to use; .0 .1 .251 pass, 2.1 keeps taking .5, and an
-                 existing 2.5 record on .5 stays savable when the save does not touch its subnet
+  [15] address   2.5.3 does not start on a host number in .2–.250: a 2.5 server stored on one (typed, switched from 2.1,
+                 already there) is SENT .1 of its /24 and keeps its record as typed (operator, 2026-10-29); .0 .1 .251 are sent
+                 as stored, a 2.1 server keeps .5, and an older node (no 2.5 build) is sent what is stored
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
                        override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12] ·
-                       arstore / arclear / ar21 [13] · list253 / listroll [14] · tunbad / tunswitch / tunbody / tun21 [15]
+                       arstore / arclear / ar21 [13] · list253 / listroll [14] · tunbad / tun21 [15]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -75,10 +75,8 @@ PLANTS = {
     "ar21": ("[13]", "            inst.pop(\"app_routing\", None)            # 2.1 has no App routing", "            pass                                     # 2.1 has no App routing"),
     "list253": (("[3]", "[14]"), "\"2.5\": [(\"2.5.3\", \"csqtt-2.5.3\"), ", "\"2.5\": ["),
     "listroll": ("[14]", "(\"2.5.3\", \"csqtt-2.5.3\"), (\"2.5.1-2\", \"csqtt-2.5.1-2\"), ", "(\"2.5.3\", \"csqtt-2.5.3\"), "),
-    "tunbad": ("[15]", "    return len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250", "    return False"),
-    "tunswitch": ("[15]", "        if _tl and (_tl != _line_from or \"tun_addr\" in body)", "        if _tl and (\"tun_addr\" in body)"),
-    "tunbody": ("[15]", "        if _tl and (_tl != _line_from or \"tun_addr\" in body)", "        if _tl and (_tl != _line_from)"),
-    "tun21": ("[15]", "        if _tl and (_tl != _line_from or \"tun_addr\" in body)", "        if (_tl != _line_from or \"tun_addr\" in body)"),
+    "tunbad": ("[15]", "    if len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250:", "    if False:"),
+    "tun21": ("[15]", "            if _line != CSQTT_DEFAULT_LINE and merged.get(\"tun_addr\"):", "            if merged.get(\"tun_addr\"):"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
@@ -350,21 +348,26 @@ try:
     def mk(i, sub, port, line=None):
         return req("/api/csqtt/set", {"node": "nnew", "iface": i, "tun_addr": sub, "listen": "0.0.0.0:%d" % port,
                                       "max_passwords": 500, "stopped": False, **({"line": line} if line else {})})
-    code, r = mk("csqtt40", "10.66.140.5/24", 46400, "2.5")
-    check("a new 2.5 server on .5 is refused", code == 400 and rec("csqtt40") is None, (code, r))
-    check("…saying what to use", "10.66.140.1/24" in json.dumps(r) and ".2–.250" in json.dumps(r, ensure_ascii=False), r)
-    for i, (sub, port) in enumerate((("10.66.141.1/24", 46410), ("10.66.142.0/24", 46420), ("10.66.143.251/24", 46430))):
-        code, r = mk("csqtt4%d" % (i + 1), sub, port, "2.5")
-        check("a new 2.5 server on %s is accepted" % sub.split("/")[0].rsplit(".", 1)[1], code == 200, (code, r))
-    code, r = mk("csqtt44", "10.66.144.5/24", 46440)
-    check("a new 2.1 server on .5 is accepted (2.1 runs it)", code == 200 and (rec("csqtt44") or {}).get("tun_addr") == "10.66.144.5/24", (code, r))
+    for i, sub, port, line in (("csqtt40", "10.66.140.5/24", 46400, "2.5"), ("csqtt41", "10.66.141.1/24", 46410, "2.5"),
+                               ("csqtt42", "10.66.142.0/24", 46420, "2.5"), ("csqtt43", "10.66.143.251/24", 46430, "2.5"),
+                               ("csqtt44", "10.66.144.5/24", 46440, None)):
+        code, r = mk(i, sub, port, line)
+        check("%s saved on %s (%s)" % (i, sub, line or "2.1"), code == 200 and (rec(i) or {}).get("tun_addr") == sub, (code, r))
+    put_csqtt("nnew", "csqtt45", dict(C1, tun_addr="10.66.145.250/24", listen="0.0.0.0:46450", line="2.5"))
+    r15 = sync("nnew")
+    got = {i: (r15.get(i) or {}).get("tun_addr") for i in ("csqtt40", "csqtt41", "csqtt42", "csqtt43", "csqtt44", "csqtt45")}
+    check("a 2.5 server stored on .5 is sent .1 of its /24", got["csqtt40"] == "10.66.140.1/24", got)
+    check("…one already stored on .250 too", got["csqtt45"] == "10.66.145.1/24", got)
+    check("…and both records keep what was typed", rec("csqtt40")["tun_addr"] == "10.66.140.5/24" and rec("csqtt45")["tun_addr"] == "10.66.145.250/24",
+          (rec("csqtt40"), rec("csqtt45")))
+    check(".1, .0 and .251 are sent as stored", (got["csqtt41"], got["csqtt42"], got["csqtt43"]) == ("10.66.141.1/24", "10.66.142.0/24", "10.66.143.251/24"), got)
+    check("a 2.1 server on .5 is sent .5 (2.1 runs it)", got["csqtt44"] == "10.66.144.5/24", got)
     code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt44", "line": "2.5"})
-    check("…its switch to 2.5 is refused, and it stays on 2.1", code == 400 and "line" not in (rec("csqtt44") or {}), (code, r, rec("csqtt44")))
-    put_csqtt("nnew", "csqtt45", dict(C1, tun_addr="10.66.145.5/24", listen="0.0.0.0:46450", line="2.5"))
-    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt45", "title": "kept"})
-    check("an existing 2.5 record on .5 still saves when its subnet is not sent", code == 200 and (rec("csqtt45") or {}).get("title") == "kept", (code, r))
-    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt45", "tun_addr": "10.66.145.5/24"})
-    check("…and a save that sends that subnet is refused", code == 400, (code, r))
+    check("its switch to 2.5 is accepted, and the next reply sends it .1", code == 200
+          and (sync("nnew").get("csqtt44") or {}).get("tun_addr") == "10.66.144.1/24", (code, r))
+    put_csqtt("nold", "csqtt46", dict(C1, tun_addr="10.66.146.5/24", listen="0.0.0.0:46460", line="2.5"))
+    check("an older node (no 2.5 build named) is sent what is stored", (sync("nold").get("csqtt46") or {}).get("tun_addr") == "10.66.146.5/24",
+          sync("nold").get("csqtt46"))
 finally:
     proc.terminate()
     try: proc.wait(5)

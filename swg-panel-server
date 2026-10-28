@@ -1562,13 +1562,18 @@ CSQTT_DEFAULT_LINE = "2.1"
 # 2.5.3 (release csqtt-2.5.3, 2026-10-27): Afteroid/csqttr main with the swg-panel integration (reviewed) — 2.5.2's server
 # under a new label (2.5.2 itself is not listed). Under the panel: an expired password's live sessions are cut within a
 # minute (2.5.1-2 refused only new ones), no scheduled self-restart in headless mode, and the server refuses a --tun-addr
-# whose host number is .2–.250 (its own address would be handed to a client) — _csqtt_tun_host_bad. 2.5.1-2 and 2.5.1
-# stay listed for a rollback.
+# whose host number is .2–.250 (its own address would be handed to a client) — such a server is sent .1 of its /24
+# (_csqtt_tun_for_line). 2.5.1-2 and 2.5.1 stay listed for a rollback.
 CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.3", "csqtt-2.5.3"), ("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")]}
-def _csqtt_tun_host_bad(addr):
-    """Does a 2.5 server refuse this --tun-addr? 2.5.3's rule: a host number in .2–.250 (the client range)."""
-    octs = str(addr or "").split("/")[0].split(".")
-    return len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250
+def _csqtt_tun_for_line(addr):
+    """The --tun-addr a 2.5 server is sent. 2.5.3 does not start on a host number in .2–.250 (the client range): such an
+    address becomes .1 of the same /24 — the same subnet, so routing, mesh and the fleet's uniqueness check are untouched,
+    and a 2.5 client's address is its password's own (operator, 2026-10-29). Any other address is sent as stored."""
+    ip, sep, mask = str(addr or "").partition("/")
+    octs = ip.split(".")
+    if len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250:
+        return ".".join(octs[:3]) + ".1" + sep + mask
+    return addr
 _CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}$")
 def _csqtt_standin(spec):
     line, _, vers = (spec or "").partition("=")
@@ -9860,6 +9865,8 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
             _cver = ""
         elif _lines_ok:
             merged["line"] = _line
+            if _line != CSQTT_DEFAULT_LINE and merged.get("tun_addr"):   # 2.5.3 refuses .2–.250; the record keeps what was typed
+                merged["tun_addr"] = _csqtt_tun_for_line(merged["tun_addr"])
             # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
             # too, or it gets no updates or rollbacks until the operator resolves the switch.
             _row = _csqtt_row(snap, iface)
@@ -31606,14 +31613,6 @@ def api(method, path, qs, body, deps):
                 inst["line"] = _ln
         if inst.get("tun_addr") and not (_WDTT_CIDR_RE.match(inst["tun_addr"]) and inst["tun_addr"].endswith("/24")):
             return 400, {"ok": False, "error": "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24", "code": "bad_request"}
-        # 2.5.3 does not start on a host number in .2–.250 (_csqtt_tun_host_bad): refused where a record MEETS a 2.5 line — a
-        # switch (a new server's line is one too) or a typed subnet. Not on another save of a record already there: no edit
-        # sheet sends tun_addr, so it would be unsavable; and never on 2.1, which runs it.
-        _tl = inst.get("line")
-        if _tl and (_tl != _line_from or "tun_addr" in body) and _csqtt_tun_host_bad(inst.get("tun_addr")):
-            _fix = ".".join(str(inst["tun_addr"]).split("/")[0].split(".")[:3]) + ".1/24"
-            return 400, {"ok": False, **perr("csqtt {v1} can't use {v2}: the server's own address must be outside .2–.250. Use {v3}.",
-                                             v1=_tl, v2=inst["tun_addr"], v3=_fix), "code": "bad_request"}
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 500
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
