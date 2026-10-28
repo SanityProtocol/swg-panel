@@ -1,0 +1,90 @@
+diff --git a/rust-server/Cargo.lock b/rust-server/Cargo.lock
+index dcbe32a..0e7f0af 100644
+--- a/rust-server/Cargo.lock
++++ b/rust-server/Cargo.lock
+@@ -454,7 +454,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "csqtt"
+-version = "2.5.2"
++version = "2.5.3"
+ dependencies = [
+  "aes",
+  "anyhow",
+diff --git a/rust-server/Cargo.toml b/rust-server/Cargo.toml
+index 0d52634..0057ac6 100644
+--- a/rust-server/Cargo.toml
++++ b/rust-server/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "csqtt"
+-version = "2.5.2"
++version = "2.5.3"
+ edition = "2024"
+ rust-version = "1.97.1"
+ license = "Unlicense"
+diff --git a/rust-server/main.rs b/rust-server/main.rs
+index 591b595..76d9502 100644
+--- a/rust-server/main.rs
++++ b/rust-server/main.rs
+@@ -1258,7 +1258,7 @@ async fn async_main() -> Result<()> {
+         });
+     }
+ 
+-    log_event(&app, "INFO", "SYSTEM", " CSQTT Server 2.5.2 (SanityProtocol build of amurcanov 2.5.0)");
++    log_event(&app, "INFO", "SYSTEM", " CSQTT Server 2.5.3 (SanityProtocol build of amurcanov 2.5.0)");
+     log_event(
+         &app,
+         "INFO",
+diff --git a/rust-server/web_panel.rs b/rust-server/web_panel.rs
+index 77fd60d..efab509 100644
+--- a/rust-server/web_panel.rs
++++ b/rust-server/web_panel.rs
+@@ -7969,7 +7969,9 @@ const PANEL_HTML: &str = r##"
+         .header-container { max-width: 1300px; width: 100%; margin: 0 auto; padding: 0 24px; height: 100%; display: flex; align-items: center; justify-content: space-between; }
+         .brand { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; }
+         .brand-logo { display: block; width: 165px; height: auto; }
+-        .version-logo { display: block; width: 180px; height: auto; flex: 0 1 auto; }
++        .version-badge { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: 0 1 auto; min-width: 0; }
++        .version-logo { display: block; width: 240px; height: auto; flex: 0 1 auto; }
++        .version-build { font-size: 10px; line-height: 1; letter-spacing: 0.02em; color: var(--text-muted); white-space: nowrap; }
+         .crypto-button {
+             display: inline-flex; align-items: center; justify-content: center; width: 100%;
+             height: 48px; min-height: 48px; padding: 0 16px; border: 0; border-radius: 12px;
+@@ -8819,7 +8821,8 @@ const PANEL_HTML: &str = r##"
+             .header-container { padding: 0 10px !important; }
+             .brand-logo { width: 92px !important; }
+             .header-actions { gap: 6px !important; }
+-            .version-logo { width: 82px !important; }
++            .version-logo { width: 112px !important; }
++            .version-build { font-size: 8px; }
+             .header-actions .btn:not(.btn-icon) { padding: 6px 8px !important; font-size: 12px !important; white-space: nowrap !important; }
+             .header-actions .btn-icon { padding: 6px !important; }
+ 
+@@ -8831,7 +8834,7 @@ const PANEL_HTML: &str = r##"
+             header { height: 64px; }
+             .header-container { padding: 0 16px; }
+             .brand-logo { width: 128px; }
+-            .version-logo { width: 132px; }
++            .version-logo { width: 176px; }
+             main { padding: 20px 12px 80px; gap: 20px; }
+ 
+             .tabs-container { width: 100%; margin-bottom: 4px; }
+@@ -9140,10 +9143,13 @@ const PANEL_HTML: &str = r##"
+                 <button class="btn btn-ghost btn-icon" onclick="toggleTheme()" title="Сменить тему">
+                     <svg id="themeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                 </button>
+-                <svg class="version-logo" viewBox="0 0 516 64" role="img" aria-label="v2.5.2 by amurcanov" fill="none" stroke="url(#versionLogoGradient)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+-                    <defs><linearGradient id="versionLogoGradient" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="516" y2="64"><stop offset="0" stop-color="#45B7FF"></stop><stop offset="0.45" stop-color="#2087FF"></stop><stop offset="1" stop-color="#075BFF"></stop></linearGradient></defs>
+-                    <path d="M8,24 L18,48 L28,24 M34,20 Q38,14 46,14 H50 Q58,14 58,22 Q58,28 52,33 L36,48 H58 M67,47 L67.8,47 M102,14 H80 V28 H92 Q102,28 102,38 Q102,48 90,48 Q80,48 78,42 M110,47 L110.8,47 M122,20 Q126,14 134,14 H138 Q146,14 146,22 Q146,28 140,33 L124,48 H146 M158,12 V48 M158,31 Q163,24 170,24 Q180,24 180,36 Q180,48 170,48 Q163,48 158,41 M190,24 L200,47 M210,24 L200,47 L196,57 Q194,60 189,58 M250,30 Q246,24 239,24 Q228,24 228,36 Q228,48 239,48 Q246,48 250,42 M250,24 V48 M260,48 V24 M260,31 Q264,24 270,24 Q277,24 277,32 V48 M277,31 Q281,24 287,24 Q294,24 294,32 V48 M304,24 V39 Q304,48 314,48 Q324,48 324,39 V24 M334,48 V24 M334,32 Q338,24 348,24 M382,29 Q378,24 370,24 Q360,24 360,36 Q360,48 370,48 Q378,48 382,43 M414,30 Q410,24 403,24 Q392,24 392,36 Q392,48 403,48 Q410,48 414,42 M414,24 V48 M424,48 V24 M424,32 Q429,24 436,24 Q446,24 446,35 V48 M467,24 Q456,24 456,36 Q456,48 467,48 Q478,48 478,36 Q478,24 467,24 Z M488,24 L498,48 L508,24"></path>
+-                </svg>
++                <div class="version-badge">
++                    <svg class="version-logo" viewBox="0 0 516 64" role="img" aria-label="v2.5.3 by amurcanov" fill="none" stroke="url(#versionLogoGradient)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
++                        <defs><linearGradient id="versionLogoGradient" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="516" y2="64"><stop offset="0" stop-color="#45B7FF"></stop><stop offset="0.45" stop-color="#2087FF"></stop><stop offset="1" stop-color="#075BFF"></stop></linearGradient></defs>
++                        <path d="M8,24 L18,48 L28,24 M34,20 Q38,14 46,14 H50 Q58,14 58,22 Q58,28 52,33 L36,48 H58 M67,47 L67.8,47 M102,14 H80 V28 H92 Q102,28 102,38 Q102,48 90,48 Q80,48 78,42 M110,47 L110.8,47 M123,19 Q127,14 134,14 H137 Q146,14 146,22 Q146,30 136,30 H132 M136,30 Q146,30 146,39 Q146,48 136,48 H133 Q125,48 122,43 M158,12 V48 M158,31 Q163,24 170,24 Q180,24 180,36 Q180,48 170,48 Q163,48 158,41 M190,24 L200,47 M210,24 L200,47 L196,57 Q194,60 189,58 M250,30 Q246,24 239,24 Q228,24 228,36 Q228,48 239,48 Q246,48 250,42 M250,24 V48 M260,48 V24 M260,31 Q264,24 270,24 Q277,24 277,32 V48 M277,31 Q281,24 287,24 Q294,24 294,32 V48 M304,24 V39 Q304,48 314,48 Q324,48 324,39 V24 M334,48 V24 M334,32 Q338,24 348,24 M382,29 Q378,24 370,24 Q360,24 360,36 Q360,48 370,48 Q378,48 382,43 M414,30 Q410,24 403,24 Q392,24 392,36 Q392,48 403,48 Q410,48 414,42 M414,24 V48 M424,48 V24 M424,32 Q429,24 436,24 Q446,24 446,35 V48 M467,24 Q456,24 456,36 Q456,48 467,48 Q478,48 478,36 Q478,24 467,24 Z M488,24 L498,48 L508,24"></path>
++                    </svg>
++                    <span class="version-build">сборка SanityProtocol</span>
++                </div>
+             </div>
+         </div>
+     </header>

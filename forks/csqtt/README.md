@@ -16,12 +16,26 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
+## csqtt 2.5.3 (line 2.5, published 2026-10-27)
+
+`csqtt-2.5.3` is amurcanov's 2.5 server as the community repository [Afteroid/csqttr](https://github.com/Afteroid/csqttr)
+carries it: its `main` at `001caa4`, where the swg-panel integration is merged, plus our version label (the web panel's
+«v2.5.3 by amurcanov», «сборка SanityProtocol»). It is 2.5.2's server under that label. **`2.5/csqtt-swgpanel-2.5.3.patch`**
+is the whole difference from `001caa4`; `2.5/build.sh` builds it, or our release's source archive if Afteroid/csqttr is gone.
+Bit for bit through `2.5/build.sh`'s git path, in the `csqtt-build:1.97.1` container (`CARGO_HOME=/tmp/ch`): the published
+amd64 `187224d9…`.
+Under the panel it differs from 2.5.1-2 in three ways: an expired password's live sessions are cut within a minute (2.5.1-2
+refused only new ones); headless mode has no scheduled self-restart; and it refuses a `--tun-addr` whose host number is
+.2–.250 (the server's address would be handed to a client) — the panel refuses that subnet where a server meets 2.5. Rig
+(`.campaign/rigs/csqtt25.sh` A I X S M R) on the published amd64 bytes `187224d9…`: every result as 2.5.1-2's.
+2.5.1-2 and 2.5.1 stay listed on the line for a rollback.
+
 ## csqtt 2.5.1-2 (line 2.5, published 2026-10-20)
 
 `csqtt-2.5.1-2` is 2.5.1 with one log change: under `--no-web` (how swg-panel always runs it) the server no longer prints
 the web panel's generated password — no web panel runs, so it opened nothing, but a secret has no place in the journal —
-and it logs "Web: off (--no-web)" instead of an address nothing listens on. **`2.5/csqtt-swgpanel-2.5.1-2.patch`** is the
-whole patch against `d02da9b`; `2.5/build.sh` builds it. Bit for bit, in the same container: amd64 `0fb63f46…`, arm64
+and it logs "Web: off (--no-web)" instead of an address nothing listens on. Its patch against `d02da9b` and source archive
+are in its release (`2.5/` held them until 2.5.3). Bit for bit, in the same container: amd64 `0fb63f46…`, arm64
 `8353df0d…`, from git and from the release's archive alike. Rig (`.campaign/rigs/csqtt25.sh` A I X S M R) on the
 published amd64 bytes: everything as 2.5.1 below. 2.5.1 stays listed on the line for a rollback.
 
@@ -30,7 +44,7 @@ published amd64 bytes: everything as 2.5.1 below. 2.5.1 stays listed on the line
 `csqtt-2.5.1` is amurcanov's published **2.5.0** (`d02da9b`, released "as is", his support ended) with this integration
 ported to it and one datapath fix, so it carries our own version, the same as our 2.5.1 build of his Android app.
 - **`csqtt-swgpanel-2.5.1.patch`** — pinned to upstream `d02da9b`; it now lives in the `csqtt-2.5.1` release beside the
-  source archive, and `2.5/` carries 2.5.1-2's patch, so `2.5/build.sh` builds **2.5.1-2**. To rebuild 2.5.1 itself, use
+  source archive, and `2.5/` carries 2.5.3's patch, so `2.5/build.sh` builds **2.5.3**. To rebuild 2.5.1 itself, use
   that release's archive and its `PROVENANCE.md`. Bit for bit, when 2.5/ still carried 2.5.1 (in the
   `csqtt-build:1.97.1` container: Rust 1.97.1, zig 0.15.2, `CARGO_HOME=/tmp/ch`): both paths gave the published amd64
   `b25bdd47…`; the release archive's own recipe rebuilds amd64 `b25bdd47…` and arm64 `9155d017…`. Another toolchain, zig

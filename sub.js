@@ -55,6 +55,10 @@
       liWings1: "1. Open *WINGS V DeX*", liWings2: "2. Click *Paste from Clipboard*", liWings3: "3. Connect",
       liGen1: "1. Open *{app}*", liGen2: "2. Open the *Add profile* / import screen",
       liGen3: "3. *Paste* the copied link (or use the app's from-clipboard button)", liGen4: "4. Confirm, then connect",
+      // csq-socks (our command-line csqtt client) and La Lune on a 2.5 server: their own steps (the csqtt cell's stepList)
+      csqSocksSteps: { linux:   ["1. Download *csq-socks* and open a *terminal* where it was saved", "2. Install it: tar xzf csq-socks.tar.gz && sudo ./csq-socks/install.sh", "3. Run csq-socks set, paste the copied link and press Enter", "4. Run csq-socks up for a SOCKS5 proxy on 127.0.0.1:1089, or csq-socks tun to send all traffic through the tunnel"],
+                       windows: ["1. Download *csq-socks* and unpack the zip", "2. Open *PowerShell* in that folder", "3. Run .\\csq-socks set, paste the copied link and press Enter", "4. Run .\\csq-socks up for a SOCKS5 proxy on 127.0.0.1:1089, or .\\csq-socks tun from an administrator PowerShell to send all traffic through the tunnel"] },
+      laluneSteps25: ["1. Open *{app}*", "2. Add a profile and choose the *CSQTTR* protocol", "3. *Paste* the copied link", "4. Save, then connect"],
       mzBtn1: "Download the GUI app", mzBtn2: "Install TURN Proxy core", mzBtn3: "Assemble and connect", mzBtn3Sub: "Follow the instructions",
       mzCopied: "Config string copied", mzGetCore: "Don't forget to download the core",
       mzStep1: "1. Open the *TURN Proxy* app", mzStep2: "2. Go to *Settings*", mzStep3: "3. Click on *Core (Binary)*", mzStep4: "4. Press *Import*",
@@ -123,6 +127,9 @@
       liWings1: "1. Откройте *WINGS V DeX*", liWings2: "2. Нажмите *Добавить из буфера*", liWings3: "3. Подключайтесь",
       liGen1: "1. Откройте *{app}*", liGen2: "2. Откройте экран *добавления профиля* / импорта",
       liGen3: "3. *Вставьте* скопированную ссылку (или кнопкой из буфера)", liGen4: "4. Подтвердите и подключитесь",
+      csqSocksSteps: { linux:   ["1. Скачайте *csq-socks* и откройте *терминал* в папке, куда он сохранился", "2. Установите его: tar xzf csq-socks.tar.gz && sudo ./csq-socks/install.sh", "3. Выполните csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или csq-socks tun, чтобы весь трафик шёл через туннель"],
+                       windows: ["1. Скачайте *csq-socks* и распакуйте архив", "2. Откройте *PowerShell* в этой папке", "3. Выполните .\\csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните .\\csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или .\\csq-socks tun в PowerShell от имени администратора, чтобы весь трафик шёл через туннель"] },
+      laluneSteps25: ["1. Откройте *{app}*", "2. Добавьте профиль и выберите протокол *CSQTTR*", "3. *Вставьте* скопированную ссылку", "4. Сохраните и подключитесь"],
       mzBtn1: "Скачать приложение (GUI)", mzBtn2: "Установить ядро TURN Proxy", mzBtn3: "Собрать и подключиться", mzBtn3Sub: "Следуйте инструкциям",
       mzCopied: "Строка конфигурации скопирована", mzGetCore: "Не забудьте скачать ядро",
       mzStep1: "1. Откройте приложение *TURN Proxy*", mzStep2: "2. Перейдите в *«Настройки»*", mzStep3: "3. Нажмите *«Ядро (Binary)»*", mzStep4: "4. Нажмите *«Импорт»*",
@@ -312,7 +319,7 @@
     }
     // 2) no (valid) default → the compat-ranked top app for this OS (matches the panel picker's default ordering):
     //    native non-CLI · friendly non-CLI · native CLI · friendly CLI · plain; hidden (no `compat` class) omitted.
-    var isCli = function (id) { return id === "sidecar" || ((clients[id] || {}).encoder === "sidecar"); };
+    var isCli = function (id) { return id === "sidecar" || ((clients[id] || {}).encoder === "sidecar") || !!(clients[id] || {}).cli; };   // `cli`: csq-socks
     var rank = function (id) { var cl = compat[id], cli = isCli(id);   // apps before sidecars in each band; plain last (matches the panel picker)
       return cl === "native" ? (cli ? 3 : 1)
         : (cl === "friendly" || cl === "friendly_core") ? (cli ? 4 : 2)
@@ -1097,7 +1104,9 @@
     inner.appendChild(done);   // green "Connection link copied" ✓✓
     var head = el("div", "ph-head"); head.appendChild(el("span", "ph-title", app)); inner.appendChild(head);
     var steps = el("div", "ph-steps");
-    if (c && c.instructions) {   // per-app-per-OS override from the catalog (each newline = one step) — no code change to retune
+    if (c && c.stepList && c.stepList.length) {   // the client's own steps, chosen by the cell (csq-socks, La Lune on 2.5)
+      c.stepList.forEach(function (ln) { steps.appendChild(stepEl(ln.replace("{app}", app))); });
+    } else if (c && c.instructions) {   // per-app-per-OS override from the catalog (each newline = one step) — no code change to retune
       String(c.instructions).split("\n").forEach(function (ln) { if (ln.trim()) steps.appendChild(stepEl(ln.replace("{app}", app))); });
     } else {
       // WINGS V DeX gets its exact button labels (Добавить профиль → Из буфера); anything else → a generic import flow.
@@ -1958,7 +1967,11 @@
         var capply = function (text) {
           ctrl.payload = text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
           ctrl.isLink = true; ctrl.hasQR = !!cart.qr; ctrl.cmd = null; ctrl.wrapCfg = true;
-          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
+          ctrl.stepList = !cga ? null : cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)
+            : (cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null;   // La Lune's Add dialog defaults to 2.1
+          // own steps → Start copies the link and shows them, never fires it: La Lune's protocol is picked by hand (and on Android
+          // it registers no csqtt:// handler), and csq-socks is a terminal program
+          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart) || !!ctrl.stepList; ctrl.instructions = (cga && cga.instructions) || "";
           // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
           // visitor sent to install the app first still has the link when they come back to it.
           ctrl.copyOnOpen = true;

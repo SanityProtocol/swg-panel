@@ -103,7 +103,7 @@ check("VK TURN Proxy is an alternative", ids.includes("vkturnproxy"), ids);
 
 console.log("\n[6] only apps of the server's csqtt line");
 const ids25 = csqttClientIds({ fork: "csqtt", line: "2.5" });
-check("a 2.5 server: the CSQTT app alone", JSON.stringify(ids25) === JSON.stringify(["csqttapp"]), ids25);
+check("a 2.5 server: its apps only — CSQTT, La Lune and csq-socks (S13a), the iOS one not", JSON.stringify(ids25) === JSON.stringify(["csqttapp", "lalune", "csqsocks"]), ids25);
 const ids21 = csqttClientIds({ fork: "csqtt", line: "2.1" });
 check("a 2.1 server: every app, the iOS one included", ["csqttapp", "focsq", "lalune", "vkturnproxy"].every(i => ids21.includes(i)), ids21);
 check("a node that reports no line: the fork's whole list", JSON.stringify(csqttClientIds({ fork: "csqtt" })) === JSON.stringify(ids), csqttClientIds({ fork: "csqtt" }));

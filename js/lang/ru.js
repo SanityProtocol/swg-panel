@@ -7394,6 +7394,7 @@ export const STR = {
   "This node can't run csqtt {v1} — update the node": "Эта нода не умеет запускать csqtt {v1} — обновите ноду",
   "This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.": "Эта нода не умеет запускать csqtt {v1}, поэтому сервер остаётся на {v2}. Обновите ноду или выберите {v2}.",
   "csqtt {v1} isn't a version this panel offers": "csqtt {v1} — не та версия, которую предлагает эта панель",
+  "csqtt {v1} can't use {v2}: the server's own address must be outside .2–.250. Use {v3}.": "csqtt {v1} не работает с {v2}: собственный адрес сервера должен быть вне .2–.250. Укажите {v3}.",
   "this node can't run csqtt {v1} yet — update the node first (its page offers \"update node to …\")": "эта нода пока не умеет запускать csqtt {v1} — сначала обновите ноду (на её странице есть «обновить ноду до …»)",
   "The panel's QR codes show the new config at once; each device still has to import it.": "QR-коды панели сразу показывают новый конфиг; импортировать его каждому устройству всё равно нужно.",
   // Settings → Interfaces: the AmneziaWG 3.1 defaults (the six values a 3.1 create or switch takes)

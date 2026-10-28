@@ -14,15 +14,31 @@
  * Run: node tests/spa_hidden_forks_selftest.mjs
  *      --perturb        enabledTurnForks lets a hidden fork through again → RED in [1]
  *      --perturb-chart  the Overview reads the pickers' set again (a hidden fork's traffic gone) → RED in [2]
+ *      --perturb-cli    pickerEntries ranks a `cli` client as an app again (a turn.js copy) → RED in [4]
+ * [4] (S13a) csq-socks, a command-line csqtt client (`cli`), ranks after the desktop apps of its band: the csqtt fork's
+ *     system default on Linux stays FOCSQ — as the sub page ranks it — and csq-socks is listed last, tagged CLI
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { spa, check, done, ROOT } from "./spa_env.mjs";
 
 const PERTURB = process.argv.includes("--perturb");
 const PERTURB_CHART = process.argv.includes("--perturb-chart");
+const PERTURB_CLI = process.argv.includes("--perturb-cli");
 const { Store } = await spa("store.js");
-const T = await spa("turn.js");
+let T;
+if (PERTURB_CLI) {   // a turn.js copy OUTSIDE the served tree, its siblings by absolute URL (the shared Store instance)
+  const src = fs.readFileSync(path.join(ROOT, "js", "turn.js"), "utf8"), a = "isCli: !!cl.cli, native, obf,";
+  if (src.split(a).length !== 2) { console.log("ANCHOR MISSING — would FALSE-PASS"); process.exit(1); }
+  const copy = src.replace(a, "isCli: false, native, obf,").replaceAll('from "./', 'from "' + pathToFileURL(path.join(ROOT, "js")).href + "/");
+  if (/(?:from\s*|import\s*\(\s*)['"]\.{1,2}\/|import\.meta\.url/.test(copy)) { console.log("ANCHOR MISSING — a relative import is left: would FALSE-PASS"); process.exit(1); }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spa-hidden-cli-")), file = path.join(dir, "turn.mjs");
+  fs.writeFileSync(file, copy);
+  process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* gone */ } });
+  T = await import(pathToFileURL(file).href);
+} else T = await spa("turn.js");
 let { enabledTurnForks, enabledTurnForkIds, turnForkPlatforms, TURN_FORKS_DEFAULT } = T;
 if (PERTURB) { const { turnForkList } = await spa("turn-catalog.js");
   enabledTurnForks = keep => turnForkList().filter(f => enabledTurnForkIds().has(f.id) || f.id === keep); }
@@ -81,4 +97,19 @@ const TSRC = fs.readFileSync(path.join(ROOT, "js", "turn.js"), "utf8");
 check("[3] no one-tap substitution, no default_client, no xxcipher left in the SPA's default rule",
       !/sysDefaultKey|default_client\b(?!.*went)|"xxcipher"/.test(TSRC.split("\n").filter(l => !/^\s*\/\//.test(l)).join("\n")), "");
 
-done(PERTURB || PERTURB_CHART);
+console.log("\n[4] a command-line client ranks after the apps (csq-socks, S13a)");
+Store.turnCatalog.servers.push({ id: "csqtt", label: "amurcanov", kind: "csqtt", product: "CSQTT",
+  compat: { csqttapp: "native", focsq: "friendly", lalune: "friendly", csqsocks: "friendly", vkturnproxy: "friendly" } });
+Object.assign(Store.turnCatalog.clients, {   // the served shapes (swg-panel-server TURN_CLIENTS), Linux only where it matters
+  csqttapp: { name: "CSQTT", author: "amurcanov", platforms: { android: { github: "g", autostart: true } } },
+  focsq: { name: "FOCSQ", author: "luminescq", platforms: { linux: { github: "g" }, windows: { github: "g" } } },
+  lalune: { name: "La Lune", author: "Endlad2", platforms: { linux: { github: "g" }, windows: { github: "g" }, android: { github: "g", autostart: true } } },
+  csqsocks: { name: "csq-socks", author: "SanityProtocol", cli: true, platforms: { linux: { github: "g" }, windows: { github: "g" } } } });
+const csq = Store.turnCatalog.servers.find(f => f.id === "csqtt");
+const lin = T.pickerEntries(csq, "linux");
+check("[4] csqtt on Linux: csq-socks is listed last, tagged CLI", lin.length === 3 && lin[2].cid === "csqsocks" && lin[2].isCli === true,
+      lin.map(e => [e.cid, e.isCli]));
+const linDef = turnForkPlatforms(csq).find(p => p.os === "linux");
+check("[4] …and the system default there stays FOCSQ, as the sub page ranks it", linDef && linDef.name === "FOCSQ", linDef);
+
+done(PERTURB || PERTURB_CHART || PERTURB_CLI);

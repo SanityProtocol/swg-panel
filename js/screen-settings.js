@@ -2198,13 +2198,16 @@ export function PanelSettingsScreen() {
       }
       for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) {   // self-contained kinds (keyed by fork, usually no version string)
         if (!w || w.fork !== fid || (!all && csqttOtherLine(w))) continue;
-        const cur = m[nid] || { version: "", installing: false, updatePending: false };
+        // `all`: a box runs csqtt 2.1 and 2.5 side by side, one binary each — one row per (node, version line), or the
+        // bubble shows one of them (operator, 2026-10-28: msk-shadow runs both, the row showed 2.1.9-4 only)
+        const line = all && csqttOtherLine(w) ? w.line : "", k = line ? nid + "@" + line : nid;
+        const cur = m[k] || { version: "", installing: false, updatePending: false, ...(line ? { node: nid, line } : {}) };
         cur.version = w.version || cur.version || "installed";   // i18n-keys
         if (w.active && w.active !== "active") cur.installing = true;   // starting / awaiting restore
-        m[nid] = cur;
+        m[k] = cur;
       }
     }
-    return Object.entries(m).map(([node, v]) => ({ node, ...v })).sort((a, b) => Store.byNode(a.node, b.node));
+    return Object.entries(m).map(([node, v]) => ({ node, ...v })).sort((a, b) => Store.byNode(a.node, b.node) || String(a.line || "").localeCompare(String(b.line || "")));
   };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
   const checkTurnUpdates = async () => {
@@ -3113,15 +3116,15 @@ const sectionLabel = k => ({
                 : html`<${Fragment}><span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}<//>`}
             </span>
             ${(() => {
-              // a fleet whose csqtt servers ALL run another version is not "not yet used": show those (no update check is offered for them here)
-              const _all = !forkVersions(f.id).length;
-              const v = forkVersions(f.id, _all); const col = fcol;
+              // The label and bubble show every csqtt version a node runs (2.1 and 2.5 side by side); the update check stays
+              // 2.1's (forkVersions / forkNodeStates without `all`): another version updates from its own Version panel.
+              const v = forkVersions(f.id, true); const col = fcol;
               if (!v.length) return html`<span class="tf-ver none">${T("not yet used")}</span>`;
-              const nodes = forkNodeStates(f.id, _all); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
+              const nodes = forkNodeStates(f.id, true); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               // per-node effective version: a hold shows "Held on <held>", else the running version. The row collapses
               // to ONE label when every node agrees, or "N versions" (detail in the hover bubble) when they differ.
-              // `_all` (only other csqtt versions run): their holds sit under csqtt@<line>, not under this row's key — no hold shown here (the fork's Version panel shows them per version)
-              const perNode = nodes.map(n => { const held = _all ? "" : (Store.turnHolds[n.node] || {})[f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
+              // A csqtt 2.5 row's hold sits under csqtt@2.5 (_csqtt_hold_svc), 2.1's under the fork's own key.
+              const perNode = nodes.map(n => { const held = (Store.turnHolds[n.node] || {})[n.line ? f.id + "@" + n.line : f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
               const distinct = [...new Set(perNode.map(p => p.eff).filter(Boolean))];
               const allHeld = perNode.length > 0 && perNode.every(p => p.held);
               const bub = html`<span class="tf-verpop">

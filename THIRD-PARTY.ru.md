@@ -33,7 +33,7 @@
 | WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `b3935b94` (v18) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-18-2` |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
-| csqtt 2.5 | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.1-2` ¶ |
+| csqtt 2.5 | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) (csqtt 2.5 от amurcanov) | **PolyForm Noncommercial 1.0.0** | `001caa4` | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.3` ¶ |
 | Приложение csqtt 2.5 для Android (наша сборка приложения amurcanov) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) `app/` | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | в релизе: `csqtt-app-2.5.1.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.1` ¶ |
 | Приложение csqtt 2.1.9 для Android (APK amurcanov без изменений) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (зеркало: его подписанные APK, хэши сверены) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (датапас AmneziaWG в пользовательском пространстве — запасной вариант bare-metal-нод) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
@@ -61,11 +61,14 @@ XXcipherX, скрытый в панели с 1.8.9, больше не предл
 выпустил 2.5.0 «как есть» и завершил поддержку. В сервере — интеграция swg-panel и серверная половина исправления
 скорости (закрепление мелкого UDP держало массовый QUIC-трафик на одном стриме ретранслятора); в приложении — клиентская
 половина, свой ID (`net.sanityprotocol.csqtt`) и наша подпись. В релизе сервера лежит точный архив исходников, из
-которого оба бинарника собираются бит в бит (рецепт и патч есть и в `forks/csqtt/2.5/`). Приложение — единственная строка,
+которого оба бинарника собираются бит в бит (рецепт и патч лежат в том же релизе). Приложение — единственная строка,
 чей рецепт не в этом репозитории: в его релизе лежат патч к `d02da9b`, `Dockerfile.android` и `build-apk.sh`.
 `csqtt-app-2.1.9` — зеркало его приложения 2.1.9 для серверов 2.1, чтобы страницы подписки не зависели от его
 репозитория. Прежняя сборка `csqtt-2.5.0` (из его предрелизных исходников; релиз на GitHub 16–20.10.2026, ни в один выпуск
-панели не входила) отозвана.
+панели не входила) отозвана. **csqtt 2.5.3** — сервер 2.5, который панель запускает с 1.8.11: сервер 2.5 от amurcanov в
+общем репозитории Afteroid/csqttr на `001caa4` (его `main`, с влитой интеграцией swg-panel) и наша метка версии —
+`forks/csqtt/2.5/csqtt-swgpanel-2.5.3.patch`, сборка `forks/csqtt/2.5/build.sh`; архив исходников лежит в его релизе.
+2.5.1-2 остаётся в списке для отката.
 
 ### Исходники к бинарникам под GPL
 

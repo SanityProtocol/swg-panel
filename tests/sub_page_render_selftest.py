@@ -38,9 +38,10 @@ Fixture — node q-node, three deployments per device:
   [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
       hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
   [11] csqtt 2.1 and 2.5 do not speak to each other: a 2.5 server (Dana's csqtt2, line 2.5) is offered only an app of its
-      line — on Android the CSQTT app, though the operator's default is La Lune (2.1 only), and on iOS nothing (VK TURN Proxy
-      speaks 2.1); her 2.1 server keeps both. Once the CSQTT app's release is of the other line (no 2.5 release yet), the
-      2.5 server offers no app at all rather than one that cannot connect; the line reaches the page through swg-sub
+      line. The operator's Android default La Lune speaks both since S13a: it serves the 2.5 server with its own steps
+      (choose CSQTTR), a Start that copies the sealed link and fires nothing; ranked, the CSQTT app; on iOS nothing (VK TURN
+      Proxy speaks 2.1); her 2.1 server keeps its app. Once the CSQTT app's release is of the other line (no 2.5 release yet),
+      the 2.5 server is never offered it — La Lune serves it; the line reaches the page through swg-sub
   [12] torrents (1.8.11 S4b): q-node lets them through (Direct) and Boris's awg1 blocks them. Every one of Anna's cells, on every
       OS and in both languages, carries the torrent marker in its badge row, labelled with the client setting for full speed
       (in the page's language); a tap opens that text in a bubble and a second tap closes it; Boris's awg1 cell carries none
@@ -48,6 +49,9 @@ Fixture — node q-node, three deployments per device:
       own text in the same bubble on a tap; the connection picker shows both icons, as icons, not buttons. The device's own
       incoming port (S12, Part C): where q-node reports forwarding awg0, Anna's AmneziaWG cells' bubble opens with port 20016
       and the address peers reach (in both languages); her WireGuard cell (wg0, not forwarded) and Boris's cells carry none
+  [13] the 2.5 clients on the desktop (S13a): Dana's 2.5 server on Linux/Windows gets La Lune (FOCSQ speaks 2.1 only) and its
+      Start shows the CSQTTR step; with the operator's choice csq-socks serves both lines, with its download and its own
+      terminal steps (EN, RU); Anna's 2.1 server still offers FOCSQ — csq-socks, a command-line client, ranks after the apps
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -78,6 +82,11 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
      --perturb-p2pport    serves a sub.js whose torrent bubble leaves out the device's incoming port → RED on [12]
      --perturb-subport    runs a swg-sub that never puts the device's incoming port on a deployment → RED on [12]
+     --perturb-csqrank    serves a sub.js that ranks csq-socks as an app (it sorts first on a 2.1 desktop) → RED on [13]
+     --perturb-csqsteps   serves a sub.js whose csq-socks cell shows the generic app steps → RED on [13]
+     --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
+     --perturb-llfire     serves a sub.js that fires a cell's link even when it has its own steps → RED on [11]
+     --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -112,8 +121,13 @@ P_PICKMARK = "--perturb-pickmark" in sys.argv
 P_PICKSHORT = "--perturb-pickshort" in sys.argv
 P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
 P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
+P_CSQRANK = "--perturb-csqrank" in sys.argv
+P_CSQSTEPS = "--perturb-csqsteps" in sys.argv
+P_LL25 = "--perturb-ll25" in sys.argv
+P_LLFIRE = "--perturb-llfire" in sys.argv
+P_LL21 = "--perturb-ll21" in sys.argv
 PERTURB = (P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE or P_CHIPLINE)
+           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -173,6 +187,10 @@ P._RELEASE_PIN[("hackdiaz-dev", "free-turn-proxy", "v4.0.3")] = _pin("v4.0.3", "
 P._PIN_WANTED = {("amurcanov", "csqtt"): {"2.1.9-4", "2.5.1"}, ("amurcanov", "proxy-turn-vk-android"): {"1.2.4-3"},
                  ("hackdiaz-dev", "free-turn-proxy"): {"v4.0.3"}}
 catalog = P.turn_catalog_view(pins=True)   # serve.json's catalog, as write_sub_serve builds it
+if P_LL21:   # La Lune back on 2.1 alone (the catalog before S13a)
+    if ((catalog.get("clients") or {}).get("lalune") or {}).get("csqtt_lines") != ["2.1", "2.5"]:
+        print("PERTURB FAILED — La Lune does not list 2.5 in the catalog, so there is nothing to remove"); sys.exit(1)
+    catalog["clients"]["lalune"]["csqtt_lines"] = ["2.1"]
 if P_AUTO:
     _ll = ((catalog.get("clients") or {}).get("lalune") or {}).get("platforms", {}).get("android")
     if not isinstance(_ll, dict) or not _ll.get("autostart"):
@@ -291,6 +309,14 @@ if P_PICKSHORT:
     perturbed_web('icon.title = x.getAttribute("data-note") || ', 'icon.title = ', "the picker icon's tooltip being the whole note")
 if P_PICKMARK:
     perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
+if P_CSQRANK:
+    perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
+if P_CSQSTEPS:
+    perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
+if P_LL25:
+    perturbed_web('(cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null', 'null', "La Lune's 2.5 steps")
+if P_LLFIRE:
+    perturbed_web("ctrl.noAutoFire = !(cga && cga.autostart) || !!ctrl.stepList;", "ctrl.noAutoFire = !(cga && cga.autostart);", "own steps instead of a fired link")
 if P_P2PPORT:
     perturbed_web("      var fp = it.tgt.p2p_port, fd", "      var fp = 0, fd", "the device's incoming port in the torrent bubble")
 if P_P2PALL:
@@ -427,8 +453,18 @@ def seek_js(mode, badge_has):
       if (i < 0) return 'no cell';
       pg._seek(i, null);""" % (json.dumps(mode), json.dumps(badge_has))
 
-def start_on(tab, mode, badge_has):
-    """Click Start on the cell of `mode` whose badge contains `badge_has`; return (clipboard writes, overlay steps, navigations)."""
+def seek_role_js(role):
+    """seek_js's twin for a Turn cell found by its version chip (`CSQTT 2.5`) — the only thing apart when one app serves both."""
+    return r"""const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === 'turn');
+      if (!pg) return 'no page';
+      const cells = [...pg.querySelectorAll('.scell')];
+      const i = cells.findIndex(c => ((c.querySelector('.scell-role-if') || {}).textContent || '') === %s);
+      if (i < 0) return 'no cell';
+      pg._seek(i, null);""" % json.dumps(role)
+
+def start_on(tab, mode, badge_has, seek=None):
+    """Click Start on the cell of `mode` whose badge contains `badge_has` (or the one `seek` finds); return (clipboard writes,
+    overlay steps, navigations)."""
     n0 = len(tab.mine("Page.frameRequestedNavigation"))
     c0 = len(tab.mine("Runtime.bindingCalled"))
     res = tab.ev(r"""(() => {
@@ -436,13 +472,22 @@ def start_on(tab, mode, badge_has):
       pg.querySelector('.pbtn-start').click();
       // read the steps NOW: the handler shows them synchronously, and a one-tap fallback may replace this document soon after
       return {res: 'clicked', steps: [...document.querySelectorAll('.ph-overlay .ph-step')].map(s => s.textContent)};
-    })()""" % seek_js(mode, badge_has))
+    })()""" % (seek or seek_js(mode, badge_has)))
     steps = res.get("steps") if isinstance(res, dict) else []
     res = res.get("res") if isinstance(res, dict) else res
     tab.br.pump(1.6)                                     # past fireDeepLink's 1 s "did the app take over" beat
     clip = [e["params"].get("payload", "") for e in tab.mine("Runtime.bindingCalled")[c0:] if e["params"].get("name") == "__swgClip"]
     navs = [e["params"].get("url", "") for e in tab.mine("Page.frameRequestedNavigation")[n0:]]
     return res, clip, steps, navs
+
+def start_on_role(tab, role):
+    return start_on(tab, "turn", None, seek_role_js(role))
+
+SHOTS = os.environ.get("SUB_SHOTS") or ""   # SUB_SHOTS=<dir> keeps screenshots of [13]'s import steps
+def shot(tab, name):
+    if SHOTS:
+        with open(os.path.join(SHOTS, name + ".png"), "wb") as fh:
+            fh.write(base64.b64decode(tab.br.send("Page.captureScreenshot", {"format": "png"}, session=tab.s)["data"]))
 
 ALL_OS = ("android", "ios", "linux", "windows", "macos")
 try:
@@ -614,7 +659,7 @@ try:
     serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}
     J("subs/serve.json", serve)
     # [8] an app from the server's own repository follows the server's running version
-    def bubble(tab, badge_has):
+    def bubble(tab, badge_has, seek=None):
         return tab.ev(r"""(() => {
           %s
           const btn = cells[i].querySelector('.scell-getapp-btn') || pg.querySelector('.scell-getapp-btn');
@@ -622,7 +667,8 @@ try:
           btn.click();
           const b = document.querySelector('.dl-bubble');
           return b ? {ver: (b.querySelector('.dl-bubble-ver') || {}).textContent || '', links: [...b.querySelectorAll('a')].map(a => a.href)} : 'no bubble';
-        })()""" % seek_js("turn", badge_has))
+        })()""" % (seek or seek_js("turn", badge_has)))
+    bubble_role = lambda tab, role: bubble(tab, None, seek_role_js(role))
     pinned = lambda b, tag, url: isinstance(b, dict) and tag in b["ver"] and "matches this server" in b["ver"] and url in b["links"]
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
     keep_default = serve["turn_client_default"]
@@ -736,28 +782,47 @@ try:
     # Dana's device has two csqtt servers: csqtt1 (no line reported → 2.1) and csqtt2 (2.5). A 2.5 cell is a QR, so its link is not
     # in the DOM as text: cells are told apart by their app, and "no cell for the 2.5 server" is a COUNT (one cell, the 2.1 one) —
     # never the absence of a port in text a QR cell does not carry.
+    # La Lune speaks 2.5 too (S13a, 2026-10-28), so the operator's Android default La Lune serves Dana's 2.5 server as well —
+    # with its own steps (its Add dialog defaults to 2.1: the user picks CSQTTR), and a Start that copies the sealed link and
+    # fires nothing (La Lune registers no csqtt:// handler on Android, and the protocol is picked by hand)
     tab, rd = render("u4", "android", "en")
     cells = turn_cells(rd)
-    c25 = [c for c in cells if "CSQTT" in (c["tag"] or "")]
+    c25 = [c for c in cells if c["role"] == "CSQTT 2.5"]
     c21 = on(rd, "56002")
-    check("[11] Android, the 2.5 server: the CSQTT app, not the operator's default La Lune (it speaks 2.1)",
-          len(cells) == 2 and len(c25) == 1 and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], (c["text"] or "")[:60]) for c in cells])
-    check("[11] …the 2.1 server beside it keeps La Lune", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
+    check("[11] Android, the operator's default La Lune: it serves the 2.5 server too (it speaks 2.5)",
+          len(cells) == 2 and len(c25) == 1 and "La Lune" in (c25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in cells])
+    check("[11] …and the 2.1 server beside it", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
+    res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+    sealed = next((x for x in clip if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
+    check("[11] …its Start copies the SEALED link and shows La Lune's 2.5 steps (choose CSQTTR), firing nothing",
+          res == "clicked" and sealed and any("CSQTTR" in x for x in steps) and not any(u.startswith("csqtt:") for u in navs),
+          (res, [x[:40] for x in clip], steps, navs))
+    tab.close()
+    # the ranked default (no operator choice): amurcanov's CSQTT app, native, first on Android for both lines
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+    tab, rd = render("u4", "android", "en")
+    cells = turn_cells(rd)
+    c25 = [c for c in cells if c["role"] == "CSQTT 2.5"]
+    c21 = on(rd, "56002")
+    check("[11] Android, ranked: the 2.5 server gets the CSQTT app", len(cells) == 2 and len(c25) == 1 and "CSQTT" in (c25[0]["tag"] or "")
+          and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in cells])
     check("[11] …the 2.5 server shown as a QR (the 2.5 app scans one), while the 2.1 server's plain link has none",
           len(c25) == 1 and c25[0]["qr"] and len(c21) == 1 and not c21[0]["qr"], [(c["tag"], c["qr"]) for c in cells])
     # 2.1 and 2.5 cards were alike until the app was downloaded (operator, 2026-10-20): the chip names the server's version,
     # the download its app's — and a node that reports no line is a 2.1 one
     check("[11] the 2.5 server's card says CSQTT 2.5, and its download CSQTT 2.5.1",
-          len(c25) == 1 and c25[0]["role"] == "CSQTT 2.5" and "CSQTT 2.5.1" in (c25[0]["getapp"] or ""),
-          [(c["role"], c["getapp"]) for c in c25])
+          len(c25) == 1 and "CSQTT 2.5.1" in (c25[0]["getapp"] or ""), [(c["role"], c["getapp"]) for c in c25])
     check("[11] …the 2.1 server's card (no line reported) says CSQTT 2.1",
           len(c21) == 1 and c21[0]["role"] == "CSQTT 2.1", [c["role"] for c in c21])
-    res, clip, steps, navs = start_on(tab, "turn", "amurcanov · CSQTT")
+    res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
     sealed = next((x for x in list(clip) + list(navs) if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
     p25 = _unseal(sealed) if sealed else ""
     check("[11] its Start hands out the SEALED link (the 2.5 app takes no other), which opens to its connect payload",
           p25.startswith("connect?v=2&host=203.0.113.7&peer=56003&password=pw5csqtt"), (res, [x[:40] for x in clip], [x[:40] for x in navs], p25))
-    b25 = bubble(tab, "CSQTT")
+    tab.close()
+    tab, rd = render("u4", "android", "en")
+    b25 = bubble_role(tab, "CSQTT 2.5")
     check("[11] …and its download is our 2.5.1 build (csqtt-app-2.5.1), shown as v2.5.1 and matching the server",
           pinned(b25, "v2.5.1", PIN25_APK) and not any("amurcanov" in u for u in b25["links"]), b25)
     tab.close()
@@ -766,24 +831,68 @@ try:
     check("[11] iOS: no cell for the 2.5 server (VK TURN Proxy speaks 2.1), while the 2.1 server keeps its iPhone cell",
           len(cells) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in cells])
     tab.close()
-    # the CSQTT app's release is of the other line (no 2.5 release out): the 2.5 server is offered nothing, not a 2.1 app.
-    # No 2.5 release also means no pin for the 2.5 build — the pin is what normally hands it our csqtt-app-2.5.1.
+
+    # [13] the 2.5 clients on the desktop (S13a): La Lune, and csq-socks — ours, a command-line client ranked after the apps
+    # (operator, 2026-10-28: "2.1 and 2.5, ranked last") — and nothing changes for a 2.1 subscriber
+    for os_ in ("linux", "windows"):
+        for lang in ("en", "ru"):
+            a = [c["tag"] for c in turn_cells(renders[(os_, lang)]) if c["role"] == "CSQTT 2.1"]
+            check("[13] %s/%s: Anna's 2.1 server still offers FOCSQ, not csq-socks (ranked last)" % (os_, lang),
+                  len(a) == 1 and "FOCSQ" in (a[0] or ""), a)
+    STEP25 = {"en": "choose the *CSQTTR* protocol".replace("*", ""), "ru": "выберите протокол *CSQTTR*".replace("*", "")}
+    SOCKS = {("linux", "en"): "Run csq-socks set", ("linux", "ru"): "Выполните csq-socks set",
+             ("windows", "en"): "Run .\\csq-socks set", ("windows", "ru"): "Выполните .\\csq-socks set"}
+    for os_ in ("linux", "windows"):
+        for lang in ("en", "ru"):
+            tab, rd = render("u4", os_, lang)
+            r25 = [c for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+            r21 = [c for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
+            check("[13] %s/%s: the 2.5 server gets a cell — La Lune (FOCSQ speaks 2.1 only)" % (os_, lang),
+                  len(r25) == 1 and "La Lune" in (r25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
+            check("[13] %s/%s: …and its 2.1 server keeps FOCSQ" % (os_, lang), len(r21) == 1 and "FOCSQ" in (r21[0]["tag"] or ""), [c["tag"] for c in r21])
+            res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+            shot(tab, "lalune25-%s-%s" % (os_, lang))
+            check("[13] %s/%s: La Lune's Start on the 2.5 server copies the sealed link and names CSQTTR in the page's language" % (os_, lang),
+                  any(x.startswith("csqtt://") and not x.startswith("csqtt://connect") for x in clip)
+                  and any(STEP25[lang] in x for x in steps) and not any(u.startswith("csqtt:") for u in navs), (res, [x[:30] for x in clip], steps))
+            tab.close()
+    serve["turn_client_default"] = {"csqtt": {"linux": "csqsocks", "windows": "csqsocks"}}
+    J("subs/serve.json", serve)
+    for os_ in ("linux", "windows"):
+        for lang in ("en", "ru"):
+            tab, rd = render("u4", os_, lang)
+            tags = [(c["role"], c["tag"], c["getapp"]) for c in turn_cells(rd)]
+            check("[13] %s/%s: the operator's choice csq-socks serves both lines, with its download" % (os_, lang),
+                  len(tags) == 2 and all("csq-socks" in (t or "") and "csq-socks" in (g or "") for _r, t, g in tags), tags)
+            res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+            shot(tab, "csqsocks-%s-%s" % (os_, lang))
+            check("[13] %s/%s: csq-socks's Start copies the sealed link and shows its own steps (%s), firing nothing" % (os_, lang, SOCKS[(os_, lang)]),
+                  any(x.startswith("csqtt://") and not x.startswith("csqtt://connect") for x in clip)
+                  and any(SOCKS[(os_, lang)] in x for x in steps) and not any(u.startswith("csqtt:") for u in navs), (res, [x[:30] for x in clip], steps))
+            tab.close()
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+
+    # the CSQTT app's release is of the other line (no 2.5 release out): the 2.5 server is never offered the 2.1 app — La Lune,
+    # which speaks 2.5, serves it instead. No 2.5 release also means no pin for the 2.5 build (the pin hands it csqtt-app-2.5.1).
     ((serve["turn_catalog"].get("pins") or {}).get("amurcanov/csqtt") or {}).pop("2.5.1", None)
     ca = serve["turn_catalog"]["clients"]["csqttapp"]["platforms"]["android"]
     ca.update({"tag": "v2.1.9", "url": PIN_APK, "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.1.9",
                "assets": [{"name": "csqtt-v2.1.9.apk", "url": PIN_APK}]})
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
-    check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server has no cell (no app of its line), the 2.1 one keeps La Lune",
-          len(turn_cells(rd)) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    c25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server is not offered it — La Lune serves it",
+          len(c25) == 1 and "La Lune" in (c25[0] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
     tab.close()
     # the release is not resolved yet (a cold cache, GitHub rate-limited): no tag — the latest is 2.1's until proven otherwise
     for k in ("tag", "url", "page", "assets"):
         ca.pop(k, None)
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
-    check("[11] with the CSQTT release not resolved yet, the 2.5 server still has no cell — its releases page leads to the 2.1 app",
-          len(turn_cells(rd)) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    c25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[11] with the CSQTT release not resolved yet, the 2.5 server is still not offered it — La Lune serves it",
+          len(c25) == 1 and "La Lune" in (c25[0] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
     tab.close()
 finally:
     br.close()

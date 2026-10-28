@@ -988,7 +988,7 @@ export function pickerEntries(f, os) {
     if (!rel || !(cl.platforms && cl.platforms[os])) return;
     const isCore = rel === "friendly_core", native = rel === "native";
     const obf = ((native || rel === "friendly" || isCore) && _FORK_GUI_OBF[fork]) ? obfLabel : "";
-    out.push({ key: cid, cid, isCli: false, native, obf,
+    out.push({ key: cid, cid, isCli: !!cl.cli, native, obf,   // `cli`: a command-line client run with the link (csq-socks) — ranks after the apps
       autostart: !!(((cl.platforms || {})[os] || {}).autostart),   // per-app-per-OS: Start opens the app via its URL scheme
       coreFork: cid === "mysorez" ? fork : null,          // the VK TURN Proxy app is a core-launcher — always name the core it loads (this fork's)
       author: (turnClientAuthor(cid) || {}).fork || fork,

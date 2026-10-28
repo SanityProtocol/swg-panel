@@ -51,6 +51,8 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         is discarded, a search typed alone does not; Own rule opens the form, Apply puts it on the row; a new exception waits
         for a person; a removed row asks before the server sheet discards it; Save sends and the panel stores the list. Rows inside the sheet at 1280 and 390 px, in
         English and Russian. SPA_SHOTS=<dir> keeps screenshots of the list, the edit and the add sheets
+  [B19] Settings → Turn proxies, a node running csqtt 2.1 and 2.5 side by side (S13a, operator 2026-10-28): the amurcanov row
+        says two versions and its bubble names both on the node, EN and RU; a hold on the 2.5 server shows on its own row
   [B18] a dial-in exit (1.8.11 S9, docs/LISTEN-EXIT-PLAN.md §2.4): the section reads "WARP & exits"; the row wears "Dial-in" and
         waits for the router naming its port; "Add a dial-in exit" opens a sheet asking for the server config with no "Connect
         from", Cancel and Save on one line at 390 px; the stored one's box shows ListenPort and no Endpoint; a server config
@@ -71,7 +73,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub | lineskey | linehold
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -101,6 +103,10 @@ if not CHROME:
 
 # ── the web root: the repo's SPA, or a copy with one fix undone ─────────────────────────────────────────────────────────────
 PERTURBATIONS = {
+    # [B19]: one bubble row per node again — a box running csqtt 2.1 and 2.5 shows one of them
+    "lineskey": ("js/screen-settings.js", 'const line = all && csqttOtherLine(w) ? w.line : "", k = line ? nid + "@" + line : nid;', 'const line = "", k = nid;'),
+    # [B19]: a 2.5 row read under the fork's own hold key — a 2.5 hold never shows
+    "linehold": ("js/screen-settings.js", '[n.line ? f.id + "@" + n.line : f.id]', '[f.id]'),
     "group-count": ("js/peer-ui.js", "  const devs = reachableByGroup(uid);", "  const devs = Store.peersByUser(uid).map(p => ({ peer: p, node: (p.targets[0] || {}).node, online: false }));"),
     "cap": ("js/ui.js", "export const capShown = (n, cap) => (n <= cap + 1 ? n : cap);", "export const capShown = (n, cap) => Math.min(n, cap);"),
     "cursor": ("app.css", ".usercombo.ugroup-combo,.ugroup-combo .uc-input{cursor:pointer}", ".usercombo.ugroup-combo{cursor:text}"),
@@ -267,7 +273,12 @@ try:
                 **({"exits": list(DXR)} if DXR else {}),
                 **({"csqtt_lines": ["2.1", "2.5"]} if CSQ[0] else {}), **({"csqtt_ar_pw": 1} if CSQ[0] > 2 else {}),
                 **({"csqtt": [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "active": "active", "line": "2.5",
-                               "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24"}]} if CSQ[0] > 1 else {})}
+                               "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24"}]} if 1 < CSQ[0] < 4 else {}),
+                # [B19]: 2.1 and 2.5 side by side, each reporting its build
+                **({"csqtt": [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "active": "active", "line": "2.5", "version": "2.5.1-2",
+                               "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24"},
+                              {"iface": "csqtt0", "kind": "csqtt", "fork": "csqtt", "active": "active", "line": "2.1", "version": "2.1.9-4",
+                               "listen": "0.0.0.0:46002", "tun_addr": "10.66.82.1/24"}]} if CSQ[0] >= 4 else {})}
     def sync():
         return call("POST", "/api/node/sync", {"snapshot": snapshot()}, token=TOKEN, timeout=180)
     must(sync(), "first sync")
@@ -1278,6 +1289,37 @@ try:
         check("[console] (%s) dial-in exit: clean" % tag, not console_bad(tab), console_bad(tab)[:3])
         close_modals(tab)
         tab.close()
+    # ── [B19] Settings → Turn proxies: a node running csqtt 2.1 and 2.5 side by side (operator, 2026-10-28: msk-shadow runs both,
+    # the amurcanov row showed 2.1.9-4 alone) — the row names both, one bubble row per version, each with its own hold ─────────
+    CSQ[0] = 4
+    must(sync(), "sync from a node running csqtt 2.1 and 2.5")
+    time.sleep(3.5); must(sync(), "sync from a node running csqtt 2.1 and 2.5, again")
+    ROW = ("(() => { const r = [...document.querySelectorAll('.tf-name')].find(a => a.textContent.trim() === 'amurcanov' && a.className.includes('tf-csqtt'));"
+           " const row = r && r.parentElement; if (!row) return null; const w = row.querySelector('.tf-verwrap');"
+           " return {ver: ((w && w.querySelector('.tf-ver')) || {}).textContent || '',"
+           " pop: w ? [...w.querySelectorAll('.tf-vg-node')].map(n => n.textContent.replace(/\\s+/g, ' ').trim()) : []}; })()")
+    for lang in ("en", "ru"):
+        tab = open_app(lang)
+        ev_mod(tab, "ui", "M.setPendingSection('turn'); return true;")
+        tab.ev("location.hash = '#/panel/settings'")
+        settle(tab, 1500)
+        row = tab.ev(ROW)
+        check("[B19] %s: the csqtt row says two versions, and its bubble has one row per version on q-node" % lang,
+              bool(row) and row["ver"].startswith("2 ") and len(row["pop"]) == 2
+              and any("2.1.9-4" in x for x in row["pop"]) and any("2.5.1-2" in x for x in row["pop"]) and all("q-node" in x for x in row["pop"]), row)
+        if hover(tab, "([...document.querySelectorAll('.tf-name')].find(a => a.className.includes('tf-csqtt')) || {parentElement: document}).parentElement.querySelector('.tf-verwrap')"):
+            shot(tab, "b19-row-" + lang)
+        tab.close()
+    must(call("POST", "/api/csqtt/version", {"node": NID, "iface": "csqtt1", "ver": "2.5.1"}), "hold the 2.5 server on 2.5.1")
+    tab = open_app("en")
+    ev_mod(tab, "ui", "M.setPendingSection('turn'); return true;")
+    tab.ev("location.hash = '#/panel/settings'")
+    settle(tab, 1500)
+    row = tab.ev(ROW)
+    check("[B19] a hold on the 2.5 server shows on its own row (Held on 2.5.1), the 2.1 row keeps its version",
+          bool(row) and any("Held on 2.5.1" in x for x in row["pop"]) and any("2.1.9-4" in x and "Held" not in x for x in row["pop"]), row)
+    check("[console] Turn proxies with two csqtt versions: clean", not console_bad(tab), console_bad(tab)[:3])
+    tab.close()
 finally:
     stop.set()
     if br:

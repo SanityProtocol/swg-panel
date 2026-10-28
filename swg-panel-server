@@ -1559,7 +1559,16 @@ CSQTT_DEFAULT_LINE = "2.1"
 # app cannot reach a 2.5 server, nor a 2.5 app a 2.1 one (catalog csqtt_lines decides which apps each server is offered).
 # 2.5.1-2 (release csqtt-2.5.1-2, 2026-10-20): 2.5.1 with one log change — under --no-web no generated web password in the
 # journal and "Web: off" instead of an address nothing listens on. 2.5.1 stays listed for a rollback.
-CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")]}
+# 2.5.3 (release csqtt-2.5.3, 2026-10-27): Afteroid/csqttr main with the swg-panel integration (reviewed) — 2.5.2's server
+# under a new label (2.5.2 itself is not listed). Under the panel: an expired password's live sessions are cut within a
+# minute (2.5.1-2 refused only new ones), no scheduled self-restart in headless mode, and the server refuses a --tun-addr
+# whose host number is .2–.250 (its own address would be handed to a client) — _csqtt_tun_host_bad. 2.5.1-2 and 2.5.1
+# stay listed for a rollback.
+CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.3", "csqtt-2.5.3"), ("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")]}
+def _csqtt_tun_host_bad(addr):
+    """Does a 2.5 server refuse this --tun-addr? 2.5.3's rule: a host number in .2–.250 (the client range)."""
+    octs = str(addr or "").split("/")[0].split(".")
+    return len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250
 _CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}$")
 def _csqtt_standin(spec):
     line, _, vers = (spec or "").partition("=")
@@ -6665,7 +6674,7 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
                                                   # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
-    "csqtt":     {"raw": ("2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
+    "csqtt":     {"raw": ("2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
                                                   # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 8911aa11 = the published
                                                   # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
@@ -6676,6 +6685,8 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 2.5.1-2 (0fb63f46 = the published bytes, 2026-10-20; 2.5.1 + a log-only change):
                                                   # csqtt25.sh A I X S M R all as 2.5.1 — reach, spoof +0, IPv6 uplink +0,
                                                   # deactivate/revoke cut + refused, stable address, two instances, App routing
+                                                  # 2.5.3 (187224d9 = the published amd64 bytes, 2026-10-28): csqtt25.sh A I X S M R
+                                                  # with the 2.5.1 test client — every result as 2.5.1-2's
 }
 
 
@@ -15765,10 +15776,19 @@ TURN_CLIENTS = {
     "focsq":       {"name": "FOCSQ", "author": "luminescq", "color": {"dark": "#7C5CFF", "light": "#5B3FD9"}, "encoder": "csqtt", "csqtt_lines": ["2.1"], "scheme": "csqtt://", "qr": False, "platforms": {   # Rust + Flutter desktop; NO macOS exists, not even in CI
                        "windows": {"github": "https://github.com/luminescq/focsq/releases"},
                        "linux":   {"github": "https://github.com/luminescq/focsq/releases"}}},
-    "lalune":      {"name": "La Lune", "author": "Endlad2", "color": {"dark": "#E3C567", "light": "#9A7B12"}, "encoder": "csqtt", "csqtt_lines": ["2.1"], "scheme": "csqtt://", "qr": False, "platforms": {   # Go + Wails; the README's iOS row is unbuilt (every iOS CI run has failed, and it only ever uploaded an unsigned artifact)
+    # La Lune speaks 2.5 since 0.9.1 (its "CSQTT 2.5.1" and, from 0.9.2, "CSQTTR" cores) — but only when the user picks that
+    # protocol in its Add dialog (default "CSQTT 2.1.9"); it reads the sealed 2.5 link itself. The sub page says so (sub.js laluneSteps25).
+    "lalune":      {"name": "La Lune", "author": "Endlad2", "color": {"dark": "#E3C567", "light": "#9A7B12"}, "encoder": "csqtt", "csqtt_lines": ["2.1", "2.5"], "scheme": "csqtt://", "qr": False, "platforms": {   # Go + Wails; the README's iOS row is unbuilt (every iOS CI run has failed, and it only ever uploaded an unsigned artifact)
                        "windows": {"github": "https://github.com/Endlad2/LaLune/releases"},
                        "linux":   {"github": "https://github.com/Endlad2/LaLune/releases"},
                        "android": {"github": "https://github.com/Endlad2/LaLune/releases", "autostart": True}}},   # one-tap: see the decision above
+    # csq-socks — OUR command-line csqtt client (github.com/SanityProtocol/csq-socks): amurcanov's 2.1.9 client for a plain link,
+    # our 2.5.3 client for a sealed one, behind a SOCKS5 proxy (`up`) or a whole-system tunnel (`tun`). `cli`: a terminal
+    # program run with the copied link, so it ranks after the apps of its band on the sub page and in the picker (operator,
+    # 2026-10-28: "2.1 and 2.5, ranked last"), and the sub page shows its own steps (sub.js csqSocksSteps).
+    "csqsocks":    {"name": "csq-socks", "author": "SanityProtocol", "encoder": "csqtt", "cli": True, "csqtt_lines": ["2.1", "2.5"], "scheme": "csqtt://", "qr": False, "platforms": {
+                       "linux":   {"github": "https://github.com/SanityProtocol/csq-socks/releases"},
+                       "windows": {"github": "https://github.com/SanityProtocol/csq-socks/releases"}}},
     "qwdtt":       {"name": "qWDTT", "author": "SpaceNeuroX", "color": {"dark": "#22C3E6", "light": "#0E8FB0"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases"}}},
     "qwdttleg":    {"name": "qWDTT Legacy", "author": "lebrit", "color": {"dark": "#A8C93A", "light": "#6E8C1E"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/lebrit/qwdtt-legacy-android/releases"}}},   # Android 5-8 compat backport of qWDTT (same qwdtt:// scheme) for old phones   # enhanced Android client fork (native qwdtt:// query scheme; also reads 6-field colon)
     "pwdtt":       {"name": "PWDTT", "author": "luminescq", "color": {"dark": "#43C46E", "light": "#2E9E52"}, "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # desktop (Go+Wails). luminescq = upstream (colon/qwdtt); ildarmaga ships a modified build in its WDTT releases (sub-URL/base64) — offered as a per-author choice (_TURN_CLI_AUTHORS)
@@ -15946,7 +15966,7 @@ TURN_SERVERS = {
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
-    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "vkturnproxy"], "reload": "sighup",
+    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "csqsocks", "vkturnproxy"], "reload": "sighup",
                      # NO client settings. This carried the shared WDTT-family placeholder (workers/dns), which the panel saved and
                      # NOTHING ever delivered: csqttArtifact builds `csqtt://connect?v=2&host=&peer=&password=&hashes=`
                      # and takes no client values at all. Verified against the app itself (amurcanov/csqtt,
@@ -16050,7 +16070,7 @@ _TURN_CLIENT_COMPAT = {
     # author's app, which here is csqttapp. That classing also produces the right DEFAULTS by itself: on Android
     # csqttapp wins on the native band, and on desktop (where csqttapp does not exist) the two friendlies tie and
     # sort alphabetically, so FOCSQ leads — the operator's choice, reached without mislabelling anything.
-    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "vkturnproxy": "friendly"},
+    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly"},
 }
 # The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
 # ExecStart's extra-flags box) appended to the client command.
@@ -31586,6 +31606,14 @@ def api(method, path, qs, body, deps):
                 inst["line"] = _ln
         if inst.get("tun_addr") and not (_WDTT_CIDR_RE.match(inst["tun_addr"]) and inst["tun_addr"].endswith("/24")):
             return 400, {"ok": False, "error": "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24", "code": "bad_request"}
+        # 2.5.3 does not start on a host number in .2–.250 (_csqtt_tun_host_bad): refused where a record MEETS a 2.5 line — a
+        # switch (a new server's line is one too) or a typed subnet. Not on another save of a record already there: no edit
+        # sheet sends tun_addr, so it would be unsavable; and never on 2.1, which runs it.
+        _tl = inst.get("line")
+        if _tl and (_tl != _line_from or "tun_addr" in body) and _csqtt_tun_host_bad(inst.get("tun_addr")):
+            _fix = ".".join(str(inst["tun_addr"]).split("/")[0].split(".")[:3]) + ".1/24"
+            return 400, {"ok": False, **perr("csqtt {v1} can't use {v2}: the server's own address must be outside .2–.250. Use {v3}.",
+                                             v1=_tl, v2=inst["tun_addr"], v3=_fix), "code": "bad_request"}
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 500
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
