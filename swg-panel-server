@@ -14455,11 +14455,18 @@ def _host_listen(snap):
     return {p for p in ((snap or {}).get("udp_listen") or ()) if isinstance(p, int)}
 
 def _port_conflict(deps, nodes, nid, port, own=(), me=None):
-    """Label of whoever already binds `port` on the node, or None. `own` = the port(s) the edited entity holds now — its
-    record's and the one the node reports it listening on: tolerated by number, before anything else, so an unchanged save
-    stays savable whatever else shares the port. Never a port it held BEFORE (a turn-proxy's service-name port after a
-    move): that one may be another holder's since. `me` = the edited holder's identity (see _node_ports): every other port
-    is judged against every holder BUT it, so a port the node reports it on is not a clash with itself."""
+    """Label of whoever already binds `port` on the node, or None.
+    `me` = the edited holder's identity (see _node_ports): the port is judged against every holder BUT it, so a port the
+    node reports it on is not a clash with itself.
+    `own` = ports tolerated by NUMBER, before anything else — RAW-IP 56003 and every other holder included. It is a trade:
+    an Edit sheet re-sends the unchanged port on every save, which must stay savable, but a number tolerated here can no
+    longer meet another holder's claim. Each door passes:
+      interface update   its record's ports + the one the node reports (as before S12; a stale report is trusted)
+      turn-proxy edit    the port it listens on now, as reported — never its service-name port, which after a move may be
+                         another holder's since; none before the node reports it (the save is then judged in full)
+      WDTT / csqtt save  its record's ports only — what the node reports is covered by `me`, never by number: a stale or
+                         wrong report must not hide another holder or 56003 (pool-doors F17)
+      creates, installs  nothing of their own"""
     try:
         port = int(str(port).strip())
     except (TypeError, ValueError):
