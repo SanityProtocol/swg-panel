@@ -3971,6 +3971,7 @@ VK_CHECK_KEEP = 3600                                          # s an answer is s
 # answer {id: (at, verdict, url)}; `seq` moves with every answer, so an open editor knows to fetch them.
 _VK_CHECK = {"running": False, "cur": "", "seq": 0, "res": {}, "kick": threading.Event(), "last": 0.0}
 _VK_ASK_LOCK = threading.Lock()   # one link at a time from this panel's address — a row check waits for the run's
+_VK_NOTE_LOCK = threading.Lock()  # the run's thread and a row's request both record answers
 
 
 def _vk_api_call(method, params):
@@ -4065,10 +4066,11 @@ def _vk_verdict(h):
 def _vk_note(eid, url, v):
     """Remember a link's answer for its row: alive / dead / unknown (limited and no-answer show as unknown)."""
     now_ = int(time.time())
-    _VK_CHECK["res"][eid] = (now_, v if v in ("alive", "dead") else "unknown", url)
-    _VK_CHECK["seq"] += 1
-    if not _VK_CHECK["seq"] % 256:                    # forget answers past their hour (removed links' included)
-        _VK_CHECK["res"] = {k: x for k, x in list(_VK_CHECK["res"].items()) if x[0] >= now_ - VK_CHECK_KEEP}
+    with _VK_NOTE_LOCK:
+        _VK_CHECK["res"][eid] = (now_, v if v in ("alive", "dead") else "unknown", url)
+        _VK_CHECK["seq"] += 1
+        if not _VK_CHECK["seq"] % 256:                # forget answers past their hour (removed links' included)
+            _VK_CHECK["res"] = {k: x for k, x in _VK_CHECK["res"].items() if x[0] >= now_ - VK_CHECK_KEEP}
 
 
 def _vk_res_view(ps):
@@ -4151,7 +4153,7 @@ def _vk_check_run(deps, manual):
     nxt = (ps0.get("vk_check") or {}).get("next") if isinstance(ps0.get("vk_check"), dict) else None
     at = next((i for i, (eid, _) in enumerate(todo) if eid == nxt), 0)
     todo = todo[at:] + todo[:at]
-    dead, state, stop = [], "done", None
+    dead, state, stop, answered = [], "done", None, 0
     now_rev, now_url = None, {}                       # id → URL as the pool holds it now; rebuilt only when its rev moves
     _VK_CHECK["running"] = True
     try:
@@ -4171,6 +4173,7 @@ def _vk_check_run(deps, manual):
             v = _vk_verdict(h)
             _VK_CHECK["cur"] = ""
             _vk_note(eid, url, v)
+            answered += v in ("alive", "dead")
             if v == "dead":
                 dead.append((eid, url))
             elif v in ("limited", "neterr"):
@@ -4178,6 +4181,11 @@ def _vk_check_run(deps, manual):
                 break
     finally:
         _VK_CHECK["cur"] = ""
+        # ⚠️ MOST OF THE POOL DEAD AT ONCE IS MORE LIKELY VK THAN THE LINKS: a changed API or error shape that reads as
+        # "dead" for every link would otherwise take every user's links in one cascade. Such a run marks nothing and
+        # says so; a row's Check still marks, one link at a time, on the operator's word.
+        if len(dead) >= 3 and len(dead) * 2 > answered:
+            dead, state = [], "suspect"
         with _api_lock:
             ps = deps.get("panel_settings") or {}
             idx = _vk_raw_index(ps)
@@ -30087,7 +30095,7 @@ def api(method, path, qs, body, deps):
         # meanwhile. It takes the lock itself, only to read the entry and to write the answer.
         eid = str(body.get("id") or "").strip()
         if not eid:                                  # "Check all": hand it to the checker thread and return
-            if _VK_CHECK["running"]:
+            if _VK_CHECK["running"] or _VK_CHECK["kick"].is_set():   # a run going, or one asked for and not begun
                 return 200, {"ok": True, "data": {"started": False, "checking": True}}
             if not _vk_pool_live(deps.get("panel_settings") or {}):
                 return 200, {"ok": True, "data": {"started": False, "checking": False}}

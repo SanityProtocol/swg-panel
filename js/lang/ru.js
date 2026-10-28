@@ -7700,6 +7700,7 @@ export const STR = {
   "Sort by VK's last answer": "Сортировать по последнему ответу VK",
   "This page is out of date — reload it, then redo your change.": "Страница устарела — перезагрузите её и повторите изменение.",
   "This user's links changed while the sheet was open — check them and save again.": "Ссылки пользователя изменились, пока окно было открыто — проверьте их и сохраните снова.",
+  "VK called most links dead — none was marked. Check one on its row to be sure.": "VK назвал мёртвыми большинство ссылок — ни одна не отмечена. Проверьте одну в её строке, чтобы убедиться.",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

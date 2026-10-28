@@ -32,6 +32,7 @@ Drives the REAL panel over HTTP against a stub of VK's API (SWG_PANEL_VK_API), w
   [25] the panel settings save no longer echoes the pool
   [26] GET /api/vk-pool reads the rev before the pool (a torn read is refused, never accepted)  (in-process)
   [27] the automatic run waits out the settle after a start
+  [28] a run that finds most of the pool dead marks nothing and says so ("suspect"); a row's Check still marks
 
 Run: python3 tests/vk_pool_check_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -69,7 +70,8 @@ PLANTS = {   # name: (old text, planted text)
                    '            due = (ps.get("vk_check_auto") is not False and time.time() >= int(last.get("at") or 0) + VK_CHECK_EVERY)'),
     "auto-ignored": ('            due = (ps.get("vk_check_auto") is not False and time.time()', '            due = (True and time.time()'),
     "switch-midrun": ('            if not manual and ps.get("vk_check_auto") is False:', '            if False:'),
-    "running-guard": ('            if _VK_CHECK["running"]:\n                return 200, {"ok": True, "data": {"started": False, "checking": True}}\n', ''),
+    "running-guard": ('            if _VK_CHECK["running"] or _VK_CHECK["kick"].is_set():   # a run going, or one asked for and not begun\n'
+                      '                return 200, {"ok": True, "data": {"started": False, "checking": True}}\n', ''),
     "default-off": ('            due = (ps.get("vk_check_auto") is not False and time.time()', '            due = (ps.get("vk_check_auto") is True and time.time()'),
     "nolive-guard": ('            if not _vk_pool_live(deps.get("panel_settings") or {}):\n'
                      '                return 200, {"ok": True, "data": {"started": False, "checking": False}}\n', ''),
@@ -88,6 +90,7 @@ PLANTS = {   # name: (old text, planted text)
     "echo-pool": ('                     "data": {**{k: v for k, v in cur.items() if k != "vk_pool"},', '                     "data": {**cur,'),
     "torn-get": ('    rev = int(ps.get("vk_pool_rev") or 0)\n    return 200, {"ok": True, "data": {"pool": _vk_pool_list(ps), "rev": rev,',
                  '    pool = _vk_pool_list(ps)\n    return 200, {"ok": True, "data": {"pool": pool, "rev": int(ps.get("vk_pool_rev") or 0),'),
+    "suspect-off": ('        if len(dead) >= 3 and len(dead) * 2 > answered:', '        if False:'),
     "settle-zero": ('    wait = VK_CHECK_SETTLE ', '    wait = 0 '),
     "lock-held": ('            if path in _LOCKLESS_POST or path in _SELF_LOCKING_POST:', '            if path in _LOCKLESS_POST:'),
 }
@@ -422,7 +425,8 @@ def run(server):
         # [8] [9] one run, three dead links and one edited while VK was asked about it
         x2, x3, x4, hd = H("DX", 2), H("DX", 3), H("DX", 4), H("HD", 1)
         stub.hold[hd] = (threading.Event(), threading.Event())
-        save_pool([{"url": J + x2}, {"url": J + x3}, {"url": J + hd}, {"url": J + x4}])
+        save_pool([{"url": J + x2}, {"url": J + x3}, {"url": J + hd}, {"url": J + x4}]
+                  + [{"url": J + H("AL", 2450 + i)} for i in range(5)])   # dead a minority: not a suspect run ([28])
         for n in ("v1", "v2", "v3", "v4", "v5"):
             call("POST", "/api/users/create", {"name": n})
         held_before = sum(len(holders(J + x)) for x in (x2, x3, x4))
@@ -492,6 +496,13 @@ def run(server):
         stub.hold[hq][1].set(); t.join(30)
         check("[24] a dead answer about a link edited meanwhile marks nothing and says so",
               got.get("verdict") == "dead" and got.get("marked") is False and not get_pool()["pool"][0]["dead"], got)
+        # [28] most of the pool dead in one run
+        xs = [H("DX", 2900 + i) for i in range(4)]
+        save_pool([{"url": J + x} for x in xs] + [{"url": J + H("AL", 2910)}])
+        _, ck = check_all_and_wait()
+        check("[28] a run finding most links dead marks nothing", ck.get("state") == "suspect"
+              and not any(x["dead"] for x in get_pool()["pool"]), (ck, [x["dead"] for x in get_pool()["pool"]]))
+        check("[28] …while a row's Check still marks", row_check(J + xs[0]).get("marked") is True)
         # [25] the settings save does not echo the pool
         code, r = call("POST", "/api/panel/settings", {})
         check("[25] the panel settings save does not echo the pool", code == 200 and "vk_pool" not in (r.get("data") or {}), list((r.get("data") or {}))[:4])

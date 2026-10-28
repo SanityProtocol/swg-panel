@@ -318,6 +318,7 @@ function VkCheckLine({ P }) {
   const line = ck.checking ? html`<span class="vkcheck-st run"><${Ic} i="clock"/>${T("Checking with VK…")}</span>`
     : !at ? html`<span class="vkcheck-st"><${Ic} i="activity"/>${T("Not checked yet")}</span>`
     : ck.state === "limited" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${auto ? T("VK limited the check, next try in {v1}", { v1: next }) : T("VK limited the check")}</span>`
+    : ck.state === "suspect" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${T("VK called most links dead — none was marked. Check one on its row to be sure.")}</span>`
     : ck.state === "failed" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${auto ? T("VK didn't answer, next try in {v1}", { v1: next }) : T("VK didn't answer")}</span>`
     : html`<span class="vkcheck-st"><${Ic} i="check"/>${T("Checked {v1}", { v1: ago(at) })}</span>`;
   const setAuto = async on => {
