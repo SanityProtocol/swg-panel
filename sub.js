@@ -1969,9 +1969,9 @@
           ctrl.isLink = true; ctrl.hasQR = !!cart.qr; ctrl.cmd = null; ctrl.wrapCfg = true;
           ctrl.stepList = !cga ? null : cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)
             : (cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null;   // La Lune's Add dialog defaults to 2.1
-          // own steps → Start copies the link and shows them, never fires it: La Lune's protocol is picked by hand (and on Android
-          // it registers no csqtt:// handler), and csq-socks is a terminal program
-          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart) || !!ctrl.stepList; ctrl.instructions = (cga && cga.instructions) || "";
+          // the steps show where Start copies the link (the desktop); a one-tap app (La Lune on Android) is handed the link as
+          // before (operator, 2026-10-29)
+          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
           // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
           // visitor sent to install the app first still has the link when they come back to it.
           ctrl.copyOnOpen = true;

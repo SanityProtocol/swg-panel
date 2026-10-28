@@ -38,8 +38,8 @@ Fixture — node q-node, three deployments per device:
   [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
       hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
   [11] csqtt 2.1 and 2.5 do not speak to each other: a 2.5 server (Dana's csqtt2, line 2.5) is offered only an app of its
-      line. The operator's Android default La Lune speaks both since S13a: it serves the 2.5 server with its own steps
-      (choose CSQTTR), a Start that copies the sealed link and fires nothing; ranked, the CSQTT app; on iOS nothing (VK TURN
+      line. The operator's Android default La Lune speaks both since S13a: it serves the 2.5 server one tap, as on 2.1 (Start
+      fires the sealed link and copies it, no steps); ranked, the CSQTT app; on iOS nothing (VK TURN
       Proxy speaks 2.1); her 2.1 server keeps its app. Once the CSQTT app's release is of the other line (no 2.5 release yet),
       the 2.5 server is never offered it — La Lune serves it; the line reaches the page through swg-sub
   [12] torrents (1.8.11 S4b): q-node lets them through (Direct) and Boris's awg1 blocks them. Every one of Anna's cells, on every
@@ -85,7 +85,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-csqrank    serves a sub.js that ranks csq-socks as an app (it sorts first on a 2.1 desktop) → RED on [13]
      --perturb-csqsteps   serves a sub.js whose csq-socks cell shows the generic app steps → RED on [13]
      --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
-     --perturb-llfire     serves a sub.js that fires a cell's link even when it has its own steps → RED on [11]
+     --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
      --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
@@ -316,7 +316,7 @@ if P_CSQSTEPS:
 if P_LL25:
     perturbed_web('(cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null', 'null', "La Lune's 2.5 steps")
 if P_LLFIRE:
-    perturbed_web("ctrl.noAutoFire = !(cga && cga.autostart) || !!ctrl.stepList;", "ctrl.noAutoFire = !(cga && cga.autostart);", "own steps instead of a fired link")
+    perturbed_web("ctrl.noAutoFire = !(cga && cga.autostart);", "ctrl.noAutoFire = !(cga && cga.autostart) || !!ctrl.stepList;", "a one-tap app handed the link")
 if P_P2PPORT:
     perturbed_web("      var fp = it.tgt.p2p_port, fd", "      var fp = 0, fd", "the device's incoming port in the torrent bubble")
 if P_P2PALL:
@@ -783,8 +783,8 @@ try:
     # in the DOM as text: cells are told apart by their app, and "no cell for the 2.5 server" is a COUNT (one cell, the 2.1 one) —
     # never the absence of a port in text a QR cell does not carry.
     # La Lune speaks 2.5 too (S13a, 2026-10-28), so the operator's Android default La Lune serves Dana's 2.5 server as well —
-    # with its own steps (its Add dialog defaults to 2.1: the user picks CSQTTR), and a Start that copies the sealed link and
-    # fires nothing (La Lune registers no csqtt:// handler on Android, and the protocol is picked by hand)
+    # one tap, as on 2.1: Start hands it the sealed link and copies it, no steps (operator, 2026-10-29: "just open the app
+    # with the link like before on android"); the CSQTTR step is the desktop's ([13])
     tab, rd = render("u4", "android", "en")
     cells = turn_cells(rd)
     c25 = [c for c in cells if c["role"] == "CSQTT 2.5"]
@@ -794,9 +794,8 @@ try:
     check("[11] …and the 2.1 server beside it", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
     res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
     sealed = next((x for x in clip if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
-    check("[11] …its Start copies the SEALED link and shows La Lune's 2.5 steps (choose CSQTTR), firing nothing",
-          res == "clicked" and sealed and any("CSQTTR" in x for x in steps) and not any(u.startswith("csqtt:") for u in navs),
-          (res, [x[:40] for x in clip], steps, navs))
+    check("[11] …its Start fires the SEALED link, one tap as before, and copies it — no steps",
+          res == "clicked" and sealed and any(u == sealed for u in navs) and not steps, (res, [x[:40] for x in clip], steps, [u[:40] for u in navs]))
     tab.close()
     # the ranked default (no operator choice): amurcanov's CSQTT app, native, first on Android for both lines
     serve["turn_client_default"] = {}
