@@ -51,6 +51,14 @@ PLANTS = [
      "[4] …a sub with its own acme entry installing to its files is left to that entry"),
     ("ENTRY", '  [ -n "$(ip_canon "$SUB_DOMAIN")" ] && san="IP:$(ip_canon "$SUB_DOMAIN")"', '  :',
      "[2] a self-signed sub on an IP writes an IP SAN, and is reused on the next start"),
+    ("ENTRY", '  if [ -n "$pc" ] && cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && sub_pair_kept; then', '  if false; then',
+     "[2] a self-signed panel certificate never replaces the sub's own self-signed pair"),
+    ("ENTRY", '  if [ -n "$pc" ] && cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && sub_pair_kept; then', '  if [ -n "$pc" ] && sub_pair_kept; then',
+     "[2] …a real panel certificate still replaces an older copy"),
+    ("ENTRY", '; else ! cert_is_selfsigned "$SC"; fi; }', '; else false; fi; }',
+     "[2] …a CA mode: a self-signed panel placeholder never replaces the sub's real certificate"),
+    ("ENTRY", '  if [ "${TLS:-selfsigned}" = selfsigned ]; then cert_is_selfsigned "$SC"; else', '  if [ "${TLS:-selfsigned}" = selfsigned ]; then :; else',
+     "[2] …selfsigned: a CA-issued sub copy is replaced by the panel's covering certificate"),
     ("ENTRY", '    for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE \'DNS:[^,[:space:]]+\' | cut -d: -f2-); do\n      [ "$dns" = "$host" ] || [ "$(ip_canon "$dns")" = "$hip" ] && return 0\n    done\n    return 1',
      '    return 1',
      "[1] …an IP spelled as a DNS SAN (an earlier image's self-signed sub cert) still covers it"),
@@ -319,6 +327,41 @@ r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert; cp "$SC" "$SC.first"; issue_sub_cer
 _t = sh("openssl", "x509", "-in", env["SUB_TLS_DIR"] + "/fullchain.pem", "-noout", "-text").stdout
 check("[2] a self-signed sub on an IP writes an IP SAN, and is reused on the next start", ("IP Address:" + IP) in _t
       and same(env["SUB_TLS_DIR"] + "/fullchain.pem", env["SUB_TLS_DIR"] + "/fullchain.pem.first"), (r.stdout[-300:], _t[-300:]))
+# the update from 1.8.10 (nightly docker-pristine, 10-25..10-28): a selfsigned IP panel, its own self-signed IP certificate,
+# and the sub's self-signed pair an earlier image wrote (a DNS SAN spelling the IP) — the sub keeps its pair
+def panel_selfsigned(env):
+    sh("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650", "-keyout", env["SWG_PANEL_TLS_KEY"],
+       "-out", env["SWG_PANEL_TLS_CERT"], "-subj", "/CN=" + IP, "-addext", "subjectAltName=IP:" + IP)
+w, env = world("w2d", tls="selfsigned")
+panel_selfsigned(env)
+sh("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650", "-keyout", env["SUB_TLS_DIR"] + "/key.pem",
+   "-out", env["SUB_TLS_DIR"] + "/fullchain.pem", "-subj", "/CN=" + IP, "-addext", "subjectAltName=DNS:" + IP)
+_old = (open(env["SUB_TLS_DIR"] + "/fullchain.pem", "rb").read(), open(env["SUB_TLS_DIR"] + "/key.pem", "rb").read())
+r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert' % IP)
+check("[2] a self-signed panel certificate never replaces the sub's own self-signed pair",
+      _old == (open(env["SUB_TLS_DIR"] + "/fullchain.pem", "rb").read(), open(env["SUB_TLS_DIR"] + "/key.pem", "rb").read()), r.stdout[-300:])
+# …a real panel certificate still replaces an older copy of it (a renewal reaches the sub)
+w, env = world("w2e")
+shutil.copyfile(IPC2, env["SWG_PANEL_TLS_CERT"]); shutil.copyfile(IPK, env["SWG_PANEL_TLS_KEY"])
+shutil.copyfile(IPC, env["SUB_TLS_DIR"] + "/fullchain.pem"); shutil.copyfile(IPK, env["SUB_TLS_DIR"] + "/key.pem")
+r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert' % IP)
+check("[2] …a real panel certificate still replaces an older copy", same(env["SUB_TLS_DIR"] + "/fullchain.pem", IPC2), r.stdout[-300:])
+# …in a CA mode the panel fell back to a self-signed placeholder: the sub keeps its real certificate
+w, env = world("w2f")
+panel_selfsigned(env)
+shutil.copyfile(IPC, env["SUB_TLS_DIR"] + "/fullchain.pem"); shutil.copyfile(IPK, env["SUB_TLS_DIR"] + "/key.pem")
+r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert' % IP)
+check("[2] …a CA mode: a self-signed panel placeholder never replaces the sub's real certificate",
+      same(env["SUB_TLS_DIR"] + "/fullchain.pem", IPC) and same(env["SUB_TLS_DIR"] + "/key.pem", IPK), r.stdout[-300:])
+# …but in selfsigned mode a CA-issued copy left from Let's Encrypt is never kept (nothing renews it there): the panel's
+# self-signed certificate on the same IP replaces it
+w, env = world("w2h", tls="selfsigned")
+panel_selfsigned(env)
+shutil.copyfile(IPC, env["SUB_TLS_DIR"] + "/fullchain.pem"); shutil.copyfile(IPK, env["SUB_TLS_DIR"] + "/key.pem")
+r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert' % IP)
+check("[2] …selfsigned: a CA-issued sub copy is replaced by the panel's covering certificate",
+      same(env["SUB_TLS_DIR"] + "/fullchain.pem", env["SWG_PANEL_TLS_CERT"]) and same(env["SUB_TLS_DIR"] + "/key.pem", env["SWG_PANEL_TLS_KEY"]),
+      r.stdout[-300:])
 
 print("[3] a start repairs an entry that installs elsewhere")
 w, env = world("w3")

@@ -100,12 +100,25 @@ acme_entry_is_panels(){
   case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 1 ;; esac
   [ "$1" = "${PANEL_DOMAIN:-}" ] && return 0
   [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ "$(acme_target "$1")" = "$SWG_PANEL_TLS_CERT" ]; }
+# Is the sub's present pair the one to keep beside a SELF-SIGNED panel certificate that covers its host? It covers the
+# host and is the kind this mode keeps: its own self-signed one in selfsigned mode (a Let's Encrypt copy left from an
+# earlier mode is never renewed there), a real one in a CA mode (the panel's is then a failed issuance's placeholder).
+sub_pair_kept(){ [ -s "$SC" ] && cert_covers_host "$SC" "$SUB_DOMAIN" || return 1
+  if [ "${TLS:-selfsigned}" = selfsigned ]; then cert_is_selfsigned "$SC"; else ! cert_is_selfsigned "$SC"; fi; }
 # Ensure swg-sub's cert for $SUB_DOMAIN. Rule: if the panel's OWN cert already covers the sub host (same domain, or a
-# SAN/wildcard) reuse it — no second issuance; else issue a SEPARATE cert (own key). Never blocks the caller fatally.
+# SAN/wildcard) reuse it — no second issuance — unless it is self-signed and the sub's present pair is kept (above); else
+# issue a SEPARATE cert (own key). Never blocks the caller fatally.
+# ⚠️ A self-signed panel certificate covers its sub on an IP since IP SANs count (S9f), and without the keep the update
+# from 1.8.10 swapped the sub's own self-signed pair for the panel's — a new certificate a browser that had accepted the
+# page warned about again, for nothing (nightly docker-pristine, 10-25..10-28).
 issue_sub_cert(){ set +e
+  local pc=
   mkdir -p "$SUB_TLS_DIR"
-  if [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -s "$SWG_PANEL_TLS_CERT" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] \
-       && cert_covers_host "$SWG_PANEL_TLS_CERT" "$SUB_DOMAIN"; then
+  [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -s "$SWG_PANEL_TLS_CERT" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] \
+    && cert_covers_host "$SWG_PANEL_TLS_CERT" "$SUB_DOMAIN" && pc=1
+  if [ -n "$pc" ] && cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && sub_pair_kept; then
+    log "swg-sub: reusing present cert for $SUB_DOMAIN"
+  elif [ -n "$pc" ]; then
     cp "$SWG_PANEL_TLS_CERT" "$SC"; cp "$SWG_PANEL_TLS_KEY" "$SK"
     log "swg-sub: panel certificate covers $SUB_DOMAIN — reusing it for the subscription page"
   elif [ -s "$SC" ] && { [ "${TLS:-selfsigned}" = selfsigned ] || ! cert_is_selfsigned "$SC"; } \
