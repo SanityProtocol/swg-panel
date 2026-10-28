@@ -299,7 +299,7 @@ function VkCheckLine({ P }) {
   if (!P.pool.length) return null;
   const at = ck.at || 0;
   const next = dur(Math.max(60, at + 6 * 3600 - panelNowS()));
-  const line = ck.running ? html`<span class="vkcheck-st run"><${Ic} i="clock"/>${T("Checking with VK…")}</span>`
+  const line = ck.checking ? html`<span class="vkcheck-st run"><${Ic} i="clock"/>${T("Checking with VK…")}</span>`
     : !at ? html`<span class="vkcheck-st"><${Ic} i="activity"/>${T("Not checked yet")}</span>`
     : ck.state === "limited" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${auto ? T("VK limited the check, next try in {v1}", { v1: next }) : T("VK limited the check")}</span>`
     : ck.state === "failed" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${auto ? T("VK didn't answer, next try in {v1}", { v1: next }) : T("VK didn't answer")}</span>`
@@ -318,7 +318,7 @@ function VkCheckLine({ P }) {
     if (!r || !r.ok) { toast(srvText(r) || T("Couldn't ask VK"), "err"); return; }
     const live = P.pool.filter(e => !e.dead).length;
     toast((r.data || {}).started ? T("Checking {v1} with VK.", { v1: plural(live, "VK link") })
-      : (r.data || {}).running ? T("A check is already running.") : T("No live links to check."), "ok");
+      : (r.data || {}).checking ? T("A check is already running.") : T("No live links to check."), "ok");
     Store.poll().catch(() => {});
   };
   return html`<div class="vkcheck">
@@ -326,7 +326,7 @@ function VkCheckLine({ P }) {
     <span class="grow"></span>
     <label class="vkcheck-auto" title=${T("Ask VK about every live link every 6 hours, one link a second, from this panel's address")}>
       <${Switch} on=${auto} onChange=${setAuto}/><span>${T("Every 6 h")}</span></label>
-    <button class="btn btn-ghost btn-mini" disabled=${!!ck.running} onClick=${checkAll}
+    <button class="btn btn-ghost btn-mini" disabled=${!!ck.checking} onClick=${checkAll}
       title=${T("Ask VK about every live link now — dead ones are skipped; check a dead one on its own row")}>
       <${Ic} i="activity"/> ${T("vk|Check all")}</button>
   </div>`;

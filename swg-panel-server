@@ -4063,11 +4063,11 @@ def _vk_res_view(ps):
 
 def _vk_poll_view(ps):
     """panel_settings as the poll carries it: no vk_pool (the editor fetches it), a count of live links instead, and
-    the check's state with what only memory knows (running, the link being asked, the answers' seq)."""
+    the check's state with what only memory knows (a run going, the link being asked, the answers' seq)."""
     out = {k: v for k, v in ps.items() if k != "vk_pool"}
     out["vk_pool_live"] = len(_vk_pool_live(ps))
     out["vk_check"] = {**(ps.get("vk_check") if isinstance(ps.get("vk_check"), dict) else {}),
-                       "running": _VK_CHECK["running"], "cur": _VK_CHECK["cur"], "seq": _VK_CHECK["seq"]}
+                       "checking": _VK_CHECK["running"], "cur": _VK_CHECK["cur"], "seq": _VK_CHECK["seq"]}
     return out
 
 
@@ -18864,7 +18864,6 @@ PANEL_SETTINGS_DEFAULTS = {
     "top_talkers": 10,        # Overview: rows in the Top talkers list (1–50)
     "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
     "vk_pool_per_user": VK_POOL_PER_USER_DEFAULT,   # Turn → VK pool: links a NEW user is handed (0–16; POST /api/vk-pool/per-user)
-    "vk_check_auto": True,    # Turn → VK pool: ask VK about every live link every VK_CHECK_EVERY (POST /api/vk-pool/check-auto)
     "expiry_warn_days": 3,    # Display: warn "about to expire" this many days before a subscription/peer expiry (0–365)
     "time_zone": "",          # Display → Data: the zone days are counted in ("" = this server's own; see tz_apply)
     "infinite_history": True,   # Display → Data: keep the ledger's detail (fine files) for ever; off: 33 days. Day rows always stay
@@ -30051,9 +30050,9 @@ def api(method, path, qs, body, deps):
         eid = str(body.get("id") or "").strip()
         if not eid:                                  # "Check all": hand it to the checker thread and return
             if _VK_CHECK["running"]:
-                return 200, {"ok": True, "data": {"started": False, "running": True}}
+                return 200, {"ok": True, "data": {"started": False, "checking": True}}
             if not _vk_pool_live(deps.get("panel_settings") or {}):
-                return 200, {"ok": True, "data": {"started": False, "running": False}}
+                return 200, {"ok": True, "data": {"started": False, "checking": False}}
             _VK_CHECK["kick"].set()
             return 200, {"ok": True, "data": {"started": True}}
         with _api_lock:
@@ -30063,7 +30062,8 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": _vk_check_one(deps, e)}
 
     if method == "POST" and path == "/api/vk-pool/check-auto":
-        # The every-6-hours switch. Its own endpoint, like vk_pool_per_user: it saves on its own.
+        # The every-6-hours switch. Its own endpoint, like vk_pool_per_user: it saves on its own. Absent = on: it is not in
+        # PANEL_SETTINGS_DEFAULTS, so a panel whose operator never touches it stores and serves exactly what it did before.
         on = body.get("on")
         if not isinstance(on, bool):
             return 400, {"ok": False, "error": "on must be true or false", "code": "bad_request"}

@@ -61,9 +61,10 @@ PLANTS = {   # name: (old text, planted text)
                    '            due = (ps.get("vk_check_auto") is not False and time.time() >= int(last.get("at") or 0) + VK_CHECK_EVERY)'),
     "auto-ignored": ('            due = (ps.get("vk_check_auto") is not False and time.time()', '            due = (True and time.time()'),
     "switch-midrun": ('            if not manual and ps.get("vk_check_auto") is False:', '            if False:'),
-    "running-guard": ('            if _VK_CHECK["running"]:\n                return 200, {"ok": True, "data": {"started": False, "running": True}}\n', ''),
+    "running-guard": ('            if _VK_CHECK["running"]:\n                return 200, {"ok": True, "data": {"started": False, "checking": True}}\n', ''),
+    "default-off": ('            due = (ps.get("vk_check_auto") is not False and time.time()', '            due = (ps.get("vk_check_auto") is True and time.time()'),
     "nolive-guard": ('            if not _vk_pool_live(deps.get("panel_settings") or {}):\n'
-                     '                return 200, {"ok": True, "data": {"started": False, "running": False}}\n', ''),
+                     '                return 200, {"ok": True, "data": {"started": False, "checking": False}}\n', ''),
     "res-anyurl": ('if at >= cut and urls.get(k) == u}', 'if at >= cut and k in urls}'),
     "settle-sleep": ('    wait = VK_CHECK_SETTLE ', '    time.sleep(VK_CHECK_SETTLE); wait = VK_CHECK_TICK '),
     "lock-held": ('            if path in _LOCKLESS_POST or path in _SELF_LOCKING_POST:', '            if path in _LOCKLESS_POST:'),
@@ -197,8 +198,8 @@ def run(server):
         r = call("POST", "/api/vk-pool/check", {})[1]["data"]
         for _ in range(300):
             ck = ps_poll().get("vk_check") or {}
-            if not ck.get("running") and (ck.get("at") or 0) and ((ck.get("at") or 0) > before or time.time() - (ck.get("at") or 0) < 2):
-                if not ck.get("running"):
+            if not ck.get("checking") and (ck.get("at") or 0) and ((ck.get("at") or 0) > before or time.time() - (ck.get("at") or 0) < 2):
+                if not ck.get("checking"):
                     break
             time.sleep(0.1)
         time.sleep(0.2)
@@ -234,7 +235,19 @@ def run(server):
         time.sleep(SETTLE + EVERY + 1.5)
         check("[10] an empty pool asks VK nothing", len(stub.log) == n_log, stub.log[n_log:n_log + 3])
         check("[10] …and writes no check state", settings_file().get("vk_check") == ck0, (ck0, settings_file().get("vk_check")))
-        check("[11] the switch is on by default", ps_poll().get("vk_check_auto") is True)
+        # [11] on by default: nobody has touched the switch, a live link gets its automatic run; nothing is stored for it
+        check("[11] the switch is stored nowhere until it is used", "vk_check_auto" not in settings_file() and "vk_check_auto" not in ps_poll())
+        save_pool([{"url": J + H("AL", 2)}])
+        for _ in range(int((EVERY + 3) * 10)):
+            if stub.asked(H("AL", 2)):
+                break
+            time.sleep(0.1)
+        check("[11] the switch is on by default: the automatic run comes", stub.asked(H("AL", 2)))
+        for _ in range(50):
+            if not ps_poll()["vk_check"].get("checking"):
+                break
+            time.sleep(0.1)
+        save_pool([])
         code, r = call("POST", "/api/vk-pool/check-auto", {"on": False})
         check("[11] the switch saves", code == 200 and settings_file().get("vk_check_auto") is False, r)
         check("[14] \"Check all\" with no live link starts nothing", call("POST", "/api/vk-pool/check", {})[1]["data"].get("started") is False)
@@ -354,10 +367,10 @@ def run(server):
         stub.hold[hb][0].wait(10)
         r2 = call("POST", "/api/vk-pool/check", {})[1]["data"]
         check("[14] \"Check all\" while a run is going starts nothing", r1.get("started") is True and r2.get("started") is False
-              and r2.get("running") is True and ps_poll()["vk_check"].get("running") is True, (r1, r2))
+              and r2.get("checking") is True and ps_poll()["vk_check"].get("checking") is True, (r1, r2))
         stub.hold[hb][1].set()
         for _ in range(100):
-            if not ps_poll()["vk_check"].get("running"):
+            if not ps_poll()["vk_check"].get("checking"):
                 break
             time.sleep(0.1)
 
@@ -379,7 +392,7 @@ def run(server):
         stub.hold[hd][1].set()
         for _ in range(200):
             time.sleep(0.1)
-            if not ps_poll()["vk_check"].get("running"):
+            if not ps_poll()["vk_check"].get("checking"):
                 break
         time.sleep(0.3)
         pl = get_pool()["pool"]
