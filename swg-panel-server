@@ -4085,9 +4085,7 @@ def peer_set(roster, pid, fields, now):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
-    if not p2p_port_wanted(rec):                              # a WDTT / csqtt-only device holds none (taken back too)
-        rec.pop("p2p_port", None)
-    elif "p2p_port" not in rec:
+    if "p2p_port" not in rec and p2p_port_wanted(rec):       # a WDTT / csqtt-only device takes none; one held is kept
         _free = p2p_port_take(roster, pid)
         if _free:                                             # pool full: no port, nothing forwarded for it
             rec["p2p_port"] = _free
@@ -9109,8 +9107,9 @@ def p2p_port_take(roster, pid):
 def p2p_ports_fill(roster, first=()):
     """Give every device that wants a port (`p2p_port_wanted`) and has none — or holds one an earlier peer holds, or one
     outside the pool (a hand edit, a node transfer from another panel) — the next free one, in sorted peer-id order
-    (`first`, the peers this panel already held, claim theirs before the rest): the same result every run. A WDTT /
-    csqtt-only device gives its port back. True when something changed."""
+    (`first`, the peers this panel already held, claim theirs before the rest): the same result every run. A port is never
+    taken back — a device left WDTT / csqtt-only for a while keeps the one its client listens on. A roster with no mark
+    gets one, past the highest port held. True when something changed."""
     peers, used, todo, changed = roster.get("peers") or {}, set(), [], False
     for pid in sorted(peers, key=lambda k: (k not in first, k)):
         q = peers[pid]
@@ -9120,15 +9119,15 @@ def p2p_ports_fill(roster, first=()):
         with contextlib.suppress(TypeError, ValueError, OverflowError):   # a hand edit's 20000.0 / "20000" keeps its own port
             if not isinstance(v, (bool, int)) and float(v) == int(float(v)):
                 v = int(float(v))
-        if not p2p_port_wanted(q):
-            changed = changed or "p2p_port" in q
-            q.pop("p2p_port", None)
-        elif type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:
+        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:
             used.add(v)
             if type(q.get("p2p_port")) is not int:
                 q["p2p_port"], changed = v, True
-        else:
+        elif p2p_port_wanted(q):
             todo.append(q)
+    if used and roster.get("p2p_next") is None:               # a roster from before the mark: seeded, so a delete never
+        _p2p_mark(roster, max(used))                          # hands the highest port to the next device
+        changed = True
     free = _p2p_free(roster, used)
     for q in todo:
         x = next(free, None)

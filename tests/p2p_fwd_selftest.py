@@ -87,13 +87,15 @@ PLANTS = {   # name: (file, old text, planted text)
     "drain-pass":    ("node", '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone drop")',
                       '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone counter")'),
     "drain-stays":   ("node", '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now and k not in cur}', '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now}'),
-    "fill-dup":      ("panel", "        elif type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:",
-                      "        elif type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
+    "fill-dup":      ("panel", "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:",
+                      "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
     "fill-first":    ("panel", "    for pid in sorted(peers, key=lambda k: (k not in first, k)):", "    for pid in sorted(peers):"),
     "fill-fullrewrite": ("panel", '        if x != q.get("p2p_port"):\n', '        if True:\n'),
-    "fill-keyless":  ("panel", '        if not p2p_port_wanted(q):', '        if False:'),
-    "set-keyless":   ("panel", '    if not p2p_port_wanted(rec):                              # a WDTT', '    if False:                              # a WDTT'),
-    "set-keepport":  ("panel", '        rec.pop("p2p_port", None)\n    elif "p2p_port" not in rec:', '        pass\n    elif "p2p_port" not in rec:'),
+    "fill-keyless":  ("panel", '        elif p2p_port_wanted(q):\n            todo.append(q)', '        else:\n            todo.append(q)'),
+    "fill-noseed":   ("panel", '    if used and roster.get("p2p_next") is None:', '    if False:'),
+    "set-keyless":   ("panel", '    if "p2p_port" not in rec and p2p_port_wanted(rec):       # a WDTT', '    if "p2p_port" not in rec:       # a WDTT'),
+    "set-takeback":  ("panel", '    if "p2p_port" not in rec and p2p_port_wanted(rec):       # a WDTT',
+                      '    if not p2p_port_wanted(rec):\n        rec.pop("p2p_port", None)\n    if "p2p_port" not in rec and p2p_port_wanted(rec):       # a WDTT'),
     "lowest-first":  ("panel", '        nx = min(max([u for u in used if type(u) is int and lo <= u <= hi], default=lo - 1) + 1, hi)', '        nx = lo'),
     "mark-ignored":  ("panel", '    if not (type(nx) is int and lo <= nx <= hi):', '    if True:'),
     "mark-still":    ("panel", '        _p2p_mark(roster, x)\n    return x', '        pass\n    return x'),
@@ -480,11 +482,10 @@ def unit_checks(src, ok):
     exec(compile(src, PANEL, "exec"), m.__dict__)
     W = lambda **kw: dict(kw, targets=[{"node": "n1", "iface": "wg0", "ip": "10.8.0.9", "type": "wg"}])   # a wg device
     r = json.loads(json.dumps(ROSTER))
-    r["peers"]["pf"]["p2p_port"] = 20009                      # a csqtt-only device the start-up fill of S12 gave a port
     ch = m.p2p_ports_fill(r)
     got = {k: v.get("p2p_port") for k, v in r["peers"].items()}
     ok(ch and got == WANT, "[7] next free, sorted peer-id order; the later duplicate and the out-of-pool port reassigned; a csqtt-only "
-       "device gives its port back (review F38) (%s)" % got)
+       "device takes none (review F38) (%s)" % got)
     ok(r.get("p2p_next") == 20006, "[7] the high-water mark moves past what was handed out (%s)" % r.get("p2p_next"))
     ok(not m.p2p_ports_fill(r), "[7] a second fill changes nothing")
     r2 = {"peers": {"a1": W(p2p_port=20000), "zz": W(p2p_port=20000)}}
@@ -498,9 +499,19 @@ def unit_checks(src, ok):
     up = {"peers": {"h%02d" % i: W(p2p_port=20000 + i) for i in range(11) if i != 3}}
     ok(m.p2p_port_take(up, "new") == 20011, "[7] a roster from before the mark: the next device gets the port past the highest held, "
        "not a deleted device's gap (s12-backlog F1) (%s)" % up.get("p2p_next"))
-    ps = {"peers": {"d": W(p2p_port=20000)}}
+    ps = {"peers": {"d": W(p2p_port=20003)}}
     m.peer_set(ps, "d", {"targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}]}, 0)
-    ok("p2p_port" not in ps["peers"]["d"], "[7] a save that leaves a device csqtt-only takes its port back (s12-backlog F4) (%s)" % ps["peers"]["d"].get("p2p_port"))
+    m.peer_set(ps, "d", {"targets": [{"node": "n2", "iface": "wg0", "ip": "10.7.0.3", "type": "wg"}]}, 0)
+    kh = {"peers": {"k": {"targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}], "p2p_port": 20009}}}
+    m.p2p_ports_fill(kh)
+    ok(ps["peers"]["d"].get("p2p_port") == 20003 and kh["peers"]["k"].get("p2p_port") == 20009,
+       "[7] a port is never taken back: a device left csqtt-only by one save and given a wg target by the next keeps the port its "
+       "client listens on, and so does one across the start-up fill (s12-backlog F11) (%s %s)" % (ps["peers"]["d"].get("p2p_port"), kh["peers"]["k"].get("p2p_port")))
+    pre = {"peers": {"h%02d" % i: W(p2p_port=20000 + i) for i in range(11)}}
+    m.p2p_ports_fill(pre)
+    pre["peers"].pop("h10")
+    ok(pre.get("p2p_next") == 20011 and m.p2p_port_take(pre, "new") == 20011,
+       "[7] a roster from before the mark gets one at the start-up fill: the deleted highest port is not reused (s12-backlog F10) (%s)" % pre.get("p2p_next"))
     full = {"peers": {"p%05d" % i: W(p2p_port=20000 + i) for i in range(10000)}}
     full["peers"]["zzz"] = W()
     m.p2p_ports_fill(full)
