@@ -585,7 +585,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   private trackers need. The magnet's bubble then opens with that port; set it as the client's listening port and turn
   off the random port at startup. Where nothing is forwarded — a WDTT or csqtt connection, a Docker node in bridge
   mode, a port another program on the server already uses — the bubble shows no port. Keep 20000–29999 free on the
-  servers: the panel refuses it for a new interface or turn-proxy. A switch to Block also ends the incoming connections
+  servers: the panel refuses it for a new interface, turn-proxy, WDTT or csqtt server, or dial-in exit. A switch to Block also ends the incoming connections
   already open.
 - **In Docker, the panel keeps port 80 for its certificate.** With a Let's Encrypt certificate (for a domain or the
   bare IP), the panel's container holds the server's port 80, so it renews on its own with nothing to set up. Another

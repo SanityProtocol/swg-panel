@@ -115,10 +115,13 @@ PLANTS = {   # name: (file, old text, planted text)
     "wire-keyless":  ("panel", '            if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):\n                continue                                      # (the node first',
                       '            if not isinstance(t, dict) or t.get("node") != node_id:\n                continue                                      # (the node first'),
     "wire-unwired":  ("panel", '**({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, nid, p2p_fwd_scope(node, _blk_mech, my_plan))) else {}),', ''),
-    "pool-open":     ("panel", "        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1] and str(port).strip() not in {str(k) for k in keep}:",
-                      "        if False:"),
-    "pool-nokeep":   ("panel", "        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1] and str(port).strip() not in {str(k) for k in keep}:",
-                      "        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1]:"),
+    "pool-wdtt":     ("panel", '            if _p and p2p_pool_refusal(_p, keep=_own):\n                return 400, {"ok": False, "error": p2p_pool_refusal(_p, keep=_own), "code": "bad_request"}\n', ''),
+    "pool-csqtt":    ("panel", '        if _dtls and p2p_pool_refusal(_dtls, keep=_own):\n            return 400, {"ok": False, "error": p2p_pool_refusal(_dtls, keep=_own), "code": "bad_request"}\n', ''),
+    "pool-manage":   ("panel", '                        _pr = p2p_pool_refusal(_np, keep=[_cp])\n', '                        _pr = None\n'),
+    "pool-dialin":   ("panel", '        if p2p_pool_refusal(port):                            # (a kept exit', '        if False:                            # (a kept exit'),
+    "pool-nokeep2":  ("panel", '        if P2P_PORT_POOL[0] <= p <= P2P_PORT_POOL[1] and str(p) not in {str(k).strip() for k in keep if k is not None}:',
+                      '        if P2P_PORT_POOL[0] <= p <= P2P_PORT_POOL[1]:'),
+    "pool-open":     ("panel", "        if p2p_pool_refusal(port, keep):\n            return p2p_pool_refusal(port, keep)", "        if False:\n            return p2p_pool_refusal(port, keep)"),
     "sub-taken":     ("sub", ' or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):', ':'),
     "sub-takenjunk": ("sub", 'port in (e.get("taken") if isinstance(e.get("taken"), list) else ())', 'port in (e.get("taken") or ())'),
     "sub-privaddr":  ("sub", "        if ipaddress.ip_address(str(e.get(\"addr\") or \"\")).is_global:", "        if True:"),
@@ -643,6 +646,24 @@ def keep_checks(src, ok):
     rc = lambda p, keep=(): m.reserved_conflict({}, {}, {}, port=p, keep=keep)
     ok(rc(20500) and rc("29999") and not rc(19999) and not rc(30000), "[10] the pool is 20000-29999, nothing around it")
     ok(not rc(20500, keep=[20500, None]) and not rc("20500", keep=["20500"]), "[10] the port a record already holds is never refused")
+    # every other door that takes a listen port (pool review F6): one helper, the record's own port kept
+    pr = m.p2p_pool_refusal
+    ok(pr(25000) and pr("25000 ") and not pr(25000, keep=["25000"]) and not pr(19999) and not pr(30000) and not pr("x") and not pr(None),
+       "[10] p2p_pool_refusal: a new port in the pool refused; its own, one outside, junk not")
+    di = lambda port, kept=None: m._dialin_refusal({"provider": "profile", "profile": {"listen_port": port, "address": "10.66.0.1/30"}},
+                                                    {"listen_port": kept, "address": "10.66.0.1/30"} if kept else None, "", {"ports": {}})
+    ok("20000–29999" in json.dumps(di(25500), ensure_ascii=False) and not di(25500, kept=25500) and not di(42850),
+       "[10] a dial-in exit's typed or pasted port in the pool is refused; a kept exit's own port is not (%s)" % di(25500))
+    tree = ast.parse(src)
+    def calls_in(handler_path):
+        for n in ast.walk(tree):
+            if isinstance(n, ast.If) and handler_path in ast.unparse(n.test):
+                return "p2p_pool_refusal(" in ast.unparse(n)
+        return None
+    doors = {d: calls_in(d) for d in ("'/api/wdtt/set'", "'/api/csqtt/set'")}   # (ast.unparse quotes with ')
+    tm = next((ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.If) and "path.endswith('/manage')" in ast.unparse(n.test)), "")
+    ok(all(doors.values()) and "p2p_pool_refusal(_np, keep=[_cp])" in tm,
+       "[10] the WDTT and csqtt saves and a turn-proxy's listen move ask it (%s, manage %s)" % (doors, "p2p_pool_refusal(_np" in tm))
 
 
 def sub_checks(src, psrc, ok):

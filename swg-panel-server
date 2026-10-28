@@ -9073,6 +9073,16 @@ def p2p_routers_cached(mark, roster, node_id, arrivals=()):
 P2P_PORT_POOL = (20000, 29999)
 
 
+def p2p_pool_refusal(port, keep=()):
+    """The torrent pool refused to a NEW listener — every door that takes a listen port asks this; a port the record
+    already holds (`keep`) stays savable. The error sentence, or None."""
+    with contextlib.suppress(TypeError, ValueError):
+        p = int(str(port).strip())
+        if P2P_PORT_POOL[0] <= p <= P2P_PORT_POOL[1] and str(p) not in {str(k).strip() for k in keep if k is not None}:
+            return "Ports 20000–29999 are kept for devices' incoming torrent ports — pick another port."
+    return None
+
+
 def p2p_port_wanted(p):
     """A device a port can reach: one wg/awg target at least. A WDTT / csqtt-only device is never forwarded, so it takes no
     port from the pool; the save that gives it a wg/awg target gives it one."""
@@ -13230,8 +13240,8 @@ def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None, keep
         base = mc["port_base"]; span = mc.get("port_span", 100)
         if base <= int(port) < base + span:
             return f"port {port} is in the reserved system mesh range ({base}–{base + span - 1})"
-        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1] and str(port).strip() not in {str(k) for k in keep}:
-            return "Ports 20000–29999 are kept for devices' incoming torrent ports — pick another port."
+        if p2p_pool_refusal(port, keep):
+            return p2p_pool_refusal(port, keep)
     return None
 
 
@@ -20159,6 +20169,8 @@ def _dialin_refusal(out, kept, dial_src, ctx):
         _mb = ctx.get("mesh_band") or range(0)
         if port in _mb:
             return perr("UDP port {v1} is in the reserved system mesh range ({v2})", v1=str(port), v2="%d–%d" % (_mb[0], _mb[-1]))
+        if p2p_pool_refusal(port):                            # (a kept exit's own port is never asked: `port != kept` above)
+            return p2p_pool_refusal(port)
         _fw = ctx.get("udp_ranges") or []
         if _fw and not any(a <= port <= b for a, b in _fw):
             return perr("UDP port {v1} is outside this node's declared firewall ranges ({v2}) — the router could never reach it; "
@@ -30695,6 +30707,9 @@ def api(method, path, qs, body, deps):
                         _np = body["listen"].strip().rsplit(":", 1)[1]
                         _cp = svc.rsplit("-", 1)[-1]   # this proxy's current port (from its service name)
                         _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp] if _cp.isdigit() else [])
+                        _pr = p2p_pool_refusal(_np, keep=[_cp])
+                        if _pr:
+                            return 400, {"ok": False, "error": _pr, "code": "bad_request"}
                         if _lc:
                             return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=_np, v2=_lc), "code": "bad_request"}
                     elif _port_of(body[k].strip()) != _port_of(turn_connect_now(deps, nodes, nid, svc)):   # the Edit sheet re-sends an unchanged one
@@ -30827,6 +30842,8 @@ def api(method, path, qs, body, deps):
         if _dtls and _wgp and str(_dtls) == str(_wgp):
             return 400, {"ok": False, "error": "the DTLS listen port and the internal WG port must be different", "code": "bad_request"}
         for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):
+            if _p and p2p_pool_refusal(_p, keep=_own):
+                return 400, {"ok": False, "error": p2p_pool_refusal(_p, keep=_own), "code": "bad_request"}
             if _p:
                 _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
                 if _lc:
@@ -31180,6 +31197,8 @@ def api(method, path, qs, body, deps):
             _own.append(str(_cur["listen"]).rsplit(":", 1)[1])
         _wl = (inst.get("listen") or "").strip()
         _dtls = _wl.rsplit(":", 1)[1] if (":" in _wl) else None
+        if _dtls and p2p_pool_refusal(_dtls, keep=_own):
+            return 400, {"ok": False, "error": p2p_pool_refusal(_dtls, keep=_own), "code": "bad_request"}
         if _dtls:
             _lc = _port_conflict(deps, nodes, nid, _dtls, own=_own)
             if _lc:
