@@ -118,7 +118,6 @@ PLANTS = {   # name: (file, old text, planted text)
     "pool-wdtt":     ("panel", '            if _p and (_pr := p2p_pool_refusal(_p, keep=_own + _ran)):\n                return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
     "pool-csqtt":    ("panel", '        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (as WDTT: the conflict check by identity)\n            return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
     "pool-manage":   ("panel", '                        _pr = p2p_pool_refusal(_np, keep=_ownt)', '                        _pr = None'),
-    "manage-namekeep": ("panel", '                        _lc = _port_conflict(deps, nodes, nid, _np, own=_ownt, me=("turn", svc))', '                        _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp])'),
     "wdtt-noran":    ("panel", '(_pr := p2p_pool_refusal(_p, keep=_own + _ran))', '(_pr := p2p_pool_refusal(_p, keep=_own))'),
     "csqtt-noran":   ("panel", 'keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (as WDTT: the conflict check by identity)', 'keep=_own)):   # (as WDTT: the conflict check by identity)'),
     "wdtt-ranclash": ("panel", '                _lc = _port_conflict(deps, nodes, nid, _p, own=_own, me=("wdtt", iface))', '                _lc = _port_conflict(deps, nodes, nid, _p, own=_own + _ran)'),
@@ -692,8 +691,8 @@ def keep_checks(src, ok):
         return None
     doors = {d: calls_in(d) for d in ("'/api/wdtt/set'", "'/api/csqtt/set'")}   # (ast.unparse quotes with ')
     tm = next((ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.If) and "path.endswith('/manage')" in ast.unparse(n.test)), "")
-    ok(all(doors.values()) and "p2p_pool_refusal(_np, keep=_ownt)" in tm and "own=_ownt, me=" in tm,
-       "[10] the WDTT and csqtt saves and a turn-proxy's listen move ask it, with one own-port list for both checks (%s, manage %s)" % (doors, "_ownt" in tm))
+    ok(all(doors.values()) and "p2p_pool_refusal(_np, keep=_ownt)" in tm and "me=('turn', svc)" in tm,
+       "[10] the WDTT and csqtt saves and a turn-proxy's listen move ask it (%s, manage %s)" % (doors, "_ownt" in tm))
 
 
 def sub_checks(src, psrc, ok):

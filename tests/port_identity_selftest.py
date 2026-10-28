@@ -15,7 +15,7 @@ claim and the RAW-IP reservation (verify F17). Now the edited holder is left out
 Run: python3 tests/port_identity_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
 """
-import ast, os, sys, types
+import ast, os, re, sys, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -35,8 +35,10 @@ PLANTS = {   # name: (old text, planted text)
     "raw-open":      ('    if port == WDTT_RAW_PORT:\n        return _wdtt_raw_holder', '    if False:\n        return _wdtt_raw_holder'),
     "door-wdtt":     ('own=_own, me=("wdtt", iface))', 'own=_own)'),
     "door-csqtt":    ('own=_own, me=("csqtt", iface))', 'own=_own)'),
-    "door-turn":     ('own=_ownt, me=("turn", svc))', 'own=_ownt)'),
-    "door-iface":    ('own=_own, me=("iface", iface))', 'own=_own)'),
+    "door-turn":     ('_lc = _port_conflict(deps, nodes, nid, _np, me=("turn", svc))', '_lc = _port_conflict(deps, nodes, nid, _np, own=_ownt)'),
+    "turn-ownnum":   ('_lc = _port_conflict(deps, nodes, nid, _np, me=("turn", svc))', '_lc = _port_conflict(deps, nodes, nid, _np, own=_ownt, me=("turn", svc))'),
+    "iface-ownsnap": ('own=[ov.get("desired_port"), ov.get("listen_port")],   # (the record', 'own=_own,   # (the record'),
+    "door-iface":    ('                                     me=("iface", iface))   # what it reports', '                                     me=None)   # what it reports'),
 }
 # the record's WDTT claims without their identity
 PLANTS["wdtt-noid"] = ('        add(tail(w.get("listen")), ifn + " (WDTT)", ("wdtt", ifn))\n        add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn), ("wdtt", ifn))\n    def ents',
@@ -90,6 +92,16 @@ def checks(src, ok):
     wd, cq, tm, iu = block("'/api/wdtt/set'"), block("'/api/csqtt/set'"), block("path.endswith('/manage')"), block("'/api/iface/update'")
     ok("me=('wdtt', iface)" in wd and "me=('csqtt', iface)" in cq and "me=('turn', svc)" in tm and "me=('iface', iface)" in iu,
        "[3] the WDTT and csqtt saves, a turn-proxy edit and an interface update pass their own identity")
+    # …and pass no REPORTED port as `own` (it is tolerated by number, and may be another holder's now — review F1)
+    tc = re.search(r"_lc = _port_conflict\(deps, nodes, nid, _np[^\n]*", tm)
+    ic = re.search(r"_pc = _port_conflict\(deps, nodes, nid, p, own=([^\n]*?)me=", iu.replace("\n", " "))
+    ok(tc and "own=" not in tc.group(0) and ic and "desired_port" in ic.group(1) and "listen_port" in ic.group(1) and "meta" not in ic.group(1),
+       "[3] the turn-proxy edit exempts no port by number; the interface update only its record's (%s | %s)" % (tc and tc.group(0)[:80], ic and ic.group(1)[:80]))
+    # the case: a proxy moved :5000 → :25000, an interface now on :5000 — moving the proxy back is a clash
+    n2 = {"n1": {"turn": {}}}
+    s2 = {"interfaces": {"awg3": {"meta": {"listen_port": 5000}}}, "turn_proxies": [{"service": "vk-turn-proxy-X-5000", "listen": "0.0.0.0:25000"}]}
+    ok(m._port_conflict({"node_snaps": {"n1": s2}}, n2, "n1", 5000, me=("turn", "vk-turn-proxy-X-5000")) == "awg3",
+       "[2] a proxy moved back onto its old port that an interface took since is a clash (review F1)")
 
 
 def run_checks(src):
