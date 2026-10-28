@@ -4112,14 +4112,16 @@ def _vk_check_run(deps, manual):
     roster_path = deps["roster_path"]
     todo = [(e["id"], e["url"]) for e in _vk_pool_live(deps.get("panel_settings") or {})]
     dead, state = [], "done"
+    now_rev, now_url = None, {}                       # id → URL as the pool holds it now; rebuilt only when its rev moves
     _VK_CHECK["running"] = True
     try:
         for i, (eid, url) in enumerate(todo):
             ps = deps.get("panel_settings") or {}
             if not manual and ps.get("vk_check_auto") is False:
                 break                                 # switched off mid-run
-            cur = next((e for e in _vk_pool_list(ps) if e["id"] == eid), None)
-            if not cur or cur["url"] != url:
+            if ps.get("vk_pool_rev") != now_rev:
+                now_rev, now_url = ps.get("vk_pool_rev"), {e["id"]: e["url"] for e in _vk_pool_list(ps)}
+            if now_url.get(eid) != url:
                 continue                              # removed or edited since the run began
             h = _wdtt_vk_hash(url)
             if not _VK_HASH_RE.fullmatch(h):

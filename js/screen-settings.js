@@ -97,9 +97,16 @@ function vkpTake(d) {
 }
 function vkpLoad(what) {
   if (VKP.loading) return VKP.loading;
+  let took = false;
   VKP.loading = (what === "res" ? api.vkPoolResults() : api.vkPoolGet())
-    .then(r => { if (r && r.ok) vkpTake(r.data); }).catch(() => {})
-    .finally(() => { VKP.loading = null; bus.emit(); });
+    .then(r => { if (r && r.ok) { vkpTake(r.data); took = true; } }).catch(() => {})
+    .finally(() => {
+      VKP.loading = null; bus.emit();
+      // The pool's rev moved while this was in flight (a results fetch, or an older pool): fetch the pool now — no
+      // later poll would, because the hook only acts when the rev changes again. Only after a success, so a failing
+      // GET is not retried in a loop; the answers wait for the next poll (a run moves them every second).
+      if (took && VKP.rev !== ((Store.panelSettings || {}).vk_pool_rev || 0)) vkpLoad();
+    });
   return VKP.loading;
 }
 
