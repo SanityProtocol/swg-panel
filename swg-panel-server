@@ -9073,6 +9073,15 @@ def p2p_routers_cached(mark, roster, node_id, arrivals=()):
 P2P_PORT_POOL = (20000, 29999)
 
 
+def _running_ports(deps, nid, kind, iface):
+    """The ports node `nid` reports its WDTT / csqtt instance `iface` listening on (DTLS listen, WDTT's internal WG port)."""
+    out = []
+    for x in ((((deps.get("node_snaps") or {}).get(nid) or {}).get(kind)) or []):
+        if isinstance(x, dict) and x.get("iface") == iface:
+            out += [str(x.get("listen") or "").rsplit(":", 1)[-1], str(x.get("wg_port") or "")]
+    return [p for p in out if p]
+
+
 def p2p_pool_refusal(port, keep=()):
     """The torrent pool refused to a NEW listener — every door that takes a listen port asks this; a port the record
     already holds (`keep`) stays savable. The error sentence, or None."""
@@ -13240,8 +13249,7 @@ def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None, keep
         base = mc["port_base"]; span = mc.get("port_span", 100)
         if base <= int(port) < base + span:
             return f"port {port} is in the reserved system mesh range ({base}–{base + span - 1})"
-        if p2p_pool_refusal(port, keep):
-            return p2p_pool_refusal(port, keep)
+        return p2p_pool_refusal(port, keep)
     return None
 
 
@@ -13966,6 +13974,12 @@ def turn_awg3_blockers(deps, nodes, nid, ports):
             out.append({"service": svc, "title": req.get("title") or tp.get("title") or "", "connect": hit[0],
                         "fork": turn_fork(svc)})
     return out
+
+
+def turn_listen_now(deps, nid, svc):
+    """Where turn proxy `svc` on node `nid` listens, as the node reports it ("" when it does not)."""
+    return next((tp.get("listen") or "" for tp in ((((deps.get("node_snaps") or {}).get(nid) or {}).get("turn_proxies")) or [])
+                 if isinstance(tp, dict) and tp.get("service") == svc), "")
 
 
 def turn_connect_now(deps, nodes, nid, svc):
@@ -20169,8 +20183,8 @@ def _dialin_refusal(out, kept, dial_src, ctx):
         _mb = ctx.get("mesh_band") or range(0)
         if port in _mb:
             return perr("UDP port {v1} is in the reserved system mesh range ({v2})", v1=str(port), v2="%d–%d" % (_mb[0], _mb[-1]))
-        if p2p_pool_refusal(port):                            # (a kept exit's own port is never asked: `port != kept` above)
-            return p2p_pool_refusal(port)
+        if (_pr := p2p_pool_refusal(port)):                   # (a kept exit's own port is never asked: `port != kept` above)
+            return _pr
         _fw = ctx.get("udp_ranges") or []
         if _fw and not any(a <= port <= b for a, b in _fw):
             return perr("UDP port {v1} is outside this node's declared firewall ranges ({v2}) — the router could never reach it; "
@@ -20232,7 +20246,7 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
             _no = used | set(ctx.get("listen") or ()) | set(ctx.get("mesh_band") or ())
             free = [p for p in DIALIN_PORTS if p not in _no and (not _fw or any(a <= p <= b for a, b in _fw))]
             if not free and _fw:
-                free = sorted({p for a, b in _fw for p in range(a, b + 1)} - _no - {51820})
+                free = sorted({p for a, b in _fw for p in range(a, b + 1)} - _no - {51820} - set(range(P2P_PORT_POOL[0], P2P_PORT_POOL[1] + 1)))
             if not free:
                 return "", "no free port in 42821–42899 on this node, nor in its declared firewall range — type a port"
             port = random.choice(free)
@@ -30707,7 +30721,7 @@ def api(method, path, qs, body, deps):
                         _np = body["listen"].strip().rsplit(":", 1)[1]
                         _cp = svc.rsplit("-", 1)[-1]   # this proxy's current port (from its service name)
                         _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp] if _cp.isdigit() else [])
-                        _pr = p2p_pool_refusal(_np, keep=[_cp])
+                        _pr = p2p_pool_refusal(_np, keep=[_cp, _port_of(turn_listen_now(deps, nid, svc))])   # (an earlier move's port too)
                         if _pr:
                             return 400, {"ok": False, "error": _pr, "code": "bad_request"}
                         if _lc:
@@ -30841,9 +30855,10 @@ def api(method, path, qs, body, deps):
         _wgp = inst.get("wg_port")
         if _dtls and _wgp and str(_dtls) == str(_wgp):
             return 400, {"ok": False, "error": "the DTLS listen port and the internal WG port must be different", "code": "bad_request"}
+        _ran = _running_ports(deps, nid, "wdtt", iface)           # what the node runs it on: kept too (a restore, a transfer)
         for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):
-            if _p and p2p_pool_refusal(_p, keep=_own):
-                return 400, {"ok": False, "error": p2p_pool_refusal(_p, keep=_own), "code": "bad_request"}
+            if _p and (_pr := p2p_pool_refusal(_p, keep=_own + _ran)):
+                return 400, {"ok": False, "error": _pr, "code": "bad_request"}
             if _p:
                 _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
                 if _lc:
@@ -31197,8 +31212,8 @@ def api(method, path, qs, body, deps):
             _own.append(str(_cur["listen"]).rsplit(":", 1)[1])
         _wl = (inst.get("listen") or "").strip()
         _dtls = _wl.rsplit(":", 1)[1] if (":" in _wl) else None
-        if _dtls and p2p_pool_refusal(_dtls, keep=_own):
-            return 400, {"ok": False, "error": p2p_pool_refusal(_dtls, keep=_own), "code": "bad_request"}
+        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (+ what it runs on)
+            return 400, {"ok": False, "error": _pr, "code": "bad_request"}
         if _dtls:
             _lc = _port_conflict(deps, nodes, nid, _dtls, own=_own)
             if _lc:
