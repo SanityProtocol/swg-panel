@@ -743,6 +743,9 @@ SYNC_LOCK_WAIT = 10   # s a node sync waits for _api_lock before answering 503 �
 # the lock and checks both stores come out untouched.
 _LOCKLESS_POST = frozenset({"/api/update/check", "/api/turn/check-updates", "/api/catalog/refresh",
                             "/api/integrations/webhook/test", "/api/nodes/transfer/preflight"})
+# POSTs that wait on the network and DO save: dispatched without _api_lock like the set above, but each handler takes
+# the lock itself around its reads and its write. Not _LOCKLESS_POST — that set's promise is that nothing is saved.
+_SELF_LOCKING_POST = frozenset({"/api/vk-pool/check"})
 
 # /api/state is identical for every poller and rebuilt from scratch on each call (roster read off disk,
 # per-node health-RRD reads, then a full-bundle JSON encode). Every open SPA tab polls it every 5s, so on a
@@ -3778,12 +3781,25 @@ def count_plaintext_configs(config_dir):
 # that. Which of them came from the pool is recorded ALONGSIDE, in `user["vk_pool"] = {pool_id: url}`, keyed
 # by the pool ENTRY so an edited link can still be traced after its URL has changed.
 #
-# ⚠️ Liveness cannot be probed. Measured 2026-09-06: a bogus call hash returns HTTP 200 with the same 211 KB
-# SPA shell as any other, because VK resolves the call client-side — so "is this link alive" is the
-# operator's knowledge, not the panel's. Hence `dead` is a flag someone sets, never something inferred, and
-# the UI must not imply the panel checked.
-VK_POOL_MAX = 64                    # entries; a pool larger than this is an import mistake, not a fleet
+# ⚠️ A GET OF THE LINK CANNOT TELL ALIVE FROM DEAD — measured 2026-09-06: a bogus call hash returns HTTP 200 with
+# the same 211 KB SPA shell as any other, because VK resolves the call client-side. VK's API can: the alive check
+# below asks it the way the csqtt 2.5 client does, and marks a link dead only on two answers that say so. `dead`
+# is therefore either the operator's flag or the check's (`dead_by: "check"`, the only value it takes).
+# No size limit: what bounds a save is MAX_BODY. The poll carries only a count (vk_pool_live) and the editor
+# fetches the list itself (GET /api/vk-pool), so a big pool costs the poll nothing.
 VK_LINK_MAXLEN = 512
+# A VK call link may be entered as its bare hash: ONE shape is stored either way, so the dedupe by URL and by hash
+# keeps working. The hash rule is csqtt's (_CSQTT_VK_MINLEN), ASCII only — `\w` would take any Unicode letter.
+# normVkLink in js/peer-ui.js is the browser twin (tests/cross_language_twins_selftest.py).
+_VK_HASH_RE = re.compile(r"[A-Za-z0-9_-]{%d,}" % _CSQTT_VK_MINLEN)
+VK_JOIN_URL = "https://vk.ru/call/join/"
+
+
+def _vk_link_norm(s):
+    """A bare call hash → its link; anything else as it came (stripped)."""
+    s = str(s or "").strip()
+    return VK_JOIN_URL + s if _VK_HASH_RE.fullmatch(s) else s
+
 # How many pool links a NEW user is handed. Every call link is its own pool of TURN streams in the clients that
 # take a list, so one link was a fraction of the throughput a user could have had. Operator-set
 # (panel_settings["vk_pool_per_user"]); 0 = hand out none. The upper bound is only a typo guard — each client
@@ -3800,8 +3816,10 @@ def _vk_pool_list(ps):
         url = str(e.get("url") or "").strip()[:VK_LINK_MAXLEN]
         eid = str(e.get("id") or "").strip()
         if url and eid:
-            out.append({"id": eid, "url": url, "dead": bool(e.get("dead")), "added": int(e.get("added") or 0)})
-    return out[:VK_POOL_MAX]
+            dead = bool(e.get("dead"))
+            out.append({"id": eid, "url": url, "dead": dead, "added": int(e.get("added") or 0),
+                        **({"dead_by": "check"} if dead and e.get("dead_by") == "check" else {})})
+    return out
 
 
 def _vk_pool_live(ps):
@@ -3820,7 +3838,7 @@ def _vk_pool_counts(roster):
     return n
 
 
-def _vk_pool_pick(ps, exclude_urls=(), counts=None):
+def _vk_pool_pick(ps, exclude_urls=(), counts=None, live=None):
     """The LEAST-LOADED live entry the user does not already hold, ties broken at random; None if there is
     none left.
 
@@ -3828,8 +3846,9 @@ def _vk_pool_pick(ps, exclude_urls=(), counts=None):
     routinely lands 8/6/4/2, which is the opposite of what a pool of call links is for. Fewest holders first
     puts the capacity where it isn't, and the random tie-break keeps two users created back-to-back off the
     same link. `counts` is threaded in so a cascade counts once and then tracks its own assignments, instead
-    of re-scanning the roster per user."""
-    avail = [e for e in _vk_pool_live(ps) if e["url"] not in set(exclude_urls or ())]
+    of re-scanning the roster per user. `live` is the cascade's one read of the pool, for the same reason."""
+    excl = set(exclude_urls or ())
+    avail = [e for e in (_vk_pool_live(ps) if live is None else live) if e["url"] not in excl]
     if not avail:
         return None
     if counts is None:
@@ -3861,7 +3880,13 @@ def _vk_pool_pick_many(ps, n, counts):
     return out
 
 
-def _vk_user_sync(u, ps, counts=None):
+def _vk_pool_index(ps):
+    """The pool by entry id, and its live entries in stored order — what _vk_user_sync reads, built once."""
+    pool = _vk_pool_list(ps)
+    return {e["id"]: e for e in pool}, [e for e in pool if not e["dead"]]
+
+
+def _vk_user_sync(u, ps, counts=None, pool=None):
     """Bring ONE user's links back in step with the pool. Returns True when anything changed.
 
     Three cases, and the operator asked for all three to be automatic:
@@ -3876,7 +3901,7 @@ def _vk_user_sync(u, ps, counts=None):
     mapped = dict(u.get("vk_pool") or {})
     if not mapped and not links:
         return False
-    by_id = {e["id"]: e for e in _vk_pool_list(ps)}
+    by_id, live = _vk_pool_index(ps) if pool is None else pool
     changed = False
     for pid, old_url in list(mapped.items()):
         e = by_id.get(pid)
@@ -3896,7 +3921,7 @@ def _vk_user_sync(u, ps, counts=None):
         # dead or gone: drop it, then replace with a live one the user does not already hold
         links = [x for x in links if x != old_url]
         mapped.pop(pid, None); changed = True
-        repl = _vk_pool_pick(ps, exclude_urls=links, counts=counts)
+        repl = _vk_pool_pick(ps, exclude_urls=links, counts=counts, live=live)
         if repl:
             links.append(repl["url"]); mapped[repl["id"]] = repl["url"]
             if counts is not None:                                    # the cascade tracks its own handiwork
@@ -3913,13 +3938,258 @@ def _vk_user_sync(u, ps, counts=None):
 
 def _vk_pool_cascade(roster, ps):
     """Run _vk_user_sync over every user. Called whenever the pool changes, so an edit or a mark-dead reaches
-    every holder in the same request rather than waiting for someone to open their profile."""
+    every holder in the same request rather than waiting for someone to open their profile. The pool is read ONCE
+    here: with no size limit, a read per user is users × links under the lock."""
     n = 0
     counts = _vk_pool_counts(roster)
+    pool = _vk_pool_index(ps)
     for u in (roster.get("users") or {}).values():
-        if isinstance(u, dict) and _vk_user_sync(u, ps, counts=counts):
+        if isinstance(u, dict) and _vk_user_sync(u, ps, counts=counts, pool=pool):
             n += 1
     return n
+
+
+# ── The VK pool's alive check ──────────────────────────────────────────────────────────────────────────
+# Two anonymous calls per link, no VK account, no call joined — copied from the csqtt 2.5 client
+# (rust-client/auth.rs check_vk_hashes): auth.getAnonymToken, then messages.getCallPreview. user_id + secret = alive;
+# error 951 / 954 / 9000–9999 or "call not found" / "invalid call join link" = dead; anything else proves nothing.
+# ⚠️ The host, client id and version are VK's. When VK changes them every answer reads as unknown and nothing is
+# marked — it fails safe; follow the csqtt client's constants when it updates. Unlike csqtt, a captcha (14) is NOT
+# alive here: it stops the run, and the panel marks nothing on an answer it could not read.
+# The requests carry only a validated hash (_VK_HASH_RE, URL-encoded) to this fixed host; SWG_PANEL_VK_API exists
+# for the gate's stub and is set by whoever starts the process, never by anything an operator types.
+VK_API = os.environ.get("SWG_PANEL_VK_API") or "https://api.vk.me/method/"
+VK_API_V, VK_API_CLIENT = "5.276", "8093730"
+_vk_env = lambda k, d: float(os.environ.get(k) or d)   # the gate shortens these; production never sets them
+VK_CHECK_GAP = _vk_env("SWG_PANEL_VK_CHECK_GAP", 1)          # s between two links (1,000 links ≈ 17 min)
+VK_CHECK_AGAIN = _vk_env("SWG_PANEL_VK_CHECK_AGAIN", 2)      # s before the second ask that confirms a dead answer
+VK_CHECK_EVERY = _vk_env("SWG_PANEL_VK_CHECK_EVERY", 6 * 3600)   # the automatic run, after the last one finished
+VK_CHECK_SETTLE = _vk_env("SWG_PANEL_VK_CHECK_SETTLE", 60)   # s after start before the first automatic run
+VK_CHECK_TICK = min(60.0, VK_CHECK_EVERY)                     # how often the idle thread looks whether a run is due
+VK_CHECK_KEEP = 3600                                          # s an answer is shown on its row (js VK_CHECK_FRESH)
+# The checker's live state. NOT stored: a restart cannot leave a stale "Checking…" behind. `res` is each link's last
+# answer {id: (at, verdict, url)}; `seq` moves with every answer, so an open editor knows to fetch them.
+_VK_CHECK = {"running": False, "cur": "", "seq": 0, "res": {}, "kick": threading.Event()}
+_VK_ASK_LOCK = threading.Lock()   # one link at a time from this panel's address — a row check waits for the run's
+
+
+def _vk_api_call(method, params):
+    """One empty-body POST to VK's API → the parsed answer, or None when no answer came (network, TLS, HTTP)."""
+    url = VK_API + method + "?" + "&".join("%s=%s" % (k, quote(str(v), safe="")) for k, v in params)
+    req = urllib.request.Request(url, data=b"", method="POST", headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0 Safari/537.36",
+        "Accept": "*/*", "Accept-Language": "en-GB,en;q=0.9"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read(1 << 20)
+    except Exception:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}                                     # an answer, but not one we can read → unknown
+
+
+def _vk_error(obj):
+    """VK's error in an answer → "dead" | "limited" | "unknown"; None when the answer carries no error."""
+    err = obj.get("error") if isinstance(obj, dict) else None
+    if not isinstance(err, dict):
+        return None
+    try:
+        code = int(float(err.get("error_code") or 0))
+    except (TypeError, ValueError):
+        code = 0
+    msg = str(err.get("error_msg") or err.get("message") or "").strip().lower()
+    if code in (951, 954) or 9000 <= code <= 9999 or "call not found" in msg or "invalid call join link" in msg:
+        return "dead"
+    if code in (6, 7, 9, 14, 29) or any(w in msg for w in ("flood control", "too many requests", "rate limit", "captcha")):
+        return "limited"
+    return "unknown"
+
+
+def _vk_ask(h):
+    """Ask VK once about the call hash `h` → "alive" | "dead" | "unknown" | "limited" | "neterr"."""
+    link = VK_JOIN_URL + h
+    dev = str(uuid.uuid4())
+    with _VK_ASK_LOCK:
+        a = _vk_api_call("auth.getAnonymToken", [("v", VK_API_V), ("client_id", VK_API_CLIENT), ("link", link),
+                                                ("device_id", dev), ("anonymName", "Guest %04d" % secrets.randbelow(10000)),
+                                                ("lang", "en")])
+        if a is None:
+            return "neterr"
+        bad = _vk_error(a)
+        if bad:
+            return bad
+        tok = (a.get("response") or {}).get("token") if isinstance(a, dict) else None
+        if not isinstance(tok, str) or not tok:
+            return "unknown"
+        b = _vk_api_call("messages.getCallPreview", [("v", VK_API_V), ("anonymous_token", tok), ("device_id", dev),
+                                                    ("extended", 1), ("fields", "first_name,last_name,photo_200"),
+                                                    ("lang", "en"), ("link", link)])
+    if b is None:
+        return "neterr"
+    bad = _vk_error(b)
+    if bad:
+        return bad
+    r = (b.get("response") or {}) if isinstance(b, dict) else {}
+    return "alive" if isinstance(r, dict) and r.get("user_id") is not None and r.get("secret") else "unknown"
+
+
+def _vk_verdict(h):
+    """ONE rule for every kind of run: dead takes two dead answers, VK_CHECK_AGAIN apart; the second decides."""
+    v = _vk_ask(h)
+    if v != "dead":
+        return v
+    time.sleep(VK_CHECK_AGAIN)
+    return _vk_ask(h)
+
+
+def _vk_note(eid, url, v):
+    """Remember a link's answer for its row: alive / dead / unknown (limited and no-answer show as unknown)."""
+    now_ = int(time.time())
+    _VK_CHECK["res"][eid] = (now_, v if v in ("alive", "dead") else "unknown", url)
+    _VK_CHECK["seq"] += 1
+    if not _VK_CHECK["seq"] % 256:                    # forget answers past their hour (removed links' included)
+        _VK_CHECK["res"] = {k: x for k, x in list(_VK_CHECK["res"].items()) if x[0] >= now_ - VK_CHECK_KEEP}
+
+
+def _vk_res_view(ps):
+    """The answers of the last hour, for the links that still hold the URL they were asked about."""
+    cut = time.time() - VK_CHECK_KEEP
+    urls = {e["id"]: e["url"] for e in _vk_pool_list(ps)}
+    res = {k: {"at": at, "v": v} for k, (at, v, u) in list(_VK_CHECK["res"].items()) if at >= cut and urls.get(k) == u}
+    return {"res": res, "seq": _VK_CHECK["seq"]}
+
+
+def _vk_poll_view(ps):
+    """panel_settings as the poll carries it: no vk_pool (the editor fetches it), a count of live links instead, and
+    the check's state with what only memory knows (running, the link being asked, the answers' seq)."""
+    out = {k: v for k, v in ps.items() if k != "vk_pool"}
+    out["vk_pool_live"] = len(_vk_pool_live(ps))
+    out["vk_check"] = {**(ps.get("vk_check") if isinstance(ps.get("vk_check"), dict) else {}),
+                       "running": _VK_CHECK["running"], "cur": _VK_CHECK["cur"], "seq": _VK_CHECK["seq"]}
+    return out
+
+
+def _vk_check_save(deps, ps, roster_path, marked):
+    """Under _api_lock: write the settings, and when links were marked dead move their holders off — one cascade, one
+    roster write, one event however many there were. Returns the users moved."""
+    save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+    moved = 0
+    if marked:
+        roster = roster_load(roster_path)
+        moved = _vk_pool_cascade(roster, ps)
+        if moved:
+            roster_save(roster_path, roster)
+        ev_append(roster_path, "settings", "", "VK check marked links dead", "",
+                  "%d link(s), reassigned %d user(s)" % (marked, moved), detail_key="{links}, reassigned {count}",
+                  detail_vars={"links": {"n": marked, "noun": "VK link"}, "count": {"n": moved, "noun": "user"}})
+    return moved
+
+
+def _vk_mark(ps, eid, url, dead):
+    """Mark the entry `eid` dead by the check (dead=True) or alive again (dead=False) — only while it still holds the
+    URL that was asked about, and only a change: a link the OPERATOR marked dead is never revived here. True if done."""
+    for e in (ps.get("vk_pool") or []):
+        if not isinstance(e, dict) or str(e.get("id") or "").strip() != eid:
+            continue
+        if str(e.get("url") or "").strip()[:VK_LINK_MAXLEN] != url:
+            return False                              # edited while it was being asked about
+        if dead and not e.get("dead"):
+            e["dead"], e["dead_by"] = True, "check"
+            return True
+        if not dead and e.get("dead") and e.get("dead_by") == "check":
+            e["dead"] = False
+            e.pop("dead_by", None)
+            return True
+        return False
+    return False
+
+
+def _vk_check_run(deps, manual):
+    """A run over the live links (an automatic one, or "Check all"): one link at a time, VK_CHECK_GAP apart. A limit
+    (captcha / flood / rate) or no answer at all stops it. Its dead marks are saved TOGETHER at its end."""
+    roster_path = deps["roster_path"]
+    todo = [(e["id"], e["url"]) for e in _vk_pool_live(deps.get("panel_settings") or {})]
+    dead, state = [], "done"
+    _VK_CHECK["running"] = True
+    try:
+        for i, (eid, url) in enumerate(todo):
+            ps = deps.get("panel_settings") or {}
+            if not manual and ps.get("vk_check_auto") is False:
+                break                                 # switched off mid-run
+            cur = next((e for e in _vk_pool_list(ps) if e["id"] == eid), None)
+            if not cur or cur["url"] != url:
+                continue                              # removed or edited since the run began
+            h = _wdtt_vk_hash(url)
+            if not _VK_HASH_RE.fullmatch(h):
+                continue
+            if i:
+                time.sleep(VK_CHECK_GAP)
+            _VK_CHECK["cur"] = eid
+            v = _vk_verdict(h)
+            _VK_CHECK["cur"] = ""
+            _vk_note(eid, url, v)
+            if v == "dead":
+                dead.append((eid, url))
+            elif v in ("limited", "neterr"):
+                state = "limited" if v == "limited" else "failed"
+                break
+    finally:
+        _VK_CHECK["cur"] = ""
+        with _api_lock:
+            ps = deps.get("panel_settings") or {}
+            marked = sum(1 for eid, url in dead if _vk_mark(ps, eid, url, True))
+            if marked:
+                ps["vk_pool_rev"] = int(ps.get("vk_pool_rev") or 0) + 1
+            ps["vk_check"] = {"at": int(time.time()), "state": state}
+            _vk_check_save(deps, ps, roster_path, marked)
+        _VK_CHECK["running"] = False
+        _invalidate_state_cache()
+    log(LOG_INFO, "VK link check: %d asked, %d marked dead, %s", len(todo), len(dead), state)
+
+
+def _vk_check_one(deps, e):
+    """A row's Check: any link, dead included. Dead on a live link marks it (its holders moved in the same save);
+    alive on a link the CHECK marked dead revives it; one the operator marked dead stays theirs. The rest changes
+    nothing. Called WITHOUT _api_lock (see _SELF_LOCKING_POST)."""
+    h = _wdtt_vk_hash(e["url"])
+    v = _vk_verdict(h) if _VK_HASH_RE.fullmatch(h) else "unknown"
+    _vk_note(e["id"], e["url"], v)
+    out = {"verdict": v, "moved": 0, "revived": False, "operator_dead": False, "was_dead": e["dead"]}
+    if v in ("alive", "dead"):
+        with _api_lock:
+            ps = deps.get("panel_settings") or {}
+            if _vk_mark(ps, e["id"], e["url"], v == "dead"):
+                ps["vk_pool_rev"] = int(ps.get("vk_pool_rev") or 0) + 1
+                out["moved"] = _vk_check_save(deps, ps, deps["roster_path"], 1 if v == "dead" else 0)
+                out["revived"] = v == "alive"
+            elif v == "alive" and e["dead"]:
+                out["operator_dead"] = e.get("dead_by") != "check"
+        _invalidate_state_cache()
+    return out
+
+
+def _vk_check_loop(deps):
+    """The checker thread. Idle, it looks every VK_CHECK_TICK whether an automatic run is due — switched on, a live
+    link, VK_CHECK_EVERY past the last finished run (at once when that is already past) — and wakes at once for
+    "Check all". An empty pool or the switch off asks VK nothing and writes nothing."""
+    wait = VK_CHECK_SETTLE                            # the first automatic run waits for the start to settle; "Check all" never does
+    while True:
+        try:
+            manual = _VK_CHECK["kick"].wait(wait)
+            wait = VK_CHECK_TICK
+            _VK_CHECK["kick"].clear()
+            ps = deps.get("panel_settings") or {}
+            last = ps.get("vk_check") if isinstance(ps.get("vk_check"), dict) else {}
+            due = (ps.get("vk_check_auto") is not False and time.time() >= int(last.get("at") or 0) + VK_CHECK_EVERY
+                   and _vk_pool_live(ps))
+            if manual or due:
+                _vk_check_run(deps, manual)
+        except Exception as ex:                       # the thread must outlive any one bad run
+            _VK_CHECK["running"] = False
+            log(LOG_WARNING, "VK link check: %s", ex)
+            time.sleep(VK_CHECK_TICK)
 
 
 def _norm_vk_links(fields, u):
@@ -3932,10 +4202,10 @@ def _norm_vk_links(fields, u):
     links = fields.get("vk_links", prev)
     if not isinstance(links, list):
         links = []
-    links = [s for s in (str(x).strip()[:512] for x in links) if s][:16]   # cleaned, non-empty, capped
+    links = [s for s in (_vk_link_norm(x)[:512] for x in links) if s][:16]   # cleaned (a bare hash → its link), non-empty, capped
     seen = set(); links = [x for x in links if not (x in seen or seen.add(x))]   # dedupe, keep order
     if "vk_link" in fields:                                          # legacy single-field save → make it the primary
-        vk = str(fields.get("vk_link") or "").strip()[:512]
+        vk = _vk_link_norm(fields.get("vk_link"))[:512]
         links = ([vk] + [x for x in links if x != vk]) if vk else links
     # ⚠️ PRUNE THE PROVENANCE MAP TOO. Deleting a pool-sourced link by hand in Manage must also forget WHERE
     # it came from, or the next pool edit would helpfully put it back.
@@ -18592,6 +18862,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "top_talkers": 10,        # Overview: rows in the Top talkers list (1–50)
     "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
     "vk_pool_per_user": VK_POOL_PER_USER_DEFAULT,   # Turn → VK pool: links a NEW user is handed (0–16; POST /api/vk-pool/per-user)
+    "vk_check_auto": True,    # Turn → VK pool: ask VK about every live link every VK_CHECK_EVERY (POST /api/vk-pool/check-auto)
     "expiry_warn_days": 3,    # Display: warn "about to expire" this many days before a subscription/peer expiry (0–365)
     "time_zone": "",          # Display → Data: the zone days are counted in ("" = this server's own; see tz_apply)
     "infinite_history": True,   # Display → Data: keep the ledger's detail (fine files) for ever; off: 33 days. Day rows always stay
@@ -25671,7 +25942,7 @@ def api(method, path, qs, body, deps):
             "exit_pass_keep": EXIT_PASS_KEEP,
             "configs_plaintext": count_plaintext_configs(config_dir),   # LEGACY plaintext files still on disk → drives the migration prompt
             "versions": VERSIONS,
-            "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps),
+            "panel_settings": {**_vk_poll_view(panel_settings), "api": _api_public_view(deps), "access": _access_public_view(deps),
                                "mesh_effective": mesh_mode_effective(deps, nodes),   # the mode in force (auto resolved here, never in the browser)
                                "mesh_auto_max": MESH_AUTO_FULL_MAX,
                                "time_zone_now": tz_view(),   # the zone days are counted in NOW (a stored one can be lost)
@@ -28546,9 +28817,9 @@ def api(method, path, qs, body, deps):
         if "name" in fields and not fields["name"]:
             return 400, {"ok": False, "error": "name cannot be empty", "code": "bad_request"}
         if "vk_link" in fields:                              # per-user VK call link baked into their turn-proxy configs
-            vk = str(fields.get("vk_link") or "").strip()[:512]
+            vk = _vk_link_norm(fields.get("vk_link"))[:512]   # a bare hash → its link
             if vk and not _VK_CALL_RE.match(vk):
-                return 400, {"ok": False, "error": "Not a valid VK call link — expected https://vk.ru/call/join/…", "code": "bad_request"}
+                return 400, {"ok": False, **perr("Not a VK call link or its hash — expected https://vk.ru/call/join/…"), "code": "bad_request"}
             fields["vk_link"] = vk
         if "vk_links" in body:                               # the FULL ordered set of a user's VK call links (index 0 = primary)
             raw = body.get("vk_links")
@@ -28556,11 +28827,11 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": "vk_links must be a list", "code": "bad_request"}
             links = []
             for item in raw:
-                s = str(item or "").strip()[:512]
+                s = _vk_link_norm(item)[:512]                # a bare hash → its link
                 if not s:
                     continue
                 if not _VK_CALL_RE.match(s):
-                    return 400, {"ok": False, "error": "Not a valid VK call link — expected https://vk.ru/call/join/…", "code": "bad_request"}
+                    return 400, {"ok": False, **perr("Not a VK call link or its hash — expected https://vk.ru/call/join/…"), "code": "bad_request"}
                 links.append(s)
             fields["vk_links"] = links
         if "expiry" in body:                                 # subscription-wide expiry date (epoch secs; 0/"" clears it)
@@ -29710,27 +29981,30 @@ def api(method, path, qs, body, deps):
         raw = body.get("pool")
         if not isinstance(raw, list):
             return 400, {"ok": False, "error": "pool must be a list", "code": "bad_request"}
-        if len(raw) > VK_POOL_MAX:
-            return 400, {"ok": False, **perr("The pool holds at most {v1} links.", v1=str(VK_POOL_MAX)), "code": "bad_request"}
+        ps = deps.get("panel_settings") or {}
+        # `dead_by` is never taken from the body: an entry keeps the check's mark while it stays dead under the same
+        # URL, and loses it when the operator un-marks or edits it. Otherwise the editor's next save would turn every
+        # check-dead link into an operator-dead one (and a row check could no longer revive it), and a link the
+        # operator marks dead would read as the check's.
+        was = {e["id"]: e for e in _vk_pool_list(ps)}
         pool, seen_url, seen_hash = [], set(), set()
         for e in raw:
             if not isinstance(e, dict):
                 continue
-            url = str(e.get("url") or "").strip()[:VK_LINK_MAXLEN]
+            url = _vk_link_norm(e.get("url"))[:VK_LINK_MAXLEN]
             if not url:
                 continue
-            # ⚠️ VALIDATED BY SHAPE, NEVER BY FETCHING. A bogus call hash returns HTTP 200 and the same page
-            # as a real one, so the panel cannot tell alive from dead — see the note on the pool model. What
-            # it CAN check is that the hash is well formed and not already in the pool under another URL.
+            # Validated by shape here; whether VK still knows the call is the alive check's job (_vk_check_run).
             h = _wdtt_vk_hash(url)
             if not h or len(h) < _CSQTT_VK_MINLEN or any(c.isspace() for c in h) or "," in h:
-                return 400, {"ok": False, **perr("{v1} doesn't look like a VK call link.", v1=url[:80]), "code": "bad_request"}
+                return 400, {"ok": False, **perr("{v1} isn't a VK call link or its hash.", v1=url[:80]), "code": "bad_request"}
             if url in seen_url or h in seen_hash:
                 return 400, {"ok": False, **perr("{v1} is already in the pool.", v1=url[:80]), "code": "bad_request"}
             seen_url.add(url); seen_hash.add(h)
-            pool.append({"id": (str(e.get("id") or "").strip() or gen_id()), "url": url,
-                         "dead": bool(e.get("dead")), "added": int(e.get("added") or 0) or now()})
-        ps = deps.get("panel_settings") or {}
+            eid, dead = (str(e.get("id") or "").strip() or gen_id()), bool(e.get("dead"))
+            prev = was.get(eid) or {}
+            pool.append({"id": eid, "url": url, "dead": dead, "added": int(e.get("added") or 0) or now(),
+                         **({"dead_by": "check"} if dead and prev.get("dead_by") == "check" and prev.get("url") == url else {})})
         # ⚠️ LOST-UPDATE GUARD. The editor holds the whole pool and saves it back, so a second operator (or a
         # second tab) saving from a snapshot taken before someone marked a link dead would quietly un-kill it
         # and put it back in circulation — the exact failure this feature exists to prevent, arriving silently.
@@ -29757,6 +30031,48 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "settings", "", "VK pool changed", "", "reassigned %d user(s)" % moved,
                       detail_key="reassigned {count}", detail_vars={"count": {"n": moved, "noun": "user"}})
         return 200, {"ok": True, "data": {"pool": pool, "rev": ps["vk_pool_rev"], "reassigned": moved}}
+
+    if method == "GET" and path == "/api/vk-pool":
+        # The pool editor's own read — the poll carries only vk_pool_rev + vk_pool_live. Console only: the node door
+        # is an allowlist (NODE_DOOR_GET) and this is not on it.
+        ps = deps.get("panel_settings") or {}
+        return 200, {"ok": True, "data": {"pool": _vk_pool_list(ps), "rev": int(ps.get("vk_pool_rev") or 0),
+                                          **_vk_res_view(ps)}}
+
+    if method == "GET" and path == "/api/vk-pool/results":
+        # The check's answers alone, for an editor following a run (vk_check.seq moves on each one).
+        return 200, {"ok": True, "data": _vk_res_view(deps.get("panel_settings") or {})}
+
+    if method == "POST" and path == "/api/vk-pool/check":
+        # ⚠️ RUNS WITHOUT _api_lock (_SELF_LOCKING_POST): a row check waits seconds on VK, and every sync would 503
+        # meanwhile. It takes the lock itself, only to read the entry and to write the answer.
+        eid = str(body.get("id") or "").strip()
+        if not eid:                                  # "Check all": hand it to the checker thread and return
+            if _VK_CHECK["running"]:
+                return 200, {"ok": True, "data": {"started": False, "running": True}}
+            if not _vk_pool_live(deps.get("panel_settings") or {}):
+                return 200, {"ok": True, "data": {"started": False, "running": False}}
+            _VK_CHECK["kick"].set()
+            return 200, {"ok": True, "data": {"started": True}}
+        with _api_lock:
+            e = next((x for x in _vk_pool_list(deps.get("panel_settings") or {}) if x["id"] == eid), None)
+        if not e:
+            return 404, {"ok": False, **perr("That link is no longer in the pool."), "code": "not_found"}
+        return 200, {"ok": True, "data": _vk_check_one(deps, e)}
+
+    if method == "POST" and path == "/api/vk-pool/check-auto":
+        # The every-6-hours switch. Its own endpoint, like vk_pool_per_user: it saves on its own.
+        on = body.get("on")
+        if not isinstance(on, bool):
+            return 400, {"ok": False, "error": "on must be true or false", "code": "bad_request"}
+        ps = deps.get("panel_settings") or {}
+        was = ps.get("vk_check_auto") is not False
+        ps["vk_check_auto"] = on
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+        if on != was:
+            ev_append(roster_path, "settings", "", "Turned the VK link check on" if on else "Turned the VK link check off", "")
+        return 200, {"ok": True, "data": {"vk_check_auto": on}}
 
     if method == "POST" and path == "/api/vk-pool/per-user":
         # How many pool links a NEW user gets. Its own endpoint for the same reason the pool has one: it saves on
@@ -36283,7 +36599,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/logs/range", "/api/logs/range/make", "/api/logs/range/close"):   # a range download: the same
             return self._send(*range_api_post(path, bodyobj, self.deps))
         try:
-            if path in _LOCKLESS_POST:            # read-only, network-bound → never holds the lock (see _LOCKLESS_POST)
+            if path in _LOCKLESS_POST or path in _SELF_LOCKING_POST:   # network-bound → never waits holding the lock (see both)
                 code, obj = api("POST", path, {}, bodyobj, self.deps)
             else:
                 with _api_lock:                   # mutations are read-modify-write; serialize them
@@ -38014,6 +38330,7 @@ def main():
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     threading.Thread(target=_turn_warm_assets_loop, args=(Handler.deps,), daemon=True).start()   # resolve latest per-OS client download assets → serve.json
     threading.Thread(target=_node_watch_loop, args=(Handler.deps,), daemon=True).start()   # node online/offline → webhooks
+    threading.Thread(target=_vk_check_loop, args=(Handler.deps,), name="vk-check", daemon=True).start()   # the VK pool's alive check
     threading.Thread(target=_catalog_refresh_loop, daemon=True).start()
     _raise_fd_limit()
     threading.Thread(target=_fd_watchdog_loop, daemon=True).start()   # name the fd hog BEFORE the wall, not after   # keep the routing catalog warm OFF the node-sync request path

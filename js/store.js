@@ -131,6 +131,10 @@ export const api = {
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev }); },     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
   vkPoolPerUser(n) { return this.post("/api/vk-pool/per-user", { n }); },   // how many pool links a NEW user gets
+  vkPoolGet() { return this.get("/api/vk-pool"); },                        // the pool itself + the check's answers (the poll carries only its rev and a live count)
+  vkPoolResults() { return this.get("/api/vk-pool/results"); },            // the check's answers alone, while a run is going
+  vkCheck(id) { return this.post("/api/vk-pool/check", id ? { id } : {}); },   // ask VK about one link (any, dead included), or start "Check all"
+  vkCheckAuto(on) { return this.post("/api/vk-pool/check-auto", { on }); },    // the every-6-hours switch
   userVkPoolAdd(id) { return this.post("/api/user/vk-pool-add", { id }); },  // give this user one more link from the pool
   subVault() { return this.get("/api/sub/vault"); },
   subVaultSet(b) { return this.post("/api/sub/vault", b); },

@@ -4485,6 +4485,41 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .vkpool-tot .vkpool-dot{color:var(--faint)}
 .vkpool-tot .vk-dead-n{color:#e0a85f}
 
+/* ── VK pool: the alive check ─────────────────────────────────────────────────────────────────────────── */
+/* One line above the totals: what the last run found on the left, the switch and "Check all" on the right. It
+   wraps on a phone with the status on a line of its own, so neither half is squeezed. */
+.vkcheck{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:4px 0 12px;padding:6px 8px 6px 11px;
+  border-radius:8px;background:color-mix(in srgb,var(--line) 26%,transparent);font-size:12px}
+.vkcheck .grow{flex:1}
+.vkcheck-st{display:inline-flex;align-items:center;gap:6px;color:var(--ink-2);min-width:0}
+.vkcheck-st .ic{flex:none;color:var(--online)}
+.vkcheck-st.run .ic{color:var(--ready)}
+.vkcheck-st.warn{color:#b5741a}
+.vkcheck-st.warn .ic{color:#e0a85f}
+:root[data-theme="dark"] .vkcheck-st.warn{color:#e0a85f}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .vkcheck-st.warn{color:#e0a85f}}
+.vkcheck-auto{display:inline-flex;align-items:center;gap:8px;color:var(--ink-2);cursor:pointer;white-space:nowrap}
+/* A link the CHECK took out of circulation, told apart from one the operator retired: the same grey row, with the
+   pool's dead amber on its border and mark, and VK's own word in the field. */
+.vkpool-row.vkgone .vkbox{border-color:color-mix(in srgb,#e0a85f 55%,var(--line-solid))}
+.vkpool-row.vkgone .vkbox > .ic{color:#e0a85f}
+.vkpool-gone{flex:none;margin-left:6px;font-size:11px;color:#b5741a;white-space:nowrap}
+:root[data-theme="dark"] .vkpool-gone{color:#e0a85f}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .vkpool-gone{color:#e0a85f}}
+/* VK's answer is the Check button's COLOUR (the pulse itself never changes), with the light tint the holder count
+   wears so it reads at a glance: blue asking, green alive, red dead, orange no clear answer, amber gone for good. */
+.vkpool-chk{flex:none}
+.vkpool-chk[class*=" t-"]{background:color-mix(in srgb,currentColor 13%,transparent)}
+.vkpool-chk.t-busy{color:var(--ready);opacity:1}
+.vkpool-chk.t-alive{color:var(--online)}
+.vkpool-chk.t-dead{color:var(--dangling)}
+.vkpool-chk.t-unknown{color:var(--fault)}
+.vkpool-chk.t-gone{color:#e0a85f}
+@media (max-width:560px){
+  .vkcheck .grow{flex-basis:100%;height:0}
+  .vkpool-gone{display:none}               /* no room beside the link on a phone — the amber mark and the title say it */
+}
+
 /* The retype phrase, made takeable: click the word or the mark to copy it. Reads as text, behaves as a button. */
 .ctype-copy{display:inline-flex;align-items:center;gap:5px;padding:1px 5px;margin:0 1px;border:0;border-radius:5px;
   background:color-mix(in srgb,var(--brand) 10%,transparent);color:inherit;font:inherit;cursor:pointer;vertical-align:baseline}

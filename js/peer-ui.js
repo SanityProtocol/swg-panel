@@ -305,8 +305,11 @@ export function targetsWantVk(targets) {
   return (targets || []).some(isSelfContainedTgt);
 }
 export const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
-// let the operator paste a VK link with or without the scheme — add https:// when it's missing
-export function normVkLink(s) { s = (s || "").trim(); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
+// let the operator paste a VK link with or without the scheme — add https:// when it's missing — or its bare hash.
+// The browser twin of the server's _vk_link_norm (tests/cross_language_twins_selftest.py): same rule, same link.
+export const VK_JOIN_URL = "https://vk.ru/call/join/";
+export function normVkLink(s) { s = (s || "").trim(); if (/^[A-Za-z0-9_-]{16,}$/.test(s)) return VK_JOIN_URL + s;
+  return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
 // Per-user VK call link, editable inline from the QR modals. Shown only when the user has a peer behind a
 // turn-proxy. Empty → amber border + a hint (the panel falls back to the test link; the subscription page won't).
 // Saves on blur / Enter; re-renders turn configs with the new link.
@@ -347,7 +350,7 @@ export function VkLinkField({ user }) {
     <div class="vkfield-row">
       <div class="vkbox">
         <${Ic} i="link"/>
-        <input class="vkbox-input" data-noautofocus value=${val} placeholder=${T("vk.ru/call/join/…")} disabled=${busy}
+        <input class="vkbox-input" data-noautofocus value=${val} placeholder=${T("A hash, or vk.ru/call/join/…")} disabled=${busy}
           onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); add(); } }}/>
       </div>
       <span class="fieldbtns">
@@ -357,7 +360,7 @@ export function VkLinkField({ user }) {
         <button class="btn btn-ghost btn-mini fbtn" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage all of this user's VK call links (add more, set primary)")}>${T("Manage")}${(lu.vk_links && lu.vk_links.length > 1) ? ` (${lu.vk_links.length})` : ""}</button>
       </span>
     </div>
-    ${invalid ? html`<div class="hint err">${T("Expected a VK call link like")} <span class="mono">https://vk.ru/call/join/…</span></div>`
+    ${invalid ? html`<div class="hint err">${T("Expected a VK call link or its hash, like")} <span class="mono">https://vk.ru/call/join/…</span></div>`
       : empty ? html`<div class="hint vk-warn">${noVkLinks()}${subd ? html` ${noVkSubbed()}` : ""}</div>` : null}
   </div>`;
 }
@@ -382,8 +385,9 @@ export function VkLinksSheet({ user }) {
     setPrimary(p => (i === p ? 0 : i < p ? p - 1 : p)); };
   const norm = rows.map(r => normVkLink(r.url));                       // add https:// where missing
   const bad = norm.some(u => u && !_VK_CALL_RE.test(u));
-  const poolLeft = ((Store.panelSettings || {}).vk_pool || [])
-    .filter(e => e && e.url && !e.dead && !norm.includes(e.url)).length;   // links this user could still be given
+  // Links this user could still be given: the live count the poll carries, less the pool links still in this sheet.
+  // Exact, because the cascade never leaves anyone holding a dead pool link. (The pool itself is not in the poll.)
+  const poolLeft = Math.max(0, ((Store.panelSettings || {}).vk_pool_live || 0) - norm.filter(u => u && poolUrls.has(u)).length);
   // The pick happens on the server (it holds the pool and excludes what they already have). Unsaved edits in
   // this sheet would be lost by the round trip, so save them first when there are any.
   const addFromPool = async () => {
@@ -400,7 +404,7 @@ export function VkLinksSheet({ user }) {
   const dirty = JSON.stringify(norm.filter(Boolean)) !== JSON.stringify(start);
   const persist = async (close) => {
     const clean = norm.filter(Boolean);
-    if (clean.some(u => !_VK_CALL_RE.test(u))) { toast(T("One of the links isn't a valid VK call link."), "err"); return false; }
+    if (clean.some(u => !_VK_CALL_RE.test(u))) { toast(T("One of the links isn't a VK call link or its hash."), "err"); return false; }
     const uniq = [...new Set(clean)];
     const primUrl = norm[primary];                                    // move the chosen primary to the front
     const ordered = primUrl && uniq.includes(primUrl) ? [primUrl, ...uniq.filter(u => u !== primUrl)] : uniq;
@@ -433,7 +437,7 @@ export function VkLinksSheet({ user }) {
             ${/* A pool link is the POOL's to edit: retyping it here would silently detach this user from the
                   pool entry, and the next edit or mark-dead would no longer reach them. Read-only, and the
                   tooltip says where to change it. Personal links stay fully editable. */ ""}
-            <input class="vkbox-input" value=${r.url} placeholder=${T("vk.ru/call/join/…")}
+            <input class="vkbox-input" value=${r.url} placeholder=${T("A hash, or vk.ru/call/join/…")}
               readOnly=${fromPool(r.url)}
               title=${fromPool(r.url) ? T("From the shared pool — change it in Settings → Turn proxies, or remove it here") : ""}
               onInput=${e => setUrl(i, e.target.value)}/>
@@ -441,7 +445,7 @@ export function VkLinksSheet({ user }) {
           <button class="iconbtn" title=${T("Remove this link")} onClick=${() => delRow(i)}><${Ic} i="trash"/></button>
         </div>`; })}
     </div>
-    ${bad ? html`<div class="hint err">${T("Every link must look like")} <span class="mono">https://vk.ru/call/join/…</span></div>` : null}
+    ${bad ? html`<div class="hint err">${T("Every link must be a VK call link or its hash, like")} <span class="mono">https://vk.ru/call/join/…</span></div>` : null}
     ${/* Apps genuinely differ — the vkturnproxy link carries every link, the wdtt:// one takes 4 and csqtt 6,
           and single-link apps take only the primary. So this says the ORDER matters rather than naming a cap
           that would be wrong for half the fleet. Only shown once a user holds more than the tightest cap. */ ""}

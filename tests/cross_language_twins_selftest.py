@@ -20,6 +20,7 @@ the direction to the other half had rotted, which is how a twin stops being main
 Run: python3 tests/cross_language_twins_selftest.py      (0 = pass)
      --perturb           nudges pairs [1] and [2] out of step and expects RED.
      --perturb-kinds     drops `socks5` from the SPA's EXIT_KINDS and expects RED in [4] alone.
+     --perturb-vkhash    lets the browser take a 15-character VK hash and expects RED in [5] alone.
      --perturb-awg <n>   drops one key from AmneziaWG key list <n> (0-5, see [3]; 6 = swg-sub's 3.x tail) and expects RED
                          in [3] alone. Without <n>, each of the seven in turn (a bare flag died on an IndexError, which a
                          sweep of every --perturb* reads as a perturbation that never ran).
@@ -30,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_KINDS = "--perturb-kinds" in sys.argv
+PERTURB_VKHASH = "--perturb-vkhash" in sys.argv
 _AWG_ARG = sys.argv[sys.argv.index("--perturb-awg") + 1:][:1] if "--perturb-awg" in sys.argv else None
 if _AWG_ARG is not None and not (_AWG_ARG and _AWG_ARG[0].isdigit()):
     import subprocess
@@ -147,7 +149,42 @@ if PERTURB_KINDS:
     _sk = [k for k in _sk if k != "socks5"]
 check("panel EXIT_PROVIDERS == noded EXIT_KINDS == SPA EXIT_KINDS", list(_pk) == list(_nk) == list(_sk), (_pk, _nk, _sk))
 
+print("\n[5] a bare VK call hash → its link — the panel's _vk_link_norm and the browser's normVkLink (S12b)")
+# The pool, a user's QR-modal field and their Manage sheet take a hash on its own. The browser turns it into the link
+# before it validates and sends; the server does the same for whatever reaches the API. If the two disagree on what a
+# hash IS, a field the browser accepts is refused on save, or one shape is stored for some links and another for others.
+import json as _json, subprocess as _sp
+_minlen = one("swg-panel-server", r"^_CSQTT_VK_MAX, _CSQTT_VK_MINLEN, _CSQTT_VK_MAXLEN = \d+, (\d+), \d+$", "_CSQTT_VK_MINLEN")
+_pyre = one("swg-panel-server", r'^_VK_HASH_RE = re\.compile\(r"(\[A-Za-z0-9_-\]\{)%d,\}" % _CSQTT_VK_MINLEN\)$', "_VK_HASH_RE")
+_pyjoin = one("swg-panel-server", r'^VK_JOIN_URL = "([^"]+)"$', "VK_JOIN_URL")
+_pyfn = one("swg-panel-server", r"^(def _vk_link_norm\(s\):\n(?:    .*\n)+)", "_vk_link_norm")
+_ns = {"re": re, "VK_JOIN_URL": _pyjoin, "_VK_HASH_RE": re.compile(_pyre + _minlen + ",}")}
+exec(_pyfn, _ns)
+_jsjoin = one("js/peer-ui.js", r'^export const VK_JOIN_URL = "([^"]+)";$', "VK_JOIN_URL")
+_jsfn = one("js/peer-ui.js", r"^export (function normVkLink\(s\) \{.*\n.*\}\s*)$", "normVkLink")
+if PERTURB_VKHASH:
+    assert _jsfn.count("{16,}") == 1, "perturbation anchor missing ({16,}) — this run would FALSE-PASS"
+    _jsfn = _jsfn.replace("{16,}", "{15,}")
+_vec = ["A" * 16, "A" * 15, "  aB3_-xY9zQ8wE7rT6  ", "aB3_-xY9zQ8wE7rT6uI5oP4", "a" * 300, "abc def ghi jkl mno",
+        "ééééééééééééééééé", "aaaaaaaaaaaaaaa,b", "https://vk.ru/call/join/aB3_-xY9zQ8wE7rT6", "https://vk.com/call/join/QQQQQQQQQQQQQQQQ?x=1", ""]
+_js = _sp.run(["node", "-e", "const VK_JOIN_URL = %s;\n%s\nconsole.log(JSON.stringify(%s.map(normVkLink)))"
+               % (_json.dumps(_jsjoin), _jsfn, _json.dumps(_vec))], capture_output=True, text=True)
+_jo = _json.loads(_js.stdout or "null") if _js.returncode == 0 else None
+check("the browser twin ran", isinstance(_jo, list) and len(_jo) == len(_vec), _js.stderr[-300:])
+_po = [_ns["_vk_link_norm"](x) for x in _vec]
+check("both turn a hash into the same link", _pyjoin == _jsjoin == "https://vk.ru/call/join/", (_pyjoin, _jsjoin))
+if isinstance(_jo, list):
+    for x, p, j in zip(_vec, _po, _jo):
+        is_link = lambda v: v.startswith(_pyjoin) and v[len(_pyjoin):] == x.strip()
+        check("…and agree on %r" % (x[:24],), is_link(p) == is_link(j) and (not is_link(p) or p == j)
+              and (not x.strip().startswith("https://") or p == j), "panel=%r browser=%r" % (p[:60], j[:60]))
+
 print()
+if PERTURB_VKHASH:
+    _red = [f for f in FAILS if "agree" in f]
+    print("PERTURB OK — %s went red" % _red if _red and len(_red) == len(FAILS)
+          else "PERTURB FAILED — the browser took a 15-character hash and [5] stayed green (or something else went red: %s)" % FAILS)
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_KINDS:
     _red = [f for f in FAILS if "EXIT_KINDS" in f]
     print("PERTURB OK — %s went red" % _red if _red and len(_red) == len(FAILS)
