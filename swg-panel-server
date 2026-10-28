@@ -14455,10 +14455,11 @@ def _host_listen(snap):
     return {p for p in ((snap or {}).get("udp_listen") or ()) if isinstance(p, int)}
 
 def _port_conflict(deps, nodes, nid, port, own=(), me=None):
-    """Label of whoever already binds `port` on the node, or None. `own` = the port(s) the edited entity's RECORD holds:
-    tolerated by number, before anything else (a stored record stays savable) — so never pass a REPORTED port here, it may
-    be stale and another holder's. `me` = the edited holder's identity (see _node_ports): every other port is judged
-    against every holder BUT it, so a port the node reports it on is not a clash with itself."""
+    """Label of whoever already binds `port` on the node, or None. `own` = the port(s) the edited entity holds now — its
+    record's and the one the node reports it listening on: tolerated by number, before anything else, so an unchanged save
+    stays savable whatever else shares the port. Never a port it held BEFORE (a turn-proxy's service-name port after a
+    move): that one may be another holder's since. `me` = the edited holder's identity (see _node_ports): every other port
+    is judged against every holder BUT it, so a port the node reports it on is not a clash with itself."""
     try:
         port = int(str(port).strip())
     except (TypeError, ValueError):
@@ -29952,8 +29953,8 @@ def api(method, path, qs, body, deps):
                 rc = reserved_conflict(deps, nodes, nodes[nid], port=p, keep=_own + [ov.get("listen_port")])
                 if rc:
                     return 400, {"ok": False, "error": rc, "code": "bad_request"}
-                _pc = _port_conflict(deps, nodes, nid, p, own=[ov.get("desired_port"), ov.get("listen_port")],   # (the record's own;
-                                     me=("iface", iface))   # what it reports, by identity) — not already bound by another holder on this node
+                _pc = _port_conflict(deps, nodes, nid, p, own=_own + [ov.get("listen_port")],   # (its record's and where it listens now;
+                                     me=("iface", iface))   # its other claims by identity) — not already bound by another holder
                 if _pc:
                     return 400, {"ok": False, **perr("port {v1} is already used by {v2} on this node — pick another port", v1=p, v2=_pc), "code": "bad_request"}
                 ov["listen_port"] = p
@@ -30732,7 +30733,9 @@ def api(method, path, qs, body, deps):
                         _np = body["listen"].strip().rsplit(":", 1)[1]
                         _cp = svc.rsplit("-", 1)[-1]   # this proxy's current port (from its service name)…
                         _ownt = [_cp, _port_of(turn_listen_now(deps, nid, svc))]   # …and where it listens now (an earlier move)
-                        _lc = _port_conflict(deps, nodes, nid, _np, me=("turn", svc))   # its own claims by identity: no number exempt
+                        # `own` = where it listens NOW (an unchanged re-send stays savable, as before) — never the service-name
+                        # port: after a move that one may be another holder's (review F1); its other claims by identity
+                        _lc = _port_conflict(deps, nodes, nid, _np, own=[_port_of(turn_listen_now(deps, nid, svc))], me=("turn", svc))
                         _pr = p2p_pool_refusal(_np, keep=_ownt)
                         if _pr:
                             return 400, {"ok": False, "error": _pr, "code": "bad_request"}

@@ -126,6 +126,9 @@ PLANTS = {   # name: (file, old text, planted text)
     "pool-dialin":   ("panel", '        if (_pr := p2p_pool_refusal(port)):                   # (a kept exit', '        if (_pr := None):                   # (a kept exit'),
     "pool-nokeep2":  ("panel", '        if P2P_PORT_POOL[0] <= p <= P2P_PORT_POOL[1] and str(p) not in {str(k).strip() for k in keep if k is not None}:',
                       '        if P2P_PORT_POOL[0] <= p <= P2P_PORT_POOL[1]:'),
+    "turn-cpown":    ("panel", 'own=[_port_of(turn_listen_now(deps, nid, svc))], me=("turn", svc))', 'own=[_cp], me=("turn", svc))'),
+    "turn-nownow":   ("panel", 'own=[_port_of(turn_listen_now(deps, nid, svc))], me=("turn", svc))', 'own=[], me=("turn", svc))'),
+    "iface-nownow":  ("panel", 'own=_own + [ov.get("listen_port")],   # (its record', 'own=[ov.get("desired_port"), ov.get("listen_port")],   # (its record'),
     "pool-open":     ("panel", "        return p2p_pool_refusal(port, keep)\n    return None", "        return None\n    return None"),
     "sub-taken":     ("sub", ' or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):', ':'),
     "sub-takenjunk": ("sub", 'port in (e.get("taken") if isinstance(e.get("taken"), list) else ())', 'port in (e.get("taken") or ())'),
@@ -633,6 +636,19 @@ def panel_checks(src, ok):
            "with itself refuses it (pool-doors F1 F6) (%s %s)" % (c, str(r)[:120]))
         c, r = req("/api/turn/manage", {"node": "n1", "service": TP["service"], "listen": "0.0.0.0:25500", "connect": TP["connect"]})
         ok(c == 400 and "20000–29999" in json.dumps(r, ensure_ascii=False), "[10] a proxy moved to a new pool port is refused (%s %s)" % (c, str(r)[:120]))
+        # port identity, by request (port-identity review F1 F3 F4 F5): a proxy moved :5100 → :25300 and an interface since on
+        # :5100 — moving the proxy back is a clash; a proxy and an interface on RAW-IP 56003 since before stay savable unchanged
+        TP2 = dict(TP, service="vk-turn-proxy-WINGS-N-5100", listen="0.0.0.0:25300")
+        TP3 = dict(TP, service="vk-turn-proxy-WINGS-N-56003", listen="0.0.0.0:56003")
+        sn = dict(snap1, generated_at=int(time.time()), turn_proxies=[TP, TP2, TP3],
+                  interfaces=dict(snap1["interfaces"], awg3={"peers": [], "meta": meta("10.33.0.0/24", 5100)}, wg9={"peers": [], "meta": meta("10.39.0.0/24", 56003)}))
+        req("/api/node/sync", {"snapshot": sn}, t1)
+        c, r = req("/api/turn/manage", {"node": "n1", "service": TP2["service"], "listen": "0.0.0.0:5100", "connect": TP2["connect"]})
+        ok(c == 400 and "awg3" in json.dumps(r), "[10] a proxy moved back onto its old port an interface took since is refused (%s %s)" % (c, str(r)[:120]))
+        c, r = req("/api/turn/manage", {"node": "n1", "service": TP3["service"], "listen": TP3["listen"], "connect": "127.0.0.1:51821"})
+        ok(c == 200, "[10] a proxy already on 56003 saves with its listen re-sent unchanged (%s %s)" % (c, str(r)[:120]))
+        c, r = req("/api/iface/update", {"node": "n1", "iface": "wg9", "listen_port": 56003, "dns": "1.1.1.1"})
+        ok(c == 200, "[10] an interface reported on 56003 with no port of its own saves with it re-sent (%s %s)" % (c, str(r)[:120]))
         # [10]
         c, r = req("/api/iface/create", {"node": "n1", "iface": "wg5", "subnet": "10.55.0.0/24", "listen_port": 20500})
         ok(c == 400 and "20000–29999" in json.dumps(r, ensure_ascii=False), "[10] a new interface on a pool port is refused (%s %s)" % (c, str(r)[:120]))
