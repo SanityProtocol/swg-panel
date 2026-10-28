@@ -514,8 +514,11 @@ function VkPoolEditor() {
       : html`<div class="vkpool-head"><${VkPoolTotals} P=${P}/></div>`}
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_INLINE, (pg + 1) * VK_PAGE_INLINE)}/>`
       : html`<div class="vkpool-empty">${!P.loaded ? T("Loading…") : (vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
-    ${/* _vk_user_sync drops a dead pool link from its holders even when nothing is left to replace it with. */ ""}
-    ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${T("No live links left — users have lost their pool links, and new users get none until you add a working one.")}</div>` : null}
+    ${/* _vk_user_sync drops a dead pool link from its holders even when nothing is left to replace it with, and a link
+          added later reaches only NEW users (vk_pool_per_user) — the others get it from "Add from pool" in their Manage. */ ""}
+    ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${vkPerUser()
+      ? T("No live links left — anyone who held a pool link has lost it. A working link you add goes to new users; give it to the others with Add from pool in their Manage view.")
+      : T("No live links left — anyone who held a pool link has lost it. Once you add a working link, give it to them with Add from pool in their Manage view.")}</div>` : null}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar">
       <${VkAddBtn} onClick=${() => setAddOpen(o => !o)}/>
