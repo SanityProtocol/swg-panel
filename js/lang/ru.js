@@ -666,7 +666,7 @@ export const STR = {
   "New users will get {v1}.": "Новые пользователи получат {v1}.",
   "Between 0 and {v1}.": "От 0 до {v1}.",
   "The same link is in the pool twice.": "Эта ссылка добавлена в пул дважды.",
-  "No live links left — users on a dead link will keep it until you add a working one.": "Живых ссылок не осталось — пока не добавите рабочую, пользователи останутся на мёртвой.",
+  "No live links left — users have lost their pool links, and new users get none until you add a working one.": "Живых ссылок не осталось — пользователи лишились ссылок из пула, а новые не получат ни одной, пока вы не добавите рабочую.",
   // ── time ──────────────────────────────────────────────────────────────────────────────────────
   // "just now" is a moment, not a duration: "только что" is the natural form.
   "just now": "только что",

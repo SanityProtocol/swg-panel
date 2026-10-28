@@ -514,7 +514,8 @@ function VkPoolEditor() {
       : html`<div class="vkpool-head"><${VkPoolTotals} P=${P}/></div>`}
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_INLINE, (pg + 1) * VK_PAGE_INLINE)}/>`
       : html`<div class="vkpool-empty">${!P.loaded ? T("Loading…") : (vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
-    ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${T("No live links left — users on a dead link will keep it until you add a working one.")}</div>` : null}
+    ${/* _vk_user_sync drops a dead pool link from its holders even when nothing is left to replace it with. */ ""}
+    ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${T("No live links left — users have lost their pool links, and new users get none until you add a working one.")}</div>` : null}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar">
       <${VkAddBtn} onClick=${() => setAddOpen(o => !o)}/>
