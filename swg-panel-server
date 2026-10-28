@@ -14466,7 +14466,8 @@ def _port_conflict(deps, nodes, nid, port, own=(), me=None):
                          another holder's since; none before the node reports it (the save is then judged in full)
       WDTT / csqtt save  its record's ports only — what the node reports is covered by `me`, never by number: a stale or
                          wrong report must not hide another holder or 56003 (pool-doors F17)
-      creates, installs  nothing of their own"""
+      interface create   its record's ports only when the node no longer reports it (a ghost recreate keeps its port)
+      turn-proxy install nothing of its own"""
     try:
         port = int(str(port).strip())
     except (TypeError, ValueError):
