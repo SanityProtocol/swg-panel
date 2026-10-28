@@ -14391,15 +14391,21 @@ def _dialin_ports(node):
     return out
 
 
-def _node_ports(deps, nodes, nid, skip_exits=False):
+def _node_ports(deps, nodes, nid, skip_exits=False, skip=None):
     """Every UDP port CLAIMED on a node → {port: holder-label}: wg/awg interfaces, turn-proxies, WDTT (DTLS listen +
     internal WG port), mesh links, and wg/awg servers in FOREIGN containers that publish a host port, from BOTH
     the live snapshot AND the desired store (so a just-created but not-yet-reported one still counts). The
-    single source of truth for port-collision checks on create/edit."""
+    single source of truth for port-collision checks on create/edit.
+    `skip` = the holder being edited, by IDENTITY — ("iface" | "turn" | "wdtt" | "csqtt", name): none of its ports count,
+    its record's or what the node reports. By identity, never by port number: a server whose report differs from its record
+    (a move not applied yet, a restore with no record) is not a clash with itself, and no port it names can hide another
+    holder's claim."""
     snap = (deps.get("node_snaps") or {}).get(nid) or {}
     node = nodes.get(nid) or {}
     out = {}
-    def add(p, label):
+    def add(p, label, who=None):
+        if who is not None and who == skip:
+            return
         try:
             p = int(str(p).strip())
         except (TypeError, ValueError):
@@ -14409,24 +14415,26 @@ def _node_ports(deps, nodes, nid, skip_exits=False):
         m = re.search(r":(\d+)$", str(v or ""))
         return m.group(1) if m else None
     for ifn, blk in (snap.get("interfaces") or {}).items():
-        add((blk.get("meta") or {}).get("listen_port"), ifn)
+        add((blk.get("meta") or {}).get("listen_port"), ifn, ("iface", ifn))
     for ifn, ov in (node.get("ifaces") or {}).items():
-        add(ov.get("desired_port") or ov.get("listen_port"), ifn)
+        add(ov.get("desired_port") or ov.get("listen_port"), ifn, ("iface", ifn))
     for tp in (snap.get("turn_proxies") or []):
-        add(tail(tp.get("listen")), tp.get("service") or "a turn-proxy")
+        add(tail(tp.get("listen")), tp.get("service") or "a turn-proxy", ("turn", tp.get("service")))
     for svc, req in (node.get("turn") or {}).items():
-        add(tail(req.get("listen")), svc)
+        add(tail(req.get("listen")), svc, ("turn", svc))
     for ifn, w in (node.get("wdtt") or {}).items():
-        add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn))
+        add(tail(w.get("listen")), ifn + " (WDTT)", ("wdtt", ifn))
+        add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn), ("wdtt", ifn))
     def ents(v):                                       # a list of objects, or an object of them keyed by iface (_snap_sanitise takes both)
         return [(e.get("iface") or (k if isinstance(v, dict) else "") or "", e)
                 for k, e in (v.items() if isinstance(v, dict) else enumerate(v or ())) if isinstance(e, dict)]
     for ifn, w in ents(snap.get("wdtt")):
-        add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn))
+        add(tail(w.get("listen")), ifn + " (WDTT)", ("wdtt", ifn))
+        add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn), ("wdtt", ifn))
     for ifn, c in (node.get("csqtt") or {}).items():   # csqtt binds ONE DTLS listen port (raw TUN, no internal WG port)
-        add(tail(c.get("listen")), ifn + " (csqtt)")
+        add(tail(c.get("listen")), ifn + " (csqtt)", ("csqtt", ifn))
     for ifn, c in ents(snap.get("csqtt")):
-        add(tail(c.get("listen")), ifn + " (csqtt)")
+        add(tail(c.get("listen")), ifn + " (csqtt)", ("csqtt", ifn))
     for lr in (node.get("links") or {}).values():
         add(lr.get("listen_port"), "a mesh link")
     for x in (snap.get("container_ifaces") or []):
@@ -14446,9 +14454,10 @@ def _host_listen(snap):
     older node sends none."""
     return {p for p in ((snap or {}).get("udp_listen") or ()) if isinstance(p, int)}
 
-def _port_conflict(deps, nodes, nid, port, own=()):
+def _port_conflict(deps, nodes, nid, port, own=(), me=None):
     """Label of whoever already binds `port` on the node, or None. `own` = the port(s) the edited entity already holds
-    (excluded, so keeping the same port isn't a false conflict)."""
+    (excluded, so keeping the same port isn't a false conflict). `me` = the edited holder's identity (see _node_ports):
+    every other port is judged against every holder BUT it — a reported port of its own is not a clash with itself."""
     try:
         port = int(str(port).strip())
     except (TypeError, ValueError):
@@ -14461,7 +14470,7 @@ def _port_conflict(deps, nodes, nid, port, own=()):
     # listener binds the wildcard address, so it blocks every IP, not just its own.
     if port == WDTT_RAW_PORT:
         return _wdtt_raw_holder(nodes, nid, "") or perr("RAW-IP (reserved)")   # a phrase: translated where it lands
-    return _node_ports(deps, nodes, nid).get(port)
+    return _node_ports(deps, nodes, nid, skip=me).get(port)
 
 
 def _alloc_port(used, base):
@@ -29942,7 +29951,7 @@ def api(method, path, qs, body, deps):
                 rc = reserved_conflict(deps, nodes, nodes[nid], port=p, keep=_own + [ov.get("listen_port")])
                 if rc:
                     return 400, {"ok": False, "error": rc, "code": "bad_request"}
-                _pc = _port_conflict(deps, nodes, nid, p, own=_own)   # not already bound by another interface / turn-proxy / WDTT / mesh link on this node
+                _pc = _port_conflict(deps, nodes, nid, p, own=_own, me=("iface", iface))   # not already bound by another interface / turn-proxy / WDTT / mesh link on this node
                 if _pc:
                     return 400, {"ok": False, **perr("port {v1} is already used by {v2} on this node — pick another port", v1=p, v2=_pc), "code": "bad_request"}
                 ov["listen_port"] = p
@@ -30721,7 +30730,7 @@ def api(method, path, qs, body, deps):
                         _np = body["listen"].strip().rsplit(":", 1)[1]
                         _cp = svc.rsplit("-", 1)[-1]   # this proxy's current port (from its service name)…
                         _ownt = [_cp, _port_of(turn_listen_now(deps, nid, svc))]   # …and where it listens now (an earlier move)
-                        _lc = _port_conflict(deps, nodes, nid, _np, own=_ownt)
+                        _lc = _port_conflict(deps, nodes, nid, _np, own=_ownt, me=("turn", svc))
                         _pr = p2p_pool_refusal(_np, keep=_ownt)
                         if _pr:
                             return 400, {"ok": False, "error": _pr, "code": "bad_request"}
@@ -30856,12 +30865,14 @@ def api(method, path, qs, body, deps):
         _wgp = inst.get("wg_port")
         if _dtls and _wgp and str(_dtls) == str(_wgp):
             return 400, {"ok": False, "error": "the DTLS listen port and the internal WG port must be different", "code": "bad_request"}
-        _ran = _running_ports(deps, nid, "wdtt", iface)           # kept by the POOL check only: a report may be stale or wrong,
-        for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):   # so the conflict check keeps the record's own
+        # What the node runs it on is its own (a restore, a move not applied yet): kept by the pool check; the conflict check
+        # leaves this server out by identity (`me`) — never by these numbers, which a stale report could make another's.
+        _ran = _running_ports(deps, nid, "wdtt", iface)
+        for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):
             if _p and (_pr := p2p_pool_refusal(_p, keep=_own + _ran)):
                 return 400, {"ok": False, "error": _pr, "code": "bad_request"}
             if _p:
-                _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
+                _lc = _port_conflict(deps, nodes, nid, _p, own=_own, me=("wdtt", iface))
                 if _lc:
                     return 400, {"ok": False, **perr("{v1} {v2} is already used by {v3} on this node — pick another port", v1=_lbl, v2=_p, v3=_lc), "code": "bad_request"}
         # ── RAW-IP listener (qWDTT only, opt-in) ──────────────────────────────────────────────────────
@@ -31213,10 +31224,10 @@ def api(method, path, qs, body, deps):
             _own.append(str(_cur["listen"]).rsplit(":", 1)[1])
         _wl = (inst.get("listen") or "").strip()
         _dtls = _wl.rsplit(":", 1)[1] if (":" in _wl) else None
-        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (the pool only, as WDTT)
+        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (as WDTT: the conflict check by identity)
             return 400, {"ok": False, "error": _pr, "code": "bad_request"}
         if _dtls:
-            _lc = _port_conflict(deps, nodes, nid, _dtls, own=_own)
+            _lc = _port_conflict(deps, nodes, nid, _dtls, own=_own, me=("csqtt", iface))
             if _lc:
                 return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=_dtls, v2=_lc), "code": "bad_request"}
         if "stopped" in body:
