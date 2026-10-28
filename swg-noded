@@ -8590,7 +8590,8 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None):
         res["errors"].append("p2p: " + str(e)[:120])
 
 P2PFWD_TABLE = "swg_p2pfwd"
-_P2PFWD = {"tbl": None, "report": {}}   # tbl: None = not yet looked · report: snapshot `p2p_fwd`, what is forwarded now
+P2PFWD_DRAIN_S = 86400   # a forward that ended keeps dropping its device's replies on flows still DNAT'd to it this long
+_P2PFWD = {"loaded": False, "report": {}, "rows": set(), "gone": {}}   # rows: (ip, port) in force · gone: (ip, port) → until
 
 
 def _p2p_fwd_take(fwd, mode, strict, groups):
@@ -8613,42 +8614,55 @@ def _p2p_fwd_take(fwd, mode, strict, groups):
     return keep
 
 
-def _p2pfwd_nft(rows, wan):
-    """`ip swg_p2pfwd` for rows [(device ip, port, address)] (P2P-OWN-ADDRESS §4.3). pre: address:port DNATs to the device,
-    before iptables/Docker's DNAT (-100). rep: the device's replies take the WAN (P2P_BIT → rule 6880 → main) — a
-    whole-interface forward's `from S lookup T` would carry them into the cascade. post: a flow from the device's port
-    leaves from the same port (before the egress SNAT at 100), so the port the swarm learns is the one forwarded."""
+def _p2pfwd_nft(rows, wan, gone=()):
+    """`ip swg_p2pfwd` for rows [(device ip, port, address)] (P2P-OWN-ADDRESS §4.3). pre: address:port DNATs to the device
+    AFTER iptables/Docker/remnanode's DNAT (-100/-101) — the first NAT binding wins, so a port something else already sends
+    on (a port-hopping REDIRECT, a published container) stays theirs. rep: the device's replies take the WAN (P2P_BIT →
+    rule 6880 → main) — a whole-interface forward's `from S lookup T` would carry them into the cascade. post: a flow from
+    the device's port leaves from the same port (before the egress SNAT at 100), so the port the swarm learns is the one
+    forwarded. `gone` [(ip, port)]: forwards that ended — the device's replies on a flow still DNAT'd to it are dropped, so
+    a switch to Block ends the connections already open too (no conntrack tool to flush them on a node); alone → the table
+    holds that drop only."""
     devs = ", ".join('"%s"' % d for d in wan)
-    return "\n".join([
-        "table ip %s {}" % P2PFWD_TABLE, "delete table ip %s" % P2PFWD_TABLE, "table ip %s {" % P2PFWD_TABLE,
-        "  map in { type ipv4_addr . inet_service : ipv4_addr; elements = { %s } }" % ", ".join("%s . %d : %s" % (a, p, ip) for ip, p, a in rows),
-        "  map out { type ipv4_addr . inet_service : ipv4_addr . inet_service; elements = { %s } }"
-        % ", ".join("%s . %d : %s . %d" % (ip, p, a, p) for ip, p, a in rows),
-        "  set fwds { typeof ip saddr; elements = { %s } }" % ", ".join(sorted({ip for ip, _, _ in rows})),
-        "  chain pre {", "    type nat hook prerouting priority dstnat - 5; policy accept;",
-        "    iifname { %s } meta l4proto { tcp, udp } dnat to ip daddr . th dport map @in" % devs, "  }",
-        "  chain rep {", "    type filter hook prerouting priority mangle + 6; policy accept;",
-        "    ct direction reply ct status dnat ip saddr @fwds meta mark set %#x" % P2P_BIT, "  }",
-        "  chain post {", "    type nat hook postrouting priority srcnat - 5; policy accept;",
-        "    oifname { %s } meta l4proto { tcp, udp } snat to ip saddr . th sport map @out" % devs, "  }", "}"]) + "\n"
+    L = ["table ip %s {}" % P2PFWD_TABLE, "delete table ip %s" % P2PFWD_TABLE, "table ip %s {" % P2PFWD_TABLE]
+    if rows:
+        L += ["  map in { typeof ip daddr . th dport : ip daddr; elements = { %s } }" % ", ".join("%s . %d : %s" % (a, p, ip) for ip, p, a in rows),
+              "  map out { type ipv4_addr . inet_service : ipv4_addr . inet_service; elements = { %s } }"
+              % ", ".join("%s . %d : %s . %d" % (ip, p, a, p) for ip, p, a in rows),
+              "  set fwds { typeof ip saddr; elements = { %s } }" % ", ".join(sorted({ip for ip, _, _ in rows}))]
+    if gone:
+        L.append("  set gone { type ipv4_addr . inet_service; elements = { %s } }" % ", ".join("%s . %d" % g for g in gone))
+    L += ["  chain rep {", "    type filter hook prerouting priority mangle + 7; policy accept;"]   # (+6 is swg_s5x's)
+    if gone:
+        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone drop")
+    if rows:
+        L.append("    ct direction reply ct status dnat ip saddr @fwds meta mark set %#x" % P2P_BIT)
+    L.append("  }")
+    if rows:
+        L += ["  chain pre {", "    type nat hook prerouting priority dstnat + 5; policy accept;",
+              "    iifname { %s } meta l4proto { tcp, udp } dnat to ip daddr . th dport map @in" % devs, "  }",
+              "  chain post {", "    type nat hook postrouting priority srcnat - 5; policy accept;",
+              "    oifname { %s } meta l4proto { tcp, udp } snat to ip saddr . th sport map @out" % devs, "  }"]
+    return "\n".join(L + ["}"]) + "\n"
 
 
 def _ensure_p2pfwd(fwd, node_cfg, res):
     """Reconcile `ip swg_p2pfwd` — a table and sig of its own, so a device added or gone never rebuilds swg_p2p (whose
     rebuild empties @flag). Each device's address is its interface's egress: the `swg-egress:<iface>` SNAT's source, else
-    the MASQUERADE device's, else the WAN's. Never over a listener: a port bound on that address or a wildcard is left out
-    and reported `taken` (in the text, so a listener that appears later converges in one pass). Nothing → table and sig
-    deleted. Never raises."""
+    the MASQUERADE device's, else the WAN's (`_detect_wan`). A device on an interface that is not up is left out — DNAT'd
+    there, the swarm's packets would leave by the default route to a private address. Never over a listener: a port bound
+    on that address or a wildcard is left out and reported `taken` (in the text, so a listener that appears later converges
+    in one pass). A forward that ends is drained (`gone`, P2PFWD_DRAIN_S). Nothing → table and sig deleted. Never raises."""
     sigf = os.path.join(GEO_DIR, ".p2pfwd.sig")
     try:
-        rows, rep, wan = [], {}, _p2p_wan_devs() if fwd else []
+        rows, rep, addr_of, wan = [], {}, {}, _p2p_wan_devs() if fwd else []
         if wan:
             nat = (run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout or "").splitlines()
             v4 = {}
-            for ln in (run(["ip", "-4", "-o", "addr", "show"]).stdout or "").splitlines():
-                m = re.match(r"\d+:\s+([^\s@]+)\S*\s+inet\s+([\d.]+)/", ln)
-                if m:
-                    v4.setdefault(m.group(1), m.group(2))
+            for d, a in _node_addrs():
+                if not a.startswith("169.254."):
+                    v4.setdefault(d.split("@")[0], a)
+            wa = v4.get(_detect_wan()) or next((v4[d] for d in wan if d in v4), "")
             bound = set()
             for ln in (run(["ss", "-Hlntu"]).stdout or "").splitlines():
                 m = re.match(r"(.*):(\d+)$", (ln.split() + [""] * 5)[4])
@@ -8657,46 +8671,56 @@ def _ensure_p2pfwd(fwd, node_cfg, res):
             subs = []
             for ifn in (node_cfg.get("interfaces") or {}):
                 with contextlib.suppress(Exception):
-                    subs.append((ifn, ipaddress.ip_network(_iface_subnet(node_cfg, ifn), strict=False)))
+                    if _dev_link_state(ifn) == "up":
+                        subs.append((ifn, ipaddress.ip_network(_iface_subnet(node_cfg, ifn), strict=False)))
             for ip, p in fwd:
                 ifn = next((i for i, n in subs if ipaddress.ip_address(ip) in n), None)
-                eg = next((ln for ln in nat if _comment_re("swg-egress:%s" % ifn).search(ln)), "") if ifn else ""
-                to, o = re.search(r"--to-source ([\d.]+)", eg), re.search(r"-o (\S+)", eg)
-                addr = to.group(1) if to else v4.get(o.group(1) if o else "") or next((v4[d] for d in wan if d in v4), "")
-                if not ifn or not addr:
+                if ifn and ifn not in addr_of:                # one egress per interface, read once
+                    eg = next((ln for ln in nat if _comment_re("swg-egress:%s" % ifn).search(ln)), "")
+                    to, o = re.search(r"--to-source ([\d.]+)", eg), re.search(r"-o (\S+)", eg)
+                    addr_of[ifn] = to.group(1) if to else v4.get(o.group(1) if o else "") or wa
+                if not ifn or not addr_of[ifn]:
                     continue
-                e = rep.setdefault(ifn, {"addr": addr, "taken": []})
-                if any((h, p) in bound for h in (addr, "0.0.0.0", "*", "::")):
+                e = rep.setdefault(ifn, {"addr": addr_of[ifn], "taken": []})
+                if any((h, p) in bound for h in (addr_of[ifn], "0.0.0.0", "*", "::")):
                     e["taken"].append(p)
                 else:
-                    rows.append((ip, p, addr))
-        text = _p2pfwd_nft(sorted(rows), wan) if rows else ""
+                    rows.append((ip, p, addr_of[ifn]))
+        cur, now = {(ip, p) for ip, p, _ in rows}, time.time()
+        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now and k not in cur}
+        gone.update({k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"] - cur})
+        text = _p2pfwd_nft(sorted(rows), wan, sorted(gone)) if rows or gone else ""
         if not text:                                          # the sig marks a table we loaded: a node that never
-            if _P2PFWD["tbl"] is not False and (_P2PFWD["tbl"] or os.path.exists(sigf)):   # forwarded asks nothing
-                if run(["nft", "delete", "table", "ip", P2PFWD_TABLE]).returncode == 0:
-                    res["changed"] += 1
-                with contextlib.suppress(OSError):
-                    os.unlink(sigf)
-            _P2PFWD["tbl"] = False
-            _P2PFWD["report"] = rep
+            if _P2PFWD["loaded"] or os.path.exists(sigf):     # forwarded asks nothing
+                r = run(["nft", "delete", "table", "ip", P2PFWD_TABLE])
+                if r.returncode == 0 or "No such file" in (r.stderr or ""):
+                    res["changed"] += r.returncode == 0
+                    _P2PFWD["loaded"] = False
+                    with contextlib.suppress(OSError):
+                        os.unlink(sigf)
+                else:                                         # retried next pass
+                    res["errors"].append("p2pfwd delete failed: " + (r.stderr or "").strip()[:160])
+            _P2PFWD.update(report=rep, rows=set(), gone={})
             return
         sig = hashlib.sha256(text.encode()).hexdigest()
-        cur = ""
+        cur_sig = ""
         with contextlib.suppress(OSError):
-            cur = open(sigf).read().strip()
-        if cur != sig or run(["nft", "-t", "list", "table", "ip", P2PFWD_TABLE]).returncode != 0:
+            cur_sig = open(sigf).read().strip()
+        have = run(["nft", "-t", "list", "table", "ip", P2PFWD_TABLE])
+        # in force = its rules are there (a table flushed in place still lists, with no rule)
+        if cur_sig != sig or have.returncode != 0 or (" dnat " if rows else " drop") not in (have.stdout or ""):
             r = run(["nft", "-f", "-"], input_text=text)
             if r.returncode != 0:                             # the old table would keep forwarding what it held: removed
                 run(["nft", "delete", "table", "ip", P2PFWD_TABLE])
                 with contextlib.suppress(OSError):
                     os.unlink(sigf)
-                _P2PFWD.update(tbl=None, report={})
+                _P2PFWD.update(loaded=False, report={}, rows=set(), gone={})
                 res["errors"].append("p2pfwd nft load failed: " + (r.stderr or "").strip()[:160])
                 return
             with contextlib.suppress(OSError):
                 os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
             res["changed"] += 1
-        _P2PFWD.update(tbl=True, report=rep)
+        _P2PFWD.update(loaded=True, report=rep, rows=cur, gone=gone)
     except Exception as e:
         _P2PFWD["report"] = {}
         res["errors"].append("p2pfwd: " + str(e)[:120])

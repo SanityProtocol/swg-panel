@@ -234,7 +234,7 @@ J("stats/stats-n1.json", {"interfaces": {
                      # [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ, hidden 2026-10-14)
                      {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64, "version": "v4.0.3"}],
     "net_carried": ["192.168.50.0/24"],
-    "p2p_fwd": {"awg0": {"addr": "203.0.113.7", "taken": []}}})   # [12] S12: q-node forwards awg0's devices' own ports
+    "p2p_fwd": {"awg0": {"addr": "45.67.89.10", "taken": []}}})   # [12] S12: q-node forwards awg0's devices' own ports
 
 SEAL = r"""
 const [k, pt] = process.argv.slice(1);
@@ -500,7 +500,7 @@ try:
               live and all(P2P_WORDS[lang] in (c["p2p"] or "") for c in live), [(c["tag"], (c["p2p"] or "")[:40]) for c in live])
     PORT_WORDS = {"en": "Incoming port 20016", "ru": "Входящий порт 20016"}
     for (os_, lang), r in sorted(renders.items()):
-        got = [(p["mode"], PORT_WORDS[lang] in (c["note"] or "") and "203.0.113.7:20016" in (c["note"] or ""))
+        got = [(p["mode"], PORT_WORDS[lang] in (c["note"] or "") and "45.67.89.10:20016" in (c["note"] or ""))
                for p in r["pages"] if p["mode"] in ("awg", "wg") for c in p["cells"]]
         check("[12] %s/%s: Anna's AmneziaWG cell's torrent note opens with her incoming port and the address peers reach; her "
               "WireGuard cell's (not forwarded) carries none" % (os_, lang),

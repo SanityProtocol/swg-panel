@@ -67,7 +67,8 @@
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
       p2pMark: "Torrents work here — the setting for full speed",
       p2pPortL: "Incoming port",
-      p2pPortD: "Set exactly this port for incoming connections in the torrent client, and turn off the random port at startup (qBittorrent: Options → Connection). Other peers reach you at {addr}:{port}.",
+      p2pPortD: "Set exactly this port for incoming connections in the torrent client, and turn off the random port at startup (qBittorrent: Options → Connection).",
+      p2pPortAt: "Other peers reach you at {addr}:{port}.",
       p2pHint: "Torrents work here. For full speed, set the torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
       rawT: "Faster mode available", rawD: "In the app's settings set the RAW port to {port} and the connection mode to RAW — they live there, not in this link. It drops WireGuard for speed.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
@@ -134,7 +135,8 @@
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
       p2pMark: "Торренты здесь работают — настройка для полной скорости",
       p2pPortL: "Входящий порт",
-      p2pPortD: "Укажите в торрент-клиенте именно этот порт для входящих соединений и выключите случайный порт при запуске (qBittorrent: Настройки → Соединение). Другие участники подключаются к вам по {addr}:{port}.",
+      p2pPortD: "Укажите в торрент-клиенте именно этот порт для входящих соединений и выключите случайный порт при запуске (qBittorrent: Настройки → Соединение).",
+      p2pPortAt: "Другие участники подключаются к вам по {addr}:{port}.",
       p2pHint: "Торренты здесь работают. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
@@ -2311,7 +2313,7 @@
       var srv = it.tgt.p2p && cc.el.querySelector(".scell-srv");
       // Where the node forwards the device's own port (swg-sub's p2p_port, Part C) the bubble opens with it: the one number
       // the user must type into the client, then how, then the speed setting.
-      var fp = it.tgt.p2p_port, fd = fp && t("p2pPortD").replace("{addr}", it.tgt.p2p_addr || "").replace("{port}", fp);
+      var fp = it.tgt.p2p_port, fd = fp && t("p2pPortD") + (it.tgt.p2p_addr ? " " + t("p2pPortAt").replace("{addr}", it.tgt.p2p_addr).replace("{port}", fp) : "");
       if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pMark"), fp ? t("p2pPortL") + " " + fp + ". " + fd + " " + t("p2pHint") : t("p2pHint"),
         fp && function () {
           var f = document.createDocumentFragment(), row = el("div", "note-port");

@@ -595,6 +595,7 @@ sudo rm -f /run/systemd/system/swg-relay@.service && sudo systemctl daemon-reloa
 
 ```bash
 sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null
+sudo nft delete table ip swg_p2pfwd 2>/dev/null   # с 1.8.11: входящие торрент-порты устройств
 ```
 
 ---

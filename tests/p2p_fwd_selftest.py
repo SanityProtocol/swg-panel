@@ -58,21 +58,37 @@ PLANTS = {   # name: (file, old text, planted text)
     "guard-never":   ("node", '        if fwdin and mode == "direct" and oif:', '        if False:'),
     "fwd-unread":    ("node", '                fwd=(smart or {}).get("p2p_fwd"))', '                fwd=None)'),
     "fwd-uncalled":  ("node", '    _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)\n', ''),
-    "addr-wan":      ("node", '        addr = to.group(1) if to else v4.get(o.group(1) if o else "") or next(', '        addr = next('),
-    "no-taken":      ("node", '                if any((h, p) in bound for h in (addr, "0.0.0.0", "*", "::")):', '                if False:'),
-    "no-delete":     ("node", '                if run(["nft", "delete", "table", "ip", P2PFWD_TABLE]).returncode == 0:\n                    res["changed"] += 1',
-                      '                if False:\n                    res["changed"] += 1'),
-    "no-siggate":    ("node", '        if cur != sig or run(["nft", "-t", "list", "table", "ip", P2PFWD_TABLE]).returncode != 0:', '        if True:'),
+    "addr-wan":      ("node", '                    addr_of[ifn] = to.group(1) if to else v4.get(o.group(1) if o else "") or wa', '                    addr_of[ifn] = wa'),
+    "addr-oldparse": ("node", '            for d, a in _node_addrs():\n                if not a.startswith("169.254."):',
+                      '            for d, a in re.findall(r"\\d+:\\s+([^\\s@]+)\\S*\\s+inet\\s+([\\d.]+)/", run(["ip", "-4", "-o", "addr", "show"]).stdout or ""):\n                if True:'),
+    "addr-sorted":   ("node", '            wa = v4.get(_detect_wan()) or next(', '            wa = next('),
+    "ifdown":        ("node", '                    if _dev_link_state(ifn) == "up":\n', '                    if True:\n'),
+    "no-taken":      ("node", '                if any((h, p) in bound for h in (addr_of[ifn], "0.0.0.0", "*", "::")):', '                if False:'),
+    "no-delete":     ("node", '            if _P2PFWD["loaded"] or os.path.exists(sigf):     # forwarded asks nothing', '            if False:     # forwarded asks nothing'),
+    "no-retry":      ("node", '                if r.returncode == 0 or "No such file" in (r.stderr or ""):', '                if True:'),
+    "no-siggate":    ("node", '        if cur_sig != sig or have.returncode != 0 or (" dnat " if rows else " drop") not in (have.stdout or ""):', '        if True:'),
+    "exists-only":   ("node", '        if cur_sig != sig or have.returncode != 0 or (" dnat " if rows else " drop") not in (have.stdout or ""):',
+                      '        if cur_sig != sig or have.returncode != 0:'),
     "fail-keeps":    ("node", '            if r.returncode != 0:                             # the old table would keep forwarding what it held: removed\n                run(["nft", "delete", "table", "ip", P2PFWD_TABLE])',
                       '            if r.returncode != 0:                             # the old table would keep forwarding what it held: removed\n                pass'),
     "snap-unsent":   ("node", '        snap["p2p_fwd"] = {i: dict(v) for i, v in _P2PFWD["report"].items()}', '        pass'),
-    "no-rep":        ("node", '        "    ct direction reply ct status dnat ip saddr @fwds meta mark set %#x" % P2P_BIT, "  }",',
-                      '        "    ct direction reply ct status dnat ip saddr @fwds", "  }",'),
-    "no-post":       ("node", '        "    oifname { %s } meta l4proto { tcp, udp } snat to ip saddr . th sport map @out" % devs, "  }", "}"]',
-                      '        "    oifname { %s } meta l4proto { tcp, udp } counter" % devs, "  }", "}"]'),
+    "no-rep":        ("node", '        L.append("    ct direction reply ct status dnat ip saddr @fwds meta mark set %#x" % P2P_BIT)',
+                      '        L.append("    ct direction reply ct status dnat ip saddr @fwds")'),
+    "no-post":       ("node", '              "    oifname { %s } meta l4proto { tcp, udp } snat to ip saddr . th sport map @out" % devs, "  }"]',
+                      '              "    oifname { %s } meta l4proto { tcp, udp } counter" % devs, "  }"]'),
+    "rep-prio":      ("node", '"    type filter hook prerouting priority mangle + 7; policy accept;"]', '"    type filter hook prerouting priority mangle + 6; policy accept;"]'),
+    "prio-first":    ("node", '"    type nat hook prerouting priority dstnat + 5; policy accept;",', '"    type nat hook prerouting priority dstnat - 5; policy accept;",'),
+    "map-type":      ("node", '"  map in { typeof ip daddr . th dport : ip daddr; elements', '"  map in { type ipv4_addr . inet_service : ipv4_addr; elements'),
+    "drain-none":    ("node", '        gone.update({k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"] - cur})\n', ''),
+    "drain-pass":    ("node", '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone drop")',
+                      '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone counter")'),
+    "drain-stays":   ("node", '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now and k not in cur}', '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now}'),
     "fill-dup":      ("panel", "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:",
                       "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
     "fill-first":    ("panel", "    for pid in sorted(peers, key=lambda k: (k not in first, k)):", "    for pid in sorted(peers):"),
+    "fill-float":    ("panel", '        if x != q.get("p2p_port") or type(q.get("p2p_port")) is not int:   # (20000.0 == 20000)', '        if x != q.get("p2p_port"):'),
+    "create-nokeep": ("panel", '                               keep=(_prev.get("desired_port"), _prev.get("listen_port"), (_prev.get("_lastcfg") or {}).get("listen_port")))',
+                      '                               keep=())'),
     "fill-nostart":  ("panel", "        if p2p_ports_fill(_r):\n            roster_save(_rp, _r)", "        if False:\n            roster_save(_rp, _r)"),
     "set-dropped":   ("panel", '"routes", "share", "private", "router", "p2p_port"):', '"routes", "share", "private", "router"):'),
     "set-noalloc":   ("panel", "        if _free:                                             # pool full", "        if False:                                             # pool full"),
@@ -90,10 +106,10 @@ PLANTS = {   # name: (file, old text, planted text)
                       "        if False:"),
     "pool-nokeep":   ("panel", "        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1] and str(port).strip() not in {str(k) for k in keep}:",
                       "        if P2P_PORT_POOL[0] <= int(port) <= P2P_PORT_POOL[1]:"),
-    "sub-taken":     ("sub", "    if type(port) is not int or not isinstance(e, dict) or port in (e.get(\"taken\") or ()):",
-                      "    if type(port) is not int or not isinstance(e, dict):"),
-    "sub-anytarget": ("sub", '    return {"p2p_port": port, "p2p_addr": str(e.get("addr") or "")} if mine and mine[1] == tg.get("iface") else {}',
-                      '    return {"p2p_port": port, "p2p_addr": str(e.get("addr") or "")}'),
+    "sub-taken":     ("sub", ' or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):', ':'),
+    "sub-takenjunk": ("sub", 'port in (e.get("taken") if isinstance(e.get("taken"), list) else ())', 'port in (e.get("taken") or ())'),
+    "sub-privaddr":  ("sub", "        if ipaddress.ip_address(str(e.get(\"addr\") or \"\")).is_global:", "        if True:"),
+    "sub-anytarget": ("sub", '    if not mine or mine[1] != tg.get("iface"):\n        return {}', '    if not mine:\n        return {}'),
 }
 
 
@@ -118,17 +134,19 @@ ip link add vr type veth peer name vc && ip link set vc netns $CPID && ip addr a
  && ip rule add fwmark 0x40000000 lookup main pref 6880 \
  && ip rule add from 10.9.0.0/24 lookup 7001 pref 7001 \
  && ip link add mesh0 type dummy && ip link set mesh0 up && ip route add default dev mesh0 table 7001 \
+ && nft add table ip keepnat && nft add chain ip keepnat pre '{ type nat hook prerouting priority dstnat; }' \
  || { echo SETUP-FAILED net; kill $CPID $XPID; exit 0; }
+# (keepnat: a node's iptables NAT keeps the kernel's NAT hook registered, so an open flow keeps its binding when ours goes)
 sleep 1
 nft -f "$1" || { echo SETUP-FAILED p2p; kill $CPID $XPID; exit 0; }
 nft -f "$2" || { echo LOADED no; kill $CPID $XPID; exit 0; }
 echo LOADED yes
 OUT=$(mktemp)
-nsenter -t $CPID -n timeout 6 python3 -u -c '
+nsenter -t $CPID -n timeout 9 python3 -u -c '
 import socket, select, os, time
 u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("10.9.0.2", 20016))
 t = socket.socket(); t.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); t.bind(("10.9.0.2", 20016)); t.listen(4)
-end = time.time() + 2.5
+end = time.time() + 4.0
 while time.time() < end:
     r, _, _ = select.select([u, t], [], [], 0.2)
     if u in r:
@@ -142,8 +160,9 @@ while time.time() < end:
 u.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:aa1:y1:qe", ("192.0.2.9", 5000))
 ' > "$OUT" 2>&1 &
 sleep 0.5
-nsenter -t $XPID -n timeout 6 python3 -c '
-import socket, os
+if [ -s "${3:-}" ]; then (sleep 1.0; nft -f "$3" || echo "SWAP failed") & fi
+nsenter -t $XPID -n timeout 9 python3 -c '
+import socket, os, time
 o = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); o.bind(("192.0.2.9", 5000)); o.settimeout(3)
 u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.settimeout(1)
 u.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"e1:q4:ping1:t2:aa1:y1:qe", ("192.0.2.1", 20016))
@@ -156,6 +175,13 @@ try:
     t.connect(("192.0.2.1", 20016)); t.sendall(b"\x13BitTorrent protocol" + b"\0" * 48); print("X_TCP %d" % len(t.recv(100)))
 except Exception as e:
     print("X_TCP none")
+time.sleep(1.5)                                   # the router may swap the table here ($3): the same flow again
+u.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"e1:q4:ping1:t2:ab1:y1:qe", ("192.0.2.1", 20016))
+try:
+    print("X_UDP2 %s:%d" % u.recvfrom(2048)[1])
+except Exception:
+    print("X_UDP2 none")
+o.settimeout(4)
 try:
     print("X_OWN %s:%d" % o.recvfrom(2048)[1])
 except Exception:
@@ -168,9 +194,9 @@ kill $CPID $XPID 2>/dev/null
 '''
 
 
-def _wire(p2p, fwd):
+def _wire(p2p, fwd, swap=""):
     fs = []
-    for t in (p2p, fwd):
+    for t in (p2p, fwd, swap):
         with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
             f.write(t)
         fs.append(f.name)
@@ -184,21 +210,25 @@ def _wire(p2p, fwd):
     out = {}
     for ln in (r.stdout or "").splitlines():
         if " " in ln:
-            out.setdefault(ln.split(" ", 1)[0], ln.split(" ", 1)[1].strip())
+            k, v = ln.split(" ", 1)
+            out[k] = v.strip() if k not in out else out[k] + " " + v.strip()   # a repeated key keeps every value
     return out
 
 
 class FwdBox:
     """The few reads _ensure_p2pfwd makes, and what it ran."""
     NAT = ['-A POSTROUTING -s 10.8.0.0/24 -o eth0 -m comment --comment swg-egress:wg0 -j SNAT --to-source 198.51.100.7',
-           '-A POSTROUTING -s 10.9.0.0/24 -o eth1 -m comment --comment "swg-egress:wg1" -j MASQUERADE']
-    ADDR = ("1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet 192.0.2.1/24 brd 192.0.2.255 scope global eth0\n"
-            "2: eth0    inet 192.0.2.77/24 scope global secondary eth0\n3: eth1@if9    inet 203.0.113.5/24 scope global eth1\n")
+           '-A POSTROUTING -s 10.9.0.0/24 -o eth1 -m comment --comment "swg-egress:wg1" -j MASQUERADE',
+           '-A POSTROUTING -s 10.11.0.0/24 -o ppp0 -m comment --comment swg-egress:wg3 -j MASQUERADE']
+    ADDR = ("1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet 169.254.7.7/16 scope link eth0\n"
+            "2: eth0    inet 192.0.2.1/24 brd 192.0.2.255 scope global eth0\n"
+            "2: eth0    inet 192.0.2.77/24 scope global secondary eth0\n3: eth1@if9    inet 203.0.113.5/24 scope global eth1\n"
+            "4: ppp0    inet 100.64.7.9 peer 100.64.0.1/32 scope global ppp0\n")
     SS = ("udp   UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*\nudp   UNCONN 0 0 0.0.0.0:20001 0.0.0.0:*\n"
           "tcp   LISTEN 0 4096 192.0.2.1:20003 0.0.0.0:*\ntcp   LISTEN 0 4096 192.0.2.77:20004 0.0.0.0:*\ntcp   LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:*\n")
 
     def __init__(self, refuse=False):
-        self.cmds, self.table, self.refuse = [], None, refuse
+        self.cmds, self.table, self.refuse, self.delfail = [], None, refuse, 0
 
     def run(self, args, input_text=None, timeout=20):
         a = list(args); self.cmds.append((a, input_text)); out, rc = "", 0
@@ -216,9 +246,14 @@ class FwdBox:
             else:
                 self.table = input_text
         elif a[:4] == ["nft", "-t", "list", "table"]:
-            rc = 0 if self.table else 1
+            rc, out = (0, self.table) if self.table else (1, "")
         elif a[:3] == ["nft", "delete", "table"]:
+            if self.delfail:
+                self.delfail -= 1
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="Error: busy")
+            rc = 0 if self.table else 1
             self.table = None
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="" if rc == 0 else "Error: No such file or directory")
         return types.SimpleNamespace(returncode=rc, stdout=out, stderr="refused" if rc else "")
 
     def loads(self):
@@ -286,33 +321,71 @@ def node_checks(src, ok):
     ok(seen == [("p2p", [["10.8.0.2", 20000]]), ("fwd", [("10.8.0.2", 20000)])],
        "[3] reconcile_cascade hands smart.p2p_fwd to _ensure_p2p, then what it kept to _ensure_p2pfwd (%s)" % seen)
     # [4]
-    def fwd_pass(fwd, box=None, mm=None):
+    def fwd_pass(fwd, box=None, mm=None, down=(), wan="eth0"):
         mm = mm or base.load(src); b = box or FwdBox()
         mm.run = b.run; mm.GEO_DIR = mm.GEO_DIR if mm.GEO_DIR.startswith(tempfile.gettempdir()) else tempfile.mkdtemp()
-        subs = {"wg0": "10.8.0.0/24", "wg1": "10.9.0.0/24", "wg2": "10.10.0.0/24"}
+        subs = {"wg0": "10.8.0.0/24", "wg1": "10.9.0.0/24", "wg2": "10.10.0.0/24", "wg3": "10.11.0.0/24", "wg4": "10.12.0.0/24"}
         mm._iface_subnet = lambda cfg, i: subs.get(i, "")
+        mm._dev_link_state = lambda d: "absent" if d in down else "up"
+        mm._detect_wan = lambda: wan
+        mm._LOOP["n"] += 1                                     # a new pass (the address read is cached per pass)
         res = {"changed": 0, "errors": []}
         mm._ensure_p2pfwd(fwd, {"interfaces": {i: {} for i in subs}}, res)
         return mm, b, res
-    FW = [("10.8.0.2", 20000), ("10.8.0.3", 20001), ("10.9.0.2", 20002), ("10.10.0.2", 20003), ("10.10.0.4", 20004), ("10.6.0.2", 20005)]
-    mm, b, res = fwd_pass(FW)
+    FW = [("10.8.0.2", 20000), ("10.8.0.3", 20001), ("10.9.0.2", 20002), ("10.10.0.2", 20003), ("10.10.0.4", 20004), ("10.6.0.2", 20005),
+          ("10.11.0.2", 20006), ("10.12.0.2", 20007)]
+    mm, b, res = fwd_pass(FW, down=("wg4",))
     t = b.table or ""
     ok("10.8.0.2 . 20000 : 198.51.100.7 . 20000" in t and "203.0.113.5 . 20002 : 10.9.0.2" in t and "192.0.2.1 . 20004 : 10.10.0.4" in t,
-       "[4] each device's address is its interface's egress: SNAT source, MASQUERADE device, else the WAN's first address")
+       "[4] each device's address is its interface's egress: SNAT source, MASQUERADE device, else the WAN's (not a link-local first)")
+    ok("100.64.7.9 . 20006 : 10.11.0.2" in t, "[4] a point-to-point WAN's address (`inet A peer B/32`) is read (review F9)")
+    ok("20007" not in t and "wg4" not in mm._P2PFWD["report"], "[4] a device on an interface that is not up is left out (review F4)")
     ok("20001" not in t and "20003" not in t and "20005" not in t,
        "[4] a port a listener holds (wildcard, or bound on that address) is left out; a device on no interface here too")
     ok("192.0.2.1 . 20004 : 10.10.0.4" in t, "[4] …a port bound on ANOTHER address of the box is not taken")
     ok(mm._P2PFWD["report"] == {"wg0": {"addr": "198.51.100.7", "taken": [20001]}, "wg1": {"addr": "203.0.113.5", "taken": []},
-                                "wg2": {"addr": "192.0.2.1", "taken": [20003]}},
+                                "wg2": {"addr": "192.0.2.1", "taken": [20003]}, "wg3": {"addr": "100.64.7.9", "taken": []}},
        "[4] the report by interface: the address and the ports taken (%s)" % mm._P2PFWD["report"])
     ok('iifname { "eth0" }' in t and 'oifname { "eth0" }' in t and "meta mark set 0x40000000" in t and not res["errors"],
        "[4] in by the WAN, out by the WAN, the replies marked for rule 6880 (%s)" % res["errors"])
+    ok("priority mangle + 7;" in t, "[4] the replies' mark at its own priority, not swg_s5x's mangle + 6 (review F44)")
+    ok("priority dstnat + 5;" in t and "typeof ip daddr . th dport : ip daddr" in t,
+       "[4] the DNAT runs after iptables/Docker/remnanode's (the first binding wins — theirs); the map by expression (review F10, F1)")
     n = len(b.loads())
-    fwd_pass(FW, b, mm)
+    fwd_pass(FW, b, mm, down=("wg4",))
     ok(n == 1 and len(b.loads()) == 1, "[4] the same set again: no reload (sig) (%d → %d)" % (n, len(b.loads())))
+    b.table = "table ip swg_p2pfwd {\n}\n"                  # flushed in place: it lists, with no rule
+    fwd_pass(FW, b, mm, down=("wg4",))
+    ok(len(b.loads()) == 2 and " dnat " in (b.table or ""), "[4] a table flushed in place is rebuilt — in force, not only there (review F14)")
+    mw = fwd_pass(FW[3:5], wan="eth1")[0]
+    ok(mw._P2PFWD["report"].get("wg2", {}).get("addr") == "203.0.113.5", "[4] the WAN's address is the default route's device (_detect_wan), "
+       "not the first by name (review F8) (%s)" % mw._P2PFWD["report"])
+    # the drain (review F2): a forward that ends drops its device's replies on flows still DNAT'd to it
+    fwd_pass(FW[:2], b, mm)
+    t2 = b.table or ""
+    ok("set gone" in t2 and "10.9.0.2 . 20002" in t2 and "ip saddr . th sport @gone drop" in t2 and "10.8.0.2 . 20000 :" in t2,
+       "[4] a device whose forward ended is drained while the others forward")
+    fwd_pass([], b, mm)
+    t3 = b.table or ""
+    ok("set gone" in t3 and "10.8.0.2 . 20000" in t3 and "chain pre" not in t3 and "chain post" not in t3 and mm._P2PFWD["report"] == {},
+       "[4] nothing forwarded any more (a switch to Block): the table holds the drain alone, nothing reported")
+    fwd_pass([("10.8.0.2", 20000)], b, mm)
+    ok("10.8.0.2 . 20000 :" in (b.table or "") and "10.8.0.2 . 20000," not in (b.table or "") and "10.8.0.2 . 20000 }" not in (b.table or ""),
+       "[4] a device forwarded again leaves the drain")
+    mm._P2PFWD["gone"] = {k: 0 for k in mm._P2PFWD["gone"]}
+    fwd_pass([], b, mm)
+    fwd_pass([], b, mm)
+    mm._P2PFWD["gone"] = {k: 0 for k in mm._P2PFWD["gone"]}
     fwd_pass([], b, mm)
     ok(b.table is None and not os.path.exists(os.path.join(mm.GEO_DIR, ".p2pfwd.sig")) and mm._P2PFWD["report"] == {},
-       "[4] nothing to forward: the table and its sig deleted, nothing reported")
+       "[4] once the drain has run its time: the table and its sig deleted, nothing reported")
+    mb, bb, _ = fwd_pass(FW[:1])
+    mb._P2PFWD["gone"] = {}; mb._P2PFWD["rows"] = set()
+    bb.delfail = 1
+    r1 = fwd_pass([], bb, mb)[2]
+    r2 = fwd_pass([], bb, mb)[2]
+    ok(r1["errors"] and bb.table is None and not r2["errors"] and not os.path.exists(os.path.join(mb.GEO_DIR, ".p2pfwd.sig")),
+       "[4] a delete that failed is tried again on the next pass (review F15)")
     mm2, b2, _ = fwd_pass(FW)
     b2.refuse = True
     mm2.GEO_DIR = tempfile.mkdtemp()                           # a new sig: the reload is asked, and refused
@@ -326,18 +399,24 @@ def node_checks(src, ok):
     if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
         print("  SKIPPED [6] real nft / kernel — no `sudo -n` here")
         return
-    out = _wire(m._p2p_nft("direct", [], ["eth0"], [], True, fwdin=True), m._p2pfwd_nft([("10.9.0.2", 20016, "192.0.2.1")], ["eth0"]))
+    p2pt, fwdt = m._p2p_nft("direct", [], ["eth0"], [], True, fwdin=True), m._p2pfwd_nft([("10.9.0.2", 20016, "192.0.2.1")], ["eth0"])
+    out = _wire(p2pt, fwdt)
     if not out or out.get("LOADED") is None:
         print("  SKIPPED [6] real kernel — the throwaway namespaces could not be set up here (%s)" % out)
         return
     ok(out.get("LOADED") == "yes", "[6] the table loads on the real nft")
-    ok(out.get("C_UDP") == "192.0.2.9" and out.get("X_UDP") == "192.0.2.1:20016",
-       "[6] an inbound DHT query reaches the device; its answer leaves from address:port by the WAN, not the mesh leg (%s %s)"
-       % (out.get("C_UDP"), out.get("X_UDP")))
+    ok((out.get("C_UDP") or "").split()[:1] == ["192.0.2.9"] and out.get("X_UDP") == "192.0.2.1:20016" and out.get("X_UDP2") == "192.0.2.1:20016",
+       "[6] an inbound DHT query reaches the device; its answers leave from address:port by the WAN, not the mesh leg (%s %s %s)"
+       % (out.get("C_UDP"), out.get("X_UDP"), out.get("X_UDP2")))
     ok(out.get("C_TCP") == "192.0.2.9" and out.get("X_TCP") == "68", "[6] an inbound BitTorrent handshake reaches it and is answered (%s %s)"
        % (out.get("C_TCP"), out.get("X_TCP")))
     ok(out.get("X_OWN") == "192.0.2.1:20016", "[6] the device's own flow from its port leaves from that port (%s)" % out.get("X_OWN"))
     ok(out.get("DROPPED") == "0", "[6] the guard dropped nothing (%s)" % out.get("DROPPED"))
+    out = _wire(p2pt, fwdt, m._p2pfwd_nft([], [], [("10.9.0.2", 20016)]))
+    ok(out and out.get("C_UDP") == "192.0.2.9 192.0.2.9" and out.get("X_UDP") == "192.0.2.1:20016" and out.get("X_UDP2") == "none"
+       and "SWAP" not in out,
+       "[6] the forward ended (the table swapped for its drain): the next packet of the open flow still reaches the device, its "
+       "answer is dropped — an open connection ends too (review F2) (%s)" % ({k: out.get(k) for k in ("C_UDP", "X_UDP", "X_UDP2", "SWAP")} if out else out))
 
 
 ROSTER = {"version": 1, "users": {"u1": {"id": "u1", "name": "anna"}}, "peers": {
@@ -367,6 +446,9 @@ def unit_checks(src, ok):
     m.p2p_ports_fill(r2, first={"zz"})
     ok(r2["peers"]["zz"]["p2p_port"] == 20000 and r2["peers"]["a1"]["p2p_port"] == 20001,
        "[7] `first` (this panel's own peers) keep their port; an arriving one is reassigned (%s)" % r2)
+    rf = {"peers": {"a": {"p2p_port": 20000.0}, "b": {"p2p_port": "20001"}}}
+    m.p2p_ports_fill(rf)
+    ok([type(v["p2p_port"]) for v in rf["peers"].values()] == [int, int], "[7] a port stored as a float or text is made an int (review F18) (%s)" % rf)
     full = {"peers": {"p%05d" % i: {"p2p_port": 20000 + i} for i in range(10000)}}
     full["peers"]["zzz"] = {}
     m.p2p_ports_fill(full)
@@ -461,6 +543,9 @@ def panel_checks(src, ok):
         ok(c == 400 and "20000–29999" in json.dumps(r, ensure_ascii=False), "[10] a new interface on a pool port is refused (%s %s)" % (c, str(r)[:120]))
         c, r = req("/api/iface/update", {"node": "n1", "iface": "wg0", "listen_port": 21000})
         ok(c == 400, "[10] moving an interface onto a pool port is refused (%s)" % c)
+        _n = json.load(open(nodes)); _n["n1"]["ifaces"]["wg7"] = {"listen_port": 25000}; json.dump(_n, open(nodes, "w"))
+        c, r = req("/api/iface/create", {"node": "n1", "iface": "wg7", "subnet": "10.77.0.0/24", "listen_port": 25000})
+        ok("20000–29999" not in json.dumps(r, ensure_ascii=False), "[10] an interface recreated on its own pool port is not refused (review F5) (%s %s)" % (c, str(r)[:120]))
         _n = json.load(open(nodes)); _n["n1"]["ifaces"]["wg1"]["listen_port"] = 21001; json.dump(_n, open(nodes, "w"))
         req("/api/nodes/update", {"id": "n1", "name": "node-a"})   # (the panel re-reads its store on a save path)
         c, r = req("/api/iface/update", {"node": "n1", "iface": "wg0", "listen_port": 51820})
@@ -491,14 +576,21 @@ def sub_checks(src, psrc, ok):
                                            {"node": "n1", "iface": "wg1", "ip": "10.9.0.5/32", "primary": "primary"},
                                            {"node": "n2", "iface": "wg0", "ip": "10.7.0.5/32"}]}
     tg = lambda n, i: {"node": n, "iface": i}
-    d = {"n1": {"p2p_fwd": {"wg0": {"addr": "198.51.100.7", "taken": []}, "wg1": {"addr": "203.0.113.5", "taken": []}}},
+    d = {"n1": {"p2p_fwd": {"wg0": {"addr": "45.67.89.10", "taken": []}, "wg1": {"addr": "45.67.89.20", "taken": []}}},
          "n2": {"p2p_fwd": {"wg0": {"addr": "192.0.2.1", "taken": [20004]}}}}
     got = [S._p2p_fwd_of(peer, tg(n, i), d) for n, i in (("n1", "wg0"), ("n1", "wg1"), ("n2", "wg0"))]
-    ok(got == [{}, {"p2p_port": 20004, "p2p_addr": "203.0.113.5"}, {}],
+    ok(got == [{}, {"p2p_port": 20004, "p2p_addr": "45.67.89.20"}, {}],
        "[11] the port on the device's chosen target (primary wg1), never its other one there, nor where it is taken (%s)" % got)
-    d1 = {"n1": {"p2p_fwd": {"wg0": {"addr": "198.51.100.7", "taken": []}}}}
+    d1 = {"n1": {"p2p_fwd": {"wg0": {"addr": "45.67.89.10", "taken": []}}}}
     got = [S._p2p_fwd_of(peer, tg("n1", i), d1) for i in ("wg0", "wg1")]
-    ok(got == [{"p2p_port": 20004, "p2p_addr": "198.51.100.7"}, {}], "[11] wg1 not forwarded there: the wg0 target carries it (%s)" % got)
+    ok(got == [{"p2p_port": 20004, "p2p_addr": "45.67.89.10"}, {}], "[11] wg1 not forwarded there: the wg0 target carries it (%s)" % got)
+    try:
+        junk = S._p2p_fwd_of(peer, tg("n1", "wg1"), {"n1": {"p2p_fwd": {"wg1": {"addr": "45.67.89.20", "taken": 20004}}}})
+    except Exception as e:
+        junk = "raised %s" % type(e).__name__
+    ok(junk == {"p2p_port": 20004, "p2p_addr": "45.67.89.20"}, "[11] a `taken` that is not a list never fails the page (review F19) (%s)" % junk)
+    pv = S._p2p_fwd_of(peer, tg("n1", "wg1"), {"n1": {"p2p_fwd": {"wg1": {"addr": "10.0.0.5", "taken": []}}}})
+    ok(pv == {"p2p_port": 20004}, "[11] a private address (a node behind 1:1 NAT) is never named; the port still is (review F37) (%s)" % pv)
     ok(S._p2p_fwd_of(peer, tg("n1", "wg1"), {}) == {} and S._p2p_fwd_of({"targets": peer["targets"]}, tg("n1", "wg1"), d) == {},
        "[11] an older node (no report) or a device with no port: nothing")
     # the twin: the panel forwards the same target swg-sub names (node reports the interfaces of its scope)

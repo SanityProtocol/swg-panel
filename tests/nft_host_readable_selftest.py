@@ -36,7 +36,7 @@ read by 1.0.6; a concatenated key already did.
   [5] CHANGELOG.md and CHANGELOG.ru.md say it, the convert included
 
 Run: python3 tests/nft_host_readable_selftest.py        (0 = pass)
-     --perturb   seventeen plants, each on its own — each must turn its own check red
+     --perturb   eighteen plants, each on its own — each must turn its own check red
 """
 import os, re, shutil, subprocess, sys, tempfile
 
@@ -47,6 +47,8 @@ PATHS = {k: os.environ.get("SWG_NH_" + k) or os.path.join(ROOT, f) for k, f in F
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PATHS.items()}
 
 PLANTS = [
+    ("mapdata", "NODED", '"  map in { typeof ip daddr . th dport : ip daddr; elements', '"  map in { type ipv4_addr . inet_service : ipv4_addr; elements',
+     "[1] swg-noded declares every single-key set and map by expression, never by a plain single `type`"),
     ("type", "NODED", 'dmap = ("  map dmap_%s { typeof ip daddr : verdict; flags interval;', 'dmap = ("  map dmap_%s { type ipv4_addr : verdict; flags interval;',
      "[1] swg-noded declares every single-key set and map by expression, never by a plain single `type`"),
     ("call", "ENTRY", "\nnft_typeof_migrate\n", "\n: nft_typeof_migrate\n", "[2] …and it runs before swg-noded starts"),
@@ -134,10 +136,13 @@ plain = re.findall(r"(?:set|map) [A-Za-z0-9_%{}]+ \{ type ([a-z0-9_]+)(?: : verd
 plain = [x for x in plain if x != "filter"]
 decls = re.findall(r"(?:set|map) [A-Za-z0-9_%{}]+ \{ (type|typeof) ([^;]+);", code) + re.findall(r'"\{ (type|typeof) ([^;]+);', code)
 single_type = [d for k, d in decls if k == "type" and " . " not in d and not d.startswith("filter hook")]
+# …and a map's DATA side: `type a . b : ipv4_addr` is a plain single type too — a CI-image nft 1.1.3 wrote it and Debian 12's
+# 1.0.6 segfaulted listing it (S12 review F1, measured 2026-10-28 on the qual-nftload images)
+single_type += [d for k, d in decls if k == "type" and " : " in d and " . " not in d.split(" : ", 1)[1] and d.split(" : ", 1)[1].strip() != "verdict"]
 typeofs = sorted({d.split(" : ")[0] for k, d in decls if k == "typeof"})
 check("[1] swg-noded declares every single-key set and map by expression, never by a plain single `type`",
       not plain and not single_type and len([1 for k, _ in decls if k == "typeof"]) >= 14, (plain, single_type, len(decls)))
-check("[1] …each by an expression measured to read on nft 1.0.2 / 1.0.6 / 1.0.9 / 1.1.3", set(typeofs) <= {"ip daddr", "ip saddr", "iifname", "th dport"}
+check("[1] …each by an expression measured to read on nft 1.0.2 / 1.0.6 / 1.0.9 / 1.1.3", set(typeofs) <= {"ip daddr", "ip saddr", "iifname", "th dport", "ip daddr . th dport"}
       and {"ip daddr", "ip saddr", "iifname", "th dport"} <= set(typeofs), typeofs)
 concats = [d for k, d in decls if k == "type" and " . " in d]
 check("[1] …while a concatenation keeps its `type` (it read everywhere before)", len(concats) >= 4, concats)

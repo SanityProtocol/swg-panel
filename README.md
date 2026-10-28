@@ -580,11 +580,13 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   *Advanced*). Where torrents are blocked there is no magnet.
 - **Each device has its own incoming torrent port.** Where torrents leave by the server's own address — a server on
   *Direct*, or an interface whose own choice is *Direct* — every device gets a fixed port (20000–29999, the same on
-  every server it is on), and the server forwards it from its address to the device: other peers can connect in, which
-  is what seeding and private trackers need. The magnet's bubble then opens with that port; set it as the client's
-  listening port and turn off the random port at startup. A port another program on the server already listens on is
-  not forwarded, and the bubble does not show it. The panel keeps 20000–29999 free for this: a new interface or
-  turn-proxy can't listen there.
+  every server it is on), and the server forwards it from its address to the device on a WireGuard or AmneziaWG
+  interface (one per server: its primary connection there): other peers can connect in, which is what seeding and
+  private trackers need. The magnet's bubble then opens with that port; set it as the client's listening port and turn
+  off the random port at startup. Where nothing is forwarded — a WDTT or csqtt connection, a Docker node in bridge
+  mode, a port another program on the server already uses — the bubble shows no port. Keep 20000–29999 free on the
+  servers: the panel refuses it for a new interface or turn-proxy. A switch to Block also ends the incoming connections
+  already open.
 - **In Docker, the panel keeps port 80 for its certificate.** With a Let's Encrypt certificate (for a domain or the
   bare IP), the panel's container holds the server's port 80, so it renews on its own with nothing to set up. Another
   certificate tool on the same server (your own acme.sh or certbot) then can't use port 80: give it hooks that stop the

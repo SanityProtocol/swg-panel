@@ -9090,7 +9090,7 @@ def p2p_ports_fill(roster, first=()):
     changed = False
     for q in todo:
         x = next(free, None)
-        if x != q.get("p2p_port"):
+        if x != q.get("p2p_port") or type(q.get("p2p_port")) is not int:   # (20000.0 == 20000)
             changed = True
             q.update(p2p_port=x) if x else q.pop("p2p_port", None)
     return changed
@@ -30182,7 +30182,9 @@ def api(method, path, qs, body, deps):
             ipaddress.ip_network(subnet, strict=False)
         except Exception:
             return 400, {"ok": False, "error": "subnet must be a CIDR like 10.8.0.0/24", "code": "bad_request"}
-        rc = reserved_conflict(deps, nodes, nodes[nid], subnet=subnet, port=body.get("listen_port"), name=iface)
+        _prev = (nodes[nid].get("ifaces") or {}).get(iface) or {}   # a recreate keeps its own port, in the torrent pool too
+        rc = reserved_conflict(deps, nodes, nodes[nid], subnet=subnet, port=body.get("listen_port"), name=iface,
+                               keep=(_prev.get("desired_port"), _prev.get("listen_port"), (_prev.get("_lastcfg") or {}).get("listen_port")))
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
         fc = subnet_fleet_conflict(deps, nodes, subnet, skip_node=nid, skip_iface=iface)   # subnets must be unique across the fleet (mesh routes by subnet)
@@ -37740,6 +37742,7 @@ def main():
         _r = roster_load(_rp)
         if p2p_ports_fill(_r):
             roster_save(_rp, _r)
+        del _r                                         # main() never returns: the parsed roster would stay for good
     _psp = fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json")
     migrate_ru_split(nodes_path)   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
     migrate_tld_rules(nodes_path, _psp)   # legacy `tld` rules -> disabled zone patterns, BEFORE zones ship (§5.1)

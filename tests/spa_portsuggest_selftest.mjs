@@ -40,9 +40,9 @@ if (PERTURB || PERTURB_POOL) {
   const before = src;
   const patched = PERTURB_POOL ? src.replace(" || (p >= 20000 && p <= 29999)) && p < 65535) p++;", ") && p < 65535) p++;") : src
     .replace("const mineUser = mine.filter(q => !inMesh(q));", "const mineUser = mine;")
-    .replace("while ((used.has(p) || reserved.has(p) || inMesh(p)) && p < 65535) p++;",
-             "while ((used.has(p) || reserved.has(p)) && p < 65535) p++;");
-  if (patched === before) { console.log("PERTURB ANCHOR MISSING — this run would FALSE-PASS"); process.exit(1); }
+    .replace("while ((used.has(p) || reserved.has(p) || inMesh(p) || (p >= 20000 && p <= 29999)) && p < 65535) p++;",
+             "while ((used.has(p) || reserved.has(p) || (p >= 20000 && p <= 29999)) && p < 65535) p++;");
+  if (patched === before || (PERTURB && patched.includes("inMesh(p) ||"))) { console.log("PERTURB ANCHOR MISSING — this run would FALSE-PASS"); process.exit(1); }
   // Written BESIDE the real module so its own relative imports resolve exactly as they do in the browser.
   // (A data: URL cannot resolve "./i18n.js", and rewriting the specifiers by regex silently missed the one
   // with a digit in it — a perturbation that crashes reads the same as one that was caught.)

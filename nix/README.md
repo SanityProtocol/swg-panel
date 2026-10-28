@@ -586,6 +586,7 @@ whatever the older build's card says — until a reboot or:
 
 ```bash
 sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null
+sudo nft delete table ip swg_p2pfwd 2>/dev/null   # from 1.8.11: the devices' incoming torrent ports
 ```
 
 ---

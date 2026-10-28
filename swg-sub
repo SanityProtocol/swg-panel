@@ -725,11 +725,16 @@ def _p2p_fwd_of(p, tg, describe):
     the panel forwards: its primary, else the first by interface name (the panel's p2p_fwd_for_node, twinned). {} else."""
     port, fw = p.get("p2p_port"), (describe.get(tg.get("node")) or {}).get("p2p_fwd") or {}
     e = fw.get(tg.get("iface"))
-    if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") or ()):
+    if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):
         return {}
     mine = min(((_role_of(t) != "primary", str(t.get("iface") or "")) for t in (p.get("targets") or [])
                 if isinstance(t, dict) and t.get("node") == tg.get("node") and str(t.get("iface") or "") in fw), default=None)
-    return {"p2p_port": port, "p2p_addr": str(e.get("addr") or "")} if mine and mine[1] == tg.get("iface") else {}
+    if not mine or mine[1] != tg.get("iface"):
+        return {}
+    with contextlib.suppress(ValueError):                 # the address only where the swarm sees it: a node behind 1:1 NAT
+        if ipaddress.ip_address(str(e.get("addr") or "")).is_global:   # holds a private one (its forward works all the same)
+            return {"p2p_port": port, "p2p_addr": str(e["addr"])}
+    return {"p2p_port": port}
 
 
 def _role_of(t):
