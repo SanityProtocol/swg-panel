@@ -129,7 +129,7 @@ export const api = {
   exitEscrowForget(node, id) { return this.post("/api/exit/escrow/forget", { node, id }); },
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
-  vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev }); },     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
+  vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev, pool_v: 2 }); },   // pool_v: built from GET /api/vk-pool, not the poll (a pre-S12b tab is refused)     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
   vkPoolPerUser(n) { return this.post("/api/vk-pool/per-user", { n }); },   // how many pool links a NEW user gets
   vkPoolGet() { return this.get("/api/vk-pool"); },                        // the pool itself + the check's answers (the poll carries only its rev and a live count)
   vkPoolResults() { return this.get("/api/vk-pool/results"); },            // the check's answers alone, while a run is going

@@ -376,6 +376,9 @@ export function VkLinksSheet({ user }) {
   const poolUrls = new Set(Object.values(lu.vk_pool || {}));
   const fromPool = (url) => poolUrls.has(url);
   const [rows, setRows] = useState(start.length ? start.map(u => ({ url: u })) : [{ url: "" }]);
+  // The links as they were when the rows were seeded. A pool change (the alive check's cascade) can replace one while
+  // the sheet is open, and saving the rows back would restore the dead link as a personal one and drop its replacement.
+  const seeded = useRef(start);
   const [adding, setAdding] = useState(false);
   const [primary, setPrimary] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -397,12 +400,20 @@ export function VkLinksSheet({ user }) {
     setAdding(false);
     if (!r || !r.ok) return toast(srvText(r) || T("Couldn't add a link from the pool"), "err");
     const got = (r.data || {}).vk_links || [];
+    seeded.current = got;
     setRows(got.map(u => ({ url: u })));
-    Store.poll(); Store.configEpoch++; bus.emit();
+    await Store.poll().catch(() => {});             // the live user catches up before a Save compares against it
+    Store.configEpoch++; bus.emit();
     toast(T("Added a link from the pool."), "ok");
   };
   const dirty = JSON.stringify(norm.filter(Boolean)) !== JSON.stringify(start);
   const persist = async (close) => {
+    if (JSON.stringify(start) !== JSON.stringify(seeded.current)) {
+      seeded.current = start;
+      setRows(start.length ? start.map(u => ({ url: u })) : [{ url: "" }]); setPrimary(0);
+      toast(T("This user's links changed while the sheet was open — check them and save again."), "err");
+      return false;
+    }
     const clean = norm.filter(Boolean);
     if (clean.some(u => !_VK_CALL_RE.test(u))) { toast(T("One of the links isn't a VK call link or its hash."), "err"); return false; }
     const uniq = [...new Set(clean)];
@@ -412,6 +423,7 @@ export function VkLinksSheet({ user }) {
     const r = await api.userUpdate({ id: user.id, vk_links: ordered });
     setBusy(false);
     if (!r || !r.ok) { toast(srvText(r) || T("Couldn't save the VK links"), "err"); return false; }
+    seeded.current = ordered;
     if (close) closeModal();
     Store.poll(); Store.configEpoch++; bus.emit();                    // turn configs re-render with the updated links
     if (close) toast(ordered.length ? T("Saved {v1}.", { v1: plural(ordered.length, "VK link") }) : T("VK links cleared."), "ok");

@@ -89,25 +89,24 @@ const VK_PAGE_INLINE = 5, VK_PAGE_SHEET = 15;
 // The pool is NOT in the poll — it carries only vk_pool_rev, a live count and the check's state. The editor fetches
 // the list (GET /api/vk-pool) when that rev moves, and the check's answers when vk_check.seq does. One module-level
 // copy, so the inline editor and the "View all" sheet share a fetch; nothing is fetched while neither is open.
-const VKP = { rev: null, pool: [], res: {}, seq: null, loading: null };
+// `asked` is the poll's rev / seq each fetch was made FOR: a fetch is made once per change the poll shows, never in a
+// loop (an answer that is newer than the poll does not ask again), and a failed one is asked again at the next poll.
+const VKP = { rev: null, pool: [], res: {}, asked: { pool: undefined, res: undefined }, busy: { pool: false, res: false } };
 function vkpTake(d) {
   if (!d) return;
-  if (Array.isArray(d.pool)) { VKP.pool = d.pool; VKP.rev = d.rev || 0; }
-  if (d.res) { VKP.res = d.res; VKP.seq = d.seq || 0; }
+  // the rev only moves forward: a GET served before a save but answered after it does not undo the save
+  if (Array.isArray(d.pool) && (VKP.rev === null || (d.rev || 0) >= VKP.rev)) { VKP.pool = d.pool; VKP.rev = d.rev || 0; }
+  if (d.res) VKP.res = d.res;
 }
-function vkpLoad(what) {
-  if (VKP.loading) return VKP.loading;
-  let took = false;
-  VKP.loading = (what === "res" ? api.vkPoolResults() : api.vkPoolGet())
-    .then(r => { if (r && r.ok) { vkpTake(r.data); took = true; } }).catch(() => {})
-    .finally(() => {
-      VKP.loading = null; bus.emit();
-      // The pool's rev moved while this was in flight (a results fetch, or an older pool): fetch the pool now — no
-      // later poll would, because the hook only acts when the rev changes again. Only after a success, so a failing
-      // GET is not retried in a loop; the answers wait for the next poll (a run moves them every second).
-      if (took && VKP.rev !== ((Store.panelSettings || {}).vk_pool_rev || 0)) vkpLoad();
-    });
-  return VKP.loading;
+function vkpLoad(what, mark) {
+  const k = what === "res" ? "res" : "pool";
+  if (VKP.busy[k]) return Promise.resolve();
+  VKP.busy[k] = true;
+  if (mark !== undefined) VKP.asked[k] = mark;
+  return (k === "res" ? api.vkPoolResults() : api.vkPoolGet())
+    .then(r => { if (!(r && r.ok)) throw new Error("vk-pool"); vkpTake(r.data); })
+    .then(() => { VKP.busy[k] = false; bus.emit(); },
+          () => { VKP.busy[k] = false; VKP.asked[k] = undefined; });   // no emit: the next poll asks again, not this instant
 }
 
 function usePool() {
@@ -115,13 +114,17 @@ function usePool() {
   const ps = Store.panelSettings || {};
   const ck = ps.vk_check || {};
   const psRev = ps.vk_pool_rev || 0, psSeq = ck.seq || 0;
-  useEffect(() => { if (VKP.rev !== psRev) vkpLoad(); else if (VKP.seq !== psSeq) vkpLoad("res"); }, [psRev, psSeq]);
+  useEffect(() => {                                // every render: cheap, and the marks keep it to once per change
+    if (VKP.asked.pool !== psRev && !VKP.busy.pool) { VKP.asked.res = psSeq; vkpLoad("pool", psRev); }
+    else if (VKP.asked.res !== psSeq && !VKP.busy.res && !VKP.busy.pool) vkpLoad("res", psSeq);
+  });
   const server = VKP.pool;
   const [local, setLocal] = useState(null);        // optimistic overlay; null = showing the server's list
-  const [checking, setChecking] = useState("");    // the row whose Check is waiting on VK
+  const [checking, setChecking] = useState(() => new Set());   // the rows whose Check is waiting on VK
   const wantRev = useRef(0);
   const revRef = useRef(VKP.rev || 0);
   const chain = useRef(Promise.resolve());
+  const gen = useRef(0);                           // moves when a save fails: the saves queued behind it are dropped
   const pool = local || server;
   // Drop the overlay only once the server has caught up, so the row never flashes back to its old value in
   // the gap between "saved" and "the next fetch arrived".
@@ -134,14 +137,20 @@ function usePool() {
   // ⚠️ SERIALISED. Each save carries the revision it was read at, and the server bumps that by one, so two
   // actions fired a moment apart must not both send the old number — the second would be refused as stale by
   // the very guard that exists to stop a different session clobbering this one.
+  // ⚠️ A REFUSED SAVE DROPS THE ONES QUEUED BEHIND IT. They were built on the same list it was, and once the conflict
+  // has moved revRef to the server's rev they would pass the guard and overwrite what changed meanwhile (a link the
+  // check marked dead, handed out again).
   const send = (next, okMsg) => {
     setLocal(next);
     wantRev.current = revRef.current + 1;
+    const g = gen.current;
     chain.current = chain.current.then(async () => {
+      if (gen.current !== g) return;
       const r = await api.vkPool(next, revRef.current);
       if (!r || !r.ok) {
+        gen.current++;
         setLocal(null);                            // revert to whatever the server actually holds
-        if ((r || {}).code === "conflict") { vkpTake(r.data); revRef.current = (r.data || {}).rev || 0; bus.emit(); await Store.poll(); }
+        if ((r || {}).code === "conflict" && (r.data || {}).pool) { vkpTake(r.data); revRef.current = r.data.rev || 0; VKP.asked.pool = undefined; bus.emit(); await Store.poll(); }
         toast(srvText(r) || T("Couldn't save the VK pool"), "err");
         return;
       }
@@ -155,7 +164,10 @@ function usePool() {
     return chain.current;
   };
 
-  const holders = url => (Store.recon.users || []).filter(u => (u.vk_links || []).includes(url)).length;
+  // Holders per URL, counted ONCE per render: with no size limit a per-row scan of every user is links × users a render.
+  const held = new Map();
+  for (const u of (Store.recon.users || [])) for (const l of (u.vk_links || [])) held.set(l, (held.get(l) || 0) + 1);
+  const holders = url => held.get(url) || 0;
   const problem = (url, skipId) => {
     const v = normVkLink(url);
     if (!v) return T("Enter a VK call link.");
@@ -168,17 +180,18 @@ function usePool() {
   };
   // A row's Check: VK's answer in a toast, and on the row's pulse for the hour after (VkCheckBtn).
   const checkOne = async e => {
-    setChecking(e.id);
+    if (!e.id || checking.has(e.id)) return;      // a row not saved yet has no id ({} would be "Check all")
+    setChecking(c => new Set(c).add(e.id));
     let r = null;
     try { r = await api.vkCheck(e.id); } catch (_) { r = null; }
-    setChecking("");
-    await vkpLoad();
+    setChecking(c => { const n = new Set(c); n.delete(e.id); return n; });
+    await vkpLoad("pool");
     if (!r || !r.ok) { toast(srvText(r) || T("Couldn't ask VK"), "err"); return; }
     const d = r.data || {};
     if (d.verdict === "alive") toast(d.revived ? T("VK: the link is alive — it is handed out again.")
       : d.operator_dead ? T("VK: the link is alive. You marked it dead — mark it alive to hand it out again.")
       : T("VK: the link is alive."), "ok");
-    else if (d.verdict === "dead") toast(d.was_dead ? T("VK: this link no longer exists.")
+    else if (d.verdict === "dead") toast(!d.marked ? T("VK: this link no longer exists.")   // already dead, or edited meanwhile
       : d.moved ? T("VK: this link no longer exists — marked dead, moved {v1} to another link.", { v1: plural(d.moved, "user") })
       : T("VK: this link no longer exists — marked dead."), "ok");
     else toast(d.verdict === "limited" ? T("VK limited the check — nothing changed. Try again later.")
@@ -190,11 +203,12 @@ function usePool() {
     pool, holders, problem, checking, checkOne, res: VKP.res, loaded: VKP.rev !== null,
     saveUrl: (e, raw) => { const v = normVkLink(raw); const why = problem(v, e.id);
       if (why) { toast(why, "err"); return false; }
-      if (v !== e.url) send(pool.map(x => x.id === e.id ? { ...x, url: v } : x), T("Link updated."));
+      if (v !== e.url) send(pool.map(x => x.id === e.id ? { ...x, url: v, dead_by: undefined } : x), T("Link updated."));
       return true; },
     addMany: (list) => send([...pool, ...list.map(u => ({ url: u, dead: false, added: Math.floor(Date.now() / 1000) }))],
                             list.length > 1 ? T("Added {v1}.", { v1: plural(list.length, "VK link") }) : T("Link added.")),
-    toggleDead: e => send(pool.map(x => x.id === e.id ? { ...x, dead: !x.dead } : x), e.dead ? T("Marked alive.") : T("Marked dead.")),
+    // dead_by dropped in the overlay as the server drops it (an un-mark or an edit is the operator's own decision)
+    toggleDead: e => send(pool.map(x => x.id === e.id ? { ...x, dead: !x.dead, dead_by: undefined } : x), e.dead ? T("Marked alive.") : T("Marked dead.")),
     remove: e => send(pool.filter(x => x.id !== e.id), T("Link removed.")),
     removeDead: () => { const n = pool.filter(x => x.dead).length;
       send(pool.filter(x => !x.dead), T("Removed {v1}.", { v1: plural(n, "dead VK link") })); },
@@ -275,9 +289,9 @@ function VkPoolRows({ P, rows, withDate }) {
 // link). After the hour it goes back to grey, except on a link the check took out of circulation: the pool's amber.
 const VK_CHECK_FRESH = 3600;   // the server's VK_CHECK_KEEP
 function vkCheckTone(P, e) {
-  if (P.checking === e.id || ((Store.panelSettings || {}).vk_check || {}).cur === e.id) return "busy";
+  if (P.checking.has(e.id) || (e.id && ((Store.panelSettings || {}).vk_check || {}).cur === e.id)) return "busy";
   const r = P.res[e.id];
-  if (r && panelNowS() - r.at < VK_CHECK_FRESH) return r.v;
+  if (r && r.url === e.url && panelNowS() - r.at < VK_CHECK_FRESH) return r.v;   // an answer about the URL the row holds now
   return e.dead_by === "check" ? "gone" : "";
 }
 function VkCheckBtn({ P, e }) {
@@ -287,8 +301,10 @@ function VkCheckBtn({ P, e }) {
     : tone === "dead" ? T("VK answered: this link no longer exists, {v1}", { v1: ago(r.at) })
     : tone === "unknown" ? T("VK gave no clear answer, {v1}", { v1: ago(r.at) })
     : tone === "gone" ? T("VK's check found this link no longer exists") : "";
-  return html`<button class=${"btn btn-ghost btn-mini iconbtn vkpool-chk" + (tone ? " t-" + tone : "")} disabled=${tone === "busy"}
-    onClick=${() => P.checkOne(e)} title=${(said ? said + " — " : "") + T("Ask VK whether this link still exists")}><${Ic} i="activity"/></button>`;
+  // Busy is aria-disabled, not disabled: .iconbtn:disabled takes the pointer away, and with it the "Asking VK…" title.
+  return html`<button class=${"btn btn-ghost btn-mini iconbtn vkpool-chk" + (tone ? " t-" + tone : "")} disabled=${!e.id}
+    aria-disabled=${tone === "busy" ? "true" : null} onClick=${() => P.checkOne(e)}
+    title=${(said ? said + " — " : "") + T("Ask VK whether this link still exists")}><${Ic} i="activity"/></button>`;
 }
 
 // The alive check's line, above the totals: what the last run found, the every-6-hours switch and "Check all".
@@ -324,8 +340,9 @@ function VkCheckLine({ P }) {
   return html`<div class="vkcheck">
     ${line}
     <span class="grow"></span>
-    <label class="vkcheck-auto" title=${T("Ask VK about every live link every 6 hours, one link a second, from this panel's address")}>
-      <${Switch} on=${auto} onChange=${setAuto}/><span>${T("Every 6 h")}</span></label>
+    ${/* A span, not a label: Switch is a <label> of its own, and a nested one is invalid and drops this title. */ ""}
+    <span class="vkcheck-auto" title=${T("Ask VK about every live link every 6 hours, one link a second, from this panel's address")}>
+      <${Switch} on=${auto} onChange=${setAuto}/><span onClick=${() => setAuto(!auto)}>${T("Every 6 h")}</span></span>
     <button class="btn btn-ghost btn-mini" disabled=${!!ck.checking} onClick=${checkAll}
       title=${T("Ask VK about every live link now — dead ones are skipped; check a dead one on its own row")}>
       <${Ic} i="activity"/> ${T("vk|Check all")}</button>

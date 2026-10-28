@@ -22,6 +22,16 @@ Drives the REAL panel over HTTP against a stub of VK's API (SWG_PANEL_VK_API), w
   [14] "Check all" while a run is going starts nothing; with no live link it starts nothing
   [15] a link's answer is shown only while it still holds the URL that was asked about
   [16] a row check waits on VK WITHOUT holding the panel's lock: another save goes through meanwhile
+  [18] a save that does not say it was built from GET /api/vk-pool (a tab running the pre-S12b editor) is refused
+  [19] a newer answer about a link (a row's Check during the run) decides over the run's own dead verdict  (in-process)
+  [20] every ask is paced, a row's included: two row checks at once ask VK at least the gap apart
+  [21] an answer of a shape VK never gave (a string response, an infinite error code) reads unknown; the run goes on
+  [22] one dropped connection is asked again, not taken for "VK didn't answer"
+  [23] a run that VK stopped resumes at the link it stopped on
+  [24] a row's dead answer about a link edited meanwhile says nothing was marked
+  [25] the panel settings save no longer echoes the pool
+  [26] GET /api/vk-pool reads the rev before the pool (a torn read is refused, never accepted)  (in-process)
+  [27] the automatic run waits out the settle after a start
 
 Run: python3 tests/vk_pool_check_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -43,17 +53,15 @@ PLANTS = {   # name: (old text, planted text)
     "one-ask": ('    v = _vk_ask(h)\n    if v != "dead":\n        return v', '    v = _vk_ask(h)\n    if True:\n        return v'),
     "captcha-dead": ('    if code in (951, 954) or 9000', '    if code in (951, 954, 14) or 9000'),
     "no-stop": ('            elif v in ("limited", "neterr"):', '            elif v in ():'),
-    "skip-off": ('    todo = [(e["id"], e["url"]) for e in _vk_pool_live(deps.get("panel_settings") or {})]',
-                 '    todo = [(e["id"], e["url"]) for e in _vk_pool_list(deps.get("panel_settings") or {})]'),
-    "revive-any": ('        if not dead and e.get("dead") and e.get("dead_by") == "check":', '        if not dead and e.get("dead"):'),
+    "skip-off": ('    todo = [(e["id"], e["url"]) for e in _vk_pool_live(ps0)]', '    todo = [(e["id"], e["url"]) for e in _vk_pool_list(ps0)]'),
+    "revive-any": ('    if not dead and e.get("dead") and e.get("dead_by") == "check":', '    if not dead and e.get("dead"):'),
     "body-deadby": ('if dead and prev.get("dead_by") == "check" and prev.get("url") == url else {})',
                     'if dead and (e.get("dead_by") == "check" or prev.get("dead_by") == "check") else {})'),
     "keep-off": ('if dead and prev.get("dead_by") == "check" and prev.get("url") == url else {})', 'if False else {})'),
-    "commit-by-id": ('            return False                              # edited while it was being asked about\n',
-                     '            pass\n'),
+    "commit-by-id": ('        return False                                  # edited while it was being asked about\n', '        pass\n'),
     "commit-per-link": ('            if v == "dead":\n                dead.append((eid, url))',
                         '            if v == "dead":\n                with _api_lock:\n                    _ps = deps.get("panel_settings") or {}\n'
-                        '                    if _vk_mark(_ps, eid, url, True):\n'
+                        '                    if _vk_mark(_vk_raw_index(_ps).get(eid), url, True):\n'
                         '                        _ps["vk_pool_rev"] = int(_ps.get("vk_pool_rev") or 0) + 1\n'
                         '                        _vk_check_save(deps, _ps, roster_path, 1)'),
     "empty-runs": ('            due = (ps.get("vk_check_auto") is not False and time.time() >= int(last.get("at") or 0) + VK_CHECK_EVERY\n'
@@ -67,6 +75,20 @@ PLANTS = {   # name: (old text, planted text)
                      '                return 200, {"ok": True, "data": {"started": False, "checking": False}}\n', ''),
     "res-anyurl": ('if at >= cut and urls.get(k) == u}', 'if at >= cut and k in urls}'),
     "settle-sleep": ('    wait = VK_CHECK_SETTLE ', '    time.sleep(VK_CHECK_SETTLE); wait = VK_CHECK_TICK '),
+    "poolv-off": ('        if body.get("pool_v") != 2:', '        if False:'),
+    "newer-off": ('                         if (_VK_CHECK["res"].get(eid) or (0, "dead"))[1] == "dead" and _vk_mark(idx.get(eid), url, True))',
+                  '                         if _vk_mark(idx.get(eid), url, True))'),
+    "pace-off": ('            if gap <= 0:\n                try:', '            if True:\n                try:'),
+    "shape-off": ('    r = a.get("response") if isinstance(a, dict) else None\n    tok = r.get("token") if isinstance(r, dict) else None',
+                  '    tok = (a.get("response") or {}).get("token")'),
+    "overflow-off": ('    except (TypeError, ValueError, OverflowError):\n        code = 0', '    except (TypeError, ValueError):\n        code = 0'),
+    "retry-off": ('    for again in (1, 0):', '    for again in (0,):'),
+    "resume-off": ('    todo = todo[at:] + todo[:at]', '    todo = todo'),
+    "marked-on": ('"moved": 0, "marked": False,', '"moved": 0, "marked": v == "dead",'),
+    "echo-pool": ('                     "data": {**{k: v for k, v in cur.items() if k != "vk_pool"},', '                     "data": {**cur,'),
+    "torn-get": ('    rev = int(ps.get("vk_pool_rev") or 0)\n    return 200, {"ok": True, "data": {"pool": _vk_pool_list(ps), "rev": rev,',
+                 '    pool = _vk_pool_list(ps)\n    return 200, {"ok": True, "data": {"pool": pool, "rev": int(ps.get("vk_pool_rev") or 0),'),
+    "settle-zero": ('    wait = VK_CHECK_SETTLE ', '    wait = 0 '),
     "lock-held": ('            if path in _LOCKLESS_POST or path in _SELF_LOCKING_POST:', '            if path in _LOCKLESS_POST:'),
 }
 
@@ -83,6 +105,8 @@ class Stub:
         self.previews = {}                            # hash → getCallPreview count
         self.flipped = set()                          # FP hashes that now answer alive
         self.hold = {}                                # hash → (reached Event, release Event): block on that preview
+        self.tokens = []                              # (monotonic time, hash) of every token request
+        self.firsts = set()                           # RS / C1 hashes already answered once
         self.lock = threading.Lock()
 
     def answer(self, method, h):
@@ -92,6 +116,18 @@ class Stub:
         if kind == "NE":
             return 500, {}
         if method == "auth.getAnonymToken":
+            with self.lock:
+                self.tokens.append((time.monotonic(), h))
+                first = h not in self.firsts
+                self.firsts.add(h)
+            if kind == "RS" and first:
+                return None, None                     # the connection is dropped, no answer
+            if kind == "C1" and first:
+                return 200, {"error": {"error_code": 14, "error_msg": "Captcha needed"}}
+            if kind == "WR":
+                return 200, {"response": "ok"}
+            if kind == "WI":
+                return 200, {"error": {"error_code": float("inf"), "error_msg": "?"}}
             if kind == "CP":
                 return 200, {"error": {"error_code": 14, "error_msg": "Captcha needed"}}
             if kind == "FL":
@@ -105,7 +141,7 @@ class Stub:
             held[1].wait(30)
         alive = {"response": {"user_id": 7, "secret": "s3cr3t"}}
         dead = {"error": {"error_code": 954, "error_msg": "Invalid join link"}}
-        if kind in ("AL", "HA"):
+        if kind in ("AL", "HA", "RS", "C1"):
             return 200, alive
         if kind in ("DX", "HD"):
             return 200, dead
@@ -127,6 +163,9 @@ def start_stub(stub):
             q = parse_qs(u.query)
             link = (q.get("link") or [""])[0]
             code, obj = stub.answer(u.path.rsplit("/", 1)[-1], link.rsplit("/", 1)[-1])
+            if code is None:
+                self.close_connection = True
+                return
             raw = json.dumps(obj).encode()
             self.send_response(code); self.send_header("Content-Length", str(len(raw))); self.end_headers()
             self.wfile.write(raw)
@@ -152,12 +191,15 @@ def run(server):
             if FIRST_FAIL:
                 raise SystemExit(1)
 
+    inproc(server, check)
     D = tempfile.mkdtemp(prefix="vkchk-")
     for d in ("state", "conf", "stats"):
         os.makedirs(os.path.join(D, d))
     json.dump({"nodes_path": D + "/state/nodes.json", "roster_path": D + "/state/users.json",
                "panel_settings_path": D + "/state/panel-settings.json", "config_dir": D + "/conf", "stats_dir": D + "/stats",
                "store_configs": False}, open(os.path.join(D, "fleet.json"), "w"))
+    json.dump({"vk_pool": [{"id": "seed", "url": J + H("AL", 3001), "dead": False, "added": 1}], "vk_pool_rev": 1},
+              open(D + "/state/panel-settings.json", "w"))   # a pool from before the start: its run waits out the settle
     stub = Stub(); ss = start_stub(stub)
     PORT = free_port()
     EVERY, SETTLE = 4.0, 6.0
@@ -176,7 +218,7 @@ def run(server):
     def get_pool():
         return call("GET", "/api/vk-pool")[1]["data"]
     def save_pool(pool):
-        return call("POST", "/api/vk-pool", {"pool": pool, "rev": get_pool()["rev"]})
+        return call("POST", "/api/vk-pool", {"pool": pool, "rev": get_pool()["rev"], "pool_v": 2})
     def by_url(url):
         return next((e for e in get_pool()["pool"] if e["url"] == url), None)
     def ps_poll():
@@ -194,13 +236,13 @@ def run(server):
         e = by_url(url)
         return call("POST", "/api/vk-pool/check", {"id": e["id"]})[1].get("data") or {}
     def check_all_and_wait():
-        before = (ps_poll().get("vk_check") or {}).get("at") or 0
+        # every run here asks at least one link, so its end is: not checking, and the answers' seq moved past `before`
+        before = (ps_poll().get("vk_check") or {}).get("seq") or 0
         r = call("POST", "/api/vk-pool/check", {})[1]["data"]
         for _ in range(300):
             ck = ps_poll().get("vk_check") or {}
-            if not ck.get("checking") and (ck.get("at") or 0) and ((ck.get("at") or 0) > before or time.time() - (ck.get("at") or 0) < 2):
-                if not ck.get("checking"):
-                    break
+            if not ck.get("checking") and (ck.get("seq") or 0) > before:
+                break
             time.sleep(0.1)
         time.sleep(0.2)
         return r, ps_poll().get("vk_check") or {}
@@ -220,6 +262,9 @@ def run(server):
         else:
             check("the panel came up", False); return fails
 
+        # [27] the automatic run waits out the settle: the seeded pool has never been checked, yet nothing is asked
+        time.sleep(2.0)
+        check("[27] the automatic run waits out the settle after a start", not stub.asked(H("AL", 3001)), stub.log[:2])
         # [17] "Check all" inside the settle runs at once
         t0 = time.time()
         save_pool([{"url": J + H("AL", 1)}])
@@ -228,7 +273,7 @@ def run(server):
             if (settings_file().get("vk_check") or {}).get("at"):
                 break
             time.sleep(0.1)
-        check("[17] \"Check all\" runs at once after a start", stub.asked(H("AL", 1)) and time.time() - t0 < SETTLE - 1, time.time() - t0)
+        check("[17] \"Check all\" runs at once after a start", stub.asked(H("AL", 1)) and time.time() - t0 < 1.5, time.time() - t0)
         # [10] golden: an empty pool, the switch on by default — the settle and a whole period pass, nothing is asked
         save_pool([])
         n_log, ck0 = len(stub.log), settings_file().get("vk_check")
@@ -340,7 +385,7 @@ def run(server):
         pool = get_pool()["pool"] + [{"url": J + ha}]
         save_pool(pool)
         t = threading.Thread(target=row_check, args=(J + ha,)); t.start()
-        stub.hold[ha][0].wait(10)
+        check("[16] (the row check reached VK)", stub.hold[ha][0].wait(10))
         t0 = time.time()
         try:
             code, _ = call("POST", "/api/vk-pool/per-user", {"n": 3}, timeout=3)
@@ -403,6 +448,54 @@ def run(server):
               len(events("VK check marked links dead")) - n_ev)
         check("[9] …and the holders moved off", held_before > 0 and not any(holders(J + x) for x in (x2, x3, x4)), held_before)
 
+        # [18] a save not built from GET /api/vk-pool
+        n0 = len(get_pool()["pool"])
+        code, r = call("POST", "/api/vk-pool", {"pool": [], "rev": get_pool()["rev"]})
+        check("[18] a save from a pre-S12b editor is refused", code == 409 and len(get_pool()["pool"]) == n0, (code, r))
+        # [20] two row checks at once are paced
+        p1, p2 = H("AL", 2601), H("AL", 2602)
+        save_pool([{"url": J + p1}, {"url": J + p2}])
+        k0 = len(stub.tokens)
+        ts = [threading.Thread(target=row_check, args=(J + x,)) for x in (p1, p2)]
+        [t.start() for t in ts]; [t.join(30) for t in ts]
+        tk = [t for t, h in stub.tokens[k0:] if h in (p1, p2)]
+        check("[20] two row checks at once ask VK the gap apart", len(tk) == 2 and abs(tk[1] - tk[0]) >= 0.04, tk)
+        # [21] answers of a shape VK never gave read unknown, and the run goes on
+        wr, wi, tail = H("WR", 1), H("WI", 1), H("AL", 2603)
+        save_pool([{"url": J + wr}, {"url": J + wi}, {"url": J + tail}])
+        check("[21] a string response reads unknown", row_check(J + wr).get("verdict") == "unknown")
+        check("[21] an infinite error code reads unknown", row_check(J + wi).get("verdict") == "unknown")
+        k0 = len(stub.log)
+        r, ck = check_all_and_wait()
+        check("[21] …and a run goes on past both", ck.get("state") == "done" and any(h == tail for _, h in stub.log[k0:]), ck)
+        # [22] one dropped connection is asked again
+        rs = H("RS", 1)
+        save_pool([{"url": J + rs}])
+        check("[22] a dropped connection is asked again", row_check(J + rs).get("verdict") == "alive")
+        # [23] a stopped run resumes where it stopped
+        r1, c1, r2 = H("AL", 2701), H("C1", 1), H("AL", 2702)
+        save_pool([{"url": J + r1}, {"url": J + c1}, {"url": J + r2}])
+        _, ck = check_all_and_wait()
+        check("[23] (the first run is stopped at the captcha)", ck.get("state") == "limited" and not stub.asked(r2), ck)
+        k0 = len(stub.tokens)
+        _, ck = check_all_and_wait()
+        order = [h for _, h in stub.tokens[k0:]]
+        check("[23] the next run resumes at the link it stopped on", order[:1] == [c1] and r2 in order and ck.get("state") == "done", order)
+        # [24] a row's dead answer about a link edited meanwhile
+        hq = H("HD", 2)
+        stub.hold[hq] = (threading.Event(), threading.Event())
+        save_pool([{"url": J + hq}])
+        got = {}
+        t = threading.Thread(target=lambda: got.update(row_check(J + hq))); t.start()
+        stub.hold[hq][0].wait(10)
+        pool = get_pool()["pool"]; pool[0]["url"] = J + H("AL", 2801); save_pool(pool)
+        stub.hold[hq][1].set(); t.join(30)
+        check("[24] a dead answer about a link edited meanwhile marks nothing and says so",
+              got.get("verdict") == "dead" and got.get("marked") is False and not get_pool()["pool"][0]["dead"], got)
+        # [25] the settings save does not echo the pool
+        code, r = call("POST", "/api/panel/settings", {})
+        check("[25] the panel settings save does not echo the pool", code == 200 and "vk_pool" not in (r.get("data") or {}), list((r.get("data") or {}))[:4])
+
         # [11] the switch off: no automatic run over a whole period
         save_pool([{"url": J + H("AL", 2500)}])
         n_log, ck0 = len(stub.log), settings_file().get("vk_check")
@@ -433,6 +526,40 @@ def run(server):
     return fails
 
 
+def inproc(server, check):
+    """[19] and [26], with the panel's functions called in-process: the interleavings they need cannot be timed over HTTP."""
+    import types
+    os.environ.update(SWG_NO_REEXEC="1", SWG_PANEL_VK_CHECK_GAP="0", SWG_PANEL_VK_CHECK_AGAIN="0")
+    m = types.ModuleType("swgpanel_vk"); m.__file__ = server
+    exec(compile(open(server, encoding="utf-8").read(), server, "exec"), m.__dict__)
+    D = tempfile.mkdtemp(prefix="vkin-")
+    try:
+        x, y = J + H("DX", 9001), J + H("AL", 9002)
+        ps = {"vk_pool": [{"id": "x", "url": x, "dead": False, "added": 1}, {"id": "y", "url": y, "dead": False, "added": 1}],
+              "vk_pool_rev": 3}
+        deps = {"panel_settings": ps, "panel_settings_path": D + "/panel-settings.json", "roster_path": D + "/users.json"}
+        def verdict(h):                               # x: dead twice; while y is asked, a row's Check answers alive for x
+            if h == H("DX", 9001):
+                return "dead"
+            m._vk_note("x", x, "alive")
+            return "alive"
+        m._vk_verdict = verdict
+        m._vk_check_run(deps, True)
+        check("[19] a newer alive answer decides over the run's dead verdict", not ps["vk_pool"][0]["dead"], ps["vk_pool"][0])
+        # [26] the order of the two reads, through a dict that records them
+        class Rec(dict):
+            def __init__(self, *a):
+                super().__init__(*a); self.order = []
+            def get(self, k, d=None):
+                self.order.append(k); return super().get(k, d)
+        rec = Rec(ps)
+        m.vk_pool_api_get("/api/vk-pool", {"panel_settings": rec})
+        o = [k for k in rec.order if k in ("vk_pool", "vk_pool_rev")]
+        check("[26] GET /api/vk-pool reads the rev before the pool", o[:1] == ["vk_pool_rev"] and "vk_pool" in o, o)
+    finally:
+        shutil.rmtree(D, ignore_errors=True)
+
+
 def plant_one(item):
     name, (old, new) = item
     src = open(SERVER, encoding="utf-8").read()
@@ -441,10 +568,17 @@ def plant_one(item):
     d = tempfile.mkdtemp(prefix="vkplant-")
     path = os.path.join(d, "swg-panel-server")
     open(path, "w").write(src.replace(old, new))
-    r = subprocess.run([sys.executable, os.path.abspath(__file__)], env=dict(os.environ, SWG_PANEL_SERVER=path, VKCHK_FIRST_FAIL="1"),
-                       capture_output=True, text=True, timeout=600)
+    pr = subprocess.Popen([sys.executable, os.path.abspath(__file__)], env=dict(os.environ, SWG_PANEL_SERVER=path, VKCHK_FIRST_FAIL="1"),
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        out, _ = pr.communicate(timeout=600)
+    except subprocess.TimeoutExpired:
+        os.killpg(pr.pid, 9)                          # the child's panel with it (its own session)
+        pr.communicate()
+        shutil.rmtree(d, ignore_errors=True)
+        return name, "TIMEOUT — not caught"
     shutil.rmtree(d, ignore_errors=True)
-    failed = [l.strip()[5:] for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
+    failed = [l.strip()[5:] for l in out.splitlines() if l.strip().startswith("FAIL ")]
     return name, ("RED  (" + failed[0][:90] + ")") if failed else "GREEN — NOT CAUGHT"
 
 

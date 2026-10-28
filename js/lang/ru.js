@@ -7698,6 +7698,8 @@ export const STR = {
   "Turned the VK link check on": "Включена проверка VK-ссылок",
   "Turned the VK link check off": "Выключена проверка VK-ссылок",
   "Sort by VK's last answer": "Сортировать по последнему ответу VK",
+  "This page is out of date — reload it, then redo your change.": "Страница устарела — перезагрузите её и повторите изменение.",
+  "This user's links changed while the sheet was open — check them and save again.": "Ссылки пользователя изменились, пока окно было открыто — проверьте их и сохраните снова.",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
