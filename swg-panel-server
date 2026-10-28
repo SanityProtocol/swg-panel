@@ -30856,9 +30856,9 @@ def api(method, path, qs, body, deps):
         _wgp = inst.get("wg_port")
         if _dtls and _wgp and str(_dtls) == str(_wgp):
             return 400, {"ok": False, "error": "the DTLS listen port and the internal WG port must be different", "code": "bad_request"}
-        _own += _running_ports(deps, nid, "wdtt", iface)          # what the node runs it on is its own too (a restore, a transfer)
-        for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):
-            if _p and (_pr := p2p_pool_refusal(_p, keep=_own)):
+        _ran = _running_ports(deps, nid, "wdtt", iface)           # kept by the POOL check only: a report may be stale or wrong,
+        for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):   # so the conflict check keeps the record's own
+            if _p and (_pr := p2p_pool_refusal(_p, keep=_own + _ran)):
                 return 400, {"ok": False, "error": _pr, "code": "bad_request"}
             if _p:
                 _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
@@ -31213,8 +31213,7 @@ def api(method, path, qs, body, deps):
             _own.append(str(_cur["listen"]).rsplit(":", 1)[1])
         _wl = (inst.get("listen") or "").strip()
         _dtls = _wl.rsplit(":", 1)[1] if (":" in _wl) else None
-        _own += _running_ports(deps, nid, "csqtt", iface)         # what the node runs it on is its own too (a restore, a transfer)
-        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own)):
+        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (the pool only, as WDTT)
             return 400, {"ok": False, "error": _pr, "code": "bad_request"}
         if _dtls:
             _lc = _port_conflict(deps, nodes, nid, _dtls, own=_own)

@@ -115,12 +115,13 @@ PLANTS = {   # name: (file, old text, planted text)
     "wire-keyless":  ("panel", '            if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):\n                continue                                      # (the node first',
                       '            if not isinstance(t, dict) or t.get("node") != node_id:\n                continue                                      # (the node first'),
     "wire-unwired":  ("panel", '**({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, nid, p2p_fwd_scope(node, _blk_mech, my_plan))) else {}),', ''),
-    "pool-wdtt":     ("panel", '            if _p and (_pr := p2p_pool_refusal(_p, keep=_own)):\n                return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
-    "pool-csqtt":    ("panel", '        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own)):\n            return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
+    "pool-wdtt":     ("panel", '            if _p and (_pr := p2p_pool_refusal(_p, keep=_own + _ran)):\n                return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
+    "pool-csqtt":    ("panel", '        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (the pool only, as WDTT)\n            return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
     "pool-manage":   ("panel", '                        _pr = p2p_pool_refusal(_np, keep=_ownt)', '                        _pr = None'),
     "manage-namekeep": ("panel", '                        _lc = _port_conflict(deps, nodes, nid, _np, own=_ownt)', '                        _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp])'),
-    "wdtt-noran":    ("panel", '        _own += _running_ports(deps, nid, "wdtt", iface)', '        _own += []'),
-    "csqtt-noran":   ("panel", '        _own += _running_ports(deps, nid, "csqtt", iface)', '        _own += []'),
+    "wdtt-noran":    ("panel", '(_pr := p2p_pool_refusal(_p, keep=_own + _ran))', '(_pr := p2p_pool_refusal(_p, keep=_own))'),
+    "csqtt-noran":   ("panel", 'keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (the pool only, as WDTT)', 'keep=_own)):   # (the pool only, as WDTT)'),
+    "wdtt-ranclash": ("panel", '                _lc = _port_conflict(deps, nodes, nid, _p, own=_own)', '                _lc = _port_conflict(deps, nodes, nid, _p, own=_own + _ran)'),
     "ran-listonly":  ("panel", '    for k, x in (v.items() if isinstance(v, dict) else enumerate(v) if isinstance(v, list) else ()):', '    for k, x in enumerate(v or []):'),
     "dialin-drawpool": ("panel", ' - {51820} - set(range(P2P_PORT_POOL[0], P2P_PORT_POOL[1] + 1)))', ' - {51820})'),
     "pool-dialin":   ("panel", '        if (_pr := p2p_pool_refusal(port)):                   # (a kept exit', '        if (_pr := None):                   # (a kept exit'),
@@ -684,7 +685,10 @@ def keep_checks(src, ok):
         for n in ast.walk(tree):
             if isinstance(n, ast.If) and handler_path in ast.unparse(n.test):
                 u = ast.unparse(n)                          # asked, with what the node runs the instance on kept
-                return "_own += _running_ports(" in u and "p2p_pool_refusal(" in u and "_port_conflict(deps, nodes, nid" in u   # one list for both
+                # the pool check keeps what the node runs the instance on; the conflict check only the record's own (verify F17:
+                # a stale or wrong report must never hide a real clash, nor the RAW-IP reservation)
+                return (bool(re.search(r"p2p_pool_refusal\([^)]*keep=_own \+ (_ran|_running_ports\()", u))
+                        and ("_port_conflict(deps, nodes, nid, _p, own=_own)" in u or "_port_conflict(deps, nodes, nid, _dtls, own=_own)" in u))
         return None
     doors = {d: calls_in(d) for d in ("'/api/wdtt/set'", "'/api/csqtt/set'")}   # (ast.unparse quotes with ')
     tm = next((ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.If) and "path.endswith('/manage')" in ast.unparse(n.test)), "")
