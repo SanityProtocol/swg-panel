@@ -8721,7 +8721,8 @@ def _ensure_p2pfwd(fwd, node_cfg, res):
                 else:                                         # retried next pass
                     res["errors"].append("p2pfwd delete failed: " + (r.stderr or "").strip()[:160])
             _P2PFWD["report"] = rep
-            _p2pfwd_keep(statef, (), {})
+            if _P2PFWD["rows"] or _P2PFWD["gone"]:            # (an idle node writes nothing)
+                _p2pfwd_keep(statef, (), {})
             return
         sig = hashlib.sha256(text.encode()).hexdigest()
         cur_sig = ""
@@ -8736,7 +8737,7 @@ def _ensure_p2pfwd(fwd, node_cfg, res):
                 with contextlib.suppress(OSError):
                     os.unlink(sigf)
                 _P2PFWD.update(loaded=False, report={})       # what was in force is drained once a load goes in
-                _p2pfwd_keep(statef, (), {**gone, **{k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"]}})
+                _p2pfwd_keep(statef, (), {**gone, **{k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"] | cur}})
                 res["errors"].append("p2pfwd nft load failed: " + (r.stderr or "").strip()[:160])
                 return
             with contextlib.suppress(OSError):
