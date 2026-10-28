@@ -4085,9 +4085,8 @@ def peer_set(roster, pid, fields, now):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
-    if "p2p_port" not in rec:
-        _used = {q.get("p2p_port") for k, q in roster["peers"].items() if k != pid and isinstance(q, dict)}
-        _free = next((x for x in range(P2P_PORT_POOL[0], P2P_PORT_POOL[1] + 1) if x not in _used), None)
+    if "p2p_port" not in rec and p2p_port_wanted(rec):
+        _free = p2p_port_take(roster, pid)
         if _free:                                             # pool full: no port, nothing forwarded for it
             rec["p2p_port"] = _free
     roster["peers"][pid] = rec
@@ -9074,26 +9073,65 @@ def p2p_routers_cached(mark, roster, node_id, arrivals=()):
 P2P_PORT_POOL = (20000, 29999)
 
 
+def p2p_port_wanted(p):
+    """A device a port can reach: one wg/awg target at least. A WDTT / csqtt-only device is never forwarded, so it takes no
+    port from the pool; the save that gives it a wg/awg target gives it one."""
+    return any(isinstance(t, dict) and not _is_self_contained_target(t) for t in (p.get("targets") or []))
+
+
+def _p2p_free(roster, used):
+    """The free pool ports in hand-out order: from the roster's high-water mark (`p2p_next`) up, then from the bottom — a
+    port a deleted device held goes to another device only once the pool has come round (its swarm and trackers still
+    know it)."""
+    lo, hi = P2P_PORT_POOL
+    nx = roster.get("p2p_next")
+    nx = nx if type(nx) is int and lo <= nx <= hi else lo
+    return (x for r in (range(nx, hi + 1), range(lo, nx)) for x in r if x not in used)
+
+
+def p2p_port_take(roster, pid):
+    """The next port for `pid` (peer_set), moving the high-water mark past it. None when the pool is full."""
+    used = {q.get("p2p_port") for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict)}
+    x = next(_p2p_free(roster, used), None)
+    if x is not None:
+        roster["p2p_next"] = x + 1 if x < P2P_PORT_POOL[1] else P2P_PORT_POOL[0]
+    return x
+
+
 def p2p_ports_fill(roster, first=()):
-    """Give every peer without a port — or holding one an earlier peer holds, or one outside the pool (a hand edit, a node
-    transfer from another panel) — the lowest free one, in sorted peer-id order (`first`, the peers this panel already
-    held, claim theirs before the rest): the same result every run. True when something changed."""
-    peers, used, todo = roster.get("peers") or {}, set(), []
+    """Give every device that wants a port (`p2p_port_wanted`) and has none — or holds one an earlier peer holds, or one
+    outside the pool (a hand edit, a node transfer from another panel) — the next free one, in sorted peer-id order
+    (`first`, the peers this panel already held, claim theirs before the rest): the same result every run. A WDTT /
+    csqtt-only device gives its port back. True when something changed."""
+    peers, used, todo, changed = roster.get("peers") or {}, set(), [], False
     for pid in sorted(peers, key=lambda k: (k not in first, k)):
         q = peers[pid]
-        v = q.get("p2p_port") if isinstance(q, dict) else None
-        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:
+        if not isinstance(q, dict):
+            continue
+        v = q.get("p2p_port")
+        if not p2p_port_wanted(q):
+            changed = changed or "p2p_port" in q
+            q.pop("p2p_port", None)
+        elif type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:
             used.add(v)
-        elif isinstance(q, dict):
+        else:
             todo.append(q)
-    free = (x for x in range(P2P_PORT_POOL[0], P2P_PORT_POOL[1] + 1) if x not in used)
-    changed = False
+    free = _p2p_free(roster, used)
     for q in todo:
         x = next(free, None)
-        if x != q.get("p2p_port") or type(q.get("p2p_port")) is not int:   # (20000.0 == 20000)
+        if x != q.get("p2p_port") or (x is not None and type(q.get("p2p_port")) is not int):   # (20000.0 == 20000)
             changed = True
             q.update(p2p_port=x) if x else q.pop("p2p_port", None)
+        if x is not None:
+            roster["p2p_next"] = x + 1 if x < P2P_PORT_POOL[1] else P2P_PORT_POOL[0]
     return changed
+
+
+def p2p_ports_at_start(path):
+    """The start-up fill, in a function of its own: main() never returns, and a parsed roster bound there stays for good."""
+    r = roster_load(path)
+    if p2p_ports_fill(r):
+        roster_save(path, r)
 
 
 _P2P_FWD = {}   # node id → ((roster mark, scope), its list): recomputed only when either moves
@@ -37739,10 +37777,7 @@ def main():
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
     with contextlib.suppress(Exception):               # every device's incoming torrent port (Part C); a no-op once given
-        _r = roster_load(_rp)
-        if p2p_ports_fill(_r):
-            roster_save(_rp, _r)
-        del _r                                         # main() never returns: the parsed roster would stay for good
+        p2p_ports_at_start(_rp)
     _psp = fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json")
     migrate_ru_split(nodes_path)   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
     migrate_tld_rules(nodes_path, _psp)   # legacy `tld` rules -> disabled zone patterns, BEFORE zones ship (§5.1)

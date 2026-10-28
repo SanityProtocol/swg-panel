@@ -8591,7 +8591,21 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None):
 
 P2PFWD_TABLE = "swg_p2pfwd"
 P2PFWD_DRAIN_S = 86400   # a forward that ended keeps dropping its device's replies on flows still DNAT'd to it this long
-_P2PFWD = {"loaded": False, "report": {}, "rows": set(), "gone": {}}   # rows: (ip, port) in force · gone: (ip, port) → until
+_P2PFWD = {"loaded": False, "report": {}, "rows": set(), "gone": {}, "read": False}   # rows: (ip, port) in force · gone: (ip, port) → until
+
+
+def _p2pfwd_keep(statef, rows, gone):
+    """Rows in force and the drain, kept beside the sig: a forward that ended while noded restarted (or the switch to Block
+    it slept through) is still drained on the next pass."""
+    with contextlib.suppress(OSError):
+        if rows or gone:
+            os.makedirs(os.path.dirname(statef), exist_ok=True)
+            with open(statef + ".tmp", "w") as f:
+                json.dump({"rows": sorted(rows), "gone": sorted([a, p, t] for (a, p), t in gone.items())}, f)
+            os.replace(statef + ".tmp", statef)
+        else:
+            os.unlink(statef)
+    _P2PFWD.update(rows=set(rows), gone=dict(gone))
 
 
 def _p2p_fwd_take(fwd, mode, strict, groups):
@@ -8653,8 +8667,14 @@ def _ensure_p2pfwd(fwd, node_cfg, res):
     there, the swarm's packets would leave by the default route to a private address. Never over a listener: a port bound
     on that address or a wildcard is left out and reported `taken` (in the text, so a listener that appears later converges
     in one pass). A forward that ends is drained (`gone`, P2PFWD_DRAIN_S). Nothing → table and sig deleted. Never raises."""
-    sigf = os.path.join(GEO_DIR, ".p2pfwd.sig")
+    sigf, statef = os.path.join(GEO_DIR, ".p2pfwd.sig"), os.path.join(GEO_DIR, ".p2pfwd.state")
     try:
+        if not _P2PFWD["read"]:                               # once a process: what the last one had in force and draining
+            _P2PFWD["read"] = True
+            with contextlib.suppress(Exception):
+                st = json.load(open(statef))
+                _P2PFWD.update(rows={(str(a), int(p)) for a, p in st.get("rows") or []},
+                               gone={(str(a), int(p)): float(t) for a, p, t in st.get("gone") or []})
         rows, rep, addr_of, wan = [], {}, {}, _p2p_wan_devs() if fwd else []
         if wan:
             nat = (run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout or "").splitlines()
@@ -8700,7 +8720,8 @@ def _ensure_p2pfwd(fwd, node_cfg, res):
                         os.unlink(sigf)
                 else:                                         # retried next pass
                     res["errors"].append("p2pfwd delete failed: " + (r.stderr or "").strip()[:160])
-            _P2PFWD.update(report=rep, rows=set(), gone={})
+            _P2PFWD["report"] = rep
+            _p2pfwd_keep(statef, (), {})
             return
         sig = hashlib.sha256(text.encode()).hexdigest()
         cur_sig = ""
@@ -8708,19 +8729,22 @@ def _ensure_p2pfwd(fwd, node_cfg, res):
             cur_sig = open(sigf).read().strip()
         have = run(["nft", "-t", "list", "table", "ip", P2PFWD_TABLE])
         # in force = its rules are there (a table flushed in place still lists, with no rule)
-        if cur_sig != sig or have.returncode != 0 or (" dnat " if rows else " drop") not in (have.stdout or ""):
+        if cur_sig != sig or have.returncode != 0 or not re.search(r"\bdnat (?:ip )?to |\bdrop\b" if not rows else r"\bdnat (?:ip )?to ", have.stdout or ""):
             r = run(["nft", "-f", "-"], input_text=text)
             if r.returncode != 0:                             # the old table would keep forwarding what it held: removed
                 run(["nft", "delete", "table", "ip", P2PFWD_TABLE])
                 with contextlib.suppress(OSError):
                     os.unlink(sigf)
-                _P2PFWD.update(loaded=False, report={}, rows=set(), gone={})
+                _P2PFWD.update(loaded=False, report={})       # what was in force is drained once a load goes in
+                _p2pfwd_keep(statef, (), {**gone, **{k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"]}})
                 res["errors"].append("p2pfwd nft load failed: " + (r.stderr or "").strip()[:160])
                 return
             with contextlib.suppress(OSError):
                 os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
             res["changed"] += 1
-        _P2PFWD.update(loaded=True, report=rep, rows=cur, gone=gone)
+        _P2PFWD.update(loaded=True, report=rep)
+        if cur != _P2PFWD["rows"] or gone != _P2PFWD["gone"]:
+            _p2pfwd_keep(statef, cur, gone)
     except Exception as e:
         _P2PFWD["report"] = {}
         res["errors"].append("p2pfwd: " + str(e)[:120])

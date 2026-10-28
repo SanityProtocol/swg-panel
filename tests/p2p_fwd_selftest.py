@@ -66,9 +66,8 @@ PLANTS = {   # name: (file, old text, planted text)
     "no-taken":      ("node", '                if any((h, p) in bound for h in (addr_of[ifn], "0.0.0.0", "*", "::")):', '                if False:'),
     "no-delete":     ("node", '            if _P2PFWD["loaded"] or os.path.exists(sigf):     # forwarded asks nothing', '            if False:     # forwarded asks nothing'),
     "no-retry":      ("node", '                if r.returncode == 0 or "No such file" in (r.stderr or ""):', '                if True:'),
-    "no-siggate":    ("node", '        if cur_sig != sig or have.returncode != 0 or (" dnat " if rows else " drop") not in (have.stdout or ""):', '        if True:'),
-    "exists-only":   ("node", '        if cur_sig != sig or have.returncode != 0 or (" dnat " if rows else " drop") not in (have.stdout or ""):',
-                      '        if cur_sig != sig or have.returncode != 0:'),
+    "no-siggate":    ("node", '        if cur_sig != sig or have.returncode != 0 or not re.search(', '        if True or not re.search('),
+    "exists-only":   ("node", '        if cur_sig != sig or have.returncode != 0 or not re.search(', '        if cur_sig != sig or have.returncode != 0 or False and not re.search('),
     "fail-keeps":    ("node", '            if r.returncode != 0:                             # the old table would keep forwarding what it held: removed\n                run(["nft", "delete", "table", "ip", P2PFWD_TABLE])',
                       '            if r.returncode != 0:                             # the old table would keep forwarding what it held: removed\n                pass'),
     "snap-unsent":   ("node", '        snap["p2p_fwd"] = {i: dict(v) for i, v in _P2PFWD["report"].items()}', '        pass'),
@@ -79,17 +78,27 @@ PLANTS = {   # name: (file, old text, planted text)
     "rep-prio":      ("node", '"    type filter hook prerouting priority mangle + 7; policy accept;"]', '"    type filter hook prerouting priority mangle + 6; policy accept;"]'),
     "prio-first":    ("node", '"    type nat hook prerouting priority dstnat + 5; policy accept;",', '"    type nat hook prerouting priority dstnat - 5; policy accept;",'),
     "map-type":      ("node", '"  map in { typeof ip daddr . th dport : ip daddr; elements', '"  map in { type ipv4_addr . inet_service : ipv4_addr; elements'),
+    "state-unread":  ("node", '        if not _P2PFWD["read"]:                               # once a process', '        if False:                               # once a process'),
+    "state-failforget": ("node", '                _p2pfwd_keep(statef, (), {**gone, **{k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"]}})',
+                      '                _p2pfwd_keep(statef, (), {})'),
+    "inforce-anydnat": ("node", 'r"\\bdnat (?:ip )?to |\\bdrop\\b" if not rows else r"\\bdnat (?:ip )?to "', 'r" drop" if not rows else r" dnat "'),
     "drain-none":    ("node", '        gone.update({k: now + P2PFWD_DRAIN_S for k in _P2PFWD["rows"] - cur})\n', ''),
     "drain-pass":    ("node", '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone drop")',
                       '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone counter")'),
     "drain-stays":   ("node", '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now and k not in cur}', '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now}'),
-    "fill-dup":      ("panel", "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:",
-                      "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
+    "fill-dup":      ("panel", "        elif type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and v not in used:",
+                      "        elif type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
     "fill-first":    ("panel", "    for pid in sorted(peers, key=lambda k: (k not in first, k)):", "    for pid in sorted(peers):"),
-    "fill-float":    ("panel", '        if x != q.get("p2p_port") or type(q.get("p2p_port")) is not int:   # (20000.0 == 20000)', '        if x != q.get("p2p_port"):'),
+    "fill-float":    ("panel", '        if x != q.get("p2p_port") or (x is not None and type(q.get("p2p_port")) is not int):   # (20000.0 == 20000)', '        if x != q.get("p2p_port"):'),
+    "fill-fullrewrite": ("panel", '        if x != q.get("p2p_port") or (x is not None and type(q.get("p2p_port")) is not int):   # (20000.0 == 20000)',
+                      '        if x != q.get("p2p_port") or type(q.get("p2p_port")) is not int:   # (20000.0 == 20000)'),
+    "fill-keyless":  ("panel", '        if not p2p_port_wanted(q):', '        if False:'),
+    "set-keyless":   ("panel", '    if "p2p_port" not in rec and p2p_port_wanted(rec):', '    if "p2p_port" not in rec:'),
+    "lowest-first":  ("panel", '    nx = nx if type(nx) is int and lo <= nx <= hi else lo', '    nx = lo'),
+    "mark-still":    ("panel", '        roster["p2p_next"] = x + 1 if x < P2P_PORT_POOL[1] else P2P_PORT_POOL[0]\n    return x', '        pass\n    return x'),
     "create-nokeep": ("panel", '                               keep=(_prev.get("desired_port"), _prev.get("listen_port"), (_prev.get("_lastcfg") or {}).get("listen_port")))',
                       '                               keep=())'),
-    "fill-nostart":  ("panel", "        if p2p_ports_fill(_r):\n            roster_save(_rp, _r)", "        if False:\n            roster_save(_rp, _r)"),
+    "fill-nostart":  ("panel", "        p2p_ports_at_start(_rp)", "        pass"),
     "set-dropped":   ("panel", '"routes", "share", "private", "router", "p2p_port"):', '"routes", "share", "private", "router"):'),
     "set-noalloc":   ("panel", "        if _free:                                             # pool full", "        if False:                                             # pool full"),
     "wire-block":    ("panel", '    d = ((plan or {}).get("_p2pi") or {}).get("direct") if pol == "iface" else None',
@@ -379,6 +388,26 @@ def node_checks(src, ok):
     fwd_pass([], b, mm)
     ok(b.table is None and not os.path.exists(os.path.join(mm.GEO_DIR, ".p2pfwd.sig")) and mm._P2PFWD["report"] == {},
        "[4] once the drain has run its time: the table and its sig deleted, nothing reported")
+    # a restart (review F47): the new process reads what the last one had in force — a forward that ended is still drained
+    mr, br, _ = fwd_pass(FW[:2])
+    m3 = base.load(src); m3.GEO_DIR = mr.GEO_DIR
+    fwd_pass([], br, m3)
+    ok("set gone" in (br.table or "") and "10.8.0.2 . 20000" in (br.table or ""), "[4] after a noded restart a forward that ended is still drained (review F47)")
+    # a refused load (review F52): what was in force is drained once a load goes in
+    mf, bf, _ = fwd_pass([FW[0], FW[2]])
+    bf.refuse = True
+    fwd_pass(FW[:1], bf, mf)
+    bf.refuse = False
+    fwd_pass(FW[:1], bf, mf)
+    t5 = bf.table or ""
+    ok("set gone" in t5 and "10.9.0.2 . 20002" in t5 and "10.8.0.2 . 20000 :" in t5,
+       "[4] a refused load forgets nothing: the next load drains what was in force (review F52)")
+    # in force (review F50): the DNAT chain gone, the reply chain's `ct status dnat` left — rebuilt
+    mi, bi, _ = fwd_pass(FW[:2])
+    bi.table = re.sub(r"\n  chain pre \{.*?\n  \}", "", bi.table, flags=re.S)
+    n0 = len(bi.loads())
+    fwd_pass(FW[:2], bi, mi)
+    ok("chain pre" in (bi.table or "") and len(bi.loads()) == n0 + 1, "[4] a table whose DNAT chain is gone is rebuilt — the reply chain's `ct status dnat` is not it (review F50)")
     mb, bb, _ = fwd_pass(FW[:1])
     mb._P2PFWD["gone"] = {}; mb._P2PFWD["rows"] = set()
     bb.delfail = 1
@@ -430,29 +459,47 @@ ROSTER = {"version": 1, "users": {"u1": {"id": "u1", "name": "anna"}}, "peers": 
     "pe": {"id": "pe", "user_id": "u1", "pubkey": key("e"), "psk": key("q"),
            "targets": [{"node": "n1", "iface": "wg0", "ip": "10.8.0.5/32", "type": "wg"},
                        {"node": "n1", "iface": "wg1", "ip": "10.9.0.5/32", "type": "wg", "primary": "primary"}]},
-    "pf": {"id": "pf", "user_id": "u1", "csqtt_password": "pw", "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt", "ip": "10.8.0.50"}]}}}
-WANT = {"pa": 20001, "pb": 20000, "pc": 20002, "pd": 20003, "pe": 20004, "pf": 20005}
+    "pf": {"id": "pf", "user_id": "u1", "csqtt_password": "pw", "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt", "ip": "10.8.0.50"}]},
+    "pz": {"id": "pz", "user_id": "u1", "pubkey": key("z"), "psk": key("q"), "csqtt_password": "pwz",
+           "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt", "ip": "10.8.0.51"}, {"node": "n2", "iface": "wg0", "ip": "10.7.0.9/32", "type": "wg"}]}}}
+WANT = {"pa": 20001, "pb": 20000, "pc": 20002, "pd": 20003, "pe": 20004, "pf": None, "pz": 20005}   # pf: csqtt only — no port (review F38)
 
 
 def unit_checks(src, ok):
     m = types.ModuleType("swgpanel_fwd"); m.__file__ = PANEL
     exec(compile(src, PANEL, "exec"), m.__dict__)
+    W = lambda **kw: dict(kw, targets=[{"node": "n1", "iface": "wg0", "ip": "10.8.0.9", "type": "wg"}])   # a wg device
     r = json.loads(json.dumps(ROSTER))
+    r["peers"]["pf"]["p2p_port"] = 20009                      # a csqtt-only device the start-up fill of S12 gave a port
     ch = m.p2p_ports_fill(r)
     got = {k: v.get("p2p_port") for k, v in r["peers"].items()}
-    ok(ch and got == WANT, "[7] lowest free, sorted peer-id order; the later duplicate and the out-of-pool port reassigned (%s)" % got)
+    ok(ch and got == WANT, "[7] next free, sorted peer-id order; the later duplicate and the out-of-pool port reassigned; a csqtt-only "
+       "device gives its port back (review F38) (%s)" % got)
+    ok(r.get("p2p_next") == 20006, "[7] the high-water mark moves past what was handed out (%s)" % r.get("p2p_next"))
     ok(not m.p2p_ports_fill(r), "[7] a second fill changes nothing")
-    r2 = {"peers": {"a1": {"p2p_port": 20000}, "zz": {"p2p_port": 20000}}}
+    r2 = {"peers": {"a1": W(p2p_port=20000), "zz": W(p2p_port=20000)}}
     m.p2p_ports_fill(r2, first={"zz"})
-    ok(r2["peers"]["zz"]["p2p_port"] == 20000 and r2["peers"]["a1"]["p2p_port"] == 20001,
+    ok(r2["peers"]["zz"].get("p2p_port") == 20000 and r2["peers"]["a1"].get("p2p_port") == 20001,
        "[7] `first` (this panel's own peers) keep their port; an arriving one is reassigned (%s)" % r2)
-    rf = {"peers": {"a": {"p2p_port": 20000.0}, "b": {"p2p_port": "20001"}}}
+    rf = {"peers": {"a": W(p2p_port=20000.0), "b": W(p2p_port="20001")}}
     m.p2p_ports_fill(rf)
-    ok([type(v["p2p_port"]) for v in rf["peers"].values()] == [int, int], "[7] a port stored as a float or text is made an int (review F18) (%s)" % rf)
-    full = {"peers": {"p%05d" % i: {"p2p_port": 20000 + i} for i in range(10000)}}
-    full["peers"]["zzz"] = {}
+    ok([type(v.get("p2p_port")) for v in rf["peers"].values()] == [int, int], "[7] a port stored as a float or text is made an int (review F18) (%s)" % rf)
+    full = {"peers": {"p%05d" % i: W(p2p_port=20000 + i) for i in range(10000)}}
+    full["peers"]["zzz"] = W()
     m.p2p_ports_fill(full)
-    ok("p2p_port" not in full["peers"]["zzz"], "[7] the pool full: the device gets no port")
+    ok("p2p_port" not in full["peers"]["zzz"] and not m.p2p_ports_fill(full),
+       "[7] the pool full: the device gets no port, and the next fill reports no change (no rewrite every start, review F53)")
+    # the hand-out: from the high-water mark, wrapping once (review F41)
+    hw = {"peers": {"a": W(p2p_port=20000), "b": W(p2p_port=20001)}, "p2p_next": 20002}
+    hw["peers"].pop("a")                                      # a deleted device's port …
+    x1 = m.p2p_port_take(hw, "c")
+    ok(x1 == 20002 and hw["p2p_next"] == 20003, "[7] … is not handed to the next device: it gets the next above the mark (%s %s)" % (x1, hw["p2p_next"]))
+    hw["p2p_next"] = 29999
+    x2, x3 = m.p2p_port_take(hw, "d"), m.p2p_port_take(hw, "e")
+    ok((x2, x3) == (29999, 20000), "[7] at the top of the pool it comes round from the bottom (%s %s)" % (x2, x3))
+    ok(m.p2p_port_wanted({"targets": [{"type": "csqtt", "iface": "csqtt1"}, {"type": "wdtt", "iface": "wdtt0"}]}) is False
+       and m.p2p_port_wanted({"targets": [{"type": "csqtt", "iface": "csqtt1"}, {"type": "awg", "iface": "awg0"}]}) is True
+       and m.p2p_port_wanted({"targets": []}) is False, "[7] a port is wanted by a device with a wg/awg target only (review F38)")
 
 
 def panel_checks(src, ok):
@@ -508,7 +555,7 @@ def panel_checks(src, ok):
         ok(wire(t1, snap1) == "ABSENT" and wire(t2, snap2) == "ABSENT", "[9] Block: no p2p_fwd on the wire (byte-identical)")
         c, r = req("/api/peers/create", {"pubkey": key("g"), "user_id": "u1", "title": "g", "targets": [{"node": "n1", "iface": "wg0", "ip": "10.8.0.7"}]})
         pg = ((r.get("data") or {}).get("peer") or r.get("data") or {}).get("id")
-        ok(c == 200 and ports().get(pg) == 20006, "[8] a create takes the lowest free port (%s %s)" % (c, ports().get(pg)))
+        ok(c == 200 and ports().get(pg) == 20006, "[8] a create takes the next free port above the mark (%s %s)" % (c, ports().get(pg)))
         req("/api/peers/update", {"peer_id": "pa", "title": "renamed"})
         req("/api/peers/update-target", {"peer_id": "pa", "node": "n1", "iface": "wg0", "overrides": {"mtu": 1380}})
         ok(ports().get("pa") == 20001, "[8] an update and a target's settings keep it (%s)" % ports().get("pa"))
@@ -519,7 +566,10 @@ def panel_checks(src, ok):
         ok(ports().get("pa") == 20001, "[8] a save after a lower port came free keeps the device's own (%s)" % ports().get("pa"))
         c2, r2 = req("/api/peers/create", {"pubkey": key("h"), "user_id": "u1", "title": "h", "targets": [{"node": "n2", "iface": "wg0", "ip": "10.7.0.8"}]})
         ph = ((r2.get("data") or {}).get("peer") or r2.get("data") or {}).get("id")
-        ok(c == 200 and ports().get(ph) == 20000, "[8] a delete frees its port for the next device (%s %s)" % (c, ports().get(ph)))
+        ok(c == 200 and ports().get(ph) == 20007, "[8] a deleted device's port is not handed to the next device (review F41) (%s %s)" % (c, ports().get(ph)))
+        c, r = req("/api/peers/create", {"title": "k", "user_id": "u1", "csqtt_password": "pwk", "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}]})
+        pk = ((r.get("data") or {}).get("peer") or r.get("data") or {}).get("id")
+        ok(pk and ports().get(pk) is None, "[8] a csqtt-only device takes no port (review F38) (%s %s %s)" % (c, pk, str(r)[:100]))
         # [9] Direct on n1
         c, r = req("/api/nodes/update", {"id": "n1", "p2p": {"action": "direct"}})
         got = wire(t1, snap1)
