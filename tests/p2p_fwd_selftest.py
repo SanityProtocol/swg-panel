@@ -602,17 +602,29 @@ def sub_checks(src, psrc, ok):
         ok(w == [[ip[s_[0]], 20004]] if len(s_) == 1 else False, "[11] the twin: the panel forwards the target the page names (%s | %s)" % (w, s_))
 
 
-def run_checks(psrc, nsrc, ssrc):
+def run_checks(psrc, nsrc, ssrc, which=None):
+    """`which`: a plant's program — only the checks that read it run (the panel's twin parity reads swg-sub too), so the
+    sweep of every plant fits the runner's time box."""
     fails = []
+    class Caught(Exception):
+        pass
     def ok(cond, what):
         print(("  PASS " if cond else "  FAIL ") + what)
         if not cond:
             fails.append(what)
-    node_checks(nsrc, ok)
-    unit_checks(psrc, ok)
-    keep_checks(psrc, ok)
-    sub_checks(ssrc, psrc, ok)
-    panel_checks(psrc, ok)
+            if which:                                         # a plant is caught at its first red check: the rest is not run
+                raise Caught()
+    try:
+        if which in (None, "node"):
+            node_checks(nsrc, ok)
+        if which in (None, "panel", "sub"):
+            unit_checks(psrc, ok)
+            keep_checks(psrc, ok)
+            sub_checks(ssrc, psrc, ok)
+        if which in (None, "panel"):
+            panel_checks(psrc, ok)
+    except Caught:
+        pass
     return fails
 
 
@@ -627,7 +639,7 @@ def main():
             if src.count(old) != 1:
                 print("PLANT %-14s anchor missing — fix the plant" % name); missed.append(name); continue
             p = src.replace(old, new)
-            f = run_checks(*{"panel": (p, NSRC, SSRC), "node": (PSRC, p, SSRC), "sub": (PSRC, NSRC, p)}[which])
+            f = run_checks(*{"panel": (p, NSRC, SSRC), "node": (PSRC, p, SSRC), "sub": (PSRC, NSRC, p)}[which], which=which)
             print("PLANT %-14s %s" % (name, ("RED  (" + f[0] + ")") if f else "GREEN — NOT CAUGHT"))
             if not f:
                 missed.append(name)
