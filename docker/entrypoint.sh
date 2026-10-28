@@ -103,7 +103,12 @@ acme_entry_is_panels(){
 # Is the sub's present pair the one to keep beside a SELF-SIGNED panel certificate that covers its host? It covers the
 # host and is the kind this mode keeps: its own self-signed one in selfsigned mode (a Let's Encrypt copy left from an
 # earlier mode is never renewed there), a real one in a CA mode (the panel's is then a failed issuance's placeholder).
-sub_pair_kept(){ [ -s "$SC" ] && cert_covers_host "$SC" "$SUB_DOMAIN" || return 1
+# Its key must be the certificate's: a start killed between the copy's two `cp`s, or a lost key, takes the copy again —
+# nothing else would repair a pair swg-sub cannot serve.
+sub_pair_kept(){ local p
+  [ -s "$SC" ] && cert_covers_host "$SC" "$SUB_DOMAIN" || return 1
+  p="$(openssl x509 -in "$SC" -noout -pubkey 2>/dev/null)"
+  [ -n "$p" ] && [ "$p" = "$(openssl pkey -in "$SK" -pubout 2>/dev/null)" ] || return 1
   if [ "${TLS:-selfsigned}" = selfsigned ]; then cert_is_selfsigned "$SC"; else ! cert_is_selfsigned "$SC"; fi; }
 # Ensure swg-sub's cert for $SUB_DOMAIN. Rule: if the panel's OWN cert already covers the sub host (same domain, or a
 # SAN/wildcard) reuse it — no second issuance — unless it is self-signed and the sub's present pair is kept (above); else

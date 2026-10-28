@@ -55,6 +55,8 @@ PLANTS = [
      "[2] a self-signed panel certificate never replaces the sub's own self-signed pair"),
     ("ENTRY", '  if [ -n "$pc" ] && cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && sub_pair_kept; then', '  if [ -n "$pc" ] && sub_pair_kept; then',
      "[2] …a real panel certificate still replaces an older copy"),
+    ("ENTRY", '  [ -n "$p" ] && [ "$p" = "$(openssl pkey -in "$SK" -pubout 2>/dev/null)" ] || return 1\n', '',
+     "[2] …a torn sub pair, or one with no key, is written again, not kept"),
     ("ENTRY", '; else ! cert_is_selfsigned "$SC"; fi; }', '; else false; fi; }',
      "[2] …a CA mode: a self-signed panel placeholder never replaces the sub's real certificate"),
     ("ENTRY", '  if [ "${TLS:-selfsigned}" = selfsigned ]; then cert_is_selfsigned "$SC"; else', '  if [ "${TLS:-selfsigned}" = selfsigned ]; then :; else',
@@ -340,6 +342,20 @@ _old = (open(env["SUB_TLS_DIR"] + "/fullchain.pem", "rb").read(), open(env["SUB_
 r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert' % IP)
 check("[2] a self-signed panel certificate never replaces the sub's own self-signed pair",
       _old == (open(env["SUB_TLS_DIR"] + "/fullchain.pem", "rb").read(), open(env["SUB_TLS_DIR"] + "/key.pem", "rb").read()), r.stdout[-300:])
+# …a torn sub pair (a start killed between the copy's two `cp`s: the panel's certificate beside the sub's old key), or one
+# with no key, is never kept: the panel's covering pair is copied again (review F1)
+_torn, _out = [], []
+for _case in ("torn", "nokey"):
+    w, env = world("w2g-" + _case, tls="selfsigned")
+    panel_selfsigned(env)
+    shutil.copyfile(env["SWG_PANEL_TLS_CERT"], env["SUB_TLS_DIR"] + "/fullchain.pem")
+    if _case == "torn":
+        shutil.copyfile(IPK, env["SUB_TLS_DIR"] + "/key.pem")
+    r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert' % IP)
+    _sk = env["SUB_TLS_DIR"] + "/key.pem"
+    _torn.append(os.path.exists(_sk) and same(_sk, env["SWG_PANEL_TLS_KEY"]))
+    _out.append(_case + ": " + r.stdout[-200:])
+check("[2] …a torn sub pair, or one with no key, is written again, not kept", all(_torn), (_torn, _out))
 # …a real panel certificate still replaces an older copy of it (a renewal reaches the sub)
 w, env = world("w2e")
 shutil.copyfile(IPC2, env["SWG_PANEL_TLS_CERT"]); shutil.copyfile(IPK, env["SWG_PANEL_TLS_KEY"])
