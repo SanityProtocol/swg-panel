@@ -7713,7 +7713,7 @@ export const STR = {
   "theme|Dark": "Тёмная",
   "This app opens the old address for good: open the new one in the browser and install the app from there again.": "Это приложение всегда открывает старый адрес: откройте новый в браузере и установите приложение оттуда заново.",
   "Filters": "Фильтры",
-  "rowact|Device": "Устройство",
+  "rowact|Device": "Девайс",   // the swipe action's word must fit a 62 px cell ("Устройство" was cut — operator, 2026-10-29)
   "Check": "Проверить",
   "What this switch does": "Что делает этот переключатель",
   "Fix": "Исправить",
