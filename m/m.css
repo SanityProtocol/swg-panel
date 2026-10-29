@@ -143,6 +143,17 @@ html[data-ui="m"] {
     box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5) !important;
   }
   & .deppop :is(.onrow, .netbub-row, .hub-row) { min-height: 40px; align-items: center; font-size: 14px; }
+  & #livepill { cursor: pointer; }
+  /* the live pill's sheet (views.js OnlineSheet): users or devices, a row each */
+  & .onsheet-sw { margin-bottom: 12px; }
+  & .onsheet-list { margin: 0 calc(-1 * var(--m-gutter)); }
+  & .onsheet-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px var(--m-gutter); border-top: 1px solid var(--line); }
+  & .onsheet-row:first-child { border-top: 0; }
+  & .onsheet-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--online); flex: none; }
+  & .onsheet-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  & .onsheet-main b { font-size: 15.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .onsheet-sub { font-size: 12.5px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .onsheet-side { flex: none; font-family: var(--mono); font-size: 13px; color: var(--online); }
   & .deppop .onpop-h { font-size: 11px; padding: 6px 8px 8px; }
   & .deppop::before {
     content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);

@@ -17,11 +17,11 @@
 
 import { tkey, seen, fmtBytes } from "./util.js";
 import { lossColor, lossColorMesh } from "./charts.js";
-import { Store, api, bus, isCustomKey, customKeyWindow } from "./store.js";
+import { Store, api, bus, isCustomKey, customKeyWindow, useStore } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
 import { go } from "./router.js";
-import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
+import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection, Sheet, closeModal } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
 import { T, plural, pluralWord, fmtNum, srvText, locale } from "./i18n.js";
 import { trafficData, trafficFreezeTag, trafficView, chartsFirstDay } from "./traffic.js";
@@ -905,7 +905,7 @@ export function onlineUserRows(nodeId) {
     const isOn = nodeId ? p.targets.some(t => t.node === nodeId && t.online) : p.online;
     if (!isOn) return;
     const id = p.unassigned ? "_un" : ("u" + p.user_id);
-    if (!m[id]) m[id] = { name: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")), count: 0, unassigned: !!p.unassigned, lastAge: null };
+    if (!m[id]) m[id] = { name: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")), count: 0, unassigned: !!p.unassigned, lastAge: null, uid: p.user_id || null };
     m[id].count++;
     if (p.lastHandshakeAge != null) m[id].lastAge = (m[id].lastAge == null) ? p.lastHandshakeAge : Math.min(m[id].lastAge, p.lastHandshakeAge);
   });
@@ -1317,6 +1317,34 @@ export function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
   // hoverOnly on the popover frees the click to TOGGLE the mode (rather than pin the bubble); the bubble updates live.
   const trig = c => html`<span class="onl-toggle" title=${T("Click to switch users / peers")} onClick=${e => { e.stopPropagation(); e.preventDefault(); setMode(m => m === "users" ? "peers" : "users"); }}>${(trigger || dflt)(c, word)}</span>`;
   return html`<${OnlPop} peer=${isPeers} title=${title} rows=${rows} count=${count} cls=${cls} hoverOnly=${true} trigger=${trig}/>`;
+}
+
+// The app bar's live pill on a phone (operator, 2026-10-29: "the update looks so much better than online"): a sheet, as the
+// update badge opens one — who is online, users or devices, the list capped like the bubble's (the rest is on Live), a row
+// opening its user, and Close + Open Live on the bottom line.
+const ONLINE_SHEET_CAP = 20;
+export function OnlineSheet() {
+  useStore();
+  const [mode, setMode] = useState("users");
+  const peers = mode === "peers";
+  const rows = peers ? onlinePeerRows(null, null) : onlineUserRows(null);
+  const count = peers ? rows.length : onlineUserCount(rows);
+  const live = () => { closeModal(); openLiveTab(mode)({ stopPropagation() {} }); go("#/connections"); };
+  return html`<${Sheet} title=${T("Online now · {n}", { n: count })} noGuard=${true}
+    foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
+      <button class="btn btn-primary" onClick=${live}>${T("Open Live")}</button>`}>
+    <div class="dpsw netsw-share onsheet-sw" role="radiogroup" aria-label=${T("Users or peers")}>${[["users", T("Users")], ["peers", T("Peers")]].map(([v, l]) =>
+      html`<button type="button" role="radio" aria-checked=${mode === v} class=${mode === v ? "on" : ""} onClick=${() => setMode(v)}>${l}</button>`)}</div>
+    ${!rows.length ? html`<div class="empty"><b>${peers ? T("No connections online") : T("No users online")}</b></div>`
+      : html`<div class="onsheet-list">${rows.slice(0, ONLINE_SHEET_CAP).map((r, i) => {
+          const open = !peers && r.uid ? () => { closeModal(); revealUser(r.uid); } : null;
+          return html`<div class=${"onsheet-row" + (open ? " clk" : "")} key=${i} onClick=${open}>
+            <span class="dot"></span>
+            <span class="onsheet-main"><b>${peers ? r.title : r.name}</b>${peers ? html`<span class="onsheet-sub">${r.user} · ${r.iface} · ${r.ip}</span>` : null}</span>
+            <span class="onsheet-side">${peers ? (r.lastAge != null ? seen(r.lastAge) : "") : plural(r.count, "peer")}</span>
+          </div>`; })}</div>
+        ${rows.length > ONLINE_SHEET_CAP ? html`<div class="hint">${T("and {n} more", { n: rows.length - ONLINE_SHEET_CAP })}</div>` : null}`}
+  <//>`;
 }
 
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.

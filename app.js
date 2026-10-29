@@ -35,7 +35,7 @@ import {
   subSKCached, subUnlock, subUnlockWithKey, subVaultCreate,
 } from "./js/crypto.js";
 import {
-  OnlineUsersTag, onlineUserRows, serviceIssues,
+  OnlineSheet, OnlineUsersTag, onlineUserCount, onlineUserRows, serviceIssues,
 } from "./js/views.js";
 import {
   maybeRekeyGhosts, setLoadIfaceOpener,
@@ -301,7 +301,10 @@ function App() {
     const lp = $("#livepill");                                       // online USERS, with a per-user peer-count bubble
     if (lp) {
       lp.classList.toggle("off", onlineUserRows(null).length === 0);   // 0 = grey, no dot
-      render(html`<${OnlineUsersTag} nodeId=${null} cls="bare" trigger=${c => html`<span class="dot"></span><b id="kpi-online">${c}</b> ${T("val|online")}`}/>`, lp);
+      // a phone: the count opens a sheet (OnlineSheet), as the update badge does — no hover bubble there
+      if (isMobile()) { if (!lp._m) { lp._m = true; lp.setAttribute("role", "button"); lp.onclick = () => openModal(html`<${OnlineSheet}/>`); }
+        render(html`<${Fragment}><span class="dot"></span><b id="kpi-online">${onlineUserCount(onlineUserRows(null))}</b> ${T("val|online")}<//>`, lp); }
+      else render(html`<${OnlineUsersTag} nodeId=${null} cls="bare" trigger=${c => html`<span class="dot"></span><b id="kpi-online">${c}</b> ${T("val|online")}`}/>`, lp);
     }
     const v = Store.versions || {}, el = $("#appver");
     if (v.panel) {            // panel came back on a different version → it was updated; prompt a hard reload
