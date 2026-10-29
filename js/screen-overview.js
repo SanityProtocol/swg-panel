@@ -1368,19 +1368,16 @@ function attnDismissed(present) {
   if (kept.size !== set.size) attnWrite(kept);          // forget what no longer needs attention
   return kept;
 }
-// Everything set aside: "nothing else needs attention" for 5 s, then the note and its heading go (operator, 2026-10-29), until
-// the set changes — a group dismissed or come back says it again
-let _attnQuiet = { k: "", t: 0 };
-function attnQuiet(keys) {
-  const k = keys.join("|");
-  if (_attnQuiet.k !== k) { _attnQuiet = { k, t: Date.now() }; setTimeout(() => bus.emit(), 5100); }
-  return Date.now() - _attnQuiet.t >= 5000;
-}
+// Everything set aside: "nothing else needs attention" for 5 s after the operator's own Dismiss, then the note and its heading
+// go (operator, 2026-10-29) — never on a page load, where nothing was just dismissed ("only if a user actually dismissed")
+let _attnDismissAt = 0;
+function attnQuiet() { return Date.now() - _attnDismissAt >= 5000; }
 function attnAct(key) {
   if (!isMobile()) return null;
   const away = attnRead().has(key);
   return html`<span class="attn-acts" onClick=${e => e.stopPropagation()}><button type="button" class="iconbtn" data-lbl=${away ? T("Restore") : T("Dismiss")}
-    aria-label=${away ? T("Restore") : T("Dismiss")} onClick=${e => { e.stopPropagation(); const s2 = attnRead(); away ? s2.delete(key) : s2.add(key); attnWrite(s2); bus.emit(); }}>
+    aria-label=${away ? T("Restore") : T("Dismiss")} onClick=${e => { e.stopPropagation(); const s2 = attnRead(); away ? s2.delete(key) : s2.add(key); attnWrite(s2);
+      if (!away) { _attnDismissAt = Date.now(); setTimeout(() => bus.emit(), 5100); } bus.emit(); }}>
     <${Ic} i=${away ? "refresh" : "x"}/></button></span>`;
 }
 export function Overview() {
@@ -1695,7 +1692,7 @@ export function Overview() {
       ];
       const away = m ? attnDismissed(rows.map(r => r[0])) : new Set();
       const shown = rows.filter(r => !away.has(r[0])), set = rows.filter(r => away.has(r[0]));
-      const quiet = m && !shown.length && set.length && attnQuiet(set.map(r => r[0]));
+      const quiet = m && !shown.length && set.length && attnQuiet();
       return html`
     ${quiet ? null : html`${secTitle(T("Needs attention"), shown.length ? plural(shown.length, "group") : null, undefined, "attention")}
     ${!shown.length
