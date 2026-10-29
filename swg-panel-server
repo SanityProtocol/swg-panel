@@ -21216,7 +21216,7 @@ def _validate_app_routing(v):
         h = h[4:] if h.startswith("www.") else h     # the app drops it and matches the parent: store what it applies
         if h.startswith("www."):
             # www.www.ru would be stored as www.ru, which the next save (every save re-sends the rule) reads as ru
-            return None, perr("App routing: {v1} is not a domain (a full name, like ya.ru)", v1=d[:80])
+            return None, perr("App routing: {v1} has www. twice — drop one", v1=d[:80])
         if not h or h == "*":
             continue                                 # a bare "*" / "." names nothing
         if ":" in h or (_AR_ADDR_RE.fullmatch(h) and any(c.isdigit() for c in h)):

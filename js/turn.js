@@ -2728,7 +2728,7 @@ const arxNobody = who => whoEntries(who || {}).every(arxGone);
 const arxWho = who => namedFew(whoEntries(who || {}).map(whoEntryName));
 const arxWhoRow = who => { const es = whoEntries(who || {});
   return html`${es.slice(0, 3).map((e, i) => html`${i ? ", " : ""}${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}`)}${
-    es.length > 3 ? html`<span class="faint"> ${T("+{v1} more", { v1: es.length - 3 })}</span>` : null}`; };
+    es.length > 3 ? html`<span class="faint"> ${T("and {n} more", { n: es.length - 3 })}</span>` : null}`; };
 function ArExceptions({ node, iface, value, onChange }) {
   const rs = useReorder(value.map(e => e._id), ids => onChange(ids.map(id => value.find(e => e._id === id))), "y", { container: ".arx-list", card: ".arx-row" });
   const edit = e => pushModal(html`<${ArExceptionSheet} node=${node} iface=${iface} entry=${e}
@@ -2761,7 +2761,7 @@ function ArExceptionSheet({ node, iface, entry, onApply }) {
   // "Discard unsaved changes?" as Rule settings asks it: what changed is the key against the one it opened with (clicks
   // included); typing in the picker's search or filter alone changes nothing.
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
-  const key = JSON.stringify([sel, own, own ? arBody(ar) : null]);
+  const key = JSON.stringify(arxEntry(sel, own, ar));   // what Apply would store: a flip to an Own rule that sets nothing is no change
   if (base.current === null) base.current = key;
   dirtyRef.current = key !== base.current;
   const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };
@@ -2811,8 +2811,12 @@ export function EditCsqttSheet({ node, iface, pick }) {
   const arKey = useRef(null), axKey = useRef(null), dirtyRef = useRef(false), closeRef = useRef(null);
   const arNow = JSON.stringify(arBody(ar)), axNow = JSON.stringify(arxSend(ax));
   if (arKey.current === null) { arKey.current = arNow; axKey.current = axNow; }
-  dirtyRef.current = arNow !== arKey.current || axNow !== axKey.current;
   const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);   // the csqtt version, here too (operator, 2026-10-17)
+  // The sheet's other click-only edits — the egress mode, the Block traffic toggles, Device access, the version — are
+  // judged the same way: against what the sheet opened with, so a flip and a flip back asks nothing.
+  const clickKey = useRef(null), clickNow = JSON.stringify([reach, egressBody(eg), blk]);
+  if (clickKey.current === null) clickKey.current = clickNow;
+  dirtyRef.current = arNow !== arKey.current || axNow !== axKey.current || clickNow !== clickKey.current || !!lineDirty;
   const sw = csqttSwitchState(node, iface);
   const is25 = csqttArLine(lineDirty ? line : cfg.line);              // the line it will run: App routing follows a switch
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);

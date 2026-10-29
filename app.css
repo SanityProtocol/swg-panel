@@ -2060,7 +2060,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
    row can't do this reliably — a <span> and a <select> don't split a flex track equally. */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 /* App routing exceptions (csqtt 2.5): the rule rows' frame and grip, one line each — whom it names, what they get, edit, ×.
-   The names give way first (ellipsis, the whole list on hover); the rule stays readable. On a phone the rule drops under them. */
+   The names give way first (ellipsis; the tooltip names three and how many more); the rule stays readable. On a phone the rule drops under them. */
 .arx{border-top:1px solid var(--line);padding-top:14px}   /* a scope of its own: these people, not the server's everyone above */
 .arx-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
 .arx-row{display:grid;grid-template-columns:16px minmax(0,1fr) auto auto auto;align-items:center;gap:8px;padding:5px 8px;

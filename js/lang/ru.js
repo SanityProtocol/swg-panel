@@ -7718,6 +7718,7 @@ export const STR = {
   "Check": "Проверить",
   "What this switch does": "Что делает этот переключатель",
   "Fix": "Исправить",
+  "App routing: {v1} has www. twice — drop one": "Маршрутизация приложений: в {v1} дважды www. — уберите один",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

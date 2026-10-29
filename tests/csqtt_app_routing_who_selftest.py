@@ -236,7 +236,7 @@ try:
         check("a stored list that is not a list is no list: %r" % (bad_prev,), ok, o)
     VA = P._validate_app_routing
     b, e = VA({"domains": ["www.www.ru"]})
-    check("www.www.ru is refused (stored as www.ru, the next save would read ru)", b is None and e and "not a domain" in e["error"], (b, e))
+    check("www.www.ru is refused (stored as www.ru, the next save would read ru), saying why", b is None and e and "www. twice" in e["error"], (b, e))
     for d in ("www.ya.ru", "*.www.example.com", "https://www.vk.com/feed", "xn--d1acpjx3f.xn--p1ai", "mail.www.ru"):
         b1, e1 = VA({"domains": [d]}); b2, e2 = VA(b1)
         check("a stored own rule re-validates to itself: %s" % d, e1 is None and e2 is None and b1 == b2, (b1, e1, b2, e2))

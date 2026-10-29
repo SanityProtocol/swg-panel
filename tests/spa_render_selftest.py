@@ -49,7 +49,8 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         counts them, an older node is said to need an update and an updated one is not; a row's sheet lists its person with the
         devices on this server (the routing rules' "For whom" picker, lifted) and its rule; a click edit there asks before it
         is discarded, a search typed alone does not; Own rule opens the form, Apply puts it on the row; a new exception waits
-        for a person; a removed row asks before the server sheet discards it; Save sends and the panel stores the list. Rows inside the sheet at 1280 and 390 px, in
+        for a person; a removed row asks before the server sheet discards it; Save sends and the panel stores the list. (S13) The
+        server sheet's other click edits (Device access) ask too and a flip back does not; an Own rule that sets nothing is no change. Rows inside the sheet at 1280 and 390 px, in
         English and Russian. SPA_SHOTS=<dir> keeps screenshots of the list, the edit and the add sheets
   [B19] Settings → Turn proxies, a node running csqtt 2.1 and 2.5 side by side (S13a, operator 2026-10-28): the amurcanov row
         says two versions and its bubble names both on the node, EN and RU; a hold on the 2.5 server shows on its own row
@@ -135,6 +136,9 @@ PERTURBATIONS = {
     "arxtyped": ("js/turn.js", "cell=${cell} onTyped=${typedOnly} empty=", "cell=${cell} empty="),
     "csqguard": ("js/turn.js", 'width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}\n', 'width=${720}\n'),
     "arpw": ("js/turn.js", "snap && !snap.csqtt_ar_pw ?", "snap && !snap.csqtt_arpw ?"),
+    # [B17] (S13, the S7 backlog): the server sheet's click-only edits judged against the opened state; a no-op Own rule
+    "csqclick": ("js/turn.js", " || clickNow !== clickKey.current || !!lineDirty;", ";"),
+    "arxnoop": ("js/turn.js", "const key = JSON.stringify(arxEntry(sel, own, ar));", "const key = JSON.stringify([sel, own, own ? arBody(ar) : null]);"),
     # [B18]: the dial-in sheet offers "Connect from" (a source for an exit that dials nothing), as a dial-out one does
     "dialsrc": ("js/screen-settings.js", '      ${isDialin || isSocks ? null : html`<div class="field"><label>${T("Connect from")}</label>',
                 '      ${false ? null : html`<div class="field"><label>${T("Connect from")}</label>'),
@@ -856,6 +860,17 @@ try:
         check("[B17] %s: every row and its controls inside the sheet" % tag, fit is True, fit)
         tab.ev("document.querySelector('.arx').scrollIntoView({block: 'center'})"); settle(tab, 300)
         shot(tab, "b17-list-" + tag.replace(" ", "-"))
+        if lang == "en" and vp[0] == 390:
+            # S13 (the S7 backlog): the server sheet's other click-only edits arm its guard, and a flip back disarms it
+            REACH = "[...document.querySelectorAll('.overlay.show .reachfield [role=radio]')]"
+            r0 = tab.ev("%s.findIndex(b => b.getAttribute('aria-checked') === 'true')" % REACH)
+            tab.ev("%s[%d].click()" % (REACH, 0 if r0 else 1)); settle(tab, 300)
+            tab.ev(ESC); settle(tab, 300)
+            check("[B17] a click edit on the server sheet (Device access) asks before Esc discards it", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
+            tab.ev("%s[%d].click()" % (REACH, r0)); settle(tab, 300)
+            tab.ev(ESC); settle(tab, 400)
+            check("[B17] …and flipped back, Esc closes it without asking", not tab.ev("!!document.querySelector('.overlay.show .sheet')"), tab.ev(ASKS))
         if lang == "en" and vp[0] == 1280:
             # edit the second row: its person is listed in the picker with the devices on this server, its rule is "No App routing"
             tab.ev("document.querySelectorAll('.arx-row')[1].querySelector('button[aria-label=\"Edit exception\"]').click()"); settle(tab, 700)
@@ -865,13 +880,19 @@ try:
             check("[B17] the exception's sheet lists its person with the devices on this server, its rule picked, and the picker to add more",
                   ed and ed["who"] == [["anna", "1"]] and ed["rule"] == "No App routing" and ed["add"], ed)
             click_text(tab, ".overlay.show [role=radio]", "/^Own rule$/"); settle(tab, 400)
-            tab.ev(ESC); settle(tab, 300)
-            check("[B17] a click edit (Own rule) asks before Esc discards it", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
-            click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
             check("[B17] Own rule opens the App routing form", tab.ev("[...document.querySelectorAll('.overlay.show .sheet')].pop().textContent.includes('Every app uses the tunnel')"))
+            n1 = tab.ev("document.querySelectorAll('.overlay.show .sheet').length")
+            tab.ev(ESC); settle(tab, 300)
+            check("[B17] an Own rule that sets nothing is no change: Esc closes the exception's sheet without asking (S13, F46)",
+                  tab.ev("document.querySelectorAll('.overlay.show .sheet').length") == n1 - 1, tab.ev(ASKS))
+            tab.ev("document.querySelectorAll('.arx-row')[1].querySelector('button[aria-label=\"Edit exception\"]').click()"); settle(tab, 700)
+            click_text(tab, ".overlay.show [role=radio]", "/^Own rule$/"); settle(tab, 400)
             tab.ev("(() => { const ta = [...[...document.querySelectorAll('.overlay.show .sheet')].pop().querySelectorAll('textarea')][0];"
                    " const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, 'vk.com'); ta.dispatchEvent(new Event('input', {bubbles: true})); })()")
             settle(tab, 300)
+            tab.ev(ESC); settle(tab, 300)
+            check("[B17] an Own rule with something in it asks before Esc discards it", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
             shot(tab, "b17-edit")
             click_text(tab, ".overlay.show .sheet-foot button", "/^Apply$/"); settle(tab, 600)
             check("[B17] Apply puts the edited rule on its row", tab.ev(ROWS) == [["family", "Own rule: Apps"], ["anna", "Own rule: Domains"]], tab.ev(ROWS))
