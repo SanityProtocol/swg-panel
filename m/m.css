@@ -687,6 +687,12 @@ html[data-ui="m"] {
   & .setfoot .btn { min-width: 0; min-height: 44px; padding: 0 8px; }
   /* the way back to the list of sections: it opens the list in place, not the screen before — its arrow points down (operator) */
   & .m-setback .ic { transform: rotate(-90deg); }
+  /* …and it stays under the app bar while the section scrolls, so another section is one tap away from anywhere (operator) */
+  & .m-setback {
+    position: sticky; top: calc(56px + env(safe-area-inset-top, 0px)); z-index: 20; box-sizing: border-box; width: calc(100% + 2 * var(--m-gutter));
+    margin-left: calc(-1 * var(--m-gutter)); margin-right: calc(-1 * var(--m-gutter)); padding: 0 var(--m-gutter);
+    background: var(--bg); box-shadow: 0 1px 0 var(--line);
+  }
   /* polish pass (2026-10-29): a choice of three (who can reach these networks, who can open connections) stacks, one per line,
      instead of two and an orphan */
   & .dpsw.netsw-share:has(> :nth-child(3)) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
