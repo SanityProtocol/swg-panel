@@ -1054,14 +1054,23 @@ html[data-ui="m"] {
   & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .faint { flex: 1 1 100%; }
   & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .btn-primary { flex: 1 1 100%; min-height: 44px; justify-content: center; }
   /* a sheet with a Back keeps it on the title's line, at its right edge as on every other sheet; a long title wraps beside it */
-  /* a head with its own controls (a turn-proxy's Drops and Turn IPs): the title and the X on the first line, centred together;
-     the controls on the next, at the right (operator, 2026-10-29) */
-  & .sheet-head:has(> .turnips-wrap) { align-items: center; }
-  & .sheet-head:has(> .turnips-wrap) > h3 { order: 0; flex: 1 1 calc(100% - 60px); }
-  & .sheet-head:has(> .turnips-wrap) > .x { order: 1; }
-  & .sheet-head:has(> .turnips-wrap) > :not(h3, .x) { order: 2; }
-  & .sheet-head:has(> .turnips-wrap) > h3 + :not(.x) { margin-left: auto; }
-  & .sheet-head:has(> .turnips-wrap) > :not(h3, .x) + :not(.x) { margin-left: 0; }   /* side by side, the line's gap between them */
+  /* a head with its own controls (a turn-family sheet: the fork line, the version gear, Drops, Turn IPs): the title and the X on
+     the first line, centred together; the rest on the next — the fork at the left, the buttons at the right (operator, 2026-10-29) */
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) { align-items: center; row-gap: 8px; }
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) > h3 { order: 0; flex: 1 1 calc(100% - 60px); }
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) > .x { order: 1; }
+  & .sheet-head:has(> .m-th-fork)::after { content: ""; order: 1; flex: 0 0 100%; height: 0; }   /* the line break after the X */
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) > :not(h3, .x) { order: 2; margin-left: 0; }
+  & .sheet-head:has(> .turnips-wrap):not(:has(> .m-th-fork)) > h3 + :not(.x) { margin-left: auto; }
+  & .sheet-head .m-th-kind { display: inline-block; margin-right: 8px; padding: 2px 6px; border-radius: 5px; vertical-align: 2px;
+    background: var(--surface-2); color: var(--dim); font: 600 11px/1.3 var(--mono); letter-spacing: .04em; }
+  & .sheet-head > .m-th-fork { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 500 12px/1.3 var(--mono); color: var(--ink-2); }   /* gives way to the buttons: they stay on one line */
+  & .sheet-head > .m-th-fork .sheet-ver { margin-left: 4px; }
+  & .sheet-head > .sheet-verset { flex: none; width: 36px; height: 32px; border: 1px solid var(--line-solid); border-radius: 8px; justify-content: center; }
+  /* the head's buttons one height (operator, 2026-10-29) */
+  & .sheet-head:has(> .m-th-fork) > :is(.drops-pop, .turnips-wrap) { display: inline-flex; padding: 0; margin: 0; }
+  & .sheet-head:has(> .m-th-fork) .turnips-hd { display: inline-flex; align-items: center; height: 32px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; margin: 0; }   /* the line's gap alone between them */
   & .sheet-head:has(> .sheet-back) { flex-wrap: nowrap; align-items: flex-start; }
   & .sheet-head:has(> .sheet-back) > h3 { flex: 1 1 0; min-width: 0; }
   & .sheet-head:has(> .sheet-back) > .sheet-back { flex: none; margin: 0; }

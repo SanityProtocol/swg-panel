@@ -41,6 +41,12 @@ import htm from "htm";
 const html = htm.bind(h);
 
 // turn create/edit sheet heading: "Turn-proxy · <title> · <fork>" (title omitted when blank)
+// A phone: a turn-family sheet's head in two lines — the kind a small tag before the name (and the X); then the fork with its
+// version at the left and the version gear with the head's other buttons at the right (operator, 2026-10-29: the one long title
+// wrapped onto two lines with its gear stranded at the end)
+const mTurnHead = (kind, name, fork, ver, gear, extras) => ({
+  title: html`<span class="m-th-kind">${kind}</span>${name}`,
+  headExtra: html`<span class="m-th-fork">${fork}${ver ? html` <span class="sheet-ver">${ver}</span>` : ""}</span>${gear}${extras || null}` });
 export function turnSheetTitle(fork, title) { return T("Turn-proxy · {v1}", { v1: ((title || "").trim() ? (title.trim() + " · ") : "") + fork }); }
 // sheetSend's refusal, said on a sheet's own message line (formmsg) — the line every turn sheet already shows its errors on
 const errMsg = setMsg => t => setMsg(t ? { k: "err", t } : null);
@@ -647,7 +653,10 @@ export function TurnManageSheet({ node, tp }) {
     || params.trim() !== origParams.trim()
     || pin !== (tp.bind_ip || "")
     || title.trim() !== (tp.title || "");
-  return html`<${Sheet} title=${html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`}
+  const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`;
+  const extras = html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`;
+  const mh = isMobile() ? mTurnHead("TURN", (title || "").trim() || forkLabel(turnFork(svc)), forkLabel(turnFork(svc)), installed, gear, extras) : null;
+  return html`<${Sheet} title=${mh ? mh.title : html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}${gear}`} width=${664} headExtra=${mh ? mh.headExtra : extras}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
@@ -2188,10 +2197,13 @@ export function WdttManageSheet({ node, w: w0 }) {
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`;
+  const extras = w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null;
+  const mh = isMobile() ? mTurnHead("WDTT", title.trim() || iface, forkLabel, w.version, gear, extras) : null;
   return html`<${Sheet}
-    title=${html`${T("WDTT-proxy")} · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
+    title=${mh ? mh.title : html`${T("WDTT-proxy")} · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}${gear}`}
     width=${664}
-    headExtra=${w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
+    headExtra=${mh ? mh.headExtra : extras}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this WDTT server up on the node"))
@@ -2640,10 +2652,13 @@ export function CsqttManageSheet({ node, c: c0 }) {
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`;
+  const extras = c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null;
+  const mh = isMobile() ? mTurnHead("CSQTT", title.trim() || iface, "csqtt", c.version, gear, extras) : null;
   return html`<${Sheet}
-    title=${html`${T("csqtt-proxy")} · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`}
+    title=${mh ? mh.title : html`${T("csqtt-proxy")} · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}${gear}`}
     width=${664}
-    headExtra=${c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
+    headExtra=${mh ? mh.headExtra : extras}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this csqtt server up on the node"))
