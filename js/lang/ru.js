@@ -7725,6 +7725,8 @@ export const STR = {
   "Open node": "Открыть ноду",
   "Add an exit": "Добавить выход",
   "rowact|Restart": "Рестарт",
+  "rowact|Stop": "Стоп",
+  "rowact|Start": "Старт",
   "csqtt version": "Версия csqtt",
   "The apps 2.5 servers hand out. Where you haven't chosen, 2.5 gets 2.1's app if it speaks 2.5, else the first that does — shown below.": "Приложения, которые выдают серверы 2.5. Где выбора нет, 2.5 получает приложение 2.1, если оно умеет 2.5, иначе первое, которое умеет, — оно показано ниже.",
   "The apps 2.1 servers hand out — and 2.5 servers too, where you haven't chosen for 2.5 and the app speaks it.": "Приложения, которые выдают серверы 2.1, — и серверы 2.5 тоже, где для 2.5 ничего не выбрано, а приложение умеет 2.5.",
