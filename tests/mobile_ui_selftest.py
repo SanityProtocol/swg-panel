@@ -54,7 +54,7 @@ PERTURBS = {
     "tabpad": ("m/m.css", "  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }\n", ""),
     "autofocus": ("js/ui.js", "    if (first && !isMobile()) setTimeout(", "    if (first) setTimeout("),
     "tapguard": ("app.js", "  if (isMobile()) { attachTitleTaps(); attachOutsideTapGuard(); }", "  if (isMobile()) { attachTitleTaps(); }"),
-    "rowswipe": ("m/m.css", "    position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; gap: 0; scroll-snap-align: end;", "    display: flex;"),
+    "rowswipe": ("m/m.css", "    position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; gap: 0; scroll-snap-align: end;", "    display: flex;"),
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
 

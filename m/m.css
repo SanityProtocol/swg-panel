@@ -184,6 +184,8 @@ html[data-ui="m"] {
   & .screen:has(> .statgrid) > :is([data-sec="protection"], .protcard) { order: 1; }
   & .screen:has(> .statgrid) > :is([data-sec="fleet"], .fleet2, .allclear:not([data-sec="attention"] + *)) { order: 2; }
   & .screen:has(> .statgrid) > :is([data-sec="activity"], .actlist, .act-morewrap) { order: 3; }
+  /* the attention groups the operator dismissed: under everything, until what is behind one is gone */
+  & .screen:has(> .statgrid) > :is([data-sec="dismissed"], .attn-away) { order: 4; }
   & .section-title .count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .statgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
   & .stat { padding: 13px 14px 12px; }
@@ -196,12 +198,30 @@ html[data-ui="m"] {
   & .statgrid > .stat:nth-child(5) .k { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
   & .statgrid > .stat:nth-child(5) .v { grid-column: 2; grid-row: 1; margin: 0; font-size: 19px !important; text-align: right; }
   & .statgrid > .stat:nth-child(5) .sub { grid-column: 2; grid-row: 2; margin: 0; text-align: right; font-family: var(--mono); }
-  & .attn-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px; min-height: 52px; padding: 10px 10px 10px 14px; }
-  & .attn-row > :first-child { grid-column: 1; grid-row: 1; align-self: center; }
-  & .attn-row .name { grid-column: 2; grid-row: 1; align-self: center; }
-  & .attn-row .why { grid-column: 1 / 3; grid-row: 2; font-size: 13px; font-family: var(--sans); }
-  & .attn-row .rowarrow { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
+  /* an attention row: its badge, then what it is on the whole width, then why; Dismiss (or Restore) behind a left swipe, as a
+     user row's actions are */
+  & .attn-row {
+    position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; min-height: 52px;
+    box-sizing: border-box; padding: 12px 22px 12px 14px;
+    overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
+    scroll-padding-left: 14px;
+    background-image: linear-gradient(var(--line-solid), var(--line-solid)); background-size: 4px 26px;
+    background-position: right 5px center; background-repeat: no-repeat;
+  }
+  & .attn-row::-webkit-scrollbar { display: none; }
+  & .attn-row > :first-child { grid-column: 1; grid-row: 1; justify-self: start; align-self: center; scroll-snap-align: start; }
+  & .attn-row .name { grid-column: 1; grid-row: 2; font-size: 14.5px; line-height: 1.4; }
+  & .attn-row .why { grid-column: 1; grid-row: 3; font-size: 13px; font-family: var(--sans); }
+  & .attn-row .rowarrow { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
   & .attn-row .grow { display: none; }
+  & .attn-row .attn-acts { position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; scroll-snap-align: end; }
+  & .attn-row .attn-acts > .iconbtn {
+    width: 76px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--dim); font: 600 11px/1.1 var(--sans);
+  }
+  & .attn-row .attn-acts > .iconbtn::after { content: attr(data-lbl); }
+  & .attn-row .attn-acts > .iconbtn svg { width: 20px; height: 20px; }
+  & .attn-away .attn-row { opacity: .62; }
   & .fleet2 { gap: 10px; }
   & .fnode { display: block; }
   & .fnode-main { padding: 12px 14px; gap: 6px; }
@@ -215,13 +235,21 @@ html[data-ui="m"] {
   & .fnode-stats > div:nth-child(1) { flex: 1 0 auto; }
   & .fnode-stats > div:nth-child(n+2) { flex: none; color: var(--dim); }
   & .fnode-stats > div:nth-child(2)::after { content: " ·"; color: var(--faint); }
-  & .prot-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  & .prot-tile { padding: 12px 10px; }
-  & .prot-top { flex-direction: column; align-items: flex-start; gap: 2px; }
-  & .prot-v { font-size: 22px; }
-  & .prot-k { font-family: var(--sans); font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--dim); border-bottom: 0; line-height: 1.3; }
+  /* Protection: its counts two to a row (an odd last one takes the row), each a figure over its word; then what is filtered,
+     the shield beside the sentence and the mechanisms as chips under both */
+  & .prot-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  & .prot-metrics > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  & .prot-tile { padding: 14px 14px 13px; min-height: 0; }
+  & .prot-top { flex-direction: column; align-items: flex-start; gap: 4px; }
+  & .prot-v { font-size: 26px; line-height: 1; }
+  & .prot-k { font-family: var(--sans); font-size: 13.5px; text-transform: none; letter-spacing: 0; color: var(--dim); border-bottom: 0; line-height: 1.3; }
   & .prot-sub, & .prot-spark { display: none; }
-  & .prot-cov { flex-wrap: wrap; }
+  & .prot-cov { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px 12px; padding: 14px; }
+  & .prot-cov-ic { width: 32px; height: 32px; }
+  & .prot-cov-txt { font-size: 14px; line-height: 1.45; align-self: center; }
+  & .prot-cov-txt b { font-family: var(--sans); font-weight: 650; letter-spacing: 0; }
+  & .prot-mech { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+  & .prot-chip { font-size: 12.5px; padding: 4px 10px; }
   & .act-row { min-height: 48px; padding: 0 12px; gap: 8px; font-size: 14px; }
   & .act-row .act-ic, & .act-row .act-detail { display: none; }
   & .act-row .act-what { flex: none; }
@@ -263,11 +291,17 @@ html[data-ui="m"] {
   & .urows { gap: 6px; }
   & .urow > .urow-head {
     position: relative; display: grid; grid-template-columns: 20px max-content minmax(0, 1fr) max-content; grid-template-rows: auto auto;
-    gap: 4px 8px; align-items: center; min-height: 64px; box-sizing: border-box; padding: 11px 14px;
+    gap: 4px 8px; align-items: center; min-height: 64px; box-sizing: border-box; padding: 11px 22px 11px 14px;   /* 22: the grab bar's lane */
     overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
     scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
   }
   & .urow > .urow-head::-webkit-scrollbar { display: none; }
+  /* a row with actions behind its swipe wears a grab bar on its right edge — a background, so it stays put while the row
+     scrolls, and the actions cover it once they are out (ui.js attachSwipePeek also slides the top row open once or twice) */
+  & :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts)) {
+    background-image: linear-gradient(var(--line-solid), var(--line-solid)); background-size: 4px 26px;
+    background-position: right 5px center; background-repeat: no-repeat;
+  }
   & .urow-head > .u-exp { grid-column: 1; grid-row: 1 / span 2; scroll-snap-align: start; }
   & .urow-head > .u-name { grid-column: 2 / -1; grid-row: 1; font-size: 15.5px; }
   & .urow-head > .ustat { grid-column: 2; grid-row: 2; }
@@ -278,7 +312,7 @@ html[data-ui="m"] {
   & .urow-head .u-thru:not(:has(.ratecell.live)), & .urow-head .u-thru .up, & .urow-head :is(.u-servers, .u-last, .u-total, .u-note) { display: none; }
   & .urow-head .u-acts {
     /* 100% resolves to the head's CONTENT width here (measured), so past its right padding too */
-    position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; gap: 0; scroll-snap-align: end;
+    position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; gap: 0; scroll-snap-align: end;
   }
   & .urow-head .u-acts > .iconbtn {
     width: 62px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
@@ -339,7 +373,7 @@ html[data-ui="m"] {
   & table.peergrid > tbody { display: flex; flex-direction: column; gap: 6px; }
   & table.peergrid > tbody > tr.clk {
     position: relative; display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 5px 10px; align-items: center;
-    margin: 0; padding: 11px 14px; min-height: 64px; box-sizing: border-box;
+    margin: 0; padding: 11px 22px 11px 14px; min-height: 64px; box-sizing: border-box;
     background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
     overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
     scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
@@ -366,7 +400,7 @@ html[data-ui="m"] {
   & table.peergrid td.c-online { grid-column: 2; grid-row: 3; justify-self: end; font-size: 12.5px; color: var(--dim); }
   & table.peergrid td.c-ep { grid-column: 1 / -1; grid-row: 4; font-size: 12.5px; color: var(--dim); }
   & table.peergrid td.c-total { display: none; }
-  & table.peergrid td.rowacts { position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; scroll-snap-align: end; }
+  & table.peergrid td.rowacts { position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; gap: 0; scroll-snap-align: end; }
   & table.peergrid td.rowacts > .iconbtn {
     width: 62px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
     background: var(--surface-2); color: var(--brand); font: 600 11px/1.1 var(--sans);

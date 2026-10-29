@@ -1349,6 +1349,24 @@ export function Protection({ range, bs }) {
 }
 
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
+// A phone sets attention rows aside (operator, 2026-10-29): kept per device, until the condition behind one is gone — a group
+// that clears and comes back later is new, so it shows on top again. The row's swipe action Dismisses, or Restores.
+const ATTN_KEY = "swg-attn-dismissed";
+function attnRead() { try { return new Set(JSON.parse(localStorage.getItem(ATTN_KEY) || "[]")); } catch (_) { return new Set(); } }
+function attnWrite(set) { try { localStorage.setItem(ATTN_KEY, JSON.stringify([...set])); } catch (_) {} }
+function attnDismissed(present) {
+  const set = attnRead(), live = new Set(present);
+  const kept = new Set([...set].filter(k => live.has(k)));
+  if (kept.size !== set.size) attnWrite(kept);          // forget what no longer needs attention
+  return kept;
+}
+function attnAct(key) {
+  if (!isMobile()) return null;
+  const away = attnRead().has(key);
+  return html`<span class="attn-acts" onClick=${e => e.stopPropagation()}><button type="button" class="iconbtn" data-lbl=${away ? T("Restore") : T("Dismiss")}
+    aria-label=${away ? T("Restore") : T("Dismiss")} onClick=${e => { e.stopPropagation(); const s2 = attnRead(); away ? s2.delete(key) : s2.add(key); attnWrite(s2); bus.emit(); }}>
+    <${Ic} i=${away ? "refresh" : "x"}/></button></span>`;
+}
 export function Overview() {
   useStore();
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
@@ -1418,7 +1436,6 @@ export function Overview() {
   orphans.forEach(o => { const k = o.node + "|" + o.iface; (orphByIf[k] || (orphByIf[k] = { node: o.node, iface: o.iface, n: 0 })).n++; });
   const orphGroups = Object.values(orphByIf);
   const svcIssues = serviceIssues();   // panel-host service health — one box, so shown regardless of the node filter (critical first)
-  const attnCount = svcIssues.length + statusGroups.length + unGroups.length + orphGroups.length;
 
   const recent = recentActivity();
 
@@ -1643,24 +1660,32 @@ export function Overview() {
       <div class="act-morewrap"><a class="act-more" href="#/activity">${T("Show all history »")}</a></div>
     <//>` : null}
 
-    ${secTitle(T("Needs attention"), attnCount ? plural(attnCount, "group") : null, undefined, "attention")}
-    ${!attnCount
-      ? html`<div class="allclear"><${Ic} i="check"/><span>${T("Everything's deployed and reporting. No drift across the fleet.")}</span></div>`
-      : html`<div class="attn">
-          ${svcIssues.map(is => html`<div class=${"attn-row svc " + is.sev} key=${"svc" + svcKey(is)} onClick=${() => openModal(html`<${ServiceIssueSheet} issues=${[is]}/>`)}>
+    ${(() => {
+      // Each group a row, keyed so a phone can set one aside (operator, 2026-10-29: "dismiss … move it to bottom, and keep there")
+      const rows = [
+        ...svcIssues.map(is => ["svc" + svcKey(is), html`<div class=${"attn-row svc " + is.sev} key=${"svc" + svcKey(is)} onClick=${() => openModal(html`<${ServiceIssueSheet} issues=${[is]}/>`)}>
             <span class=${"svc-badge " + is.sev}><${Ic} i="warn"/>${is.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span>
             <span class="name">${is.label} — ${SVC_KINDWORD[is.kind] || is.kind}</span>
-            <span class="why">${is.msg}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${statusGroups.map(g => html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>
+            <span class="why">${is.msg}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("svc" + svcKey(is))}</div>`]),
+        ...statusGroups.map(g => ["s" + g.status, html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>
             <${Badge} s=${g.status}/><span class="name">${Trich("*{v1}* {v2}", { v1: plural(g.peers.length, "peer"), v2: STATUS_WORD[g.status] || g.status })}</span>
-            <span class="why">${why[g.status] || ""}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${unGroups.map(g => html`<div class="attn-row" key=${"u" + g.node} onClick=${() => revealPeersFiltered({ node: g.node, status: "unassigned" })}>
+            <span class="why">${why[g.status] || ""}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("s" + g.status)}</div>`]),
+        ...unGroups.map(g => ["u" + g.node, html`<div class="attn-row" key=${"u" + g.node} onClick=${() => revealPeersFiltered({ node: g.node, status: "unassigned" })}>
             <${Badge} s="unassigned"/><span class="name">${Trich("*{v1}* unassigned on {v2} on {v3}", { v1: plural(g.peers.size, "peer"), v2: ifCountPhrase(g), v3: Store.nodeName(g.node) })}</span>
-            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${orphGroups.map(g => html`<div class="attn-row" key=${"o" + g.node + g.iface} onClick=${() => revealOrphans(g.node, g.iface)}>
+            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("u" + g.node)}</div>`]),
+        ...orphGroups.map(g => ["o" + g.node + g.iface, html`<div class="attn-row" key=${"o" + g.node + g.iface} onClick=${() => revealOrphans(g.node, g.iface)}>
             <${Badge} s="orphan"/><span class="name">${Trich("*{v1}* orphan on {v2} ({v3}) on {v4}", { v1: plural(g.n, "peer"), v2: g.iface, v3: ifTypeLabel(g.node, g.iface), v4: Store.nodeName(g.node) })}</span>
-            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-        </div>`}
+            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("o" + g.node + g.iface)}</div>`]),
+      ];
+      const away = m ? attnDismissed(rows.map(r => r[0])) : new Set();
+      const shown = rows.filter(r => !away.has(r[0])), set = rows.filter(r => away.has(r[0]));
+      return html`
+    ${secTitle(T("Needs attention"), shown.length ? plural(shown.length, "group") : null, undefined, "attention")}
+    ${!shown.length
+      ? html`<div class="allclear"><${Ic} i="check"/><span>${set.length ? T("Nothing else needs attention — what you set aside is at the bottom.") : T("Everything's deployed and reporting. No drift across the fleet.")}</span></div>`
+      : html`<div class="attn">${shown.map(r => r[1])}</div>`}
+    ${set.length ? html`${secTitle(T("Dismissed"), plural(set.length, "group"), undefined, "dismissed")}<div class="attn attn-away">${set.map(r => r[1])}</div>` : null}`;
+    })()}
   </div>`;
 }
 

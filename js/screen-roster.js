@@ -39,7 +39,7 @@ import {
 import { TrafficRail, TrafficCell, UserTrafficCell } from "./traffic-ui.js";
 import { trafficTotals } from "./traffic.js";
 import {
-  EmbeddedPeers, PeerGrid, UsersHeader,
+  EmbeddedPeers, PeerGrid, UsersHeader, filterBtn, sortField, PEER_SORT, USER_SORT, GROUP_SORT,
 } from "./grids.js";
 import {
   OrphanRow,
@@ -531,34 +531,6 @@ function GroupRow({ g, st, q }) {
 // member does, and opens on just those members. `reset` is the caller's: its own page goes back to 1.
 const memberPasses = u => userOnNodeIface(u, usersView.node, usersView.iface) && (!usersView.online || u.onlineCount > 0);
 const filtersOn = () => !!(usersView.node || usersView.iface || usersView.online);
-// A list's toolbar on a phone (MOBILE-PLAN P0): the search stays, the filters go behind one Filters button into a sheet — five
-// controls do not fit a 390 px row. A dot on the button while one is set. `controls(redraw)` draws them; each filter's own
-// handler re-renders the screen, `redraw` the sheet.
-function FilterSheet({ controls }) {
-  useStore();
-  const [, redraw] = useState(0);
-  return html`<${Sheet} title=${T("Filters")} noGuard=${true}
-    foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
-    <div class="mfilters">${controls(() => redraw(x => x + 1))}</div>
-  <//>`;
-}
-// …and the list's ORDER there too: a phone draws no column headers to click (operator, 2026-10-29). `view[sk]` / `view[dk]` are
-// the same sort and direction the headers set on a desktop; `cols` = [[key, label]].
-function sortField(view, sk, dk, cols, defdir, reset) {
-  return html`<div class="msort"><span class="msort-l">${T("Sort by")}</span>
-    <${Dropdown} className="selwrap" ariaLabel=${T("Sort by")} value=${view[sk]} options=${cols.map(([value, label]) => ({ value, label }))}
-      onChange=${v => { view[sk] = v; view[dk] = defdir[v] || 1; reset(); }}/>
-    <button type="button" class="btn btn-ghost msort-dir" aria-label=${view[dk] < 0 ? T("Descending") : T("Ascending")} title=${view[dk] < 0 ? T("Descending") : T("Ascending")}
-      onClick=${() => { view[dk] = -(view[dk] || 1); reset(); }}>${view[dk] < 0 ? "↓" : "↑"}</button></div>`;
-}
-const PEER_SORT = () => [["status", T("col|Status")], ["title", T("col|Title")], ["user", T("col|User")], ["server", T("col|Node")],
-  ["address", T("col|Address")], ["online", T("col|Online")], ["rate", T("col|Rate")], ["total", T("col|Total")]];
-const USER_SORT = live => [["status", T("col|Status")], ["name", T("col|User")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
-  ["last", T("col|Online")], ["rate", T("col|Rate")], ...(live ? [["total", T("col|Total")]] : [])];
-const GROUP_SORT = () => [["name", T("col|Group")], ["members", T("col|Members")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
-  ["nets", T("col|Networks")], ["rate", T("col|Rate")]];
-const filterBtn = (on, controls) => html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
-  onClick=${() => openModal(html`<${FilterSheet} controls=${controls}/>`)}><${Ic} i="sliders"/></button>`;
 function RosterFilters({ reset }) {
   const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
   const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;

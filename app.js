@@ -26,7 +26,7 @@ import {
   ConfirmSheet, Ic, Sheet, THEME_ICON, applyForkColors, applyThemeColors, clearModalStack, closeModal, cycleLang, cycleThemeMode,
   dismissHostProc, gotoSettingsSection, inProc, openConfirm, openModal, paintLangBtn, paintThemeBtn,
   procAborted, procFailed, procInClass, procLabel, procSuccess, setModalRenderer, setPendingSection,
-  setQrZoomProbe, toast, trackIfaceOps, attachTitleTaps, attachOutsideTapGuard,
+  setQrZoomProbe, toast, trackIfaceOps, attachTitleTaps, attachOutsideTapGuard, attachSwipePeek,
 } from "./js/ui.js";
 import { themeMode } from "./js/theme.js";
 import { LANGS, nextLang } from "./js/i18n.js";
@@ -666,7 +666,7 @@ function paintChrome() {
   // straight on Access & TLS, BEFORE it mounts and defaults to Display. (The outcome modal is shown by App.)
   try { if (sessionStorage.getItem("__apply_ok")) setPendingSection("access"); } catch (_) {}
   render(h(App), viewEl);
-  if (isMobile()) { attachTitleTaps(); attachOutsideTapGuard(); }   // a phone: a title= on a tap (hook 5); a tap outside a list only closes it
+  if (isMobile()) { attachTitleTaps(); attachOutsideTapGuard(); attachSwipePeek(); }   // a phone: a title= on a tap (hook 5); a tap outside a list only closes it
   // Tell the boot guard in index.html that the SPA is up. Set AFTER the first render, so it means
   // "something is on screen", not merely "this file parsed" — a module that loads and then throws
   // mid-boot must still count as a failure.

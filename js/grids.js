@@ -19,12 +19,12 @@ import {
   Ic, Tag, Badge, Dropdown, SearchBox, secTitle, footRow, Popover, toast, openModal, openConfirm,
   rowSingle, rowDouble, rowNoSelect, RowError, connDot, endpointCell, rateCell, xferCell, DepBadge,
   gridIfaceTag, gridIfacesTag, gridStatusBadge, uncatPop, badgeWithReason, lifecycleIcon, statusLabel, dlul, rowError, statusReason,
-  Portal,
+  Portal, Sheet, closeModal,
 } from "./ui.js";
 import {
   peersView, sortPeerRows, peerSortBy, pageScroll, pageSizeOpts, searchMatch, peerMatchesQ, ifaceOptGroups,
   nodeFilterOptions, ifaceFilterOptions, orphCount, OnlinePeersTag, revealUser,
-  dashNodes, dashNodeOn, dashToggleNode, trafficRangeLabel,
+  dashNodes, dashNodeOn, dashToggleNode, trafficRangeLabel, PEER_DEFDIR,
 } from "./views.js";
 import {
   UserCombo, assignPeer, confirmUnassign, confirmDeletePeer, confirmRestoreDeployment,
@@ -181,6 +181,35 @@ export function UsersHeader({ sort, dir, onSort, live }) {
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
+// A list's toolbar on a phone (MOBILE-PLAN P0): the search stays, the filters go behind one Filters button into a sheet — five
+// controls do not fit a 390 px row. A dot on the button while one is set. `controls(redraw)` draws them; each filter's own
+// handler re-renders the screen, `redraw` the sheet.
+export function FilterSheet({ controls }) {
+  useStore();
+  const [, redraw] = useState(0);
+  return html`<${Sheet} title=${T("Filters")} noGuard=${true}
+    foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
+    <div class="mfilters">${controls(() => redraw(x => x + 1))}</div>
+  <//>`;
+}
+// …and the list's ORDER there too: a phone draws no column headers to click (operator, 2026-10-29). `view[sk]` / `view[dk]` are
+// the same sort and direction the headers set on a desktop; `cols` = [[key, label]].
+export function sortField(view, sk, dk, cols, defdir, reset) {
+  return html`<div class="msort"><span class="msort-l">${T("Sort by")}</span>
+    <${Dropdown} className="selwrap" ariaLabel=${T("Sort by")} value=${view[sk]} options=${cols.map(([value, label]) => ({ value, label }))}
+      onChange=${v => { view[sk] = v; view[dk] = defdir[v] || 1; reset(); }}/>
+    <button type="button" class="btn btn-ghost msort-dir" aria-label=${view[dk] < 0 ? T("Descending") : T("Ascending")} title=${view[dk] < 0 ? T("Descending") : T("Ascending")}
+      onClick=${() => { view[dk] = -(view[dk] || 1); reset(); }}>${view[dk] < 0 ? "↓" : "↑"}</button></div>`;
+}
+export const PEER_SORT = () => [["status", T("col|Status")], ["title", T("col|Title")], ["user", T("col|User")], ["server", T("col|Node")],
+  ["address", T("col|Address")], ["online", T("col|Online")], ["rate", T("col|Rate")], ["total", T("col|Total")]];
+export const USER_SORT = live => [["status", T("col|Status")], ["name", T("col|User")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
+  ["last", T("col|Online")], ["rate", T("col|Rate")], ...(live ? [["total", T("col|Total")]] : [])];
+export const GROUP_SORT = () => [["name", T("col|Group")], ["members", T("col|Members")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
+  ["nets", T("col|Networks")], ["rate", T("col|Rate")]];
+export const filterBtn = (on, controls) => html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
+  onClick=${() => openModal(html`<${FilterSheet} controls=${controls}/>`)}><${Ic} i="sliders"/></button>`;
+
 export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly, freezeKey, owner }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
@@ -237,17 +266,19 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
   const setPage = p => { view.page = p; bump(); };
 
   return html`<div class="peerspanel">
-    ${hideToolbar ? null : html`<div class="toolbar sub">
+    ${hideToolbar ? null : html`<div class=${"toolbar sub" + (isMobile() ? " mtoolbar" : "")}>
       <${SearchBox} placeholder=${T("Search title, address…")} value=${view.q || ""} onInput=${e => { view.q = e.target.value; view.page = 1; bump(); }}/>
-      ${multiServer ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
-        onChange=${v => { view.node = v; view.iface = ""; view.page = 1; bump(); }}
+      ${(() => { const dd = r => html`${multiServer ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
+        onChange=${v => { view.node = v; view.iface = ""; view.page = 1; bump(); if (r) r(); }}
         options=${[{ value: "*", label: T("All nodes") }, ...nodes.map(n => ({ value: n, label: Store.nodeName(n) }))]}/>` : null}
       ${ifaceOpts.length > 1 ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${iface}
-        onChange=${v => { view.iface = v; view.page = 1; bump(); }}
-        options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}
+        onChange=${v => { view.iface = v; view.page = 1; bump(); if (r) r(); }}
+        options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}`;
+        // a phone: the search, and the filters (and the order) behind the Filters button, as on every list there
+        return isMobile() ? filterBtn(node !== (multiServer ? "*" : (nodes[0] || "*")) || iface !== ifaceDefault(), r => html`${dd(r)}${sortField(view, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => { view.page = 1; bump(); r(); })}`) : dd(); })()}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || T("New peer")}</button>` : null}
     </div>`}
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} ranged=${!live} owner=${owner} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} ranged=${!live && !isMobile()} owner=${owner} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">${T("Rows per page")}
         <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}

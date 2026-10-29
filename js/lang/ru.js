@@ -7720,6 +7720,8 @@ export const STR = {
   "App routing: {v1} has www. twice — drop one": "Маршрутизация приложений: в {v1} дважды www. — уберите один",
   "Online now · {n}": "Сейчас онлайн · {n}",
   "Open Live": "Открыть «Онлайн»",
+  "Dismissed": "Скрытое",
+  "Nothing else needs attention — what you set aside is at the bottom.": "Больше ничего не требует внимания — скрытое внизу страницы.",
   "Users or peers": "Пользователи или пиры",
   "Sort by": "Сортировка",
   "Ascending": "По возрастанию",

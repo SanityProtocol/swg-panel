@@ -408,6 +408,25 @@ export function attachTitleTaps() {
   window.addEventListener("hashchange", drop);
 }
 
+// A row whose actions sit behind a left swipe says so (operator, 2026-10-29: "something for users to understand they can slide
+// left"): a grab bar on its right edge (m/m.css), and the first few times a list with such rows opens, its top row slides open
+// a little and back. Counted per device (localStorage), so it teaches and then stops.
+const SWIPE_ROW = ".urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts)";
+export function attachSwipePeek() {
+  const peek = () => setTimeout(() => {
+    let n = 0;
+    try { n = +(localStorage.getItem("swg-peek") || 0); } catch (_) { return; }
+    const row = n < 3 && [...document.querySelectorAll(SWIPE_ROW)].find(r => { const b = r.getBoundingClientRect(); return b.height && b.top > 60 && b.bottom < innerHeight - 80; });
+    if (!row || document.querySelector(".overlay.show")) return;
+    try { localStorage.setItem("swg-peek", String(n + 1)); } catch (_) {}
+    row.style.scrollSnapType = "none";                       // a snap point would swallow a part-way slide
+    row.scrollTo({ left: 76, behavior: "smooth" });
+    setTimeout(() => { row.scrollTo({ left: 0, behavior: "smooth" }); setTimeout(() => { row.style.scrollSnapType = ""; }, 500); }, 750);
+  }, 1200);
+  window.addEventListener("hashchange", peek);
+  peek();
+}
+
 // A phone: while a list or a bubble is open (a dropdown, the user picker, a bottom bubble), a tap anywhere outside it only
 // closes it and drops the keyboard — the tap does not also open what happened to be under the finger (operator,
 // 2026-10-29: "tapping anywhere else must only close the list and focus out"). The layers close themselves on that
