@@ -223,8 +223,11 @@ export function SubLinkActions({ user }) {
         ? html`<div class="hint warn">${Trich("Set a public base URL in {v1} to build the link.", { v1: settingsLink })}</div>`
         : html`<div class="hint">${T("Building link…")}</div>`}
       <span class="fieldbtns">
-        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${rotate}>${T("Rotate token")}</button>
-        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${disable}>${T("Disable URL")}</button>
+        ${/* a phone: icon buttons on the link's own line (operator, 2026-10-29); their words are their names */""}
+        ${isMobile() ? html`<button class="btn btn-ghost btn-mini fbtn m-icob" disabled=${busy} onClick=${rotate} title=${T("Rotate token")} aria-label=${T("Rotate token")}><${Ic} i="refresh"/></button>
+          <button class="btn btn-ghost btn-mini fbtn m-icob" disabled=${busy} onClick=${disable} title=${T("Disable URL")} aria-label=${T("Disable URL")}><${Ic} i="off"/></button>`
+        : html`<button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${rotate}>${T("Rotate token")}</button>
+        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${disable}>${T("Disable URL")}</button>`}
       </span>
     </div>
   </div>`;
@@ -357,8 +360,10 @@ export function VkLinkField({ user }) {
       <span class="fieldbtns">
         ${saveStatus === "saved" ? html`<span class="vk-status ok"><${Ic} i="check"/> ${T("Saved")}</span>`
           : saveStatus === "failed" ? html`<span class="vk-status err"><${Ic} i="warn"/> ${T("Failed")}</span>` : null}
-        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy || !dirty || invalid || empty} onClick=${add}>${busy ? T("Adding…") : T("Add link")}</button>
-        <button class="btn btn-ghost btn-mini fbtn" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage all of this user's VK call links (add more, set primary)")}>${T("Manage")}${(lu.vk_links && lu.vk_links.length > 1) ? ` (${lu.vk_links.length})` : ""}</button>
+        ${isMobile() ? html`<button class="btn btn-ghost btn-mini fbtn m-icob" disabled=${busy || !dirty || invalid || empty} onClick=${add} title=${T("Add link")} aria-label=${T("Add link")}><${Ic} i="plus"/></button>
+          <button class="btn btn-ghost btn-mini fbtn m-icob" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage")} aria-label=${T("Manage")}><${Ic} i="pencil"/>${(lu.vk_links && lu.vk_links.length > 1) ? html`<span class="m-icob-n">${lu.vk_links.length}</span>` : null}</button>`
+        : html`<button class="btn btn-ghost btn-mini fbtn" disabled=${busy || !dirty || invalid || empty} onClick=${add}>${busy ? T("Adding…") : T("Add link")}</button>
+        <button class="btn btn-ghost btn-mini fbtn" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage all of this user's VK call links (add more, set primary)")}>${T("Manage")}${(lu.vk_links && lu.vk_links.length > 1) ? ` (${lu.vk_links.length})` : ""}</button>`}
       </span>
     </div>
     ${invalid ? html`<div class="hint err">${T("Expected a VK call link or its hash, like")} <span class="mono">https://vk.ru/call/join/…</span></div>`

@@ -516,11 +516,14 @@ html[data-ui="m"] {
   & .sheet-foot > .qrfoot-ucounts { grid-column: 4 / -1; justify-self: end; }
   /* its counts are the status line: above the buttons, which have no Close beside them here */
   & .sheet-foot:has(> .qrfoot-count) > :is(.qrfoot-count, .qrfoot-ucounts) { order: 0; }
-  /* the links: the address on a line of its own, its two buttons in halves under it */
-  & :is(.sublink-row, .vkfield-row) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  & :is(.sublink-row, .vkfield-row) > .fieldbtns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  & :is(.sublink-row, .vkfield-row) > .fieldbtns > .btn { width: 100%; min-height: 44px; justify-content: center; }
-  & :is(.sublink-row, .vkfield-row) > .fieldbtns > .vk-status { grid-column: 1 / -1; }
+  /* the links (subscription, VK call): the address and its icon buttons on one line (operator, 2026-10-29) */
+  & :is(.sublink-row, .vkfield-row) { display: flex; align-items: center; gap: 8px; }
+  & :is(.sublink-row, .vkfield-row) > :first-child { flex: 1 1 auto; min-width: 0; }
+  & :is(.sublink-row, .vkfield-row) > .fieldbtns { flex: none; display: flex; gap: 6px; }
+  & .m-icob { position: relative; width: 44px; height: 44px; min-height: 44px; padding: 0; justify-content: center; }
+  & .m-icob .ic svg { width: 18px; height: 18px; }
+  & .m-icob-n { position: absolute; top: 2px; right: 3px; min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box; border-radius: 8px;
+    background: var(--brand); color: var(--bg); font: 700 9.5px/15px var(--mono); text-align: center; }
   & .vkbox { min-height: 44px; }
   & .vkbox-input { font-size: 14px; }
   /* a device with no config to show: its sentence in a short box, not a QR-sized empty square */
