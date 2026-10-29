@@ -920,7 +920,11 @@ html[data-ui="m"] {
   & .panel-head:has(> .rangetabs) > h3 { flex: none; }
   & .panel-head:has(> .rangetabs) > .grow { display: none; }
   & .panel-head > .rangetabs { flex: 1 1 170px; min-width: 0; display: flex; margin-left: auto; }
-  & .panel-head > .rangetabs > .rtab { flex: 1 1 auto; min-width: 0; padding: 0 3px; font-size: 9.5px; letter-spacing: 0; justify-content: center; text-align: center; }
+  & .panel-head > .rangetabs > .rtab { flex: 1 1 0; min-width: 0; padding: 0 2px; font-size: 9.5px; letter-spacing: 0; justify-content: center; text-align: center; }
+  /* range tabs anywhere else (a mesh link's sheet, a group's or a user's traffic): the width of what holds them, five equal
+     cells (operator, 2026-10-29) */
+  & :not(.panel-head) > .rangetabs { display: flex; width: 100%; box-sizing: border-box; }
+  & .rangetabs > .rtab { flex: 1 1 0; min-width: 0; justify-content: center; text-align: center; }
   /* a node's Traffic (it has Peers / Mesh too): always two lines (operator, 2026-10-29) — the name, Peers / Mesh at the right;
      then the five range tabs across the width in equal cells */
   & .panel-head:has(> .rangetabs):has(> .hdr-lead) { flex-wrap: wrap; }
