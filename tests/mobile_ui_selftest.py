@@ -28,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +51,7 @@ PERTURBS = {
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
     "nodemore": ("js/screen-nodes.js", "        ${isMobile() ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}", "        ${false ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}"),
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
+    "backclose": ("app.js", "attachToastSwipe(); attachBackCloses(); }", "attachToastSwipe(); }"),
     "bubdrag": ("js/ui.js", 'if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important");', 'if (d.dy) d.pop.style.transform = "translateY(" + d.dy + "px)";'),
     "bubtap": ("js/ui.js", "onClick=${hoverOnly && !isMobile() ? null :", "onClick=${hoverOnly ? null :"),
     "tagtap": ("js/ui.js", '    if (el.matches(".tg, .iftype, .tag, .capb, .ce-tag")) return;\n', ''),
@@ -442,6 +443,21 @@ try:
         tap(tab, tg["x"] + tg["w"] / 2, tg["y"] + tg["h"] / 2)
         check("[9] a tag that names itself (an interface's protocol badge) opens no bubble", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
     tab.close()
+
+    # ── [13] the phone's Back closes the top sheet, the page stays ──
+    with guard("[13]"):
+        print("\n[13] Back with a sheet open closes the sheet and keeps the page")
+        tab = open_app("#/peers")
+        tab.ev("location.hash = '#/users'"); settle(tab, 900)
+        tab.ev("(async () => { const P = await %s; const U = await %s('ui'); U.openModal(P.h(U.Sheet, {title: 'On top'}, P.h('p', null, 'x'))); })()" % (PREACT, MOD)); settle(tab, 600)
+        check("[13] the sheet is open", sheets(tab) == 1)
+        tab.ev("history.back()"); settle(tab, 900)
+        st = tab.ev("({n: document.querySelectorAll('.overlay.show .sheet').length, hash: location.hash, users: !!document.querySelector('.urows, .urow')})")
+        check("[13] Back closed the sheet", st["n"] == 0, st)
+        check("[13] …and the page is still the one under it", st["hash"] == "#/users" and st["users"], st)
+        tab.ev("history.back()"); settle(tab, 900)
+        check("[13] with nothing open, Back is the browser's", tab.ev("location.hash") == "#/peers")
+        tab.close()
 
     # ── [12] a hover-only bubble on a phone: a tap's, swiped away, opened again ──
     with guard("[12]"):

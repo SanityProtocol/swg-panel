@@ -389,6 +389,26 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
 // version chip's "ahead", a mesh row's numbers. One delegated tap, mobile only, shows the tapped element's title in the docked
 // bubble. A tap that belongs to something else never does: on a link, a button, a field, or anything with a pointer cursor (a
 // clickable row or card) the tap is that thing's, and a title-less tap anywhere just closes the bubble.
+// A phone's Back closes what is on top — a QR, a bubble, a sheet — and leaves the page under it where it was (operator, 2026-10-29:
+// "must close the slider, not go back to the previous page"). The browser has already gone back one entry when popstate fires: the
+// address the page had is put back (pushState fires no event), and the hashchange that back navigation is about to fire is eaten
+// before the router sees it. Nothing open → Back is the browser's, untouched.
+export function attachBackCloses() {
+  let url = location.href, eat = false;
+  window.addEventListener("popstate", () => {
+    const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop");
+    if (!qr && !pop && !_stack.length) { url = location.href; return; }
+    if (location.href !== url) { eat = true; history.pushState(history.state, "", url); }
+    if (qr) qr.click();
+    else if (pop) { if (pop.classList.contains("m-titletap")) pop.remove(); else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
+    else closeModal();
+  });
+  window.addEventListener("hashchange", e => {
+    if (eat) { eat = false; e.stopImmediatePropagation(); return; }
+    url = location.href;
+  }, true);
+}
+
 export function attachTitleTaps() {
   let bub = null;
   const drop = () => { if (bub) { bub.remove(); bub = null; } };
