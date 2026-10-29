@@ -522,6 +522,7 @@ html[data-ui="m"] {
   & .sheet-foot > .qrfoot-ucounts { grid-column: 4 / -1; justify-self: end; }
   /* its counts are the status line: above the buttons, which have no Close beside them here */
   & .sheet-foot:has(> .qrfoot-count) > :is(.qrfoot-count, .qrfoot-ucounts) { order: 0; }
+  & .sheet-foot:not(:has(> .qrfoot-ucounts)) > .qrfoot-count { grid-column: 1 / -1; }   /* alone (a user with no devices): its own line, the buttons one row under it */
   /* the links (subscription, VK call): the address and its icon buttons on one line (operator, 2026-10-29) */
   & :is(.sublink-row, .vkfield-row) { display: flex; align-items: center; gap: 8px; }
   & :is(.sublink-row, .vkfield-row) > :first-child { flex: 1 1 auto; min-width: 0; }
