@@ -916,12 +916,12 @@ html[data-ui="m"] {
   & :is(.rangetabs .rtab, .primtog, .mi-restore, .lv-mphead) { min-height: 34px; }
   /* a chart's head (Traffic, Throughput): its name and the range tabs on ONE line (operator, 2026-10-29) — the section icon
      not drawn, the tabs share the rest of the line in equal cells, their words a size down */
-  & .panel-head:has(> .rangetabs) { flex-wrap: wrap; gap: 8px 10px; }   /* one line where 236 px of tabs fit beside the name; on a smaller phone the tabs take a line of their own, whole */
+  & .panel-head:has(> .rangetabs) { flex-wrap: wrap; gap: 8px 10px; }   /* one line where 170 px of tabs fit beside the name; on a smaller phone the tabs take a line of their own, whole */
   & .panel-head:has(> .rangetabs) > .panel-ic { display: none; }
   & .panel-head:has(> .rangetabs) > h3 { flex: none; }
   & .panel-head:has(> .rangetabs) > .grow { display: none; }
-  & .panel-head > .rangetabs { flex: 1 1 236px; min-width: 0; display: flex; margin-left: auto; }
-  & .panel-head > .rangetabs > .rtab { flex: 1 1 0; min-width: 0; padding: 0 2px; font-size: 9.5px; letter-spacing: .02em; justify-content: center; text-align: center; }
+  & .panel-head > .rangetabs { flex: 1 1 170px; min-width: 0; display: flex; margin-left: auto; }
+  & .panel-head > .rangetabs > .rtab { flex: 1 1 auto; min-width: 0; padding: 0 3px; font-size: 9.5px; letter-spacing: 0; justify-content: center; text-align: center; }
   & .ifrow .m-onltap { padding: 8px 6px; margin: -8px -6px; }
   /* a label over a value (a tile's, an interface's facts, a node's health, a sort's) at 11 px at the least */
   & :is(.stat .k, .ig-l, .hcol-l, .msort-l, .netshare-l, .act-cat) { font-size: 11px; }
