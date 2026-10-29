@@ -108,6 +108,29 @@ export function rotateAllUserKeys(user, after) {
     } });
 }
 
+// Rotate one device's keys — every credential it holds, as rotateAllUserKeys does per peer (a phone's device sheet; operator,
+// 2026-10-29). Confirmed once; the row shows "Rotating" until the poll brings the new key.
+export function rotateOnePeerKeys(peer) {
+  const p = (peer && peer.id && Store.peer(peer.id)) || peer;
+  openConfirm({ title: T("Rotate keys"), confirmLabel: T("Rotate keys"), warn: true,
+    body: T("A fresh keypair and preshared key are generated. The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked."),
+    onConfirm: () => {
+      Store.rotating[p.id] = Date.now(); Store.apply();
+      (async () => {
+        let did = false;
+        try {
+          if (p.csqtt_password) { await api.csqttPeerRotate({ peer_id: p.id }); did = true; }
+          if (p.wdtt_password)  { await api.wdttPeerRotate({ peer_id: p.id });  did = true; }
+          if ((p.targets || []).some(t => !isSelfContainedTgt(t))) { await rotatePeerKeys(p); did = true; }
+        } catch (_) { did = false; }
+        if (!did) delete Store.rotating[p.id];
+        await Store.poll();
+        const re = Store.rowErrors["peer:" + p.id];
+        toast(did && !re ? T("Keys rotated — send the user the new QR / config; the old one no longer works.") : ((re && re.msg) || T("Rotate failed.")), did && !re ? "ok" : "err");
+      })();
+    } });
+}
+
 // A device that carries networks takes them down with it, and nothing on the side of the people who used them says why — so
 // every confirm that cuts one off names what goes (docs/NETWORKS-PLAN.md §18).
 function _netsLost(peer, block) {
