@@ -378,7 +378,7 @@ function nodesTap(srvNodes, title) {
   const nif = srvNodes.reduce((a, n) => a + n.ifaces.length, 0);
   const label = plural(srvNodes.length, "node") + " · " + plural(nif, "interface");
   return html`<span class="u-srvtap" role="button" aria-label=${label} onClick=${e => { e.stopPropagation(); openModal(html`<${NodesSheet} title=${title} label=${label} srvNodes=${srvNodes}/>`); }}
-    onDblClick=${e => e.stopPropagation()}><span class="u-srv-n"><${Ic} i="server"/>${srvNodes.length}</span><span class="u-srv-i"><${Ic} i="key"/>${nif}</span></span>`;
+    onDblClick=${e => e.stopPropagation()}><span class="u-srv-n"><${Ic} i="server"/>${srvNodes.length}</span><span class="u-srv-i"><${Ic} i="globe"/>${nif}</span></span>`;
 }
 function NodesSheet({ title, label, srvNodes }) {
   const to = h => { closeModal(); location.hash = h; };
