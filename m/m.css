@@ -469,6 +469,10 @@ html[data-ui="m"] {
   & .urow-head .u-srv-n { color: var(--brand); }
   & .urow-head .u-srv-i { color: var(--awg3); }
   & .urow-head .u-srvtap .ic svg { width: 12px; height: 12px; }
+  /* a peer's other deployments (the +N pill) as a sheet: one per line, a thumb's height — node, interface, address */
+  & .m-deplist .deprow { display: flex; align-items: center; gap: 10px; min-height: 48px; border-top: 1px solid var(--line); font-size: 15px; }
+  & .m-deplist .deprow:first-child { border-top: 0; }
+  & .m-deplist .dep-ip { margin-left: auto; font-size: 13.5px; color: var(--ink-2); }
   & .m-nodesheet .m-ns-sum { font-size: 13px; color: var(--ink-3); margin: 0 0 8px; }
   & .m-nodesheet .m-ns-node { border-top: 1px solid var(--line); padding: 4px 0 8px; }
   & .m-nodesheet :is(.m-ns-nm, .m-ns-if) { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0; border: 0;

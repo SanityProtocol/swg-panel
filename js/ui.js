@@ -1264,12 +1264,20 @@ export function DepBadge({ others }) {
   const [open, setOpen] = useState(false);     // hover preview
   const [pinned, setPinned] = useState(false); // click-pinned (mobile / sticky)
   const [pos, setPos] = useState(null);
-  const ref = useRef(null);
+  const ref = useRef(null), popRef = useRef(null);   // ⚠️ popRef was read by onDoc and never made: a tap outside threw, nothing closed it
   const closeT = useRef(null);
   const show = open || pinned;
   const cancelClose = () => clearTimeout(closeT.current);
   const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 6) }); };
+  // a phone: the list is a sheet, as the updates list is (operator, 2026-10-29: the bubble would not close and looked thin)
+  const rows = others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
+        <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
+        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
+        <span class="dep-ip addr">${d.ip || "—"}</span></div>`);
+  if (isMobile()) return html`<span class="depmore" role="button" onClick=${e => { e.stopPropagation(); e.preventDefault();
+      (_stack.length ? pushModal : openModal)(html`<${Sheet} title=${T("Other interfaces of this peer")} noGuard=${true}
+        foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}><div class="m-deplist">${rows}</div><//>`); }}>+${others.length}</span>`;
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
@@ -1298,12 +1306,9 @@ export function DepBadge({ others }) {
           hovering took the badge from 18px to 38.8px tall and the row from 49.5px to 60px, leaving a
           stray fragment of the split inline box under the cell. Rendering at <body> keeps the span a
           single unbroken inline box, so the row does not move at all. */""}
-    ${show && pos ? html`<${Portal}><div class="deppop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+    ${show && pos ? html`<${Portal}><div class="deppop" ref=${popRef} style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
-      ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
-        <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
-        <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
+      ${rows}
     </div><//>` : null}
   </span>`;
 }

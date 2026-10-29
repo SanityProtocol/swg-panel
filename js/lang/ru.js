@@ -5637,6 +5637,7 @@ export const STR = {
   // the grouped row's IF badge: the row stands for several deployments, so it counts them
   "{n} interfaces": "{n} интерф.",
   "This peer's interfaces": "Интерфейсы этого пира",
+  "Other interfaces of this peer": "Другие интерфейсы этого пира",
   "Collapse each peer's deployments into one row": "Свернуть развёртывания каждого пира в одну строку",
   "One row per peer — its other deployments are behind the +N": "По строке на пира — остальные его развёртывания за +N",
   // the address column on a self-contained turn row: its server mints the client IP on connect
