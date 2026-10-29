@@ -140,7 +140,7 @@ PLANTS = {
               "            free = [p for p in range(42821, 65536) if p not in _no and"),
     "dinrange": ("p", "DIALIN_PORTS = range(42821, 42900)", "DIALIN_PORTS = range(51820, 51900)"),
     "fwfall": ("p", "            if not free and _fw:\n", "            if False:\n"),
-    "no51820": ("p", "- _no - {51820})", "- _no)"),
+    "no51820": ("p", "- _no - {51820} - set(range(P2P_PORT_POOL", "- _no - set(range(P2P_PORT_POOL"),
     "typedport": ("p", "        if _tp:                  # typed:", "        if False:                  # typed:"),
     "typedmtu": ("p", "        if _tm:\n            if not re.fullmatch", "        if False:\n            if not re.fullmatch"),
     "typedawg": ("p", '        _typed = g.get("awg") if isinstance(g.get("awg"), dict) and proto != "wg" else {}', '        _typed = {}'),
