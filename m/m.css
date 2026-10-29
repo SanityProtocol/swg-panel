@@ -623,6 +623,10 @@ html[data-ui="m"] {
   & .dh-ver > .iconbtn.m-uptodate svg { color: var(--online); }   /* the four cells always begin a row of their own */
   & .dh-ver > .dh-sep { display: none; }
   & .dh-ver > :is(.livepill, .hostproc-tag, .nstat) { grid-column: 1 / -1; }
+  /* "arrived here" (a node transferred in) is a button: drawn as the status words beside it, not a grey system button with
+     faint text (operator, 2026-10-29); its tap opens where it came from */
+  & button.nstat.xferdone { background: none; padding: 4px 0; min-height: 28px; color: var(--ink-2); text-decoration: underline dotted; text-underline-offset: 3px; }
+  & button.nstat.xferdone svg { width: 14px; height: 14px; }
   & .dh-ver > .iconbtn {
     width: auto; height: auto; min-height: 60px; flex-direction: column; gap: 5px; border: 1px solid var(--line); border-radius: 11px;
     background: var(--surface-2); color: var(--ink-2); font: 600 12.5px/1.1 var(--sans);
