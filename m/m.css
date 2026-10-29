@@ -771,7 +771,13 @@ html[data-ui="m"] {
     margin-left: auto; flex: none; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
     border: 1px solid var(--line); border-radius: 50%; font-size: 13px; color: var(--dim); background: var(--surface-2);
   }
-  & .bkrow.open .bk-chev { border-color: var(--brand); }
+  /* the chevron drawn, not the ▾ glyph (too small to read): two strokes, the row's turning makes it point up when open */
+  & .bk-chev { font-size: 0; width: 36px; height: 36px; color: var(--ink-2); }
+  & .bk-chev::before {
+    content: ""; width: 9px; height: 9px; border-right: 2.2px solid currentColor; border-bottom: 2.2px solid currentColor;
+    border-radius: 1px; transform: translateY(-2px) rotate(45deg);
+  }
+  & .bkrow.open .bk-chev { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); }
   /* an open category's lists: a list's name and source on a line, what it is under them, its state, size and buttons last */
   & .bk-expand { padding-left: 0; }
   & .bk-lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-left: 0; padding: 10px 12px; }
