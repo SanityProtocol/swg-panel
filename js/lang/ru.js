@@ -7715,6 +7715,8 @@ export const STR = {
   "Filters": "Фильтры",
   "Groups view": "Показать группы",
   "rowact|Device": "Устройство",
+  "Check": "Проверить",
+  "What this switch does": "Что делает этот переключатель",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

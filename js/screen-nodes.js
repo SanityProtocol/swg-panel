@@ -23,7 +23,7 @@ import {
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
   trackIfaceOps, StoreOffBanner, ifaceColor, meshGenColor, meshGenLabel, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
-  rate, awgSwitchTag,
+  rate, awgSwitchTag, rateCell,
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
@@ -333,15 +333,19 @@ export function NodeDetail({ node: rawName }) {
             : T("AmneziaWG on this node is running on the slower fallback datapath — its kernel module isn't loaded, or its interfaces haven't moved back to it yet. ")) + (nrec.local ? T("Re-run the updater to repair.") : T("Update this node to repair."))}><${Ic} i="warn"/> ${T("repair node")}</button>`
           : (nrec.local ? (Store.updFlash && Date.now() < Store.updFlash) : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until))
           ? html`<span class="livepill upd-uptodate" title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}><${Ic} i="check"/> ${T("up to date")}</span>`
-          : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+          : html`<button class="iconbtn" disabled=${blocked} data-lbl=${T("Check")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
-        <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
-        <button class="iconbtn" title=${T("This node's live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: NODE_SOURCES })}><${Ic} i="doc"/></button>
+        <button class="iconbtn" disabled=${blocked} data-lbl=${T("Settings")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
+        <button class="iconbtn" data-lbl=${T("Logs")} title=${T("This node's live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: NODE_SOURCES })}><${Ic} i="doc"/></button>
         ${/* T-20: shown for a DOWN node too, and that is the point. It used to hide exactly when it was
               needed — a node locked out by a rotate is by definition not reporting — leaving "Restore or
               migrate" as the only door, which arms a whole rebuild for a box whose only problem is its
               credential. Rotating is also the right verb here: the sheet it opens now carries a one-line
               "only fix the credential" command beside the re-install ones. */ null}
+        ${/* A phone: these four doors go into the node's More sheet (MOBILE-PLAN hook 8) — their titles are sentences, too
+              long to label an icon with */ ""}
+        ${isMobile() ? html`<button class="iconbtn" data-lbl=${T("More")} title=${T("More")} onClick=${() => openModal(html`<${NodeMoreSheet} id=${nrec.id}/>`)}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>` : html`<${Fragment}>
         <button class="iconbtn" title=${down ? T("Rotate token — and get a one-line command that fixes only the credential") : T("Rotate token (re-enroll / re-install)")} onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
         ${/* The two doors that MOVE a node, on the card as well as in its settings sheet. Both are about
               this node's whole existence — the same class of act as rotating its token or removing it —
@@ -351,6 +355,7 @@ export function NodeDetail({ node: rawName }) {
         <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(nrec)}><${Ic} i="server"/></button>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec))}><${Ic} i="link"/></button>
         <button class="iconbtn danger" title=${nrec.removing ? T("Force remove node") : T("Remove node")} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
+        <//>`}
         ${/* §3.1: the door for a node that is NOT reporting — and it says "or migrate" because not
               reporting is not the same as gone for good: the same command rebuilds this node on the same
               box, a damaged one, or a brand-new one. The reporting node's door is "Migrate", in its settings. */
@@ -1265,19 +1270,43 @@ function NodeLanPanel({ nrec }) {
     : lb.ok ? html`<div class="lanstat ok"><${Ic} i="check"/> ${T("Closed on the node.")}</div>`
     : lb.why === "addresses_unreadable" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't read its own addresses, so it left the block as it was.")}</span></div>`
     : html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't close it, so its clients still reach it: {why}", { why: lb.detail || lb.why || "" })}</span></div>`;
+  const lanMsg = share
+      ? T("Clients of this node can reach the private network it sits on — every device on it, not only this node — and so can clients of other nodes whose traffic leaves through this one. A client whose traffic this node sends on to another node reaches that node's network instead. Nobody set this up: it is what routing does when the node's local network is also its way out.")
+      : T("Clients of this node, and of other nodes whose traffic leaves through it, are kept off the private network it sits on. They still reach the internet and this node itself.");
   return html`<${Panel} icon="shield" title=${T("Local network")} tone=${share ? "pending" : "online"}
       actions=${html`<span class="lanswitch">${T("Clients can reach it")}<${Switch} on=${share} onChange=${set}
         title=${share ? T("Keep this node's clients off its local network") : T("Let this node's clients reach its local network")}/></span>`}>
     <div class="lanlist">${lans.map(l => html`<span class="lanaddr"><span class="mono">${l.ip}</span>${l.iface ? html`<span class="faint">${l.iface}</span>` : null}</span>`)}</div>
-    <p class="lanmsg">${share
-      ? T("Clients of this node can reach the private network it sits on — every device on it, not only this node — and so can clients of other nodes whose traffic leaves through this one. A client whose traffic this node sends on to another node reaches that node's network instead. Nobody set this up: it is what routing does when the node's local network is also its way out.")
-      : T("Clients of this node, and of other nodes whose traffic leaves through it, are kept off the private network it sits on. They still reach the internet and this node itself.")}</p>
+    ${/* a phone folds the explanation under one line (MOBILE-PLAN P0), the switch and the addresses stay */""}
+    ${isMobile() ? html`<details class="lanfold"><summary>${T("What this switch does")}</summary><p class="lanmsg">${lanMsg}</p></details>`
+      : html`<p class="lanmsg">${lanMsg}</p>`}
     ${status}
   <//>`;
 }
 
+// The node's lifecycle doors on a phone (MOBILE-PLAN hook 8): the desktop header's four icons, as labelled rows. Read live by id,
+// so a door the node's state closes (converting, down) closes here too.
+function NodeMoreSheet({ id }) {
+  useStore();
+  const nrec = (Store.nodes || []).find(n => n.id === id);
+  if (!nrec) { closeModal(); return null; }
+  const blocked = !!nrec.migrating || Store.recon.nodeStatus[id] !== "live" || inProc(nrec.proc_status);   // NodeDetail's own rule
+  const row = (icon, label, on, off, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} disabled=${off} onClick=${() => { closeModal(); on(); }}>
+    <${Ic} i=${icon}/><span class="msheet-l">${label}</span></button>`;
+  return html`<${Sheet} title=${Store.nodeName(id)} noGuard=${true}>
+    <div class="msheet"><div class="msheet-g">
+      ${row("key", T("Rotate token"), () => openNodeRotate(nrec))}
+      ${row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked)}
+      ${row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked)}
+      ${row("trash", nrec.removing ? T("Force remove node") : T("Remove node"), () => openNodeRemove(nrec), false, "danger")}
+    </div>${blocked ? html`<p class="hint msheet-note">${T("Unavailable while the node is down / converting")}</p>` : null}</div>
+  <//>`;
+}
 export function NodeHealthPanel({ name, nrec }) {
   const [range, setRange] = useState("live");
+  // A phone: the three meters, live — no range and no chart (MOBILE-PLAN hook 4)
+  if (isMobile()) return html`<${Panel} icon="activity" title=${T("Health")} tone="online" actions=${html`<span class="faint">${T("range|live")}</span>`}>
+    <${HealthAlerts} health=${nrec.health}/><${HealthMeters} health=${nrec.health}/><//>`;
   const removing = nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span><button class="btn btn-mini" style="margin-left:9px" title=${T("Cancel removal — keep this node")} onClick=${() => unflagNode(nrec)}>${T("Cancel")}</button>` : null;
   const actions = html`<div class="panel-tools">${removing}${nrec.health_history ? html`<${RangeTabs} range=${range} setRange=${setRange}/>` : null}</div>`;
   return html`<${Panel} icon="activity" title=${T("Health")} tone="online" actions=${actions}>
@@ -1291,6 +1320,12 @@ export function NodeThroughput({ name, nrec }) {
   const [peers, setPeers] = useState(true);
   const [mesh, setMesh] = useState(true);
   const [range, setRange] = useState("live");
+  if (isMobile()) {   // a phone: the clients' live rate as a figure — no range, no chart, no mesh split (MOBILE-PLAN hook 4)
+    const s = nrec.health_live && (nrec.health_live.t || []).length > 1 ? nrec.health_live : (nrec.health_history || {});
+    const last = a => { a = a || []; for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return 0; };
+    return html`<${Panel} icon="gauge" title=${T("Throughput")} actions=${html`<span class="faint">${T("range|live")}</span>`}>
+      <div class="m-tput">${rateCell(Math.max(0, last(s.rx) - last(s.mrx)), Math.max(0, last(s.tx) - last(s.mtx)))}</div><//>`;
+  }
   const togP = () => { if (peers && !mesh) { setPeers(false); setMesh(true); } else setPeers(!peers); };
   const togM = () => { if (mesh && !peers) { setMesh(false); setPeers(true); } else setMesh(!mesh); };
   // Peers/Mesh sits on the LEFT (as the header's `lead`, right after the title); the range picker stays on the right.

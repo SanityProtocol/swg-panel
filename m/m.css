@@ -130,7 +130,7 @@ html[data-ui="m"] {
 
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
   /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
-  & :is(.iftype.awg, .tg-awg).awg3::after { content: " 3.1"; }
+  & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
 
   /* ───── sign-in ───── */
   & .login-wrap { min-height: calc(100dvh - 56px - env(safe-area-inset-top, 0px)); padding: 16px var(--m-gutter) calc(24px + var(--m-safe-b)); align-items: flex-start; }
@@ -268,6 +268,57 @@ html[data-ui="m"] {
      with the next one peeking; its footer counts share one line ───── */
   & .sheet-foot > .qrfoot-count { grid-column: 1 / 4; }
   & .sheet-foot > .qrfoot-ucounts { grid-column: 4 / -1; justify-self: end; }
+
+  /* ───── Live (T1): the cards stay; the node / interface / Online filters go behind the Filters button ───── */
+  & .mtoolbar .pmode { flex: none; }
+  & .mtoolbar .pmode .pm-opt { min-height: 42px; }
+
+  /* ───── Nodes list (T1): a card per node — its name on one line, the chips under it, then peers and throughput, then the
+     interfaces and the mesh. No drag grips, no CPU bar, no row buttons: Settings and Remove are on the node's page ───── */
+  & .section-title:has(+ .nodegrid) { flex-wrap: wrap; align-items: center; }
+  & .section-title:has(+ .nodegrid) .nodehint { display: none; }
+  & .section-title:has(+ .nodegrid) .btn-primary { min-height: 44px; }
+  & .ncard { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 12px 14px; }
+  & .ncard :is(.nc-gutter, .nc-cpu, .nc-ctl) { display: none; }
+  & .ncard .nc-name { grid-column: 1 / -1; grid-row: 1; flex-wrap: wrap; gap: 6px 8px; }
+  & .ncard .nname { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; line-height: 1.3; }
+  & .ncard .nc-peers { grid-column: 1; grid-row: 2; }
+  & .ncard .nc-thru { grid-column: 2; grid-row: 2; justify-self: end; }
+  & .ncard .nc-ifaces { grid-column: 1; grid-row: 3; }
+  & .ncard .nc-mesh { grid-column: 2; grid-row: 3; justify-self: end; }
+  & .ncard .nc-turn { grid-column: 1 / -1; grid-row: 4; }
+  & .ncard .nc-ifaces, & .ncard .nc-ifaces .tags { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+  /* ───── node detail (T1, D6): the name on one line, its chips under it; the version and the updater's branch; then Check,
+     Settings, Logs and More as labelled cells (the lifecycle doors are in the More sheet, hook 8). Health is the three meters
+     and Throughput a live figure (screen-nodes.js, hook 4); no node rail ───── */
+  & .detail-head { flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+  & .detail-head > .title { flex: 1 0 100%; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+  & .detail-head > .title h1 { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; margin: 0; }
+  & .detail-head > .grow { display: none; }
+  & .dh-ver { flex: 1 0 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: stretch; }
+  & .dh-ver > :not(.iconbtn) { grid-column: 1 / -1; justify-self: start; align-self: center; }
+  & .dh-ver > .nm-ver + .nm-ver { grid-column: auto / span 2; }
+  & .dh-ver > .dh-sep { display: none; }
+  & .dh-ver > :is(.livepill, .hostproc-tag, .nstat) { grid-column: 1 / -1; }
+  & .dh-ver > .iconbtn {
+    width: auto; height: auto; min-height: 60px; flex-direction: column; gap: 5px; border: 1px solid var(--line); border-radius: 11px;
+    background: var(--surface-2); color: var(--ink-2); font: 600 12.5px/1.1 var(--sans);
+  }
+  & .dh-ver > .iconbtn::after { content: attr(data-lbl); }
+  & .dh-ver > .iconbtn svg { width: 20px; height: 20px; }
+  & .drag-grip { display: none; }   /* reordering by drag is a mouse gesture; the order set on a desktop stays */
+  & .m-tput { font-family: var(--mono); font-size: 18px; font-weight: 600; padding: 4px 2px; }
+  & .msheet-it:disabled { opacity: .45; }
+  & .msheet-note { margin: 4px var(--m-gutter) 8px; }
+  & .noderibbon { flex-wrap: wrap; gap: 8px; }
+  & .health-cols { grid-auto-flow: row; grid-auto-columns: auto; gap: 12px; }
+  & .hcol-l { font-size: 10.5px; }
+  & .hcol-v { font-size: 13px; }
+  & .lanfold > summary { min-height: 44px; display: flex; align-items: center; color: var(--brand); font-weight: 600; font-size: 14px; cursor: pointer; }
+  & .lanfold > .lanmsg { margin-top: 2px; }
+  /* a panel's header actions wrap under its title instead of running off the card */
+  & .panel-head { flex-wrap: wrap; row-gap: 8px; }
 
   /* ───── the More sheet (app.js MoreSheet) ───── */
   & .msheet { margin: -8px calc(-1 * var(--m-gutter)); }

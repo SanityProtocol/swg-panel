@@ -11,7 +11,7 @@
  * modal. views.js is layer 3 and derives rows; this renders them and acts on them.
  */
 
-import { esc, tkey, seen, dur, fmtBytes } from "./util.js";
+import { esc, tkey, seen, dur, fmtBytes, isMobile } from "./util.js";
 import { T } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgtSeenAge, peerUncategorised } from "./model.js";
@@ -289,7 +289,7 @@ export function NodesRailPanel({ nav, active }) {
 }
 
 export function NodeRail({ active }) {
-  if ((Store.nodes || []).length < 2) return null;
+  if ((Store.nodes || []).length < 2 || isMobile()) return null;   // a phone has no room for a rail: the Nodes tab is the way (MOBILE-PLAN hook 4)
   // Render at <body> (Portal) so the fixed rail escapes the .screen "rise" transform — otherwise a fixed child of a
   // transformed ancestor is positioned relative to THAT ancestor and rides the 0.32s enter animation into place.
   return html`<${Portal}><div class="dashrail noderail"><div class="dashrail-stack">

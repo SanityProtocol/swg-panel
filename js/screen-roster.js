@@ -278,17 +278,20 @@ export function ConnectionsScreen() {
   const paginate = (list) => { const pageSize = connView.pageSize || 20, totalPages = Math.max(1, Math.ceil(list.length / pageSize));
     const page = Math.min(Math.max(1, connView.page || 1), totalPages); return list.slice((page - 1) * pageSize, page * pageSize); };
 
-  const toolbar = html`<div class="toolbar">
+  const filters = redraw => { const r = () => { reset(); if (redraw) redraw(); };
+    return html`<${Fragment}>
+    <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${connView.node}
+      onChange=${v => { connView.node = v; connView.iface = ""; r(); }} options=${nodeFilterOptions("")}/>
+    <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${connView.iface}
+      onChange=${v => { connView.iface = v; r(); }} options=${ifaceFilterOptions(connView.node ? Store.userIfacesOf(connView.node) : allIfaces, "")}/>
+    <button class=${"onlbtn" + (connView.online ? " on" : "")} title=${T("Show only online connections")} onClick=${() => { connView.online = !connView.online; r(); }}>${T("status|Online")}</button><//>`; };
+  const toolbar = html`<div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
     <div class="pmode">
       <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "")} onClick=${() => setMode("peers")}>${T("Peers")}</button>
       <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>${T("Users")}</button>
     </div>
     <${SearchBox} placeholder=${mode === "users" ? T("Search users, tags, peers…") : T("Search peer, user, endpoint, IP…")} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
-    <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${connView.node}
-      onChange=${v => { connView.node = v; connView.iface = ""; reset(); }} options=${nodeFilterOptions("")}/>
-    <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${connView.iface}
-      onChange=${v => { connView.iface = v; reset(); }} options=${ifaceFilterOptions(ifaceOpts, "")}/>
-    <button class=${"onlbtn" + (connView.online ? " on" : "")} title=${T("Show only online connections")} onClick=${() => { connView.online = !connView.online; reset(); }}>${T("status|Online")}</button>
+    ${isMobile() ? filterBtn(!!(connView.node || connView.iface || connView.online), filters) : filters()}
   </div>`;
 
   if (mode === "users") {
@@ -513,25 +516,19 @@ function GroupRow({ g, st, q }) {
 // member does, and opens on just those members. `reset` is the caller's: its own page goes back to 1.
 const memberPasses = u => userOnNodeIface(u, usersView.node, usersView.iface) && (!usersView.online || u.onlineCount > 0);
 const filtersOn = () => !!(usersView.node || usersView.iface || usersView.online);
-// The Users toolbar on a phone (MOBILE-PLAN P0): the search, and one Filters button holding the group, node, interface and
-// Online filters and the Groups view in a sheet — five controls do not fit a 390 px row. A dot on the button while one is set.
-function RosterFilterSheet({ force }) {
+// A list's toolbar on a phone (MOBILE-PLAN P0): the search stays, the filters go behind one Filters button into a sheet — five
+// controls do not fit a 390 px row. A dot on the button while one is set. `controls(redraw)` draws them; each filter's own
+// handler re-renders the screen, `redraw` the sheet.
+function FilterSheet({ controls }) {
   useStore();
   const [, redraw] = useState(0);
-  const reset = () => { usersView.page = 1; redraw(x => x + 1); force(x => x + 1); };
-  const groups = Store.groups();
   return html`<${Sheet} title=${T("Filters")} noGuard=${true}
     foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
-    <div class="mfilters">
-      <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
-        onChange=${v => { usersView.group = v; reset(); }}
-        options=${[{ value: "", label: T("All groups") }, ...groups.map(g => ({ value: g.id, label: g.name }))]}/>
-      <${RosterFilters} reset=${reset}/>
-      <button class="btn btn-ghost mfilters-groups" onClick=${() => { closeModal(); usersView.mode = "groups"; force(x => x + 1); }}>
-        <${Ic} i="users"/> ${T("Groups view")}</button>
-    </div>
+    <div class="mfilters">${controls(() => redraw(x => x + 1))}</div>
   <//>`;
 }
+const filterBtn = (on, controls) => html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
+  onClick=${() => openModal(html`<${FilterSheet} controls=${controls}/>`)}><${Ic} i="sliders"/></button>`;
 function RosterFilters({ reset }) {
   const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
   const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;
@@ -614,8 +611,14 @@ export function UsersScreen() {
     ${isMobile() ? null : html`<${TrafficRail}/>`}
     ${isMobile() ? html`<div class="toolbar mtoolbar">
       <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
-      <button class=${"iconbtn mfilter-btn" + (filtersOn() || usersView.group ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
-        onClick=${() => openModal(html`<${RosterFilterSheet} force=${force}/>`)}><${Ic} i="sliders"/></button>
+      ${filterBtn(filtersOn() || usersView.group, redraw => { const reset = () => { usersView.page = 1; redraw(); force(x => x + 1); };
+        return html`<${Fragment}>
+          <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
+            onChange=${v => { usersView.group = v; reset(); }}
+            options=${[{ value: "", label: T("All groups") }, ...Store.groups().map(g => ({ value: g.id, label: g.name }))]}/>
+          <${RosterFilters} reset=${reset}/>
+          <button class="btn btn-ghost mfilters-groups" onClick=${() => { closeModal(); usersView.mode = "groups"; force(x => x + 1); }}>
+            <${Ic} i="users"/> ${T("Groups view")}</button><//>`; })}
       <button class="btn btn-primary mfab" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
     </div>` : html`<div class="toolbar">
       <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
