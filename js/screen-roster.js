@@ -7,7 +7,7 @@
  */
 
 import {
-  ago, seen, tkey, isPrimaryTarget,
+  ago, seen, tkey, isPrimaryTarget, isMobile,
 } from "./util.js";
 import { T, Tsplit, Trich, plural, srvVerb, srvDetail, srvName } from "./i18n.js";
 import {
@@ -17,8 +17,8 @@ import {
   ifaceIsAll, ifaceMatch, targetType, awgGen,
 } from "./model.js";
 import {
-  CapList, Dropdown, Ic, Popover, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
-  rowNoSelect, rowSingle, secTitle, xferCell, tgt3,
+  CapList, Dropdown, Ic, Popover, RowError, SearchBox, Sheet, StoreOffBanner, Tag, closeModal, dlul, lifecycleIcon, openConfirm, openModal,
+  rateCell, rowDouble, rowNoSelect, rowSingle, secTitle, xferCell, tgt3,
 } from "./ui.js";
 import {
   EV_ACTIONS, EV_ITEMS, evItemLabel, evActionLabel, peerStatusFilters, USER_DEFDIR, activityView, connView, evDecorate,
@@ -398,15 +398,18 @@ export function UserRow({ user, live, onlineOnly, q, nested }) {
         <span class="u-last">${st.last == null ? html`<span class="u-never">${T("Never")}</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
         ${live ? html`<span class="u-total">${xferCell(db, ub)}</span>`
+          // a phone draws no traffic window, so no figure from one (MOBILE-PLAN hook 4): the ledger is not fetched there
+          : isMobile() ? null
           // the user's figure opens the user's view — their graph and every device they had (O12)
           : html`<span class="u-total clk" role="button" tabindex="0" title=${T("Open this user's traffic — graph and devices")}
               onClick=${e => { e.stopPropagation(); openUserView(user.id); }} onDblClick=${e => e.stopPropagation()}
               onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); openUserView(user.id); } }}><${UserTrafficCell} uid=${user.id}/></span>`}
         ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
-          <button class="iconbtn qr" title=${T("Show QR / configs")} onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
-          <button class="iconbtn" title=${T("Traffic — graph and devices")} aria-label=${T("Traffic — graph and devices")} onClick=${() => openUserView(user.id)}><${Ic} i="bars"/></button>
-          <button class="iconbtn" title=${T("Edit user")} onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
-          <button class="iconbtn iconbtn-add" title=${T("Add peer")} onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
+          ${/* data-lbl: the word a phone shows under each icon, where the row's swipe reveals them (m/m.css); nothing on a desktop */""}
+          <button class="iconbtn qr" title=${T("Show QR / configs")} data-lbl="QR" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
+          <button class="iconbtn" title=${T("Traffic — graph and devices")} aria-label=${T("Traffic — graph and devices")} data-lbl=${T("Traffic")} onClick=${() => openUserView(user.id)}><${Ic} i="bars"/></button>
+          <button class="iconbtn" title=${T("Edit user")} data-lbl=${T("Edit")} onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
+          <button class="iconbtn iconbtn-add" title=${T("Add peer")} data-lbl=${T("rowact|Device")} onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         </span>`}
       </span>
     </div>
@@ -510,6 +513,25 @@ function GroupRow({ g, st, q }) {
 // member does, and opens on just those members. `reset` is the caller's: its own page goes back to 1.
 const memberPasses = u => userOnNodeIface(u, usersView.node, usersView.iface) && (!usersView.online || u.onlineCount > 0);
 const filtersOn = () => !!(usersView.node || usersView.iface || usersView.online);
+// The Users toolbar on a phone (MOBILE-PLAN P0): the search, and one Filters button holding the group, node, interface and
+// Online filters and the Groups view in a sheet — five controls do not fit a 390 px row. A dot on the button while one is set.
+function RosterFilterSheet({ force }) {
+  useStore();
+  const [, redraw] = useState(0);
+  const reset = () => { usersView.page = 1; redraw(x => x + 1); force(x => x + 1); };
+  const groups = Store.groups();
+  return html`<${Sheet} title=${T("Filters")} noGuard=${true}
+    foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
+    <div class="mfilters">
+      <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
+        onChange=${v => { usersView.group = v; reset(); }}
+        options=${[{ value: "", label: T("All groups") }, ...groups.map(g => ({ value: g.id, label: g.name }))]}/>
+      <${RosterFilters} reset=${reset}/>
+      <button class="btn btn-ghost mfilters-groups" onClick=${() => { closeModal(); usersView.mode = "groups"; force(x => x + 1); }}>
+        <${Ic} i="users"/> ${T("Groups view")}</button>
+    </div>
+  <//>`;
+}
 function RosterFilters({ reset }) {
   const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
   const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;
@@ -589,8 +611,13 @@ export function UsersScreen() {
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${TrafficRail}/>
-    <div class="toolbar">
+    ${isMobile() ? null : html`<${TrafficRail}/>`}
+    ${isMobile() ? html`<div class="toolbar mtoolbar">
+      <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
+      <button class=${"iconbtn mfilter-btn" + (filtersOn() || usersView.group ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
+        onClick=${() => openModal(html`<${RosterFilterSheet} force=${force}/>`)}><${Ic} i="sliders"/></button>
+      <button class="btn btn-primary mfab" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
+    </div>` : html`<div class="toolbar">
       <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
         onChange=${v => { usersView.group = v; usersView.page = 1; force(x => x + 1); }}
         options=${[{ value: "", label: T("All groups") }, ...groups.map(g => ({ value: g.id, label: g.name }))]}/>
@@ -598,7 +625,7 @@ export function UsersScreen() {
       <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
       <${RosterFilters} reset=${() => { usersView.page = 1; force(x => x + 1); }}/>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
-    </div>
+    </div>`}
 
     ${secTitle(inGroup ? T("{name} users", { name: Store.group(usersView.group).name }) : T("Total users"), users.length, false)}
     ${!allUsers.length ? html`<div class="empty"><b>${T("No users yet")}</b>${T("Create a user, then add devices for them — or create a peer on the Peers screen and assign it later.")}</div>`

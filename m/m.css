@@ -93,6 +93,11 @@ html[data-ui="m"] {
   & .sheet-head .x { width: 44px; height: 44px; font-size: 26px; top: 0; }
   & .sheet-head .sheet-back { min-height: 40px; }
   & .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px var(--m-gutter); }
+  /* a form that is a card of its own (the user editor) sits in the sheet without a second frame */
+  & .sheet-body > .card:only-child { border: 0; padding: 0; background: none; box-shadow: none; }
+  & .fieldrow { flex-direction: column; gap: 15px; margin-bottom: 15px; }
+  & .fieldrow > .field { width: 100%; }
+  & .ugroup-combo .uc-input, & .ugroup-combo .uc-size::before, & .ugroup-combo .uc-size::after { font-size: 16px; }
   & .sheet.m-dragging { transition: none; }
   & .sheet.m-springback { transition: transform .22s var(--ease); }
 
@@ -123,10 +128,146 @@ html[data-ui="m"] {
     box-sizing: border-box; margin: 0 !important;
   }
 
+  & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
+  /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
+  & :is(.iftype.awg, .tg-awg).awg3::after { content: " 3.1"; }
+
   /* ───── sign-in ───── */
   & .login-wrap { min-height: calc(100dvh - 56px - env(safe-area-inset-top, 0px)); padding: 16px var(--m-gutter) calc(24px + var(--m-safe-b)); align-items: flex-start; }
   & .login-card { max-width: none; margin-top: 8vh; padding: 24px 20px; }
   & .login-card .btn { min-height: 48px; font-size: 15px; }
+
+  /* ───── section headings: the screen's own captions, a little more air on a phone ───── */
+  & .section-title { margin: 20px 0 8px; }
+
+  /* ───── Overview (T1). What it does not draw on a phone is render-gated in screen-overview.js (hook 4): the rail, the charts,
+     the doughnuts, the flow map, the ranked lists. What is left, in the mockup's order: Needs attention first (D2), the five
+     tiles with Throughput across the row (D1), the fleet, Protection as one card of three counts (D3), recent activity ───── */
+  & .screen:has(> .statgrid) { display: flex; flex-direction: column; }
+  & .screen:has(> .statgrid) > [data-sec="attention"] { order: -2; margin-top: 4px; }
+  & .screen:has(> .statgrid) > [data-sec="attention"] + :is(.attn, .allclear) { order: -1; }
+  & .statgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  & .stat { padding: 13px 14px 12px; }
+  & .stat-ic { display: none; }
+  & .stat .v { font-size: 24px; }
+  & .stat .sub { font-size: 12.5px; }
+  & .statgrid > .stat:nth-child(5) { grid-column: 1 / -1; }
+  & .statgrid > .stat:nth-child(5) .stat-c { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 12px; }
+  & .statgrid > .stat:nth-child(5) .k { flex: 1 0 100%; }
+  & .statgrid > .stat:nth-child(5) .v { margin-top: 4px; }
+  & .attn-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px; min-height: 52px; padding: 10px 10px 10px 14px; }
+  & .attn-row > :first-child { grid-column: 1; grid-row: 1; align-self: center; }
+  & .attn-row .name { grid-column: 2; grid-row: 1; align-self: center; }
+  & .attn-row .why { grid-column: 1 / 3; grid-row: 2; font-size: 12.5px; }
+  & .attn-row .rowarrow { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
+  & .attn-row .grow { display: none; }
+  & .fleet2 { gap: 10px; }
+  & .fnode { display: block; }
+  & .fnode-main { padding: 12px 14px; gap: 6px; }
+  & .fnode-name { font-size: 15px; }
+  & .fnode-stats { gap: 2px 8px; flex-wrap: wrap; justify-content: flex-end; font-size: 12.5px; }
+  & .fnode-stats .fl { display: none; }
+  & .fnode-stats > div:nth-child(1) { flex: 1 0 auto; }
+  & .fnode-stats > div:nth-child(n+2) { flex: none; color: var(--dim); }
+  & .fnode-stats > div:nth-child(2)::after { content: " ·"; color: var(--faint); }
+  & .prot-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  & .prot-tile { padding: 12px 10px; }
+  & .prot-top { flex-direction: column; align-items: flex-start; gap: 2px; }
+  & .prot-v { font-size: 22px; }
+  & .prot-k { font-size: 10px; border-bottom: 0; letter-spacing: .06em; }
+  & .prot-sub, & .prot-spark { display: none; }
+  & .prot-cov { flex-wrap: wrap; }
+  & .act-row { min-height: 48px; padding: 0 12px; gap: 8px; font-size: 14px; }
+  & .act-row .act-ic, & .act-row .act-detail { display: none; }
+  & .act-row .act-what { flex: none; }
+  & .act-row .act-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+  & .act-row .grow { flex: 1 1 0; min-width: 4px; }
+  & .act-row .when { flex: none; }
+  & .act-morewrap { text-align: right; }
+  & .act-more { display: inline-block; padding: 12px 0; }
+
+  /* ───── Users (T1): the search and a Filters button (the rest of the toolbar is in RosterFilterSheet), a floating New user
+     (D5), two-line rows whose actions sit behind a LEFT SWIPE — the head scrolls sideways and snaps; the actions stand just
+     past its right edge (absolute, so they add the scroll room), each with its word (data-lbl). No column header: the
+     columns are gone. TrafficRail and the traffic column are render-gated (hook 4) ───── */
+  & .toolbar.mtoolbar { display: flex; flex-wrap: nowrap; gap: 8px; align-items: stretch; margin-bottom: 4px; }
+  & .mtoolbar .search { flex: 1 1 auto; min-width: 0; min-height: 44px; }
+  & .mfilter-btn { flex: none; width: 46px; height: auto; min-height: 44px; border: 1px solid var(--line-solid); background: var(--surface); border-radius: var(--r-sm); position: relative; }
+  & .mfilter-btn.on::after { content: ""; position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+  & .mfab {
+    position: fixed; right: max(var(--m-gutter), env(safe-area-inset-right, 0px)); bottom: calc(var(--m-tabbar) + var(--m-safe-b) + 16px); z-index: 35;
+    min-height: 52px; padding: 0 20px 0 16px; border-radius: 16px; font-size: 15px; gap: 8px;
+    box-shadow: 0 10px 28px -8px color-mix(in srgb, var(--brand) 60%, transparent);
+  }
+  &:has(:is(input:not([type=checkbox]):not([type=radio]), textarea, select):focus) .mfab { display: none; }
+  & .mfilters { display: flex; flex-direction: column; gap: 12px; }
+  & .mfilters > * { width: 100%; }
+  & .mfilters .selwrap, & .mfilters .onlbtn, & .mfilters-groups { min-height: 44px; }
+  & .mfilters-groups { justify-content: center; }
+  & .uhead { display: none; }
+  & .urows { gap: 6px; }
+  & .urow > .urow-head {
+    position: relative; display: grid; grid-template-columns: 20px max-content minmax(0, 1fr) max-content; grid-template-rows: auto auto;
+    gap: 4px 8px; align-items: center; min-height: 64px; box-sizing: border-box; padding: 11px 14px;
+    overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
+  }
+  & .urow > .urow-head::-webkit-scrollbar { display: none; }
+  & .urow-head > .u-exp { grid-column: 1; grid-row: 1 / span 2; scroll-snap-align: start; }
+  & .urow-head > .u-name { grid-column: 2 / -1; grid-row: 1; font-size: 15.5px; }
+  & .urow-head > .ustat { grid-column: 2; grid-row: 2; }
+  & .urow-head > .u-right { display: contents; }
+  & .urow-head .u-right > * { padding: 0; }
+  & .urow-head .u-counts { display: block; grid-column: 3; grid-row: 2; font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  & .urow-head .u-thru { display: block; grid-column: 4; grid-row: 2; justify-self: end; font-size: 12px; }
+  & .urow-head .u-thru:not(:has(.ratecell.live)), & .urow-head .u-thru .up, & .urow-head :is(.u-servers, .u-last, .u-total, .u-note) { display: none; }
+  & .urow-head .u-acts {
+    /* 100% resolves to the head's CONTENT width here (measured), so past its right padding too */
+    position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; gap: 0; scroll-snap-align: end;
+  }
+  & .urow-head .u-acts > .iconbtn {
+    width: 62px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--brand); font: 600 11px/1.1 var(--sans);
+  }
+  & .urow-head .u-acts > .iconbtn::after { content: attr(data-lbl); max-width: 58px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .urow-head .u-acts > .iconbtn svg { width: 20px; height: 20px; }
+
+  /* ───── deployment rows (the target picker, a device's Deployments): TWO LINES (D4, option A) — the box, the node, the interface
+     and the type tag; then the role with its word (hook 9), the address and the gear. The desktop's --topt-col is not touched:
+     the right part simply stops being a column here ───── */
+  & .targetpick > .targetopt { min-width: 0; }
+  & .targetopt { flex-wrap: wrap; row-gap: 8px; column-gap: 8px; padding: 8px 10px; }
+  & .targetopt::after { content: ""; order: 3; flex: 1 0 100%; height: 0; }
+  & .targetopt:not(:has(.topt-right > :not(.tg))) { flex-wrap: nowrap; }
+  & .targetopt:not(:has(.topt-right > :not(.tg)))::after { display: none; }
+  & .targetopt .topt-main { order: 1; flex: 1 1 0; min-width: 0; min-height: 32px; }
+  & .targetopt .nm { flex: 0 1 auto; width: auto; }
+  & .targetopt .topt-right, & .targetopt .topt-right.hasprim { display: contents; }
+  & .targetopt .topt-right > .tg { order: 2; }
+  & .targetopt .topt-right > :not(.tg) { order: 4; }
+  & .targetopt .topt-right > .tgt-front { flex: 0 1 auto; }
+  & .targetopt .topt-right > .topt-ip { order: 5; flex: 1 1 0; width: auto; min-width: 0; margin: 0; min-height: 36px; }
+  & .targetopt .topt-right > .topt-ip:last-child { margin-right: 0; }
+  & .targetopt .topt-right > .topt-gear { order: 6; width: 36px; height: 36px; }
+  & .targetopt .box { width: 20px; height: 20px; }
+  & .targetopt .topt-right > .topt-err { order: 7; flex: 1 0 100%; margin: -2px 0 0; font-size: 12.5px; }
+
+  /* ───── Add peers (AddPeersSheet): its six-column grid becomes two lines a deployment — the title and the actions, then the
+     status, the type, the interface and the address ───── */
+  & :is(.pg2, .pg2-peer) { display: block; }
+  & .pg2-dep { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 12px; }
+  & .pg2-dep::after { content: ""; order: 3; flex: 1 0 100%; height: 0; }
+  & .pg2-title { order: 1; flex: 1 1 0; }
+  & .pg2-ctl { order: 2; }
+  & .pg2-st { order: 4; }
+  & .pg2-tags { order: 5; }
+  & .pg2-ifn { order: 6; }
+  & .pg2-ip { order: 7; margin: 0 0 0 auto; }
+  & .pg2-act { width: 40px; height: 40px; }
+
+  /* ───── user detail: the user's configs sheet (peer-ui.js openUserConfigs) — its device pager (QRRow) already shows one device
+     with the next one peeking; its footer counts share one line ───── */
+  & .sheet-foot > .qrfoot-count { grid-column: 1 / 4; }
+  & .sheet-foot > .qrfoot-ucounts { grid-column: 4 / -1; justify-self: end; }
 
   /* ───── the More sheet (app.js MoreSheet) ───── */
   & .msheet { margin: -8px calc(-1 * var(--m-gutter)); }

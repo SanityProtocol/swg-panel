@@ -9,7 +9,7 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, V, BASE, seen, panelNowS, configErrors, orderedTargets, isPrimaryTarget, useStableOrder,
-         isSelfContainedKind, ipOf, portOf, ipPickerVal } from "./util.js";
+         isSelfContainedKind, ipOf, portOf, ipPickerVal, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
@@ -299,6 +299,8 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
           // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
           ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto IP")}</span>`
           : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || T("address")} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
+        ${/* a phone shows no title: the reason goes under the field (MOBILE-PLAN hook 5) */""}
+        ${s && isMobile() && s.ip && !V.ipv4(s.ip) ? html`<span class="hint err topt-err">${T("not a valid IPv4 address")}</span>` : null}
         ${(s && !t.missing) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${s.opts} onSave=${v => setOpts(k, v)} readOnly=${!!s.existing}/>` : null}
       </div>
     </div>`;
@@ -1077,7 +1079,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")} onMouseEnter=${nmTip}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <div class="topt-right hasprim">
-            <${RoleToggle} peer=${peer} t=${t} compact=${true}/>
+            ${/* a phone has no hover for the star's title, so its word stays (MOBILE-PLAN hook 9) */""}
+            <${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>
             <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online} gen3=${tgt3(t)}/>
             <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
             ${sc

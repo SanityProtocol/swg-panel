@@ -9,7 +9,7 @@
  */
 
 import {
-  ago, dur, fmtBytes, seen, panelNowS,
+  ago, dur, fmtBytes, seen, panelNowS, isMobile,
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvName, srvText } from "./i18n.js";
 import {
@@ -97,9 +97,9 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
         <div><span class="fl">${T("Sync")}</span><span class="fv">${sync}</span></div>
       </div>
     </div>
-    <div class="fnode-health">
+    ${isMobile() ? null : html`<div class="fnode-health">
       ${health ? html`<${NodeHealth} health=${health} node=${n.id} compact=${true} range=${histRange} nodeHist=${nodeHist}/>` : html`<div class="fnode-nohealth">${live ? T("no health data reported") : T("node offline")}</div>`}
-    </div>
+    </div>`}
   </a>`;
 }
 
@@ -1354,8 +1354,11 @@ export function Overview() {
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
   // Every widget aggregates over the SELECTED node set (default = whole fleet). A peer is "in scope" if
   // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
-  const selIds = dashNodes(), sel = new Set(selIds);
-  const dKey = dashKey();                                        // the range, or a custom window's key (its days)
+  // A PHONE draws no rail (MOBILE-PLAN hook 4), so it has no range and no node set to choose: live, the whole fleet — a choice
+  // kept from the desktop view would scope every figure with nothing on screen saying so. Live also means no history fetch.
+  const m = isMobile();
+  const selIds = m ? (Store.fleet || []).map(n => n.id) : dashNodes(), sel = new Set(selIds);
+  const dKey = m ? "live" : dashKey();                           // the range, or a custom window's key (its days)
   const rangeHist = useRangeHistory(dKey, selIds);              // one fetch, shared by the doughnuts + flow map
   const blockStats = useBlockStats(dKey);                       // Protection card feed (independent, supports live)
   // Fresh install (or every node removed) → there's no fleet to chart. Skip the whole dashboard and invite
@@ -1561,7 +1564,7 @@ export function Overview() {
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${DashRail}/>
+    ${m ? null : html`<${DashRail}/>`}
     ${isCustomKey(dKey) && rangeHist.range === dKey && rangeHist.err ? html`<div class="notice warn">${srvText(rangeHist.err)}</div>` : null}
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections" onClick=${openLiveTab("peers")}><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">${T("Online now")}</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">${T("live connections →")}</div></div></a>
@@ -1572,7 +1575,7 @@ export function Overview() {
     </div>
 
     ${secTitle(T("Fleet"), scoped ? T("{n} of {total}", { n: fleetSel.length, total: plural(fleet.length, "server") }) : plural(fleet.length, "server"), undefined, "fleet")}
-    ${fleetSel.length ? html`<div class="trends">
+    ${fleetSel.length && !m ? html`<div class="trends">
       <div class="trendcard wide">
         <div class="donutcard-h"><h3>${T("Fleet throughput")}</h3></div>
         ${(fleetHist.t || []).length > 1
@@ -1589,29 +1592,29 @@ export function Overview() {
     ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n} traffic=${nodeTraffic.find(x => x.id === n.id)} ranged=${dRanged} histRange=${effRange} nodeHist=${(rangeHist.byNode || {})[n.id] || null} presence=${dRanged && _pres ? (_pres.nodes || {})[n.id] || null : null}/>`)}</div>`
       : html`<div class="allclear">${T("No servers configured in fleet.json.")}</div>`}
 
-    ${fleetSel.length ? html`<${Fragment}>
+    ${fleetSel.length && !m ? html`<${Fragment}>
       ${secTitle(T("Distribution"), html`${scoped ? T("selected nodes") : T("whole fleet")} · ${rangeWord(effRange)}`, undefined, "distribution")}
       <${DashDoughnuts} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
-    ${fleetSel.length ? html`<${Fragment}>
+    ${fleetSel.length && !m ? html`<${Fragment}>
       ${secTitle(T("Traffic flow map"), T("signal flow · by category"), undefined, "flow")}
       <${FlowMap2} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
     ${fleetSel.length ? html`<${Protection} range=${effRange} bs=${blockStats}/>` : null}
 
-    ${fleetSel.length > 1 ? html`<${Fragment}>
+    ${fleetSel.length > 1 && !m ? html`<${Fragment}>
       ${secTitle(T("Top nodes by peers"), rnkTotal ? T("total peers") : (dRanged ? T("online · {range}", { range: rangeWord(effRange) }) : T("online now")), undefined, "topnodes")}
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
     <//>` : null}
 
-    ${fleetSel.length > 1 && anyTraffic ? html`<${Fragment}>
+    ${fleetSel.length > 1 && anyTraffic && !m ? html`<${Fragment}>
       ${secTitle(T("Top nodes by traffic"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "topnodestraf")}
       <div class="rankcard"><${RankBars} rows=${rankRowsTraffic}/></div>
     <//>` : null}
 
-    ${talkerRows.length || (dRanged && (!talkD || talkE.off || talkE.err)) ? html`<${Fragment}>
+    ${!m && (talkerRows.length || (dRanged && (!talkD || talkE.off || talkE.err))) ? html`<${Fragment}>
       ${secTitle(T("Top talkers"), dRanged ? talkSub(effRange, talkD, scoped) : T("by live throughput"), undefined, "toptalkers")}
       ${talkerRows.length ? html`<div class="rankcard"><${RankBars} rows=${talkerRows}/></div>`
         : talkE.off ? html`<div class="hint">${T("Traffic totals are off — Settings → Display says why.")}</div>`
@@ -1619,19 +1622,19 @@ export function Overview() {
         : html`<div class="hint faint">…</div>`}
     <//>` : null}
 
-    ${catRows.length ? html`<${Fragment}>
+    ${catRows.length && !m ? html`<${Fragment}>
       ${secTitle(T("Top destinations"), html`${dRanged ? rangeWord(effRange) : rangeWord("live")} · ${T("categories overlap")}${(totClientRx + totClientTx) ? (() => { const f = dRanged ? fmtBytes : rate, [d, u] = dlul(totClientRx, totClientTx); return html` · ${ofTotal(f(d), f(u))}`; })() : ""}`, undefined, "topdest")}
       <div class="rankcard"><${RankBars} rows=${catRows}/></div>
     <//>` : null}
 
-    ${exitRows.length ? html`<${Fragment}>
+    ${exitRows.length && !m ? html`<${Fragment}>
       ${secTitle(T("Traffic by exit"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "byexit")}
       <div class="rankcard"><${RankBars} rows=${exitRows}/></div>
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
       ${secTitle(T("Recent activity"), null, false, "activity")}
-      <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
+      <div class="actlist">${(m ? recent.slice(0, 5) : recent).map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
           onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
         <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
         <span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${srvName(e)}</span>` : null}

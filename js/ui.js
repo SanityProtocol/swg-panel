@@ -380,6 +380,34 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   </span>`;
 }
 
+// A phone has no hover, and about 700 values of the panel live in a `title=` (MOBILE-PLAN hook 5): a status badge's reason, a
+// version chip's "ahead", a mesh row's numbers. One delegated tap, mobile only, shows the tapped element's title in the docked
+// bubble. A tap that belongs to something else never does: on a link, a button, a field, or anything with a pointer cursor (a
+// clickable row or card) the tap is that thing's, and a title-less tap anywhere just closes the bubble.
+export function attachTitleTaps() {
+  let bub = null;
+  const drop = () => { if (bub) { bub.remove(); bub = null; } };
+  document.addEventListener("click", e => {
+    const t = e.target;
+    if (bub && bub.contains(t)) return;
+    drop();
+    if (!t || !t.closest || t.closest(".deppop")) return;
+    let el = null;
+    for (let n = t; n && n !== document.body; n = n.parentElement) {
+      if (n.matches("a, button, input, select, textarea, label, summary, [role=button], [contenteditable]")) return;
+      if (getComputedStyle(n).cursor === "pointer") return;
+      if (!el && n.getAttribute("title")) el = n;
+    }
+    if (!el) return;
+    bub = document.createElement("div");
+    bub.className = "deppop m-titletap";
+    bub.setAttribute("role", "status");
+    bub.textContent = el.getAttribute("title");
+    document.body.appendChild(bub);
+  });
+  window.addEventListener("hashchange", drop);
+}
+
 /* Every label table below is built ONCE, on first use — never at module load. T() only answers correctly
    after loadLang() has resolved, and these modules are imported before that; a table frozen at import time
    would be English forever. Caching for the process is safe because setLang() reloads the page. */

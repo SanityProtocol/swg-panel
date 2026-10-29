@@ -7712,6 +7712,9 @@ export const STR = {
   "theme|Light": "Светлая",
   "theme|Dark": "Тёмная",
   "This app opens the old address for good: open the new one in the browser and install the app from there again.": "Это приложение всегда открывает старый адрес: откройте новый в браузере и установите приложение оттуда заново.",
+  "Filters": "Фильтры",
+  "Groups view": "Показать группы",
+  "rowact|Device": "Устройство",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
