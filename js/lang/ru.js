@@ -6270,6 +6270,7 @@ export const STR = {
   "Add a second step at sign-in using an authenticator app (Google Authenticator, Authy, 1Password…).":
     "Добавьте второй шаг при входе — код из приложения-аутентификатора (Google Authenticator, Authy, 1Password…).",
   "Turn IPs": "Адреса turn",
+  "Open Settings": "Открыть настройки",
   "This node is busy or offline": "Нода занята или не на связи",
   " — turn-proxy actions are disabled until it's reporting again.": " — действия с turn-прокси недоступны, пока она не отзовётся.",
   "Internal port": "Внутренний порт",

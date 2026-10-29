@@ -483,6 +483,15 @@ html[data-ui="m"] {
   & .m-deplist .deprow { display: flex; align-items: center; gap: 10px; min-height: 48px; border-top: 1px solid var(--line); font-size: 15px; }
   & .m-deplist .deprow:first-child { border-top: 0; }
   & .m-deplist .dep-ip { margin-left: auto; font-size: 13.5px; color: var(--ink-2); }
+  /* a turn-proxy's collected VK IPs as a sheet (the desktop's hover): a row a thumb's height */
+  & .m-tiplist .tipbub-row { display: flex; align-items: center; gap: 10px; min-height: 44px; border-top: 1px solid var(--line); font-size: 14px; }
+  & .m-tiplist .tipbub-row:first-child { border-top: 0; }
+  & .m-tiplist .tipbub-ip { font: 500 14px var(--mono); }
+  & .m-tiplist .tipbub-when { font-size: 13px; color: var(--ink-3); }
+  /* a danger button, as Delete / Block (its desktop rule draws it as a bare link under a line) */
+  & .m-tiplist .tipbub-flush { margin-top: 14px; min-height: 48px; width: 100%; justify-content: center; padding: 0 14px; font-size: 15px;
+    background: color-mix(in srgb, var(--dangling) 10%, transparent); border: 1px solid color-mix(in srgb, var(--dangling) 32%, transparent); border-radius: var(--r-sm); }
+  & .m-tiplist .tipbub-flush .ic svg { width: 16px; height: 16px; }
   & .m-nodesheet .m-ns-sum { font-size: 13px; color: var(--ink-3); margin: 0 0 8px; }
   & .m-nodesheet .m-ns-node { border-top: 1px solid var(--line); padding: 4px 0 8px; }
   & .m-nodesheet :is(.m-ns-nm, .m-ns-if) { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0; border: 0;

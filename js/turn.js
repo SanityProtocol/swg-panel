@@ -484,16 +484,24 @@ export function TurnIpsHeader({ node, svc }) {
     body: Trich(T("Remove {count} offline recorded for *this turn-proxy only*. Currently-online relays are kept, and other proxies are untouched.", { count: plural(offlineN, "IP") })),
     onConfirm: async () => { await api.turnIpsFlush({ node, service: svc }); load(); } });   // service-scoped on the backend → this proxy's offline IPs only
   const openSettings = () => goSettingsTurnIps();
-  const trigger = html`<span class="turnips-hd" onClick=${openSettings}>${T("Turn IPs")}${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
+  const label = html`${T("Turn IPs")}${active.size ? html` · <b>${active.size}</b>` : ""}`;
+  // a phone: the tap shows the list in a sheet, as the desktop's hover does, Settings one button away (operator, 2026-10-29:
+  // "don't take me to settings directly")
+  if (isMobile()) return html`<span class="turnips-wrap"><span class="turnips-hd" role="button" onClick=${() => pushModal(html`<${Sheet}
+      title=${T("Collected VK IPs")} noGuard=${true} foot=${html`<button class="btn btn-ghost" onClick=${openSettings}><${Ic} i="gear"/> ${T("Open Settings")}</button>
+        <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
+      <div class="m-tiplist">${tipRows()}</div><//>`)}>${label}</span></span>`;
+  const trigger = html`<span class="turnips-hd" onClick=${openSettings}>${label}</span>`;
   return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
     <div class="onpop-h">${T("Collected VK IPs")}</div>
-    ${rows.length ? html`<${Fragment}>
+    ${tipRows()}
+  <//>`;
+  function tipRows() { return html`${rows.length ? html`<${Fragment}>
       ${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? T("val|online") : _lastSeen(r.last)}</span></div>`)}
       ${all.length > rows.length ? html`<div class="tipbub-more">${T("+{n} more in Settings", { n: all.length - rows.length })}</div>` : null}
-      ${offlineN ? html`<button class="tipbub-flush" onClick=${flush}><${Ic} i="trash"/> ${T("Flush offline recorded IPs")}</button>` : null}
+      ${offlineN ? html`<button class=${"tipbub-flush" + (isMobile() ? " btn btn-danger" : "")} onClick=${flush}><${Ic} i="trash"/> ${T("Flush offline recorded IPs")}</button>` : null}
     <//>`
-      : html`<div class="tipbub-empty">${T("No connections seen yet.")}</div>`}
-  <//>`;
+      : html`<div class="tipbub-empty">${T("No connections seen yet.")}</div>`}`; }
 }
 
 // The "Collected IPs" grid in Settings → Turn proxies: every unique VK relay IP across the fleet's proxies,
