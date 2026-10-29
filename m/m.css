@@ -956,6 +956,13 @@ html[data-ui="m"] {
   /* range tabs anywhere else (a mesh link's sheet, a group's or a user's traffic): the width of what holds them, five equal
      cells (operator, 2026-10-29) */
   & :not(.panel-head) > .rangetabs { display: flex; width: 100%; box-sizing: border-box; }
+  /* a traffic sheet's head (a user's, a group's): "Traffic", then its ranges on a line of their own at the full width in equal
+     tabs (operator, 2026-10-29); a custom period's two dates under them, at the right */
+  & .tblock-head { flex-wrap: wrap; row-gap: 8px; }
+  & .tblock-head > .grow { display: none; }
+  & .tblock-head > .trange { flex: 1 0 100%; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+  & .trange > .rangetabs > .rtab { white-space: normal; line-height: 1.15; }   /* "Свой период" takes two lines on a 320 px phone rather than being cut */
+  & .trange-dates { align-self: flex-end; }
   & .rangetabs > .rtab { flex: 1 1 0; min-width: 0; justify-content: center; text-align: center; }
   /* a node's Traffic (it has Peers / Mesh too): always two lines (operator, 2026-10-29) — the name, Peers / Mesh at the right;
      then the five range tabs across the width in equal cells */
