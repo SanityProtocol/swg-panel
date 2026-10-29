@@ -182,7 +182,13 @@ html[data-ui="m"] {
   & .m-meshsheet .mh-rn { font: 600 15.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .m-meshsheet :is(.mh-rtt, .mh-loss) { font-family: var(--mono); font-size: 13px; color: var(--dim); }
   & .m-meshsheet .mh-rar { display: flex; gap: 4px; font-size: 16px; }
-  & .deppop .onpop-h { font-size: 11px; padding: 6px 8px 8px; }
+  /* a bubble's heading reads as a sheet's title (operator, 2026-10-29: the bubbles must look like the Online sheet): the
+     words at the sheet's size, no tinted bar, a line under them — whichever bubble it is (their heads have their own classes) */
+  & .deppop > :first-child:is([class*="-h"], [class*="head"], .onpop-h) {
+    display: block; margin: 0 calc(-1 * var(--m-gutter)) 8px !important; padding: 4px var(--m-gutter) 12px !important;
+    background: none !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; border-radius: 0 !important;
+    font: 600 16px/1.35 var(--sans) !important; letter-spacing: 0 !important; text-transform: none !important; color: var(--ink) !important;
+  }
   & .deppop::before {
     content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
   }
@@ -452,7 +458,7 @@ html[data-ui="m"] {
   /* the links: the address on a line of its own, its two buttons in halves under it */
   & :is(.sublink-row, .vkfield-row) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   & :is(.sublink-row, .vkfield-row) > .fieldbtns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  & :is(.sublink-row, .vkfield-row) > .fieldbtns > .btn { min-height: 44px; justify-content: center; }
+  & :is(.sublink-row, .vkfield-row) > .fieldbtns > .btn { width: 100%; min-height: 44px; justify-content: center; }
   & :is(.sublink-row, .vkfield-row) > .fieldbtns > .vk-status { grid-column: 1 / -1; }
   & .vkbox { min-height: 44px; }
   & .vkbox-input { font-size: 16px; }
@@ -569,6 +575,9 @@ html[data-ui="m"] {
   & .detail-head:has(> .dh-ver > .nm-ver:first-child) { position: relative; }
   & .detail-head:has(> .dh-ver > .nm-ver:first-child) > .title h1 { line-height: 30px; padding-right: 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   & .detail-head > .dh-ver > .nm-ver:first-child { position: absolute; top: 0; right: 0; height: 30px; display: flex; align-items: center; }
+  /* with the updater's branch ("from dev"): the two stacked on the name's line, the branch under the version */
+  & .detail-head > .dh-ver > .nm-ver:first-child:has(+ .nm-ver) { height: 15px; line-height: 15px; }
+  & .detail-head:has(> .dh-ver > .nm-ver:first-child) > .dh-ver > .nm-ver + .nm-ver { position: absolute; top: 15px; right: 0; line-height: 15px; font-size: 11px; grid-column: auto; }
   & .dh-ver > .nm-ver + .nm-ver { grid-column: 3 / -1; justify-self: end; }
   & .dh-ver > :not(.iconbtn, .dh-sep) + .iconbtn { grid-column-start: 1; }
   /* Check: while it looks, only its icon turns (and takes the brand colour), the cell stays put; found nothing newer, the
@@ -710,7 +719,8 @@ html[data-ui="m"] {
   & .exgrid.g8 > .exg-r > :nth-child(4) { grid-column: 1 / -1; grid-row: 3; font-size: 13px; }
   & .exgrid.g8 > .exg-r > :nth-child(6) { grid-column: 1; grid-row: 4; justify-content: flex-start; }
   & .exgrid.g8 > .exg-r > :nth-child(7) { grid-column: 1; grid-row: 5; justify-content: flex-start; }
-  & .exgrid.g8 > .exg-r > :nth-child(6)::before, & .exgrid.g8 > .exg-r > :nth-child(7)::before { content: attr(data-lbl); min-width: 96px; font-size: 13px; color: var(--dim); }
+  & .exgrid.g8 > .exg-r > :nth-child(6), & .exgrid.g8 > .exg-r > :nth-child(7) { text-align: left; gap: 10px; }
+  & .exgrid.g8 > .exg-r > :nth-child(6)::before, & .exgrid.g8 > .exg-r > :nth-child(7)::before { content: attr(data-lbl); min-width: 96px; font-size: 13px; color: var(--dim); text-align: left; }
   & .exgrid.g8 > .exg-r > :nth-child(8) { grid-column: 2; grid-row: 4 / span 2; justify-self: end; align-self: center; }
   & .exgrid.g8 .exg-ed, & .exgrid.g8 .exg-qr, & .exgrid.g8 .exg-rm { width: 40px; height: 40px; }
 

@@ -368,8 +368,9 @@ export function NodeDetail({ node: rawName }) {
 
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>${T("This node isn't sending any data right now")}</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
-        ${nodeIfaces(name).map(x => IfaceTag(name, x))}
-        ${turnEnabled() ? nodeTurns(name).map(tp => TurnTag(name, tp)) : null}
+        ${/* a phone counts them by kind, as its node card does; each one is in the sections below */""}
+        ${isMobile() ? ifaceSummary(name, turnEnabled() ? nodeTurns(name).length : 0) : html`${nodeIfaces(name).map(x => IfaceTag(name, x))}
+        ${turnEnabled() ? nodeTurns(name).map(tp => TurnTag(name, tp)) : null}`}
       </div>
       <span class="grow"></span>
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">${T("up {v1}", { v1: dur(nrec.health.uptime) })}</span>` : null}</div>
@@ -1234,7 +1235,7 @@ export const IfaceTag = (node, { ifn, type, muted }) => {
 };
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 export const ifaceTags = node => nodeIfaces(node).map(x => IfaceTag(node, x));
-// …and on a phone's node card, counted by kind instead — one tag per interface ran a dozen deep (operator, 2026-10-29: "too
+// …and on a phone's node card and page, counted by kind instead — one tag per interface ran a dozen deep (operator, 2026-10-29: "too
 // crowded and unstructured"); the node's page lists every one. `nTurn`: its turn-proxies, one more count.
 function ifaceSummary(node, nTurn) {
   const c = {};
