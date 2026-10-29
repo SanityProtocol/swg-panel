@@ -133,9 +133,13 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot) > .grow { display: none; }
   & :is(.sheet-foot, .editfoot) > :not(.btn, button, .grow) { order: 2; grid-column: 1 / -1; justify-self: start; align-self: center; }
   & :is(.sheet-foot, .editfoot) > .btn-dismiss { order: 3; grid-column: 1 / span 3; }
+  /* the other actions: three or more go three to a row (their words a size down, so they fit); one or two take a half each —
+     a third was too narrow for "Удалить группу" or "Изменить пользователя" (polish pass, 2026-10-29) */
+  & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { grid-column: span 3; }
+  & :is(.sheet-foot, .editfoot):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn)) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { font-size: 13px; gap: 5px; padding-left: 4px; padding-right: 4px; }
   /* one other action, not a destructive one (New user's "Create only"): as wide as the main action, right above it (operator) */
   & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn)))
-    > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) { grid-column: 4 / span 3; }
+    > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) { grid-column: 4 / span 3 !important; }   /* over the halves rule's weightier selector */
   /* …except one that resets the form (.m-wide, the deployment settings' "Reset to interface defaults"): the whole width (operator) */
   & :is(.sheet-foot, .editfoot) > .m-wide { grid-column: 1 / -1 !important; }
   & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
@@ -207,7 +211,6 @@ html[data-ui="m"] {
   & .screen:has(> .statgrid) > :is([data-sec="activity"], .actlist, .act-morewrap) { order: 3; }
   /* the attention groups the operator dismissed: under everything, until what is behind one is gone */
   & .screen:has(> .statgrid) > :is([data-sec="dismissed"], .attn-away) { order: 4; }
-  & .section-title .count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .statgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
   & .stat { padding: 13px 14px 12px; }
   & .stat-ic { display: none; }
@@ -436,8 +439,6 @@ html[data-ui="m"] {
   & .conn-cell .cl { font: 400 14px var(--sans); text-transform: none; letter-spacing: 0; color: var(--dim); flex: none; margin: 0; }
   & .conn-cell .cv { font-family: var(--mono); font-size: 13.5px; text-align: right; min-width: 0; overflow-wrap: anywhere; white-space: normal; overflow: visible; }
   & .sheet-body .row2:has(.dropdown, select) { flex-direction: column; gap: 15px; }
-  & .field.meshgen .dpsw.awgsw { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; width: 100%; }
-  & .field.meshgen .dpsw.awgsw > button { min-height: 40px; white-space: nowrap; }
   & .dp-verdict { display: block; line-height: 1.5; }
   & .dp-verdict .ic, & .dp-verdict > svg { display: inline-block; vertical-align: -3px; margin-right: 6px; }
   & .sheet-body .hint:not(.field .hint, .err, .warnish, .warn, .vk-warn, .dp-verdict) { font-size: 13.5px; line-height: 1.55; color: var(--dim); }
@@ -626,6 +627,92 @@ html[data-ui="m"] {
   & .setfoot > :not(.btn) { grid-column: 1 / -1; }
   & .setfoot > .grow { display: none; }
   & .setfoot .btn { min-width: 0; min-height: 44px; padding: 0 8px; }
+  /* the way back to the list of sections: it opens the list in place, not the screen before — its arrow points down (operator) */
+  & .m-setback .ic { transform: rotate(-90deg); }
+  /* polish pass (2026-10-29): a choice of three (who can reach these networks, who can open connections) stacks, one per line,
+     instead of two and an orphan */
+  & .dpsw.netsw-share:has(> :nth-child(3)) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  & .dpsw.netsw-share:has(> :nth-child(3)) > button { min-height: 40px; }
+  /* a pending node's Restore / move: a whole row under the four cells, in plain words */
+  & .dh-ver > .iconbtn.recover { grid-column: 1 / -1; flex-direction: row; gap: 8px; min-height: 44px; height: auto; text-transform: none; letter-spacing: 0; font: 600 14px var(--sans); }
+  /* an interface's AmneziaWG values: their list takes the card's width and flows, the short ones beside each other */
+  & .ig-item:has(> .ig-v > span + span) { grid-column: 1 / -1; }
+  & .ig-item > .ig-v:has(> span + span) { display: flex; flex-wrap: wrap; column-gap: 20px; row-gap: 2px; }
+  /* a card's own Save (the account's) is the width of the card and thumb-sized */
+  & :is(.screen .card > .btn-primary:last-child, .screen .card > div:last-child > .btn-primary:only-child) { width: 100%; min-height: 44px; justify-content: center; margin-top: 6px; }
+  /* a section's caption wraps under its title instead of being cut (Protection's "live · what blocking caught …") */
+  & .section-title { flex-wrap: wrap; row-gap: 2px; }
+  & .section-title .count { white-space: normal; overflow: visible; text-overflow: clip; }
+
+  /* ───── Settings, a section at a time (operator, 2026-10-29: "go over the settings screens properly"): one column; a section's
+     description quieter than its controls; no row of controls squeezed into columns a word wide; nothing past the edge ───── */
+  & .setpane .card > p.hint, & .setpane .card > .hint:not(.err, .warnish, .warn, .vk-warn) { font-size: 14px; line-height: 1.55; color: var(--dim); }
+  & .field .hint { font-size: 12.5px; line-height: 1.5; }
+  /* a dropdown in a form shows its whole choice, on two lines if it must */
+  & .field .dropdown .ddbtn { min-height: 44px; height: auto; padding-top: 8px; padding-bottom: 8px; }
+  & .field .dropdown .ddlbl { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; text-align: left; }
+  & .setpane .row2:has(input[type=password]) { flex-direction: column; gap: 15px; }
+  /* a choice of two to four (AmneziaWG version, a link type): the row's whole width, equal cells; four go two to a row */
+  & .dpsw.awgsw { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; width: 100%; }
+  & .dpsw.awgsw:has(> :nth-child(4)) { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  & .dpsw.awgsw > button { min-height: 40px; white-space: nowrap; }
+  /* a sentence and its button (Update all lists now, Check for updates): the sentence, the button under it at full width */
+  & .georefresh { flex-direction: column; align-items: stretch; gap: 8px; }
+  & .georefresh > .btn { min-height: 44px; justify-content: center; }
+  /* Routing & Blocking: what the node runs, its health above the caption; the four modes across the top of the card, the
+     chosen one's name and its lines under them at full width */
+  & .rmode-runbar { flex-direction: column; align-items: stretch; gap: 8px; }
+  & .rmr-left, & .rmr-right { align-items: flex-start; flex: none; min-width: 0; }
+  & .rmr-rtop { flex-wrap: wrap; }
+  & .rmode-banner { display: flex; flex-direction: column; align-items: stretch; padding: 12px 14px 14px; }
+  & .rd-headside { order: -1; align-items: stretch; margin-bottom: 12px; }
+  & .rd-headside .rmode-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; width: 100%; align-self: stretch; }
+  & .rd-headside .rmtab { width: auto; min-height: 48px; }
+  & .rd-adds { font-weight: 600; }
+  & .rd-spec { grid-template-columns: max-content minmax(0, 1fr); }
+  /* a section's tabs under its caption, not beside it */
+  & .rltabs { flex-wrap: wrap; row-gap: 8px; }
+  & .rltab-cap { flex: 1 0 100%; }
+  & .rltab-group { flex: 1 0 100%; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  & .lgrid-head { flex-wrap: wrap; row-gap: 8px; }
+  & .lg-htitle { flex-wrap: wrap; flex: 1 1 auto; min-width: 0; row-gap: 4px; }
+  & .lg-sub { flex: 1 0 100%; margin: 0; }
+  /* Geo data providers: the switch and the colours on the first line, the provider's name, what it is and its source under them */
+  & .provrow.bprow { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 8px 12px; }
+  & .provrow.bprow > .grow { display: none; }
+  & .provrow.bprow > :not(.swt, .prov-nosw, .tswrow) { grid-column: 1 / -1; min-width: 0; }
+  & .provrow.bprow .bprov-top { flex-wrap: wrap; row-gap: 4px; width: auto; }
+  & .provrow.bprow .bprov-note { width: auto; }
+  /* Turn proxies: a fork's switch, colours, name and version on its first line; its apps and its gear on the next */
+  & .cl-row { flex-wrap: wrap; row-gap: 8px; }
+  & .cl-row > .grow { flex: 1 0 100%; height: 0; }
+  & .cl-row .tf-plats { margin-right: 0; flex-wrap: wrap; }
+  & .cl-row .tf-gear { margin-left: auto; }
+  /* Interfaces → peer health: the switch and its badge on a line, what it means under them */
+  & .condrow { grid-template-columns: 34px auto minmax(0, 1fr); gap: 8px 12px; }
+  & .condrow .cond-t { grid-column: 1 / -1; font-size: 13px; }
+  /* Subscriptions → address & certificate: each name over its value */
+  & .subaddr-row { flex-direction: column; gap: 2px; align-items: stretch; }
+  & .subaddr-k, & .subaddr.wide .subaddr-k { flex: none; }
+  /* WARP & exits: a card per exit instead of an eight-column table — its title and type, the device and the latency, the exit's
+     address, then its two switches (with their names) and its actions */
+  & .exgrid.g8 { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+  & .exgrid.g8 > .exg-r:first-child { display: none; }
+  & .exgrid.g8 > .exg-r {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  }
+  & .exgrid.g8 > .exg-r > .exg-c { padding: 0; border: 0; background: none !important; min-width: 0; }
+  & .exgrid.g8 > .exg-r > :nth-child(1) { grid-column: 1; grid-row: 1; font-size: 15px; font-weight: 600; }
+  & .exgrid.g8 > .exg-r > :nth-child(3) { grid-column: 2; grid-row: 1; justify-self: end; }
+  & .exgrid.g8 > .exg-r > :nth-child(2) { grid-column: 1; grid-row: 2; font-size: 13px; }
+  & .exgrid.g8 > .exg-r > :nth-child(5) { grid-column: 2; grid-row: 2; justify-self: end; font-size: 13px; }
+  & .exgrid.g8 > .exg-r > :nth-child(4) { grid-column: 1 / -1; grid-row: 3; font-size: 13px; }
+  & .exgrid.g8 > .exg-r > :nth-child(6) { grid-column: 1; grid-row: 4; justify-content: flex-start; }
+  & .exgrid.g8 > .exg-r > :nth-child(7) { grid-column: 1; grid-row: 5; justify-content: flex-start; }
+  & .exgrid.g8 > .exg-r > :nth-child(6)::before, & .exgrid.g8 > .exg-r > :nth-child(7)::before { content: attr(data-lbl); min-width: 96px; font-size: 13px; color: var(--dim); }
+  & .exgrid.g8 > .exg-r > :nth-child(8) { grid-column: 2; grid-row: 4 / span 2; justify-self: end; align-self: center; }
+  & .exgrid.g8 .exg-ed, & .exgrid.g8 .exg-qr, & .exgrid.g8 .exg-rm { width: 40px; height: 40px; }
 
   /* ───── the Logs view (T2): already full screen; clear of the notch and the home indicator, a thumb-sized close ───── */
   & .lv-full { padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: calc(12px + var(--m-safe-b)); }
