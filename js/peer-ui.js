@@ -13,7 +13,8 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget, targetRole,
-         useStableOrder, isSelfContainedKind } from "./util.js";
+         useStableOrder, isSelfContainedKind, isMobile } from "./util.js";
+import { openGroupView } from "./sheets-crud.js";   // a cycle (sheets-crud imports this module): used only on a click, after both have loaded
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt, peerUncategorised } from "./model.js";
 import { go } from "./router.js";
@@ -1190,6 +1191,8 @@ function GroupSheet({ gid, seed }) {
     dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     foot=${html`<${Fragment}>
       ${gid ? html`<button class="btn btn-danger" onClick=${() => confirmDeleteGroup(g, true)}><${Ic} i="trash"/> ${T("Delete group")}</button>` : null}
+      ${/* a phone: the group's traffic from its editor, as its row's swipe offers it (operator, 2026-10-29) */""}
+      ${gid && isMobile() ? html`<button class="btn btn-ghost" onClick=${() => openGroupView(gid)}><${Ic} i="bars"/> ${T("Traffic")}</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>
