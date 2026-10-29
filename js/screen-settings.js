@@ -4031,7 +4031,7 @@ function ExitUsedBy({ node, id }) {
  *  correct, a name the NODE reported is that box's own device and editing it would repoint the exit at
  *  something else. `discovered` is looked up by the caller from the name as it is TYPED, so entering a name
  *  the node already reports turns "Auto" into "Auto (10.66.0.2)" under the operator's hands. */
-function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onSubmit, onCancel, hint, addrs, isNic, gw }) {
+function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onSubmit, onCancel, hint, addrs, isNic, gw, noAct }) {
   const key = e => { if (e.key === "Enter") { e.preventDefault(); onSubmit(); }
                      if (e.key === "Escape") onCancel(); };
   const fld = (cls, label, ctl) => html`<span class=${"exname-f " + cls}>
@@ -4059,10 +4059,10 @@ function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onS
       onInput=${e => onChange({ gw: e.target.value })} onKeyDown=${key}/>`) : null}
     ${/* The actions go to the right, where the thing pressed last belongs — and on the CONTROLS' line, not
           the labels'. */""}
-    <span class="exname-act">
+    ${noAct ? null : html`<span class="exname-act">
       <button class="btn btn-mini" onClick=${onSubmit}>${submitLabel}</button>
       <button class="btn btn-mini ghost" onClick=${onCancel}>${T("val|Cancel")}</button>
-    </span>
+    </span>`}
     ${hint ? html`<div class="hint exname-hint">${hint}</div>` : null}
   </div>`;
 }
@@ -4145,7 +4145,8 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
       // Deleting commits ONLY the deletion — every survivor goes as it was saved.
       await commit(next.map(r => ({ ...(r._src || r), id: r.id })), "d" + i, next); },
   });
-  const addRow = () => {
+  const addRow = (v = nv) => {
+    const nv = v;
     const d = String(nv.device || "").trim();
     if (!d) return;
     dirtyRef.current = true;
@@ -4174,6 +4175,13 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                      action: anyDirty ? (busy === "all" ? T("Saving…") : T("Save changes")) : null,
                      onAction: saveAll, disabled: !!busy })}>
     <p class="hint" style="margin:0 0 16px">${Trich("Every way *{v1}* can leave that isn't its own address. WARP accounts, pasted profiles and dial-in exits are created under Settings → WARP & exits; the devices below the line are this node's own, or names you add here.", { v1: node.name })}</p>
+    ${isMobile() ? html`<button class="btn btn-primary m-addtop" onClick=${() => pushModal(html`<${AddExitDeviceSheet} onAdd=${addRow}
+        fields=${(v, set, submit) => html`<${ExitFields} value=${v} onChange=${p => set(x => ({ ...x, ...p }))}
+          discovered=${candAddr(node, v.device)} addrs=${cardAddrs(node, v.device)}
+          isNic=${isCardName(node, v.device)} gw=${cardGateway(node, v.device)} devEditable=${true} noAct=${true}
+          onSubmit=${submit} onCancel=${closeModal}
+          hint=${T("A device this node hasn't reported. Add it if you know it is there — nothing is checked until the node next syncs.")}/>`}/>`)}>
+      <${Ic} i="plus"/> ${T("Add an interface by name")}</button>` : null}
     <div class="exgrid g8x">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
       <div class="exg-h">${T("Device")}</div>
@@ -4277,7 +4285,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
       })}
     </div>
     ${!rows.length ? html`<p class="hint">${T("This node reports no devices that could be an exit, and nothing has been added by hand.")}</p>` : null}
-    ${adding
+    ${isMobile() ? null : adding
       ? html`<${ExitFields} value=${nv} onChange=${p => setNv(x => ({ ...x, ...p }))}
           discovered=${candAddr(node, nv.device)} addrs=${cardAddrs(node, nv.device)}
           isNic=${isCardName(node, nv.device)} gw=${cardGateway(node, nv.device)} devEditable=${true}
@@ -5152,6 +5160,17 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         <${Ic} i="plus"/> ${label}</button>`)}
     </div>`}
   </div>`;
+}
+// A phone adds a device to a node's ways out in a sheet of its own, opened from the top of the list (operator, 2026-10-29): the
+// fields of the desktop's inline row, Cancel and Add on the footer's bottom line. `fields` draws them (they need the node's facts).
+function AddExitDeviceSheet({ onAdd, fields }) {
+  const [v, setV] = useState({});
+  const ok = !!String(v.device || "").trim();
+  const submit = () => { if (!ok) return; onAdd(v); closeModal(); };
+  return html`<${Sheet} title=${T("Add an interface by name")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${!ok} onClick=${submit}>${T("val|Add")}</button>`}>
+    ${fields(v, setV, submit)}
+  <//>`;
 }
 // A phone adds an exit from the top of the section, not after the last card (operator, 2026-10-29): one button, and a sheet
 // that asks which kind — the same four the desktop's row of buttons offers.
