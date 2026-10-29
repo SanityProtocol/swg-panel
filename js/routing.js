@@ -2028,7 +2028,13 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   const place = () => { const el = ref.current; if (!el) return; setPos(placeWide(el)); };
   useEffect(() => {
     if (!open) return; place();
-    const onMove = () => place();
+    // A phone scrolls the sheet under a list that is pinned to the screen: once its field leaves the sheet's view the list is
+    // closed (and the keyboard with it) rather than drawn over the sheet's head or its buttons (operator, 2026-10-29)
+    const onMove = () => {
+      const el = ref.current, sc = el && isMobile() && el.closest(".sheet-body, .view");
+      if (sc) { const a = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
+        if (a.bottom < b.top + 8 || a.top > b.bottom - 40) { setOpen(false); if (inRef.current) inRef.current.blur(); return; } }
+      place(); };
     const onDoc = e => { const t = e.target;
       // The foot's controls (the rule's settings button, its destination) sit inside this field but are not the search: a
       // click there closes it, or the list stays open under the window or the dropdown it opened.

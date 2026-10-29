@@ -622,6 +622,15 @@ html[data-ui="m"] {
   & .tfield .tf-vtog .ic svg { width: 20px; height: 20px; }
   & .tfield:has(> .tf-vtog) .tf-box, & .tfield:has(> .tf-vtog) .tf-text { padding-right: 52px; }
   & .tf-text { font-size: 14px; }
+  /* the target list under a rule's field: the screen's width, and a row's name over its id and what it is — "А…" and
+     "Госсай…" were cut to make room for the chips beside them */
+  & .catpick-pop.tfpop { left: 8px !important; width: auto !important; right: 8px; max-width: none; }
+  & .catpick-pop .catrow { flex-wrap: wrap; row-gap: 4px; }
+  & .catpick-pop .catrow-main { flex: 1 1 100%; min-width: 0; }
+  & .catpick-pop .catrow-l1 { flex-wrap: wrap; row-gap: 2px; }
+  & .catpick-pop :is(.catrow-title, .catrow-l2) { white-space: normal; overflow: visible; text-overflow: clip; font-size: 14px; }
+  & .catpick-pop .catrow-right { flex: 1 1 100%; justify-content: flex-start; flex-wrap: wrap; gap: 6px; align-self: auto; }
+  & .catpick-pop .catrow { min-height: 52px; }
   & .tf-box { min-height: 56px; }
   & .tf-in { min-width: 0; flex: 1 1 160px; font-size: 15px; padding: 6px 2px; }
   & .tf-foot { align-items: center; gap: 8px 10px; font-size: 12px; }
