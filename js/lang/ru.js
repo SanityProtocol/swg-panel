@@ -7721,6 +7721,9 @@ export const STR = {
   "Online now · {n}": "Сейчас онлайн · {n}",
   "Open Live": "Открыть «Онлайн»",
   "Users or peers": "Пользователи или пиры",
+  "Sort by": "Сортировка",
+  "Ascending": "По возрастанию",
+  "Descending": "По убыванию",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

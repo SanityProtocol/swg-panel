@@ -1231,6 +1231,17 @@ export const IfaceTag = (node, { ifn, type, muted }) => {
 };
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 export const ifaceTags = node => nodeIfaces(node).map(x => IfaceTag(node, x));
+// …and on a phone's node card, counted by kind instead — one tag per interface ran a dozen deep (operator, 2026-10-29: "too
+// crowded and unstructured"); the node's page lists every one. `nTurn`: its turn-proxies, one more count.
+function ifaceSummary(node, nTurn) {
+  const c = {};
+  nodeIfaces(node).forEach(x => { const k = x.type === "awg" && awg3Cls(node, x.ifn) ? "awg3" : x.type; c[k] = (c[k] || 0) + 1; });
+  const order = ["wg", "awg", "awg3", "wdtt", "csqtt"];
+  const keys = [...order.filter(k => c[k]), ...Object.keys(c).filter(k => !order.includes(k))];
+  const tags = keys.map(k => html`<span class=${"tg m-sum tg-" + (k === "awg3" ? "awg awg3" : k)}>${k === "awg3" ? "awg 3.1" : k}${c[k] > 1 ? " ×" + c[k] : ""}</span>`);
+  if (nTurn) tags.push(html`<span class="tg m-sum tg-turn">turn${nTurn > 1 ? " ×" + nTurn : ""}</span>`);
+  return tags;
+}
 
 // The other half of the same badge rows: the node's turn-proxies, in the operator's saved order.
 // `turn_order` also holds "wdtt:<iface>" entries, because the Turn-proxies grid it comes from lists
@@ -1812,13 +1823,14 @@ export function NodeCard({ n, reorder }) {
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
       : html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers faint">${T("val|none")}</span>`}</span>
-    <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
+    <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
+      : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"
       ? html`<span class=${"nm-v thru" + ((n.rx_speed || 0) + (n.tx_speed || 0) > 0 ? "" : " idle")}><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
       : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl danger" title=${removing ? T("Force remove") : T("Remove node")} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
 
-    ${turnEnabled() && tps.length ? html`<div class="nc-turn nm-item"><span class="nm-l">${T("Turn-proxies")}</span><span class="tags">${tps.map(tp => TurnTag(n.id, tp))}</span></div>` : null}
+    ${turnEnabled() && tps.length && !isMobile() ? html`<div class="nc-turn nm-item"><span class="nm-l">${T("Turn-proxies")}</span><span class="tags">${tps.map(tp => TurnTag(n.id, tp))}</span></div>` : null}
   </div>`;
 }
 

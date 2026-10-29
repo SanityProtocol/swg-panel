@@ -25,7 +25,7 @@ import {
   ifaceFilterOptions, ifaceOptGroups, nodeFilterOptions, pageScroll, pageSizeOpts, peerMatchesQ, peerSortBy, peersView,
   searchMatch, sortColToggle, sortPeerRows, sortUsers, unassignedView, userIdentityMatchesQ, userMatchesQ,
   userOnNodeIface, userPeerViews, userStatTag, userStats, usersView, groupShares, shareDeviceName,
-  groupMemberViews, groupStats, sortGroups, GROUP_DEFDIR, trafficRangeLabel,
+  groupMemberViews, groupStats, sortGroups, GROUP_DEFDIR, PEER_DEFDIR, trafficRangeLabel,
 } from "./views.js";
 import {
   confirmCorrectAll, confirmRestoreAll,
@@ -165,7 +165,8 @@ export function PeersScreen() {
     <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
       ${isMobile() ? groupBtn : null}
       ${search(true)}
-      ${isMobile() ? filterBtn(node !== "*" || (iface !== "*" && !!iface) || !!peersView.status, filters) : filters()}
+      ${isMobile() ? filterBtn(node !== "*" || (iface !== "*" && !!iface) || !!peersView.status,
+        r => html`${filters(r)}${sortField(peersView, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => re(r))}`) : filters()}
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
       <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
@@ -303,7 +304,9 @@ export function ConnectionsScreen() {
       <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "") + (isMobile() ? " pm-ico" : "")} aria-label=${isMobile() ? T("Users") : null} onClick=${() => setMode("users")}>${isMobile() ? html`<${Ic} i="user"/>` : T("Users")}</button>
     </div>
     <${SearchBox} placeholder=${mode === "users" ? T("Search users, tags, peers…") : T("Search peer, user, endpoint, IP…")} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
-    ${isMobile() ? filterBtn(!!(connView.node || connView.iface || connView.online), filters) : filters()}
+    ${isMobile() ? filterBtn(!!(connView.node || connView.iface || connView.online), r => html`${filters(r)}${mode === "users"
+        ? sortField(connView, "usort", "udir", USER_SORT(true), USER_DEFDIR, () => { reset(); if (r) r(); })
+        : sortField(connView, "sort", "dir", [...PEER_SORT().slice(0, 4), ["endpoint", T("col|Endpoint")], ...PEER_SORT().slice(4)], PEER_DEFDIR, () => { reset(); if (r) r(); })}`) : filters()}
   </div>`;
 
   if (mode === "users") {
@@ -539,6 +542,21 @@ function FilterSheet({ controls }) {
     <div class="mfilters">${controls(() => redraw(x => x + 1))}</div>
   <//>`;
 }
+// …and the list's ORDER there too: a phone draws no column headers to click (operator, 2026-10-29). `view[sk]` / `view[dk]` are
+// the same sort and direction the headers set on a desktop; `cols` = [[key, label]].
+function sortField(view, sk, dk, cols, defdir, reset) {
+  return html`<div class="msort"><span class="msort-l">${T("Sort by")}</span>
+    <${Dropdown} className="selwrap" ariaLabel=${T("Sort by")} value=${view[sk]} options=${cols.map(([value, label]) => ({ value, label }))}
+      onChange=${v => { view[sk] = v; view[dk] = defdir[v] || 1; reset(); }}/>
+    <button type="button" class="btn btn-ghost msort-dir" aria-label=${view[dk] < 0 ? T("Descending") : T("Ascending")} title=${view[dk] < 0 ? T("Descending") : T("Ascending")}
+      onClick=${() => { view[dk] = -(view[dk] || 1); reset(); }}>${view[dk] < 0 ? "↓" : "↑"}</button></div>`;
+}
+const PEER_SORT = () => [["status", T("col|Status")], ["title", T("col|Title")], ["user", T("col|User")], ["server", T("col|Node")],
+  ["address", T("col|Address")], ["online", T("col|Online")], ["rate", T("col|Rate")], ["total", T("col|Total")]];
+const USER_SORT = live => [["status", T("col|Status")], ["name", T("col|User")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
+  ["last", T("col|Online")], ["rate", T("col|Rate")], ...(live ? [["total", T("col|Total")]] : [])];
+const GROUP_SORT = () => [["name", T("col|Group")], ["members", T("col|Members")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
+  ["nets", T("col|Networks")], ["rate", T("col|Rate")]];
 const filterBtn = (on, controls) => html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
   onClick=${() => openModal(html`<${FilterSheet} controls=${controls}/>`)}><${Ic} i="sliders"/></button>`;
 function RosterFilters({ reset }) {
@@ -579,7 +597,8 @@ function GroupsView({ force }) {
     <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
       <${ModeIcons} users=${true} force=${force}/>
       <${SearchBox} placeholder=${T("Search groups or members…")} value=${usersView.gq} onInput=${e => { usersView.gq = e.target.value; usersView.gpage = 1; force(x => x + 1); }}/>
-      ${isMobile() ? filterBtn(filtersOn(), r => html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); r(); }}/>`)
+      ${isMobile() ? filterBtn(filtersOn(), r => html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); r(); }}/>
+          ${sortField(usersView, "gsort", "gdir", GROUP_SORT(), GROUP_DEFDIR, () => { usersView.gpage = 1; force(x => x + 1); r(); })}`)
         : html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); }}/>`}
       <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreateGroup()}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
     </div>
@@ -630,7 +649,8 @@ export function UsersScreen() {
           <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
             onChange=${v => { usersView.group = v; reset(); }}
             options=${[{ value: "", label: T("All groups") }, ...Store.groups().map(g => ({ value: g.id, label: g.name }))]}/>
-          <${RosterFilters} reset=${reset}/><//>`; })}
+          <${RosterFilters} reset=${reset}/>
+          ${sortField(usersView, "sort", "dir", USER_SORT(false), USER_DEFDIR, reset)}<//>`; })}
       <button class="btn btn-primary mfab" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
     </div>` : html`<div class="toolbar">
       <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}

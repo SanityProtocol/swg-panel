@@ -99,9 +99,10 @@ html[data-ui="m"] {
     touch-action: pan-y;
   }
   & .sheet::before { content: ""; flex: none; align-self: center; width: 40px; height: 5px; margin: 8px 0 0; border-radius: 3px; background: var(--line-solid); }
-  & .sheet-head { flex: none; padding: 4px 4px 10px var(--m-gutter); flex-wrap: wrap; gap: 4px 8px; }
+  /* the header's controls keep the footer's side margin (operator, 2026-10-29: Back sat against the edge) */
+  & .sheet-head { flex: none; padding: 4px var(--m-gutter) 10px; flex-wrap: wrap; gap: 4px 8px; }
   & .sheet-head h3 { font-size: 17px; flex: 1 1 auto; min-width: 0; }
-  & .sheet-head .x { width: 44px; height: 44px; font-size: 26px; top: 0; }
+  & .sheet-head .x { width: 44px; height: 44px; font-size: 26px; top: 0; margin-right: -12px; }   /* the glyph, not its tap box, on the margin */
   & .sheet-head .sheet-back { min-height: 40px; }
   & .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px var(--m-gutter); }
   /* a form that is a card of its own (the user editor) sits in the sheet without a second frame */
@@ -243,9 +244,16 @@ html[data-ui="m"] {
   &:has(:is(input:not([type=checkbox]):not([type=radio]), textarea, select):focus) .mfab { display: none; }
   & .mfilters { display: flex; flex-direction: column; gap: 12px; }
   & .mfilters > * { width: 100%; }
-  & .mfilters .selwrap, & .mfilters .onlbtn { min-height: 44px; }
+  & .mfilters .selwrap, & .mfilters .onlbtn, & .mfilters .ddbtn { min-height: 44px; box-sizing: border-box; }
+  & .mfilters .selwrap { display: flex; }
+  & .mfilters .ddbtn { width: 100%; }
   & .mtoolbar > .pmode, & .mtoolbar > .onlbtn { flex: none; min-height: 44px; }
-  & .uhead { display: none; }
+  /* no column headers on a phone, at any width (a landscape phone is past app.css's 680 px rule): the order is the Filters
+     sheet's Sort row (operator, 2026-10-29) */
+  & .uhead, & table.peergrid > thead { display: none; }
+  & .msort { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; align-items: center; }
+  & .msort-l { grid-column: 1 / -1; font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin-top: 6px; }
+  & .msort .msort-dir { min-height: 44px; padding: 0; font-size: 18px; justify-content: center; }
   & .urows { gap: 6px; }
   & .urow > .urow-head {
     position: relative; display: grid; grid-template-columns: 20px max-content minmax(0, 1fr) max-content; grid-template-rows: auto auto;
@@ -366,21 +374,39 @@ html[data-ui="m"] {
   & .mtoolbar .pmode { flex: none; }
   & .mtoolbar .pmode .pm-opt { min-height: 42px; }
 
-  /* ───── Nodes list (T1): a card per node — its name on one line, the chips under it, then peers and throughput, then the
-     interfaces and the mesh. No drag grips, no CPU bar, no row buttons: Settings and Remove are on the node's page ───── */
+  /* ───── Nodes list (T1), rows the eye can follow (operator, 2026-10-29): the name; what it is, as quiet words (bare metal ·
+     Ubuntu · reporting) and its issue; a strip of three equal cells — peers, throughput, mesh; the interfaces counted by kind
+     (screen-nodes.js ifaceSummary). No drag grips, no CPU bar, no row buttons: Settings and Remove are on the node's page ───── */
   & .section-title:has(+ .nodegrid) { flex-wrap: wrap; align-items: center; }
   & .section-title:has(+ .nodegrid) .nodehint { display: none; }
   & .section-title:has(+ .nodegrid) .btn-primary { min-height: 44px; }
-  & .ncard { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 12px 14px; }
-  & .ncard :is(.nc-gutter, .nc-cpu, .nc-ctl) { display: none; }
-  & .ncard .nc-name { grid-column: 1 / -1; grid-row: 1; flex-wrap: wrap; gap: 6px 8px; }
-  & .ncard .nname { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; line-height: 1.3; }
-  & .ncard .nc-peers { grid-column: 1; grid-row: 2; }
-  & .ncard .nc-thru { grid-column: 2; grid-row: 2; justify-self: end; }
-  & .ncard .nc-ifaces { grid-column: 1; grid-row: 3; }
-  & .ncard .nc-mesh { grid-column: 2; grid-row: 3; justify-self: end; }
-  & .ncard .nc-turn { grid-column: 1 / -1; grid-row: 4; }
-  & .ncard .nc-ifaces, & .ncard .nc-ifaces .tags { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+  & .nodegrid { gap: 10px; }
+  & .ncard { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; padding: 14px 0 12px; }
+  & .ncard :is(.nc-gutter, .nc-cpu, .nc-ctl, .nc-turn) { display: none; }
+  & .ncard .nc-name { grid-column: 1 / -1; grid-row: 1; flex-wrap: wrap; gap: 4px 10px; padding: 0 16px 12px; align-items: center; }
+  & .ncard .nname { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; line-height: 1.3; }
+  & .ncard .nc-name :is(.tport, .platwrap .tport) { background: none; border: 0; padding: 0; font: 500 13px var(--sans); text-transform: none; letter-spacing: 0; color: var(--dim); }
+  & .ncard .nc-name .tport::first-letter { text-transform: uppercase; }
+  & .ncard .nc-name .reporting { font-family: var(--sans); font-size: 13px; text-transform: none; letter-spacing: 0; }
+  & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) {
+    grid-row: 2; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; min-width: 0;
+    padding: 10px 12px 10px 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); justify-self: stretch; align-self: stretch;
+  }
+  & .ncard .nc-peers :is(.nm-peerpop, .onlinetag) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  & .ncard .nc-name .platwrap::before { content: "·"; margin-right: 8px; color: var(--faint); }
+  & .ncard .nc-peers { grid-column: 1; }
+  & .ncard .nc-thru { grid-column: 2; border-left: 1px solid var(--line); }
+  & .ncard .nc-mesh { grid-column: 3; border-left: 1px solid var(--line); }
+  & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) .nm-l { font-size: 10px; }
+  & .ncard .nc-thru .nm-v { display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+  & .ncard .nc-peers .nm-v { font-size: 16px; }
+  & .ncard .nc-mesh .mh-tag { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  & .ncard .nc-ifaces { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; gap: 8px; padding: 12px 16px 0; }
+  & .ncard .nc-ifaces .nm-l { display: none; }
+  & .ncard .nc-ifaces .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  & .tg.m-sum.awg3::after { content: none; }
+  & .tg.m-sum { font-size: 11.5px; padding: 3px 8px; }
+  & .ncard .nc-ifaces:not(:has(.m-sum)) { display: none; }
 
   /* ───── node detail (T1, D6): the name on one line, its chips under it; the version and the updater's branch; then Check,
      Settings, Logs and More as labelled cells (the lifecycle doors are in the More sheet, hook 8). Health is the three meters
