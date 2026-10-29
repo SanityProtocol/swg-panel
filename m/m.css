@@ -142,7 +142,10 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn)) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { font-size: 13px; gap: 5px; padding-left: 4px; padding-right: 4px; }
   /* one other action, not a destructive one (New user's "Create only"): as wide as the main action, right above it (operator) */
   & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn)))
-    > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) { grid-column: 4 / span 3 !important; }   /* over the halves rule's weightier selector */
+    > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn, .m-third) { grid-column: 4 / span 3 !important; }   /* over the halves rule's weightier selector */
+  /* …or one marked .m-third (New user's "Create only"): Cancel, it and the main action share one line in thirds (operator, 2026-10-29) */
+  & :is(.sheet-foot, .editfoot):has(> .m-third) > :is(.btn-dismiss, .m-third, .btn-primary) { grid-column: span 2 !important; order: 1 !important;
+    font-size: 13px; gap: 4px; padding-left: 4px; padding-right: 4px; white-space: normal; line-height: 1.15; text-align: center; }   /* a narrower phone wraps a label, never cuts it */
   /* …except one that resets the form (.m-wide, the deployment settings' "Reset to interface defaults"): the whole width (operator) */
   & :is(.sheet-foot, .editfoot) > .m-wide { grid-column: 1 / -1 !important; }
   /* two actions of weight side by side (Reset routing's learned IPs / everything): both on the top line in halves, the dismiss
