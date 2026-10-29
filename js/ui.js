@@ -427,6 +427,48 @@ export function attachSwipePeek() {
   peek();
 }
 
+// A phone draws a bubble as a sheet at the bottom (m/m.css), so it closes the way a sheet does: dragged down by more than
+// 70 px, or flicked (operator, 2026-10-29: "swiping down doesn't close this"). A pinned one closes on its own Escape, one a
+// tap opened as a hover on its mouseleave (Popover), and a bubble drawn by the title tap is simply removed. A drag that starts in a part that scrolls, not at its top, scrolls it.
+export function attachBubbleSwipe() {
+  let d = null;
+  document.addEventListener("touchstart", e => {
+    const pop = e.target && e.target.closest && e.target.closest(".deppop");
+    if (!pop || e.touches.length !== 1) { d = null; return; }
+    let sc = e.target;
+    while (sc && sc !== pop && !(sc.scrollHeight > sc.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+    if (sc && sc !== pop && sc.scrollTop > 0) { d = null; return; }
+    d = { pop, y: e.touches[0].clientY, t: Date.now(), dy: 0 };
+  }, { passive: true, capture: true });
+  document.addEventListener("touchmove", e => {
+    if (!d) return;
+    d.dy = Math.max(0, e.touches[0].clientY - d.y);
+    d.pop.style.transition = "none"; d.pop.style.transform = d.dy ? "translateY(" + d.dy + "px)" : "";
+  }, { passive: true, capture: true });
+  document.addEventListener("touchend", () => {
+    if (!d) return;
+    const { pop, dy, t } = d; d = null;
+    const back = () => { pop.style.transition = "transform .2s var(--ease)"; pop.style.transform = ""; };
+    if (dy < 70 && !(dy > 24 && dy / Math.max(1, Date.now() - t) > 0.5)) return back();
+    if (pop.classList.contains("m-titletap")) return pop.remove();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));   // a pinned one
+    pop.dispatchEvent(new MouseEvent("mouseleave"));                                                          // one a tap opened as a hover
+    setTimeout(() => { if (pop.isConnected) back(); }, 260);
+  }, { capture: true });
+}
+
+// A phone: a sheet is docked at the bottom and as tall as what it holds, so a hint, a check or an error that comes and goes
+// while someone types moved the whole sheet, the field with it, up and down (operator, 2026-10-29: "data entry must be
+// smooth"). The first time a text field in a sheet takes the focus, the sheet takes its full height and keeps it until it
+// closes: what changes below the field no longer moves it (m/m.css .sheet.m-typed).
+const TEXT_FIELD = "textarea, input:not([type]), input[type=text], input[type=search], input[type=email], input[type=url], input[type=number], input[type=password], input[type=tel]";
+export function attachTypingHold() {
+  document.addEventListener("focusin", e => {
+    const t = e.target, sh = t && t.closest && t.matches && t.matches(TEXT_FIELD) && !t.readOnly && t.closest(".overlay .sheet");
+    if (sh) sh.classList.add("m-typed");
+  }, true);
+}
+
 // A phone: while a list or a bubble is open (a dropdown, the user picker, a bottom bubble), a tap anywhere outside it only
 // closes it and drops the keyboard — the tap does not also open what happened to be under the finger (operator,
 // 2026-10-29: "tapping anywhere else must only close the list and focus out"). The layers close themselves on that

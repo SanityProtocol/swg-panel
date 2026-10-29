@@ -220,17 +220,21 @@ export function ActivityHistoryScreen() {
   const clearAll = () => openConfirm({ title: T("Clear all activity?"), confirmLabel: T("Clear history"), danger: true,
     body: Trich("Delete *all {v1}* from the activity log? This can't be undone.", { v1: plural(all.length, "record") }),
     onConfirm: async () => { await api.eventsClear(); activityView.page = 1; await load(); } });
+  const m = isMobile();
+  const clearBtn = html`<button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> ${T("Clear history")}</button>`;
   return html`<div class="screen">
     <div class="crumb"><a href="#/">${T("Overview")}</a><span class="sep">/</span><b>${T("Activity history")}</b></div>
-    <div class="toolbar">
+    <div class=${"toolbar" + (m ? " mtoolbar" : "")}>
       <${SearchBox} placeholder=${T("Search action, name, detail…")} value=${activityView.q} onInput=${e => { activityView.q = e.target.value; activityView.page = 1; bump(); }}/>
-      <${Dropdown} className="selwrap" ariaLabel=${T("All items")} value=${activityView.item}
-        onChange=${v => { activityView.item = v; activityView.page = 1; bump(); }}
+      ${(() => { const dd = r => html`<${Dropdown} className="selwrap" ariaLabel=${T("All items")} value=${activityView.item}
+        onChange=${v => { activityView.item = v; activityView.page = 1; bump(); if (r) r(); }}
         options=${[{ value: "", label: T("All items") }, ...EV_ITEMS.map(i => ({ value: i, label: evItemLabel(i) }))]}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All actions")} value=${activityView.action}
-        onChange=${v => { activityView.action = v; activityView.page = 1; bump(); }}
-        options=${[{ value: "", label: T("All actions") }, ...EV_ACTIONS.map(a => ({ value: a, label: evActionLabel(a) }))]}/>
-      <button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> ${T("Clear history")}</button>
+        onChange=${v => { activityView.action = v; activityView.page = 1; bump(); if (r) r(); }}
+        options=${[{ value: "", label: T("All actions") }, ...EV_ACTIONS.map(a => ({ value: a, label: evActionLabel(a) }))]}/>`;
+        // a phone: the search, the two filters behind the Filters button; Clear history goes under the list
+        return m ? filterBtn(!!(activityView.item || activityView.action), dd) : dd(); })()}
+      ${m ? null : clearBtn}
     </div>
     ${secTitle(T("Activity history"), html`${list.length}${list.length !== all.length ? " / " + all.length : ""}`, false)}
     ${rows === null ? html`<div class="loading"><${Ic} i="refresh"/> ${T("Loading…")}</div>`
@@ -245,7 +249,7 @@ export function ActivityHistoryScreen() {
           <span class="grow"></span>
           <span class="act-cat">${e.itemLabel || e.item}</span>
           <span class="when">${ago(e.ts)}</span>
-          <button class="iconbtn danger" title=${T("Delete entry")} onClick=${() => delOne(e)}><${Ic} i="x"/></button>
+          <button class="iconbtn danger" title=${T("Delete entry")} data-lbl=${T("Delete")} onClick=${() => delOne(e)}><${Ic} i="x"/></button>
         </div>`)}</div>`}
     ${list.length > pageSize ? html`<div class="pager">
       <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, list.length), total: list.length })}</span>
@@ -253,6 +257,7 @@ export function ActivityHistoryScreen() {
       <span class="pager-pg">${page} / ${totalPages}</span>
       <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>${T("Next ›")}</button>
     </div>` : null}
+    ${m && all.length ? html`<div class="m-actclear">${clearBtn}</div>` : null}
   </div>`;
 }
 
@@ -422,7 +427,7 @@ export function UserRow({ user, live, onlineOnly, q, nested }) {
           : html`<span class="u-total clk" role="button" tabindex="0" title=${T("Open this user's traffic — graph and devices")}
               onClick=${e => { e.stopPropagation(); openUserView(user.id); }} onDblClick=${e => e.stopPropagation()}
               onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); openUserView(user.id); } }}><${UserTrafficCell} uid=${user.id}/></span>`}
-        ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
+        ${live && !isMobile() ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
           ${/* data-lbl: the word a phone shows under each icon, where the row's swipe reveals them (m/m.css); nothing on a desktop */""}
           <button class="iconbtn qr" title=${T("Show QR / configs")} data-lbl="QR" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
           <button class="iconbtn" title=${T("Traffic — graph and devices")} aria-label=${T("Traffic — graph and devices")} data-lbl=${T("Traffic")} onClick=${() => openUserView(user.id)}><${Ic} i="bars"/></button>

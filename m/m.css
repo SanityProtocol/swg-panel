@@ -111,6 +111,8 @@ html[data-ui="m"] {
   & .fieldrow > .field { width: 100%; }
   & .ugroup-combo .uc-input, & .ugroup-combo .uc-size::before, & .ugroup-combo .uc-size::after { font-size: 16px; }
   & .sheet.m-dragging { transition: none; }
+  /* typed in: the full height, kept until it closes (ui.js attachTypingHold) — the field stays put while the rest changes */
+  & .sheet.m-typed { height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px); }
   & .sheet.m-springback { transition: transform .22s var(--ease); }
 
   /* ───── sheet footers (the operator's rule, 2026-10-21): the dismiss button (Close / Cancel / Back — .btn-dismiss) and the
@@ -252,6 +254,40 @@ html[data-ui="m"] {
   & .prot-chip { font-size: 12.5px; padding: 4px 10px; }
   & .act-row { min-height: 48px; padding: 0 12px; gap: 8px; font-size: 14px; }
   & .act-row .act-ic, & .act-row .act-detail { display: none; }
+  /* Activity history: an entry's Delete behind its left swipe, as every list's actions are; Clear history under the list */
+  & .acthist .act-row {
+    position: relative; padding-right: 22px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain; scrollbar-width: none; scroll-padding-left: 12px;
+    background-image: linear-gradient(var(--line-solid), var(--line-solid)); background-size: 4px 26px;
+    background-position: right 5px center; background-repeat: no-repeat;
+  }
+  & .acthist .act-row::-webkit-scrollbar { display: none; }
+  & .acthist .act-row > :is(.act-link, .act-what) { scroll-snap-align: start; }   /* its icon, the first child, is not drawn here */
+  & .acthist .act-row > .iconbtn.danger {
+    position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); width: 76px; height: auto; scroll-snap-align: end;
+    flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--dangling); font: 600 11px/1.1 var(--sans);
+  }
+  & .acthist .act-row > .iconbtn.danger::after { content: attr(data-lbl); }
+  & .acthist .act-row > .iconbtn.danger svg { width: 20px; height: 20px; }
+  & .acthist .act-row .act-link, & .acthist .act-row .act-what { min-width: 0; }
+  & .acthist .act-row .act-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .m-actclear { display: flex; justify-content: center; margin: 18px 0 8px; }
+  & .m-actclear > .btn { min-height: 44px; padding: 0 22px; }
+  /* a pager: Prev and Next as two tap targets at the ends, which page and which rows between them; how many rows a page holds
+     stays as it was set (a desktop choice) */
+  & .pager {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "prev pg next" "prev info next";
+    align-items: center; gap: 2px 10px; margin: 14px 0 0; padding: 0;
+  }
+  & .pager-size { display: none; }
+  & .pager > .btn:first-of-type { grid-area: prev; }
+  & .pager > .btn:last-of-type { grid-area: next; }
+  & .pager > .btn { min-height: 44px; min-width: 96px; justify-content: center; }
+  & .pager-pg { grid-area: pg; text-align: center; font-size: 14px; color: var(--ink-2); }
+  & .pager-info { grid-area: info; text-align: center; font-size: 12px; color: var(--dim); }
+  /* a list with the New button floating over its foot keeps its pager clear of it */
+  & .screen:has(.mfab) .pager { margin-bottom: 76px; }
   & .act-row .act-what { flex: none; }
   & .act-row .act-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
   & .act-row .grow { flex: 1 1 0; min-width: 4px; }
@@ -363,6 +399,17 @@ html[data-ui="m"] {
      with the next one peeking; its footer counts share one line ───── */
   & .sheet-foot > .qrfoot-count { grid-column: 1 / 4; }
   & .sheet-foot > .qrfoot-ucounts { grid-column: 4 / -1; justify-self: end; }
+  /* its counts are the status line: above the buttons, which have no Close beside them here */
+  & .sheet-foot:has(> .qrfoot-count) > :is(.qrfoot-count, .qrfoot-ucounts) { order: 0; }
+  /* the links: the address on a line of its own, its two buttons in halves under it */
+  & :is(.sublink-row, .vkfield-row) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  & :is(.sublink-row, .vkfield-row) > .fieldbtns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  & :is(.sublink-row, .vkfield-row) > .fieldbtns > .btn { min-height: 44px; justify-content: center; }
+  & :is(.sublink-row, .vkfield-row) > .fieldbtns > .vk-status { grid-column: 1 / -1; }
+  & .vkbox { min-height: 44px; }
+  & .vkbox-input { font-size: 16px; }
+  /* a device with no config to show: its sentence in a short box, not a QR-sized empty square */
+  & .qrrow .deploy .qr-none, & .deploy .qr-none { width: auto; height: auto; aspect-ratio: auto; max-width: none; min-height: 0; padding: 22px 16px; font-size: 13.5px; line-height: 1.45; }
 
   /* ───── the peer grid (Peers, Live's peers, a user's and the unassigned lists — promoted to T1, 2026-10-29): a card per
      deployment instead of the table's label/value stack. The title and its status; the node, the address and the live rate;

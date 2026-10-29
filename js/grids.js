@@ -150,7 +150,8 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
                 ungrouped=${!grouped && !loc && p.targets.length > 1}
                 filtered=${(grouped || loc) && matchedOf(p).length < p.targets.length}/>`
             : xferCell(...dlul(xf ? xf.rx_bytes : 0, xf ? xf.tx_bytes : 0))}</td>`; })()}
-          ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
+          ${/* Live draws no controls on a desktop; a phone keeps them behind the row's swipe, as on every list (operator, 2026-10-29) */""}
+          ${live && !isMobile() ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             ${(() => { const gh = ghostIface(t.node, t.iface); return (gh && gh.ripe)
               ? html`<button class="iconbtn ghost" data-lbl=${T("Recreate")} title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
               : t.restorable

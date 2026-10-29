@@ -33,7 +33,7 @@ import {
 import { RailCustom } from "./traffic-ui.js";
 import { panelToday, chartsFirstDay, trafficTotals, talkerGroups } from "./traffic.js";
 import {
-  DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
+  DASH_RANGES, OnlineUsersTag, onlinePeerRows, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
   revealOrphans, revealPeer, revealPeersFiltered, revealUser, serviceIssues, svcKey, svcSaveSilence,
   svcSilence, svcSilencedSet,
 } from "./views.js";
@@ -79,7 +79,7 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
   // The panel's own "last heard from it", like the node page's (model.js lastHeard) — one clock at both ends, so
   // the age can never disagree with the live dot beside it.
   const seenAt = lastHeard(nrec, snap);
-  let sync = T("no data"); if (seenAt) { const a = Math.floor(panelNowS() - seenAt); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
+  let sync = T("no data"); if (seenAt) { const a = Math.floor(panelNowS() - seenAt); sync = live ? (isMobile() ? seen(a) : T("{v1} ago", { v1: seen(a) })) : T("stale · {v1}", { v1: seen(a) }); }
   const al = healthAlerts(health);
   // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
   // An AmneziaWG 3.1 interface is counted on its own badge, in the 3.1 colour (docs/AWG3-PLAN.md D-colour) — one badge per colour.
@@ -93,7 +93,10 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c, g3]) => html`<span key=${t + (g3 ? "3" : "")} class=${"iftype " + t + (g3 ? " awg3" : "")} ...${tip3(g3)}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">${T("Throughput")}</span>${trafCell}</div>
-        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${rangeWord(histRange)} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
+        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${rangeWord(histRange)} trigger=${isMobile()
+          // a phone: who and how many devices, one tap target opening the node's Online sheet (operator, 2026-10-29)
+          ? c => html`<span class="faint">${plural(c, "user")} · ${plural(onlinePeerRows(n.id, null).length, "peer")}</span>`
+          : (c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
         <div><span class="fl">${T("Sync")}</span><span class="fv">${sync}</span></div>
       </div>
     </div>
@@ -1360,6 +1363,14 @@ function attnDismissed(present) {
   if (kept.size !== set.size) attnWrite(kept);          // forget what no longer needs attention
   return kept;
 }
+// Everything set aside: "nothing else needs attention" for 5 s, then the note and its heading go (operator, 2026-10-29), until
+// the set changes — a group dismissed or come back says it again
+let _attnQuiet = { k: "", t: 0 };
+function attnQuiet(keys) {
+  const k = keys.join("|");
+  if (_attnQuiet.k !== k) { _attnQuiet = { k, t: Date.now() }; setTimeout(() => bus.emit(), 5100); }
+  return Date.now() - _attnQuiet.t >= 5000;
+}
 function attnAct(key) {
   if (!isMobile()) return null;
   const away = attnRead().has(key);
@@ -1679,11 +1690,12 @@ export function Overview() {
       ];
       const away = m ? attnDismissed(rows.map(r => r[0])) : new Set();
       const shown = rows.filter(r => !away.has(r[0])), set = rows.filter(r => away.has(r[0]));
+      const quiet = m && !shown.length && set.length && attnQuiet(set.map(r => r[0]));
       return html`
-    ${secTitle(T("Needs attention"), shown.length ? plural(shown.length, "group") : null, undefined, "attention")}
+    ${quiet ? null : html`${secTitle(T("Needs attention"), shown.length ? plural(shown.length, "group") : null, undefined, "attention")}
     ${!shown.length
       ? html`<div class="allclear"><${Ic} i="check"/><span>${set.length ? T("Nothing else needs attention — what you set aside is at the bottom.") : T("Everything's deployed and reporting. No drift across the fleet.")}</span></div>`
-      : html`<div class="attn">${shown.map(r => r[1])}</div>`}
+      : html`<div class="attn">${shown.map(r => r[1])}</div>`}`}
     ${set.length ? html`${secTitle(T("Dismissed"), plural(set.length, "group"), undefined, "dismissed")}<div class="attn attn-away">${set.map(r => r[1])}</div>` : null}`;
     })()}
   </div>`;
