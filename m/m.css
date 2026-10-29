@@ -195,6 +195,10 @@ html[data-ui="m"] {
     box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5) !important;
   }
   & .deppop :is(.onrow, .netbub-row, .hub-row) { min-height: 40px; align-items: center; font-size: 14px; }
+  /* the "live" dots pulse in opacity alone, which the compositor runs on its own: the desktop's pulse also rings a box-shadow out,
+     and a shadow is repainted on the main thread every frame — measured on swgt at 6x CPU throttle (a weak phone): Overview's three
+     dots took 4.1 s of every 12 s idle, the whole rest of the page 0.4 s (operator, 2026-10-29: "too heavy for weak phones?") */
+  & :is(.livepill .dot, .dot.live, .lkdot.up, .lkdot.connecting), & .nstat.online::before { animation-name: m-pulse; will-change: opacity; }   /* a pseudo-element cannot sit in :is() */
   & #livepill { cursor: pointer; }
   /* none online: a grey dot before the 0, as a peer's offline dot (operator, 2026-10-29) — the desktop keeps its bare grey count */
   & #livepill.off .dot { display: inline-block; background: var(--faint); box-shadow: none; animation: none; }
@@ -1168,4 +1172,5 @@ html[data-ui="m"] {
   & .msheet-ver p { margin: 6px 0 0; font-family: var(--sans); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 }
 
+@keyframes m-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 @keyframes m-sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
