@@ -1373,7 +1373,7 @@ export function OnlineSheet({ nodeId = null } = {}) {
 }
 // Any other online count on a phone (a node's peers, an interface's, a turn proxy's connections): the same sheet, for the
 // list its bubble would show. The count re-renders every poll and keeps its latest list here, so the open sheet stays live.
-const _onlSrc = new Map();
+const _onlSrc = new WeakMap();   // keyed by each count's own ref object: a count that leaves the screen takes its entry with it
 function OnlineListSheet({ src }) {
   useStore();
   const d = _onlSrc.get(src) || { title: T("Online peers"), rows: [], peer: true, n: 0 };
