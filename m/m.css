@@ -159,6 +159,17 @@ html[data-ui="m"] {
   & .onsheet-main b { font-size: 15.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .onsheet-sub { font-size: 12.5px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .onsheet-side { flex: none; font-family: var(--mono); font-size: 13px; color: var(--online); }
+  /* the mesh sheet (views.js MeshSheet): the bubble's rows, drawn as the Online sheet's */
+  & .m-meshsheet .mh-rows { display: flex; flex-direction: column; margin: 0 calc(-1 * var(--m-gutter)); }
+  & .m-meshsheet .mh-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 14px; min-height: 52px;
+    padding: 6px var(--m-gutter); border-top: 1px solid var(--line);
+  }
+  & .m-meshsheet .has-loss .mh-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  & .m-meshsheet .mh-row:first-child { border-top: 0; }
+  & .m-meshsheet .mh-rn { font: 600 15.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .m-meshsheet :is(.mh-rtt, .mh-loss) { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+  & .m-meshsheet .mh-rar { display: flex; gap: 4px; font-size: 16px; }
   & .deppop .onpop-h { font-size: 11px; padding: 6px 8px 8px; }
   & .deppop::before {
     content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
@@ -476,7 +487,7 @@ html[data-ui="m"] {
   & .ncard .nc-name .tport::first-letter { text-transform: uppercase; }
   & .ncard .nc-name .reporting { font-family: var(--sans); font-size: 13px; text-transform: none; letter-spacing: 0; }
   & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) {
-    grid-row: 2; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; min-width: 0;
+    grid-row: 2; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; min-width: 0;   /* the three labels on one line (operator) */
     padding: 10px 12px 10px 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); justify-self: stretch; align-self: stretch;
   }
   & .ncard .nc-peers :is(.nm-peerpop, .onlinetag) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
@@ -484,7 +495,7 @@ html[data-ui="m"] {
   & .ncard .nc-peers { grid-column: 1; }
   & .ncard .nc-thru { grid-column: 2; border-left: 1px solid var(--line); }
   & .ncard .nc-mesh { grid-column: 3; border-left: 1px solid var(--line); }
-  & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) .nm-l { font-size: 10px; }
+  & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) .nm-l { font-size: 10px; line-height: 14px; margin: 0; padding: 0; }
   & .ncard .nc-thru .nm-v { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; font-size: 13px; text-align: left; }
   & .ncard .nc-thru .nm-v > * { margin: 0; min-width: 0; text-align: left; }
   & .ncard .nc-peers .nm-v { font-size: 16px; }
@@ -508,7 +519,13 @@ html[data-ui="m"] {
   & .dh-ver > :not(.iconbtn) { grid-column: 1 / -1; justify-self: start; align-self: center; }
   & .dh-ver > .nm-ver:first-child { grid-column: 1 / 3; }
   & .dh-ver > .nm-ver + .nm-ver { grid-column: 3 / -1; justify-self: end; }
-  & .dh-ver > :not(.iconbtn, .dh-sep) + .iconbtn { grid-column-start: 1; }   /* the four cells always begin a row of their own */
+  & .dh-ver > :not(.iconbtn, .dh-sep) + .iconbtn { grid-column-start: 1; }
+  /* Check: while it looks, only its icon turns (and takes the brand colour), the cell stays put; found nothing newer, the
+     cell says so — a green check over "Up to date" — for the 5 s the desktop shows its pill */
+  & .dh-ver > .iconbtn.checking { animation: none; color: var(--ink-2); }
+  & .dh-ver > .iconbtn.checking svg { animation: spin .8s linear infinite; transform-origin: center; color: var(--brand); }
+  & .dh-ver > .iconbtn.m-uptodate { color: var(--online); }
+  & .dh-ver > .iconbtn.m-uptodate svg { color: var(--online); }   /* the four cells always begin a row of their own */
   & .dh-ver > .dh-sep { display: none; }
   & .dh-ver > :is(.livepill, .hostproc-tag, .nstat) { grid-column: 1 / -1; }
   & .dh-ver > .iconbtn {

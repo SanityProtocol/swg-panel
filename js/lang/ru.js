@@ -7721,6 +7721,8 @@ export const STR = {
   "Online now · {n}": "Сейчас онлайн · {n}",
   "Open Live": "Открыть «Онлайн»",
   "Dismissed": "Скрытое",
+  "Up to date": "Актуален",
+  "Open node": "Открыть ноду",
   "Nothing else needs attention — what you set aside is at the bottom.": "Больше ничего не требует внимания — скрытое внизу страницы.",
   "Users or peers": "Пользователи или пиры",
   "Sort by": "Сортировка",

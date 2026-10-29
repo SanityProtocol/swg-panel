@@ -332,7 +332,10 @@ export function NodeDetail({ node: rawName }) {
             : nrec.datapath_broken ? T("The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ")
             : T("AmneziaWG on this node is running on the slower fallback datapath — its kernel module isn't loaded, or its interfaces haven't moved back to it yet. ")) + (nrec.local ? T("Re-run the updater to repair.") : T("Update this node to repair."))}><${Ic} i="warn"/> ${T("repair node")}</button>`
           : (nrec.local ? (Store.updFlash && Date.now() < Store.updFlash) : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until))
-          ? html`<span class="livepill upd-uptodate" title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}><${Ic} i="check"/> ${T("up to date")}</span>`
+          // a phone keeps the Check cell where it is (the row of four): its icon a green check, its word "Up to date"
+          ? (isMobile() ? html`<button class="iconbtn m-uptodate" data-lbl=${T("Up to date")} title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}
+                onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><${Ic} i="check"/></button>`
+            : html`<span class="livepill upd-uptodate" title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}><${Ic} i="check"/> ${T("up to date")}</span>`)
           : html`<button class="iconbtn" disabled=${blocked} data-lbl=${T("Check")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" disabled=${blocked} data-lbl=${T("Settings")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>

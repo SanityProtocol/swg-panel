@@ -1005,7 +1005,18 @@ export function meshHealth(nodeId) {
 export const mhArrow = (dir, status) => html`<span class=${"mh-ar mh-" + dir + " s-" + status}>${dir === "down" ? "↓" : "↑"}</span>`;
 
 // mode "in" → node-detail header (inbound only) · mode "both" → nodes-list (down = inbound, up = outbound)
-export function MeshStat({ nodeId, mode }) {
+// A phone: the mesh count opens a sheet drawn like the Online one (operator, 2026-10-29) — a row per linked node, its latency
+// and its arrows; Close, and the node's page. Its rows are the bubble's own (MeshStat `rows`), re-read every poll.
+function MeshSheet({ nodeId, mode }) {
+  useStore();
+  const h = meshHealth(nodeId);
+  return html`<${Sheet} title=${(mode === "in" ? T("Inbound links") : T("Mesh connections")) + " · " + h.total} noGuard=${true}
+    foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
+      <button class="btn btn-primary" onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(nodeId)); }}>${T("Open node")}</button>`}>
+    <div class="m-meshsheet"><${MeshStat} nodeId=${nodeId} mode=${mode} rows=${true}/></div>
+  <//>`;
+}
+export function MeshStat({ nodeId, mode, rows }) {
   const h = meshHealth(nodeId);
   if (!h.total) return null;
   // all-up → the arrow's colour (inbound green · outbound blue) · none up → red · partial → orange
@@ -1063,6 +1074,8 @@ export function MeshStat({ nodeId, mode }) {
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">${T("This node's mesh status:")}</span> ${num(h.okIn, "mhn-down")}</span>`
     : html`<span class="mh-tag"><span class="nm-l">${T("Mesh")}</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
+  if (rows) return html`<div class=${"mh-rows" + (anyLoss ? " has-loss" : "")}>${ordered.map(row)}</div>`;
+  if (isMobile()) return onlTap("mh-pop", () => openChildOrRoot(html`<${MeshSheet} nodeId=${nodeId} mode=${mode}/>`), trigger);
   return html`<${Popover} cls="mh-pop" popCls=${"mh-bubble" + (anyLoss ? " has-loss" : "")} alignRight=${true} trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? T("Inbound links") : T("Mesh connections")}</div>
     ${ordered.map(row)}
