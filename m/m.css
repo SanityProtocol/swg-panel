@@ -196,6 +196,8 @@ html[data-ui="m"] {
   }
   & .deppop :is(.onrow, .netbub-row, .hub-row) { min-height: 40px; align-items: center; font-size: 14px; }
   & #livepill { cursor: pointer; }
+  /* none online: a grey dot before the 0, as a peer's offline dot (operator, 2026-10-29) — the desktop keeps its bare grey count */
+  & #livepill.off .dot { display: inline-block; background: var(--faint); box-shadow: none; animation: none; }
   /* an online count that opens its sheet: the count as it is, no bubble frame and no "open" box around it */
   & .m-onltap { cursor: pointer; background: none !important; box-shadow: none !important; outline: 0; }
   /* the live pill's sheet (views.js OnlineSheet): users or devices, a row each */
