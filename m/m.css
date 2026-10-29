@@ -819,6 +819,8 @@ html[data-ui="m"] {
   & .setfoot > :not(.btn) { grid-column: 1 / -1; }
   & .setfoot > .grow { display: none; }
   & .setfoot .btn { min-width: 0; min-height: 44px; padding: 0 8px; }
+  & .setfoot:has(> .m-setmenu) { grid-template-columns: 1fr 1fr 1fr; }   /* Back · Open menu · Save */
+  & .setfoot > .m-setmenu { color: var(--brand); }
   /* the way back to the list of sections: it opens the list in place, not the screen before — its arrow points down (operator) */
   & .m-setback .ic { transform: rotate(-90deg); }
   /* …and it stays under the app bar while the section scrolls, so another section is one tap away from anywhere (operator) */

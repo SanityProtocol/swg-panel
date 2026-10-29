@@ -3650,6 +3650,8 @@ const sectionLabel = k => ({
           ${/* Back leaves Settings for where the operator came from, on a phone as on a desktop (operator, 2026-10-29: it went to
                 the list of sections, wherever Settings was opened from); the list is the sticky "Panel settings" line above */""}
           <button class="btn btn-ghost btn-dismiss" onClick=${leaveSettings}>${T("Back")}</button>
+          ${/* a phone in a section: the list of sections from the foot too, as the sticky line above opens it (operator) */""}
+          ${isMobile() && section ? html`<button class="btn btn-ghost m-setmenu" onClick=${() => { setSection(null); window.scrollTo(0, 0); }}>${T("Open menu")}</button>` : null}
           ${section === "access"
             ? html`<button class="btn btn-primary" disabled=${accessRef.current.busy || !accessRef.current.dirty} title=${!accessRef.current.dirty ? T("No changes to save") : ""} onClick=${() => accessRef.current.run()}>${accessRef.current.busy ? T("Saving…") : T("Save")}</button>`
             : html`<button class="btn btn-primary" disabled=${!!secErr() || !!exitErr() || !anyDirty} title=${secErr() || exitErr() || (!anyDirty ? T("No changes to save") : "")} onClick=${confirmSave}>${T("Save")}</button>`}</div>
