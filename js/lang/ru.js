@@ -7726,6 +7726,7 @@ export const STR = {
   "Add an exit": "Добавить выход",
   "rowact|Restart": "Рестарт",
   "rowact|New": "Новый",
+  "Stop + remove this interface and its peers' deployments on it": "Остановить и удалить этот интерфейс вместе с размещениями пиров на нём",
   "rowact|Stop": "Стоп",
   "rowact|Start": "Старт",
   "csqtt version": "Версия csqtt",
