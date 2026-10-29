@@ -9840,7 +9840,7 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
         return {}
     derived = desired_csqtt_for_node(roster, nodes, node_id, fallback_vk)
     _lines_ok = isinstance((snap or {}).get("csqtt_lines"), list)
-    out = {}
+    out, _runs, _stay = {}, {}, set()
     for iface, inst in insts.items():
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None); merged.pop("web_pass", None)   # node-owned secrets
@@ -9865,12 +9865,26 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
             _cver = ""
         elif _lines_ok:
             merged["line"] = _line
-            if _line != CSQTT_DEFAULT_LINE and merged.get("tun_addr"):   # 2.5.3 refuses .2–.250; the record keeps what was typed
-                merged["tun_addr"] = _csqtt_tun_for_line(merged["tun_addr"])
-            # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
-            # too, or it gets no updates or rollbacks until the operator resolves the switch.
             _row = _csqtt_row(snap, iface)
             _run = str(_row.get("line") or CSQTT_DEFAULT_LINE) if _row else ""
+            _runs[iface] = _run
+            _tun = merged.get("tun_addr")
+            # 2.5.3 refuses .2–.250; the record keeps what was typed. A server that RUNS 2.5 while its switch to 2.1 waits
+            # is sent .1 too, or it restarts on .5 under 2.5.3 (verify F8).
+            if _tun and (_line != CSQTT_DEFAULT_LINE or _run not in ("", CSQTT_DEFAULT_LINE)):
+                merged["tun_addr"] = _csqtt_tun_for_line(_tun)
+                if (merged["tun_addr"] != _tun and _row and _run in CSQTT_LINES
+                        and str(_row.get("tun_addr") or "") != merged["tun_addr"]):
+                    # The node restarts a server on its new build or line BEFORE it writes a new address (swg-noded
+                    # _csqtt_update_binary / _csqtt_switch_line start on the csqtt.env on disk), and 2.5.3 refuses the
+                    # old one — the server stays down (verify F7). So the move lands first, on what runs: this sync
+                    # keeps the server on its line, and its 2.5 line on its build (no `ver`, below); the next names them.
+                    merged["line"] = _line = _run
+                    _cver = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
+                    if _run != CSQTT_DEFAULT_LINE:
+                        _stay.add(_run)
+            # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
+            # too, or it gets no updates or rollbacks until the operator resolves the switch.
             if _run and _run != _line and _run in CSQTT_LINES:
                 _rv = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
                 if _rv:
@@ -9880,6 +9894,11 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
         if _cver:
             merged["ver"] = _cver
         out[iface] = merged
+    for iface, merged in out.items():   # one binary per (node, line): a line held on its build is held for every server on it
+        if merged.get("line") in _stay:
+            merged.pop("ver", None)
+        if _runs.get(iface) in _stay:
+            merged.pop("cur_ver", None)
     return out
 
 

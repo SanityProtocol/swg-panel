@@ -37,12 +37,17 @@ today csqtt-2.5.1) — until then a stand-in line played 2.5 — and the node's 
   [15] address   2.5.3 does not start on a host number in .2–.250: a 2.5 server stored on one (typed, switched from 2.1,
                  already there) is SENT .1 of its /24 and keeps its record as typed (operator, 2026-10-29); .0 .1 .251 are sent
                  as stored, a 2.1 server keeps .5, and an older node (no 2.5 build) is sent what is stored
+  [16] staged    verify F7/F8: the node restarts on a new build or line before it writes a new address, so while a server
+                 still reports its old one the reply keeps it on what it runs — its 2.5 line gets no `ver` (every server
+                 on that line), a pending switch waits on the line it runs, a server running 2.5 asked back to 2.1 is
+                 sent .1 until it runs 2.1 — and the sync after names the build and line
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
                        override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12] ·
-                       arstore / arclear / ar21 [13] · list253 / listroll [14] · tunbad / tun21 [15]
+                       arstore / arclear / ar21 [13] · list253 / listroll [14] · tunbad / tun21 [15] ·
+                       stage / stayall / curpop / f8 [16]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -67,16 +72,20 @@ PLANTS = {
                     "        _vl = (_csqtt_line_of(_vi) if _vi"),
     "runline": (("[11]", "[12]"), "        _vl = (_csqtt_run_line(((deps.get(\"node_snaps\") or {}).get(nid)), iface, ((nodes[nid].get(\"csqtt\")) or {}).get(iface))",
                 "        _vl = (_csqtt_line_of(((nodes[nid].get(\"csqtt\")) or {}).get(iface))"),
-    "curver": ("[11]", "            if _run and _run != _line and _run in CSQTT_LINES:", "            if False:"),
+    "curver": (("[11]", "[16]"), "            if _run and _run != _line and _run in CSQTT_LINES:", "            if False:"),
     "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
     "arstore": ("[13]", "            _ar, _are = _validate_app_routing(body.get(\"app_routing\"))",
                 "            _ar, _are = body.get(\"app_routing\"), None"),
     "arclear": ("[13]", "                else:\n                    inst.pop(\"app_routing\", None)\n", "                else:\n                    pass\n"),
     "ar21": ("[13]", "            inst.pop(\"app_routing\", None)            # 2.1 has no App routing", "            pass                                     # 2.1 has no App routing"),
-    "list253": (("[3]", "[14]"), "\"2.5\": [(\"2.5.3\", \"csqtt-2.5.3\"), ", "\"2.5\": ["),
+    "list253": (("[3]", "[14]", "[16]"), "\"2.5\": [(\"2.5.3\", \"csqtt-2.5.3\"), ", "\"2.5\": ["),
     "listroll": ("[14]", "(\"2.5.3\", \"csqtt-2.5.3\"), (\"2.5.1-2\", \"csqtt-2.5.1-2\"), ", "(\"2.5.3\", \"csqtt-2.5.3\"), "),
-    "tunbad": ("[15]", "    if len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250:", "    if False:"),
-    "tun21": ("[15]", "            if _line != CSQTT_DEFAULT_LINE and merged.get(\"tun_addr\"):", "            if merged.get(\"tun_addr\"):"),
+    "tunbad": (("[15]", "[16]"), "    if len(octs) == 4 and octs[3].isdigit() and 2 <= int(octs[3]) <= 250:", "    if False:"),
+    "tun21": (("[15]", "[16]"), "            if _tun and (_line != CSQTT_DEFAULT_LINE or _run not in (\"\", CSQTT_DEFAULT_LINE)):", "            if _tun:"),
+    "stage": ("[16]", "                        and str(_row.get(\"tun_addr\") or \"\") != merged[\"tun_addr\"]):", "                        and False):"),
+    "stayall": ("[16]", "        if merged.get(\"line\") in _stay:\n            merged.pop(\"ver\", None)", "        if merged.get(\"line\") in _stay:\n            pass"),
+    "curpop": ("[16]", "            merged.pop(\"cur_ver\", None)\n", "            pass\n"),
+    "f8": ("[16]", "(_line != CSQTT_DEFAULT_LINE or _run not in (\"\", CSQTT_DEFAULT_LINE))", "_line != CSQTT_DEFAULT_LINE"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
@@ -368,6 +377,50 @@ try:
     put_csqtt("nold", "csqtt46", dict(C1, tun_addr="10.66.146.5/24", listen="0.0.0.0:46460", line="2.5"))
     check("an older node (no 2.5 build named) is sent what is stored", (sync("nold").get("csqtt46") or {}).get("tun_addr") == "10.66.146.5/24",
           sync("nold").get("csqtt46"))
+
+    section("[16] the move to .1 lands before the build or line moves")
+    json.dump({}, open(os.path.join(state, "turn-holds.json"), "w"))
+    n = nodes(); n["nnew"]["csqtt"] = {
+        "csqtt50": dict(C1, tun_addr="10.66.150.5/24", listen="0.0.0.0:46500", line="2.5"),
+        "csqtt51": dict(C1, tun_addr="10.66.151.1/24", listen="0.0.0.0:46510", line="2.5"),
+        "csqtt52": dict(C1, tun_addr="10.66.152.1/24", listen="0.0.0.0:46520")}
+    with open(NODES + ".tmp", "w") as f:
+        json.dump(n, f)
+    os.replace(NODES + ".tmp", NODES)
+    row = lambda i, line, ver, tun: {"iface": i, "kind": "csqtt", "fork": "csqtt", "active": "active", "line": line,
+                                     "version": ver, "tun_addr": tun, "max_passwords": 500, "params": ""}
+    R51 = row("csqtt51", "2.5", "2.5.1-2", "10.66.151.1/24"); R52 = row("csqtt52", "2.1", "2.1.9-4", "10.66.152.1/24")
+    r = sync("nnew", [row("csqtt50", "2.5", "2.5.1-2", "10.66.150.5/24"), R51, R52])
+    a, b, c = (r.get(i) or {} for i in ("csqtt50", "csqtt51", "csqtt52"))
+    check("a 2.5 server still on .5 is sent .1 and no build (it moves on 2.5.1-2 first)",
+          a.get("tun_addr") == "10.66.150.1/24" and a.get("line") == "2.5" and "ver" not in a, a)
+    check("…its sibling on the same line gets no build either (one binary per line)", "ver" not in b and b.get("line") == "2.5", b)
+    check("…a 2.1 server on the node keeps its build", c.get("ver") == "2.1.9-4" and c.get("line") == "2.1", c)
+    R50 = row("csqtt50", "2.5", "2.5.1-2", "10.66.150.1/24")
+    r = sync("nnew", [R50, R51, R52])
+    check("once it reports .1, both are named 2.5.3", (r.get("csqtt50") or {}).get("ver") == "2.5.3"
+          and (r.get("csqtt51") or {}).get("ver") == "2.5.3", (r.get("csqtt50"), r.get("csqtt51")))
+    put_csqtt("nnew", "csqtt53", dict(C1, tun_addr="10.66.153.5/24", listen="0.0.0.0:46530", line="2.5"))
+    r = sync("nnew", [R50, R51, R52, row("csqtt53", "2.1", "2.1.9-4", "10.66.153.5/24")])
+    d = r.get("csqtt53") or {}
+    check("a switch from 2.1 on .5 waits on 2.1: sent .1 with 2.1's build, no 2.5 build", d.get("line") == "2.1"
+          and d.get("tun_addr") == "10.66.153.1/24" and d.get("ver") == "2.1.9-4" and "cur_ver" not in d, d)
+    check("…and the other 2.5 servers are not held for it", (r.get("csqtt50") or {}).get("ver") == "2.5.3", r.get("csqtt50"))
+    R53 = row("csqtt53", "2.1", "2.1.9-4", "10.66.153.1/24")
+    d = sync("nnew", [R50, R51, R52, R53]).get("csqtt53") or {}
+    check("…once it reports .1, the switch is asked: line 2.5, 2.5.3", d.get("line") == "2.5" and d.get("ver") == "2.5.3", d)
+    put_csqtt("nnew", "csqtt54", dict(C1, tun_addr="10.66.154.5/24", listen="0.0.0.0:46540", line="2.1"))
+    put_csqtt("nnew", "csqtt55", dict(C1, tun_addr="10.66.155.1/24", listen="0.0.0.0:46550", line="2.1"))
+    R55 = row("csqtt55", "2.5", "2.5.1-2", "10.66.155.1/24")
+    r = sync("nnew", [R50, R51, R52, R53, row("csqtt54", "2.5", "2.5.3", "10.66.154.1/24"), R55])
+    e = r.get("csqtt54") or {}
+    check("a server running 2.5 asked back to 2.1 is sent .1 while it runs 2.5 (F8)", e.get("tun_addr") == "10.66.154.1/24"
+          and e.get("line") == "2.1" and e.get("cur_ver") == "2.5.3", e)
+    e = sync("nnew", [R50, R51, R52, R53, row("csqtt54", "2.1", "2.1.9-4", "10.66.154.1/24"), R55]).get("csqtt54") or {}
+    check("…and its record's .5 once it runs 2.1", e.get("tun_addr") == "10.66.154.5/24", e)
+    r = sync("nnew", [row("csqtt50", "2.5", "2.5.1-2", "10.66.150.5/24"), R51, R52, R53, R55])
+    check("while a 2.5 server moves, one running 2.5 on its way to 2.1 gets no 2.5 build to swap (no cur_ver)",
+          "cur_ver" not in (r.get("csqtt55") or {}) and (r.get("csqtt55") or {}).get("line") == "2.1", r.get("csqtt55"))
 finally:
     proc.terminate()
     try: proc.wait(5)
