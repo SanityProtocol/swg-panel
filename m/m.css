@@ -208,7 +208,9 @@ html[data-ui="m"] {
   /* a list picker inside a bubble (Blocking's "Add list"): the bubble's width, not the desktop's 288 px, and its own height */
   & .deppop .bk-pick { width: auto; max-height: none; }
   & .deppop .bk-picklist { max-height: 55dvh; }
-  & .deppop .bk-pickitem { min-height: 48px; justify-content: center; }
+  & .deppop .bk-pickitem { min-height: 52px; justify-content: center; gap: 3px; padding: 10px 8px; border-radius: 0; border-top: 1px solid var(--line); }
+  & .deppop :is(.bk-pickprov, .bk-pickgrp) + .bk-pickitem { border-top: 0; }
+  & .deppop .bk-pickprov { padding-top: 16px; }
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
   /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
   & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
@@ -771,7 +773,7 @@ html[data-ui="m"] {
   & .cl-row .tf-plats { margin-right: 0; flex-wrap: wrap; }
   & .cl-row .tf-gear { margin-left: auto; }
   /* Interfaces → peer health: the switch and its badge on a line, what it means under them */
-  & .condrow { grid-template-columns: 34px auto minmax(0, 1fr); gap: 8px 12px; }
+  & .condrow { grid-template-columns: 44px auto minmax(0, 1fr); gap: 8px 12px; }
   & .condrow .cond-t { grid-column: 1 / -1; font-size: 13px; }
   /* Subscriptions → address & certificate: each name over its value */
   & .subaddr-row { flex-direction: column; gap: 2px; align-items: stretch; }
@@ -815,6 +817,32 @@ html[data-ui="m"] {
   & .exgrid.g8x .exg-c input { min-height: 40px; }
   & .exgrid.g8x .exg-c .dropdown { flex: 1 1 auto; min-width: 0; }
   /* a section's add button at its top (WARP & exits), and the sheet that asks which kind: a row each, its word and a line */
+  /* ───── the second full check (2026-10-29, a crawler tapping every control): touch sizes and type that a phone needs ─────
+     a switch: a thumb-sized track (44×26) and the knob to match; its hidden input still covers it */
+  & .swt { width: 44px; height: 26px; }
+  & .swt .track { width: 44px; height: 26px; }
+  & .swt .knob { left: 4px; top: 4px; width: 18px; height: 18px; }
+  & .swt input:checked ~ .knob { transform: translateX(18px); }
+  /* small buttons a thumb could miss: 36 px tall at the least, an icon-only one 36 square */
+  & :is(.btn-mini, .snbadge, .seg, .lv-lvb, .btn-add, .chiprow > .btn) { min-height: 36px; }
+  & :is(.rmode-reset-ic, .tf-gear, .iconbtn.tf-gear) { width: 36px; height: 36px; }
+  & .linkbtn { padding: 6px 0; margin: -6px 0; }
+  & .advtoggle { min-height: 40px; }
+  & .prov-repo { display: inline-flex; align-items: center; min-height: 32px; }
+  /* type a phone can read: a field's label, a dropdown's group, the small names under an app */
+  & :is(.field > label, .field > label > span, .toggle-row > span) { font-size: 11.5px; }
+  & .ddgrp { font-size: 11px; }
+  & :is(.osapp-auth, .rmc-tag, .lg-id, .lg-unused, .apiep-m) { font-size: 11px; }
+  /* a dropdown's choices whole, on two lines if they must */
+  & .ddopt { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; min-height: 40px; }
+  /* a switch's hit area reaches past its track (the label is the control) */
+  & .swt::after { content: ""; position: absolute; inset: -9px -6px; }
+  /* more small controls the crawler found: a chart's range tabs, a device's Primary switch, a missing link's Restore, a
+     facet's head in the Logs filters, an online count inside a card row */
+  & :is(.rangetabs .rtab, .primtog, .mi-restore, .lv-mphead) { min-height: 34px; }
+  & .ifrow .m-onltap { padding: 8px 6px; margin: -8px -6px; }
+  /* a label over a value (a tile's, an interface's facts, a node's health, a sort's) at 11 px at the least */
+  & :is(.stat .k, .ig-l, .hcol-l, .msort-l, .netshare-l, .act-cat) { font-size: 11px; }
   & .m-addtop { width: 100%; min-height: 44px; justify-content: center; margin: 0 0 14px; }
   /* a fork's client apps sheet (turn.js ServerClientsSheet): an app's name and author whole on a line, its badges under them;
      the save line's sentence over a full-width Save; a sheet with a Back keeps it at the top left, the title under it */
