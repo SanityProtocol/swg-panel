@@ -204,6 +204,10 @@ html[data-ui="m"] {
   & .fnode { display: block; }
   & .fnode-main { padding: 12px 14px; gap: 6px; }
   & .fnode-name { font-size: 15px; }
+  /* the name keeps its whole line when a node has many kinds of interface: the badges wrap under it */
+  & .fnode-top { flex-wrap: wrap; row-gap: 6px; }
+  & .fnode-top .fnode-name { flex: 1 1 auto; min-width: 50%; }
+  & .fnode-top .fnode-ifs { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
   & .fnode-stats { gap: 2px 8px; flex-wrap: wrap; justify-content: flex-end; font-size: 12.5px; }
   & .fnode-stats .fl { display: none; }
   & .fnode-stats > div:nth-child(1) { flex: 1 0 auto; }
