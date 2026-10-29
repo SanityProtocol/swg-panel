@@ -503,11 +503,11 @@ export function subjectBlocked(subject) {
   return !!(rec && rec.disabled);
 }
 // Swipe down to close, on a phone (docs/MOBILE-PLAN.md hook 2; sub.js attachSwipeClose's gesture, downward only). Only the
-// TOPMOST sheet takes it. It yields to an inner scroller that can still scroll up, a sideways move is never a close, and a touch
+// TOPMOST sheet takes it — by construction: the listeners are on the sheet itself and a child's overlay covers its parent. It yields to an inner scroller that can still scroll up, a sideways move is never a close, and a touch
 // that starts on a field never closes (selecting text in a config). A committed swipe goes through the sheet's own tryClose, so
 // a dirty sheet shows its "Discard?" and springs back, and a sheet with onBack goes Back. `noSwipe`: a sheet holding a secret
 // shown once (a node token, the encryption key, a router config) ignores it, since tryClose closes a CLEAN sheet without asking.
-function attachSheetSwipe(root, isTop, canSwipe, wantsGuard, close) {
+function attachSheetSwipe(root, canSwipe, wantsGuard, close) {
   let st = null;
   const scrollerAbove = el => {        // an element between the touch and the sheet that can still scroll content down
     for (; el && el !== root; el = el.parentElement) {
@@ -522,7 +522,7 @@ function attachSheetSwipe(root, isTop, canSwipe, wantsGuard, close) {
   };
   const onStart = e => {
     st = null;
-    if (e.touches.length !== 1 || !isTop() || !canSwipe()) return;
+    if (e.touches.length !== 1 || !canSwipe()) return;
     const t = e.target;
     if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .ddpop")) return;
     if (scrollerAbove(t)) return;
@@ -547,7 +547,7 @@ function attachSheetSwipe(root, isTop, canSwipe, wantsGuard, close) {
     if (!s.on) return;
     const fast = s.dy > 40 && s.dy / Math.max(1, Date.now() - s.t) > 0.6;
     if (!(s.dy > Math.min(140, root.offsetHeight * 0.3) || fast)) return reset(true);
-    if (wantsGuard()) { reset(true); close(); return; }              // the discard prompt shows; the sheet stays
+    if (wantsGuard()) { reset(true); close(); return; }              // the discard prompt shows: spring back, never off the screen
     root.classList.remove("m-dragging"); root.classList.add("m-springback");
     root.style.transform = "translateY(100%)";
     setTimeout(() => { close(); if (root.isConnected) reset(false); root.classList.remove("m-springback"); }, 180);
@@ -630,8 +630,7 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       }
     };
     document.addEventListener("keydown", onKey, true);          // capture so it works regardless of focus
-    const unswipe = isMobile() ? attachSheetSwipe(root, () => _sheetStack[_sheetStack.length - 1] === tok, () => !noSwipeRef.current,
-                                                  () => wantsGuardRef.current(), () => tryCloseRef.current()) : null;
+    const unswipe = isMobile() ? attachSheetSwipe(root, () => !noSwipeRef.current, () => wantsGuardRef.current(), () => tryCloseRef.current()) : null;
     return () => {
       if (unswipe) unswipe();
       document.removeEventListener("keydown", onKey, true);

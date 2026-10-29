@@ -29,7 +29,7 @@ import {
   setQrZoomProbe, toast, trackIfaceOps, attachTitleTaps,
 } from "./js/ui.js";
 import { themeMode } from "./js/theme.js";
-import { LANGS, lang } from "./js/i18n.js";
+import { LANGS, nextLang } from "./js/i18n.js";
 import {
   cryptoReady, ifaceKeyAutoRestore, escrowAutoVerify, lockVault, looksLikeVaultKey, qrZoomEl, subAutoHeal, subBootRestore, subForget, subRewrap,
   subSKCached, subUnlock, subUnlockWithKey, subVaultCreate,
@@ -359,7 +359,8 @@ function App() {
       else if (Store.hostChecking) body = `<span class="livepill upd-busy">${esc(T("checking…"))} ${UPD_SPIN_SVG}</span>`;   // Check status click → brief "checking…" pill (updates + issues)
       // Priority: a real upgrade first (updating heals too, so no "Fix" then) → else self-healable issues → else up-to-date / check.
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd">${esc(T("update to"))} <b>${esc(Store.latestRemote || "?")}</b></button>`;
-      else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix">${WARN_SVG} ${esc(fixLabel(_healN))}</button>`;
+      // data-n: the count alone, which a phone's one-line app bar shows in place of the words (m/m.css); a desktop draws nothing of it
+      else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix" data-n="${_healN}">${WARN_SVG} ${esc(fixLabel(_healN))}</button>`;
       else if (Store.updFlash && Date.now() < Store.updFlash) body = `<button class="livepill upd-uptodate" id="host-repair" title="${esc(T("This panel is on the latest version"))}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> ${esc(T("up to date"))}</button>`;
       else body = _checkBtn;
       // Steady = a badge you can act on. NOT the in-flight tags (updating / checking / proc): re-polling
@@ -379,7 +380,7 @@ function App() {
         // the versions rather than restating the label. A native tooltip would surface a second later, on top
         // of it, saying less. (parkTitles in hostHoverBubble enforces that generally; the header rewrites this
         // element every poll, so the attribute must not be here to be reinstated mid-hover.)
-        ? `<button class="livepill updpill turnpill" id="turn-upd">${esc(plural(_turnN, "update"))}</button>` : "";
+        ? `<button class="livepill updpill turnpill" id="turn-upd" data-n="${_turnN}">${esc(plural(_turnN, "update"))}</button>` : "";
       // Left of the check button in BOTH layouts: the badges read as a row of things that are true, and the
       // check is the verb that refreshes them — a verb belongs at the end of the row, not between two facts.
       if (_turnBadge) body = body.includes(_checkBtn) ? body.replace(_checkBtn, _turnBadge + _checkBtn) : body + _turnBadge;
@@ -561,7 +562,8 @@ function MoreSheet() {
       <div class="msheet-g">
         ${item(THEME_ICON[tm], T("Theme"), () => { cycleThemeMode(); force(x => x + 1); },
                tm === "auto" ? T("theme|Auto") : tm === "light" ? T("theme|Light") : T("theme|Dark"))}
-        <button class="msheet-it" onClick=${cycleLang}><${Ic} i="globe"/><span class="msheet-l">${T("Language")}</span><span class="msheet-v">${(LANGS.find(([c]) => c === lang()) || [])[1] || lang()}</span></button>
+        ${/* the value is the language a tap switches TO, in its own words — someone who cannot read this one finds theirs */""}
+        <button class="msheet-it" onClick=${cycleLang}><${Ic} i="globe"/><span class="msheet-l">${T("Language")}</span><span class="msheet-v" lang=${nextLang()}>${(LANGS.find(([c]) => c === nextLang()) || [])[1] || nextLang()}</span></button>
         ${item(DESKTOP_SVG, T("Desktop view"), () => setUiMode("d"))}
       </div>
       <div class="msheet-g">

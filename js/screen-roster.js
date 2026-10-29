@@ -138,10 +138,11 @@ export function PeersScreen() {
   // The toolbar's pieces, drawn once for both layouts: a phone keeps the search and New peer, and puts the grouping and the
   // three filters behind its Filters button (MOBILE-PLAN, Peers promoted to T1 on 2026-10-29). `r` redraws that sheet.
   const re = r => { peersView.page = 1; force(x => x + 1); if (r) r(); };
-  const filters = r => html`<${Fragment}>
-      <button class=${"onlbtn" + (grouped ? " on" : "")}
+  const groupBtn = html`<button class=${"onlbtn" + (grouped ? " on" : "")}
         title=${grouped ? T("One row per peer — its other deployments are behind the +N") : T("Collapse each peer's deployments into one row")}
-        onClick=${() => { peersView.group = !peersView.group; re(r); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>
+        onClick=${() => { peersView.group = !peersView.group; re(); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>`;
+  const filters = r => html`<${Fragment}>
+      ${isMobile() ? null : groupBtn}
       ${search(false)}
       <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
         onChange=${v => { peersView.node = v; peersView.iface = ""; re(r); }}
@@ -162,8 +163,9 @@ export function PeersScreen() {
     <${StoreOffBanner}/>
     ${isMobile() ? null : html`<${TrafficRail}/>`}
     <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
+      ${isMobile() ? groupBtn : null}
       ${search(true)}
-      ${isMobile() ? filterBtn(grouped || node !== "*" || (iface !== "*" && !!iface) || !!peersView.status, filters) : filters()}
+      ${isMobile() ? filterBtn(node !== "*" || (iface !== "*" && !!iface) || !!peersView.status, filters) : filters()}
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
       <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
@@ -620,15 +622,14 @@ export function UsersScreen() {
     <${StoreOffBanner}/>
     ${isMobile() ? null : html`<${TrafficRail}/>`}
     ${isMobile() ? html`<div class="toolbar mtoolbar">
+      <${ModeIcons} users=${true} force=${force}/>
       <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
       ${filterBtn(filtersOn() || usersView.group, redraw => { const reset = () => { usersView.page = 1; redraw(); force(x => x + 1); };
         return html`<${Fragment}>
           <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
             onChange=${v => { usersView.group = v; reset(); }}
             options=${[{ value: "", label: T("All groups") }, ...Store.groups().map(g => ({ value: g.id, label: g.name }))]}/>
-          <${RosterFilters} reset=${reset}/>
-          <button class="btn btn-ghost mfilters-groups" onClick=${() => { closeModal(); usersView.mode = "groups"; force(x => x + 1); }}>
-            <${Ic} i="users"/> ${T("Groups view")}</button><//>`; })}
+          <${RosterFilters} reset=${reset}/><//>`; })}
       <button class="btn btn-primary mfab" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
     </div>` : html`<div class="toolbar">
       <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}

@@ -26,26 +26,37 @@ html[data-ui="m"] {
 
   /* ───── the app bar: brand · live pill · More ───── */
   & .appbar {
-    position: sticky; top: 0; z-index: 30; flex-wrap: wrap; height: auto; min-height: 56px; gap: 0 8px;
+    position: sticky; top: 0; z-index: 30; flex-wrap: nowrap; height: auto; min-height: 56px; gap: 0 6px;
     padding: env(safe-area-inset-top, 0px) max(4px, env(safe-area-inset-right, 0px)) 0 max(var(--m-gutter), env(safe-area-inset-left, 0px));
     background: var(--surface); backdrop-filter: none;
   }
-  & .brand { margin-right: auto; height: 56px; }
+  & .brand { margin-right: auto; height: 56px; flex: 0 1 auto; min-width: 0; }
   & .brand-name { font-size: 17px; }
   & .appver, & #appref { display: none; }
   & .appbar-right { display: contents; }
   & .appbar-right > :not(#livepill, #more-btn, #updslot) { display: none; }
-  & #livepill { order: 1; height: 32px; padding: 0 12px; font-size: 12px; }
-  & #more-btn { order: 2; display: inline-flex; width: 48px; height: 48px; color: var(--ink-2); }
-  /* #updslot stays the header's ONE status renderer (hook 1): while it holds a badge it is a strip under the bar, its check
-     button left to the More sheet; with nothing to say it takes no room */
-  & #updslot { order: 3; display: none; }
-  & #updslot:has(.updpill, .hostproc-tag, .upd-busy) {
-    display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 8px; margin: 0 calc(-1 * max(4px, env(safe-area-inset-right, 0px))) 0 calc(-1 * max(var(--m-gutter), env(safe-area-inset-left, 0px)));
-    padding: 8px var(--m-gutter); border-top: 1px solid var(--line);
-  }
+  /* ONE line (operator, 2026-10-29): the brand, then #updslot's badges and the live pill as icons and counts — their words
+     go (font-size 0 on the pill, the icon and the count kept), then More. #updslot stays the header's ONE status renderer
+     (hook 1); its check button is left to the More sheet. A tap still runs each badge's own action. */
+  & #updslot { order: 1; display: flex; gap: 6px; flex: none; }
   & #updslot #upd-check { display: none; }
-  & #updslot :is(.updpill, .hostproc-tag, .upd-busy, .upd-uptodate) { min-height: 32px; padding: 0 12px; font-size: 12px; display: inline-flex; align-items: center; }
+  & #livepill { order: 2; flex: none; }
+  & #more-btn { order: 3; display: inline-flex; width: 44px; height: 48px; flex: none; color: var(--ink-2); }
+  & :is(#livepill, #updslot :is(.livepill, .hostproc-tag)) {
+    height: 34px; min-width: 34px; padding: 0 10px; gap: 5px; font-size: 0; letter-spacing: 0; justify-content: center; box-sizing: border-box;
+    display: inline-flex; align-items: center;
+  }
+  & :is(#livepill, #updslot :is(.livepill, .hostproc-tag)) b { font-size: 14px; margin: 0; }
+  & :is(#livepill, #updslot :is(.livepill, .hostproc-tag)) svg { width: 15px; height: 15px; top: 0; }
+  & #updslot [data-n]::after { content: attr(data-n); font: 700 14px var(--mono); }
+  & #updslot #host-upd b { display: none; }   /* the version: the update sheet names it */
+  & #updslot :is(#host-upd, #turn-upd)::before {
+    content: ""; width: 15px; height: 15px; background: currentColor;
+    -webkit-mask: var(--m-ic-up) center / 15px no-repeat; mask: var(--m-ic-up) center / 15px no-repeat;
+  }
+  & #updslot #turn-upd::before { --m-ic-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v11M7 10l5 5 5-5M5 20h14'/%3E%3C/svg%3E"); }
+  & #updslot #host-upd::before { --m-ic-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5M6 11l6-6 6 6'/%3E%3C/svg%3E"); }
+  & #updslot .hostproc-tag .xbtn { font-size: 0; }
   & body.loggedout #more-btn { display: none; }
 
   /* ───── the bottom tab bar: #tabs, its five links as they are; the icons are masks, so no markup changes ───── */
@@ -120,12 +131,21 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
   & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
 
-  /* ───── bubbles: docked at the bottom, full width, over whatever place() computed ───── */
+  /* ───── bubbles: a bottom sheet, like More (operator, 2026-10-29) — full width, rounded top, a grab handle, the page dimmed
+     behind it (its own shadow; a bubble has no overlay element) — over whatever place() computed. A tap outside closes it,
+     as it did ───── */
   & .deppop {
-    position: fixed !important; left: 8px !important; right: 8px !important; top: auto !important;
-    bottom: calc(8px + var(--m-safe-b)) !important; transform: none !important;
-    width: auto !important; min-width: 0 !important; max-width: none !important; max-height: 60dvh !important; overflow: auto !important;
-    box-sizing: border-box; margin: 0 !important;
+    position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important; transform: none !important;
+    width: auto !important; min-width: 0 !important; max-width: none !important; max-height: 70dvh !important; overflow: auto !important;
+    box-sizing: border-box; margin: 0 !important; z-index: 90 !important;
+    padding: 22px var(--m-gutter) calc(16px + var(--m-safe-b)) !important; border: 0 !important; border-top: 1px solid var(--line-solid) !important;
+    border-radius: 18px 18px 0 0 !important; background: var(--surface) !important; font-size: 14px;
+    box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5) !important;
+  }
+  & .deppop :is(.onrow, .netbub-row, .hub-row) { min-height: 40px; align-items: center; font-size: 14px; }
+  & .deppop .onpop-h { font-size: 11px; padding: 6px 8px 8px; }
+  & .deppop::before {
+    content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
   }
 
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
@@ -209,8 +229,8 @@ html[data-ui="m"] {
   &:has(:is(input:not([type=checkbox]):not([type=radio]), textarea, select):focus) .mfab { display: none; }
   & .mfilters { display: flex; flex-direction: column; gap: 12px; }
   & .mfilters > * { width: 100%; }
-  & .mfilters .selwrap, & .mfilters .onlbtn, & .mfilters-groups { min-height: 44px; }
-  & .mfilters-groups { justify-content: center; }
+  & .mfilters .selwrap, & .mfilters .onlbtn { min-height: 44px; }
+  & .mtoolbar > .pmode, & .mtoolbar > .onlbtn { flex: none; min-height: 44px; }
   & .uhead { display: none; }
   & .urows { gap: 6px; }
   & .urow > .urow-head {
@@ -306,7 +326,12 @@ html[data-ui="m"] {
   & table.peergrid td.c-addr { grid-column: 2; grid-row: 2; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & table.peergrid td.c-rate { grid-column: 3; grid-row: 2; justify-self: end; font-size: 12.5px; }
   & table.peergrid td.c-rate .up { display: none; }
-  & table.peergrid td.usercell { grid-column: 1 / 3; grid-row: 3; font-size: 14px; min-width: 0; }
+  /* the owner's cell opens the user: only the name and a little room around it, the rest of the card opens the device
+     (operator, 2026-10-29) — the cell sizes to its content instead of spanning the card */
+  & table.peergrid td.usercell { grid-column: 1 / 3; grid-row: 3; justify-self: start; max-width: 100%; font-size: 14px; min-width: 0; }
+  & table.peergrid td.usercell .namecell { display: inline-flex; align-items: center; width: auto; min-height: 36px; padding: 0 10px; margin: 0 -10px; }
+  & table.peergrid td.usercell .namecell > span { max-width: 230px; }
+  & table.peergrid td.usercell .namecell svg { display: none; }
   & table.peergrid td.usercell .assigncell { max-width: 220px; }
   & table.peergrid td.c-online { grid-column: 3; grid-row: 3; justify-self: end; font-size: 12.5px; color: var(--dim); }
   & table.peergrid td.c-ep { grid-column: 1 / -1; grid-row: 4; font-size: 12.5px; color: var(--dim); }
