@@ -403,6 +403,9 @@ export function attachTitleTaps() {
       if (!el && n.getAttribute("title")) el = n;
     }
     if (!el) return;
+    // a tag that names itself (an interface's protocol badge — "AWG 3.1" titled "AmneziaWG 3.1") says nothing new: no bubble
+    // (operator, 2026-10-29: "that slider is useless")
+    if (el.matches(".tg, .iftype, .tag, .capb, .ce-tag")) return;
     bub = document.createElement("div");
     bub.className = "deppop m-titletap";
     bub.setAttribute("role", "status");

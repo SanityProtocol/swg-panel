@@ -28,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +51,7 @@ PERTURBS = {
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
     "nodemore": ("js/screen-nodes.js", "        ${isMobile() ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}", "        ${false ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}"),
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
+    "tagtap": ("js/ui.js", '    if (el.matches(".tg, .iftype, .tag, .capb, .ce-tag")) return;\n', ''),
     "titletap": ("app.js", "  if (isMobile()) attachTitleTaps();", "  if (false) attachTitleTaps();"),
     "tabpad": ("m/m.css", "  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }\n", ""),
     "nativefocus": ("app.js", "  options.vnode = v => { const p = v.props; if (typeof v.type === \"string\" && p && p.autofocus) delete p.autofocus; if (prev) prev(v); };",
@@ -433,6 +434,11 @@ try:
         b2 = box(tab, "[...document.querySelectorAll('.dh-ver > .iconbtn')].find(b => b.dataset.lbl === 'Settings')")
         tap(tab, b2["x"] + 5, b2["y"] + 5); close_all(tab)
         check("[9] a tap on a button is the button's, not a bubble's", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
+        tab.ev("(() => { const e = document.createElement('span'); e.id = 'mtg'; e.className = 'tg tg-awg'; e.title = 'AmneziaWG 3.1';"
+               " e.textContent = 'AWG 3.1'; e.style.cssText = 'display:inline-block;padding:10px'; document.querySelector('#view .screen').prepend(e); })()")
+        tg = box(tab, "document.getElementById('mtg')")
+        tap(tab, tg["x"] + tg["w"] / 2, tg["y"] + tg["h"] / 2)
+        check("[9] a tag that names itself (an interface's protocol badge) opens no bubble", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
     tab.close()
 
     # ── [11] a tap outside an open list ──
