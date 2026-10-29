@@ -750,7 +750,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     ${meta ? html`<${IfaceThroughput} node=${node} iface=${iface}/>` : null}
 
-    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${T("Reachable via turn-proxy")} iface=${iface}/>` : null}
+    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${isMobile() ? T("Reachable via") : T("Reachable via turn-proxy")} iface=${iface}/>` : null}
 
     <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
