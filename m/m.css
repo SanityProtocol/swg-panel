@@ -387,6 +387,10 @@ html[data-ui="m"] {
   }
   & .urow-head > .u-exp { grid-column: 1; grid-row: 1 / span 2; scroll-snap-align: start; }
   & .urow-head > .u-name { grid-column: 2 / -1; grid-row: 1; font-size: 15.5px; }
+  /* a long name wraps rather than cutting it and its tag down to "O…" (a 360 px phone, the emulator) */
+  & .urow-head > .u-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+  & .urow-head > .u-name > * { white-space: normal; overflow: visible; text-overflow: clip; min-width: 0; }
+  & .urow-head > .u-name .tagchip { flex: none; }
   & .urow-head > .ustat { grid-column: 2; grid-row: 2; }
   & .urow-head > .u-right { display: contents; }
   & .urow-head .u-right > * { padding: 0; }
@@ -516,6 +520,9 @@ html[data-ui="m"] {
   /* the owner's cell opens the user: only the name and a little room around it, the rest of the card opens the device
      (operator, 2026-10-29) — the cell sizes to its content instead of spanning the card */
   & table.peergrid td.usercell { grid-column: 1 / 3; grid-row: 3; justify-self: start; max-width: 100%; font-size: 14px; min-width: 0; }
+  /* …but never into the last-online time and the rate beside it: the owner's name is cut there on a narrow phone */
+  & table.peergrid td.usercell { max-width: calc(100vw - 2 * var(--m-gutter) - 160px); overflow: hidden; }
+  & table.peergrid td.usercell .namecell > span { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & table.peergrid td.usercell .namecell { display: inline-flex; align-items: center; width: auto; min-height: 36px; padding: 0 10px; margin: 0 -10px; }
   & table.peergrid td.usercell .namecell > span { max-width: 230px; }
   & table.peergrid td.usercell .namecell svg { display: none; }
