@@ -651,7 +651,7 @@ export function TurnManageSheet({ node, tp }) {
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${T("Start service")}</button>`
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
         : installing
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${true} title=${T("Installing…")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`
         // a looping proxy keeps Stop + Restart however its state flickers between crashes — systemd is still
@@ -659,8 +659,8 @@ export function TurnManageSheet({ node, tp }) {
         // crash would blink as badly as the verdict once did
         : ((!turnDown(tp) || looping) && !failed)
         ? html`<${Fragment}>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${T("Stop service")}</button>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${T("Restart service")}</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button>
           <//>`
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
       <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
@@ -2194,8 +2194,8 @@ export function WdttManageSheet({ node, w: w0 }) {
     headExtra=${w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
-        ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
-          : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this WDTT server on the node"))}<//>`}
+        ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this WDTT server up on the node"))
+          : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this WDTT server on the node"))}<//>`}
       <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${Trich("This server was wiped. Its identity (server keypair + owner password) is *escrowed in your Encryption Vault*. *Restore* to bring it back with its original identity — no user re-imports.")}
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
@@ -2361,8 +2361,8 @@ export function EditWdttSheet({ node, iface }) {
   return html`<${Sheet} title=${T("Edit WDTT interface · {v1}", { v1: iface })} width=${720}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
-        ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
-          : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this WDTT server on the node"))}<//>`}
+        ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this WDTT server up on the node"))
+          : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this WDTT server on the node"))}<//>`}
       <//>`, onCancel: closeModal, disabled: busy || adopting || !!wgperr || !!egressSaveBlock(eg, emode), title: (adopting ? T("This server is being adopted — wait for the node to finish") : wgperr || egressSaveBlock(eg, emode)) || "", onAction: save, action: T("Save") })}>
     ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* right now — its settings are read-only until the node reports the result.")}</span></div>` : null}
     <div class="iface-intro"><div>${Trich("*WDTT* owns its own *WireGuard* interface *({iface} · {addr})* and mints each user's key on connect.", { iface, addr: wgAddr || "—" })}</div></div>
@@ -2646,8 +2646,8 @@ export function CsqttManageSheet({ node, c: c0 }) {
     headExtra=${c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
-        ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))
-          : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this csqtt server on the node"))}<//>`}
+        ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this csqtt server up on the node"))
+          : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this csqtt server on the node"))}<//>`}
       <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     <${IfaceThroughput} node=${node} iface=${iface}/>
     <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
@@ -2861,8 +2861,8 @@ export function EditCsqttSheet({ node, iface, pick }) {
   return html`<${Sheet} title=${T("Edit csqtt interface · {v1}", { v1: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
-        ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))
-          : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this csqtt server on the node"))}<//>`}
+        ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this csqtt server up on the node"))
+          : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this csqtt server on the node"))}<//>`}
       <//>`, onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), disabled: busy || !!egressSaveBlock(eg, emode), title: egressSaveBlock(eg, emode) || "", onAction: save, action: T("Save") })}>
     <div class="iface-intro"><div>${Trich("*csqtt* owns its own raw-IP tunnel *({iface} · {addr})* and mints each user's address on connect.", { iface, addr: tunAddr || "—" })}</div></div>
     ${/* Same read-only identity row WDTT's edit sheet carries. csqtt has no fork choice and no internal WG
