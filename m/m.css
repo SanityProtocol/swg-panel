@@ -226,6 +226,14 @@ html[data-ui="m"] {
     background: none !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; border-radius: 0 !important;
     font: 600 16px/1.35 var(--sans) !important; letter-spacing: 0 !important; text-transform: none !important; color: var(--ink) !important;
   }
+  /* a bubble whose head carries an action (a leg's / an interface's Reset): the action a real button on its own line under the
+     title, full width, a thumb's height (operator, 2026-10-29: "needs to be a proper button") */
+  & .deppop > .dp-h:has(> .dp-reset) { display: flex !important; flex-wrap: wrap; align-items: center; gap: 10px; }
+  & .deppop .dp-h > .dp-reset {
+    flex: 1 1 100%; min-height: 44px; margin: 2px 0 0; padding: 0 14px; border: 1px solid var(--line-solid); border-radius: var(--r-sm);
+    background: var(--surface-2); color: var(--ink); font: 600 14px/1 var(--sans); letter-spacing: 0; text-transform: none;
+  }
+  & .deppop .dp-h > .dp-reset.ok { color: var(--online); border-color: color-mix(in srgb, var(--online) 45%, transparent); }
   & .deppop::before {
     content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
   }
