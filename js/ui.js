@@ -465,6 +465,31 @@ export function attachBubbleSwipe() {
   }, { capture: true });
 }
 
+// A phone: a notification goes on a swipe in any direction (operator, 2026-10-29) — dragged more than 50 px it leaves that
+// way and is gone; less, it springs back. Its own timer still ends it otherwise.
+export function attachToastSwipe() {
+  let d = null;
+  document.addEventListener("touchstart", e => {
+    const t = e.target && e.target.closest && e.target.closest(".toasts > .toast");
+    d = t && e.touches.length === 1 ? { t, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, dy: 0 } : null;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchmove", e => {
+    if (!d) return;
+    d.dx = e.touches[0].clientX - d.x; d.dy = e.touches[0].clientY - d.y;
+    d.t.style.transition = "none"; d.t.style.transform = "translate(" + d.dx + "px," + d.dy + "px)";
+    d.t.style.opacity = String(Math.max(0.2, 1 - Math.hypot(d.dx, d.dy) / 220));
+  }, { passive: true, capture: true });
+  document.addEventListener("touchend", () => {
+    if (!d) return;
+    const { t, dx, dy } = d; d = null;
+    t.style.transition = "transform .2s var(--ease), opacity .2s var(--ease)";
+    const n = Math.hypot(dx, dy);
+    if (n < 50) { t.style.transform = ""; t.style.opacity = ""; return; }
+    t.style.transform = "translate(" + (dx / n * 480) + "px," + (dy / n * 480) + "px)"; t.style.opacity = "0";
+    setTimeout(() => t.remove(), 220);
+  }, { capture: true });
+}
+
 // A phone: a sheet is docked at the bottom and as tall as what it holds, so a hint, a check or an error that comes and goes
 // while someone types moved the whole sheet, the field with it, up and down (operator, 2026-10-29: "data entry must be
 // smooth"). The first time a text field in a sheet takes the focus, the sheet takes its full height and keeps it until it

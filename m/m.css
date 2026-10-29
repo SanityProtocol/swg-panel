@@ -89,6 +89,9 @@ html[data-ui="m"] {
 
   /* toasts sit above the tab bar, across the screen */
   & .toasts { left: 12px; right: 12px; bottom: calc(var(--m-tabbar) + var(--m-safe-b) + 12px); max-width: none; }
+  & .toasts > .toast { touch-action: none; }   /* a swipe moves the notification, not the page (ui.js attachToastSwipe) */
+  /* a sheet's buttons are at the bottom: while one is open the notifications come down from the top instead of covering them */
+  &:has(.overlay.show) .toasts { top: calc(env(safe-area-inset-top, 0px) + 10px); bottom: auto; }
 
   /* ───── sheets: docked at the bottom, full width, a grab handle; the body scrolls, the head and foot stay ───── */
   & .overlay { padding: 0; align-items: flex-end; overflow: hidden; overscroll-behavior: contain; }
@@ -130,6 +133,9 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot) > .grow { display: none; }
   & :is(.sheet-foot, .editfoot) > :not(.btn, button, .grow) { order: 2; grid-column: 1 / -1; justify-self: start; align-self: center; }
   & :is(.sheet-foot, .editfoot) > .btn-dismiss { order: 3; grid-column: 1 / span 3; }
+  /* one other action, not a destructive one (New user's "Create only"): as wide as the main action, right above it (operator) */
+  & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn)))
+    > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) { grid-column: 4 / span 3; }
   & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
   & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
   & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
@@ -403,6 +409,20 @@ html[data-ui="m"] {
   & .pg2-ip { order: 7; margin: 0 0 0 auto; }
   & .pg2-act { width: 40px; height: 40px; }
 
+  /* ───── a device's sheet (sheets-crud.js PeerView): each deployment says it with values only, nothing cut (operator,
+     2026-10-29) — the node and interface, the address at the right; the live rate, when it was last online at the right;
+     what it carried in all, marked Σ, quiet under them ───── */
+  & .pv-dep-grid { grid-template-columns: max-content max-content minmax(0, 1fr); gap: 6px 12px; font-size: 13.5px; align-items: baseline; }
+  & .pv-dep-grid .k { display: none; }
+  & .pv-dep-grid > span { overflow: visible; }
+  & .pv-dep-grid > span:nth-child(1) { grid-column: 1; grid-row: 1; font-weight: 600; }
+  & .pv-dep-grid > span:nth-child(2) { grid-column: 2; grid-row: 1; color: var(--dim); }
+  & .pv-dep-grid > span:nth-child(3) { grid-column: 3; grid-row: 1; justify-self: end; text-align: right; white-space: normal; }
+  & .pv-dep-grid > span:nth-child(4) { grid-column: 1 / 3; grid-row: 2; }
+  & .pv-dep-grid > span:nth-child(6) { grid-column: 3; grid-row: 2; justify-self: end; color: var(--dim); }
+  & .pv-dep-grid > span:nth-child(5) { grid-column: 1 / -1; grid-row: 3; font-size: 12px; color: var(--dim); }
+  & .pv-dep-grid > span:nth-child(5)::before { content: "\03A3"; margin-right: 6px; color: var(--faint); }
+
   /* ───── user detail: the user's configs sheet (peer-ui.js openUserConfigs) — its device pager (QRRow) already shows one device
      with the next one peeking; its footer counts share one line ───── */
   & .sheet-foot > .qrfoot-count { grid-column: 1 / 4; }
@@ -521,10 +541,14 @@ html[data-ui="m"] {
   & .detail-head > .title { flex: 1 0 100%; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
   & .detail-head > .title h1 { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; margin: 0; }
   & .detail-head > .grow { display: none; }
-  & .dh-ver { flex: 1 0 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: stretch; }
+  & .dh-ver { flex: 1 1 100%; max-width: 100%; min-width: 0; box-sizing: border-box; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: stretch; }
   /* the version and the updater's branch share one line; any status pill takes a line of its own; then the four cells */
   & .dh-ver > :not(.iconbtn) { grid-column: 1 / -1; justify-self: start; align-self: center; }
   & .dh-ver > .nm-ver:first-child { grid-column: 1 / 3; }
+  /* the node's version: on the name's line, at its right, centred on it (operator, 2026-10-29); the name keeps clear of it */
+  & .detail-head:has(> .dh-ver > .nm-ver:first-child) { position: relative; }
+  & .detail-head:has(> .dh-ver > .nm-ver:first-child) > .title h1 { line-height: 30px; padding-right: 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  & .detail-head > .dh-ver > .nm-ver:first-child { position: absolute; top: 0; right: 0; height: 30px; display: flex; align-items: center; }
   & .dh-ver > .nm-ver + .nm-ver { grid-column: 3 / -1; justify-self: end; }
   & .dh-ver > :not(.iconbtn, .dh-sep) + .iconbtn { grid-column-start: 1; }
   /* Check: while it looks, only its icon turns (and takes the brand colour), the cell stays put; found nothing newer, the
