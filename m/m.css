@@ -763,21 +763,21 @@ html[data-ui="m"] {
   & .bkrow > :not(.lg-pull, .bk-cat, .bk-defchip) { order: 3; }
   & .bkrow > :is(.bk-kind, .bk-size):empty { display: none; }
   & .bkrow > .bk-addwrap { margin-left: auto; }
-  /* a category opens on a tap — said by a chevron in a tap box at the end of its name's line, turning when open (operator:
-     "difficult to tell that those are expandable") */
+  /* a category opens on a tap — said the way a user's or a group's row says it (operator: "match the users/groups expanding
+     control"): a chevron in the row's left lane, pointing right, down when open */
   & .bk-catline { align-items: center; }
   & .bk-catline .lg-title { white-space: normal; overflow: visible; }
+  & .bkrow { position: relative; padding-left: 30px; }
   & .bk-chev {
-    margin-left: auto; flex: none; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--line); border-radius: 50%; font-size: 13px; color: var(--dim); background: var(--surface-2);
+    position: absolute; left: 0; top: 12px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0; color: var(--dim); transform: none !important; border: 0; background: none;
   }
-  /* the chevron drawn, not the ▾ glyph (too small to read): two strokes, the row's turning makes it point up when open */
-  & .bk-chev { font-size: 0; width: 36px; height: 36px; color: var(--ink-2); }
   & .bk-chev::before {
-    content: ""; width: 9px; height: 9px; border-right: 2.2px solid currentColor; border-bottom: 2.2px solid currentColor;
-    border-radius: 1px; transform: translateY(-2px) rotate(45deg);
+    content: ""; width: 7px; height: 7px; border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor;
+    transform: rotate(-45deg); transition: transform .15s ease;
   }
-  & .bkrow.open .bk-chev { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); }
+  & .bkrow.open .bk-chev { color: var(--brand); }
+  & .bkrow.open .bk-chev::before { transform: translateY(-2px) rotate(45deg); }
   /* an open category's lists: a list's name and source on a line, what it is under them, its state, size and buttons last */
   & .bk-expand { padding-left: 0; }
   & .bk-lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-left: 0; padding: 10px 12px; }
