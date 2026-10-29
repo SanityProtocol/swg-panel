@@ -452,12 +452,15 @@ export function attachBubbleSwipe() {
     if (sc && sc !== pop && sc.scrollTop > 0) { d = null; return; }
     d = { pop, y: e.touches[0].clientY, t: Date.now(), dy: 0 };
   }, { passive: true, capture: true });
+  // ⚠️ NOT PASSIVE: on a real phone the page under a bubble took the drag as its own scroll and Chrome sent touchcancel —
+  // the bubble never closed (operator, 2026-10-29). A downward drag on it is the bubble's, so the page is told no.
   document.addEventListener("touchmove", e => {
     if (!d) return;
     d.dy = Math.max(0, e.touches[0].clientY - d.y);
+    if (d.dy > 0 && e.cancelable) e.preventDefault();
     d.pop.style.transition = "none"; d.pop.style.transform = d.dy ? "translateY(" + d.dy + "px)" : "";
-  }, { passive: true, capture: true });
-  document.addEventListener("touchend", () => {
+  }, { passive: false, capture: true });
+  const bubbleEnd = () => {
     if (!d) return;
     const { pop, dy, t } = d; d = null;
     const back = () => { pop.style.transition = "transform .2s var(--ease)"; pop.style.transform = ""; };
@@ -466,7 +469,9 @@ export function attachBubbleSwipe() {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));   // a pinned one
     pop.dispatchEvent(new MouseEvent("mouseleave"));                                                          // one a tap opened as a hover
     setTimeout(() => { if (pop.isConnected) back(); }, 260);
-  }, { capture: true });
+  };
+  document.addEventListener("touchend", bubbleEnd, { capture: true });
+  document.addEventListener("touchcancel", bubbleEnd, { capture: true });
 }
 
 // A phone: a notification goes on a swipe in any direction (operator, 2026-10-29) — dragged more than 50 px it leaves that
