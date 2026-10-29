@@ -674,7 +674,6 @@ html[data-ui="m"] {
   & .rrfoot-lead .btn-mini { margin-left: 0; min-height: 44px; flex: 1 0 100%; justify-content: center; }
   & .rrfoot-label { margin: 4px 0 0; flex: 1 0 100%; }
   & .rrfoot > .tf-trail { flex: 1 0 100%; margin: 0; }
-  & .m-tput { font-family: var(--mono); font-size: 18px; font-weight: 600; padding: 4px 2px; }
   & .msheet-it:disabled { opacity: .45; }
   & .msheet-note { margin: 4px var(--m-gutter) 8px; }
   & .noderibbon { flex-wrap: wrap; gap: 8px; }

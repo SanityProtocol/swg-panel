@@ -1335,12 +1335,7 @@ export function NodeThroughput({ name, nrec }) {
   const [peers, setPeers] = useState(true);
   const [mesh, setMesh] = useState(true);
   const [range, setRange] = useState("live");
-  if (isMobile()) {   // a phone: the clients' live rate as a figure — no range, no chart, no mesh split (MOBILE-PLAN hook 4)
-    const s = nrec.health_live && (nrec.health_live.t || []).length > 1 ? nrec.health_live : (nrec.health_history || {});
-    const last = a => { a = a || []; for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return 0; };
-    return html`<${Panel} icon="gauge" title=${T("Throughput")} actions=${html`<span class="faint">${T("range|live")}</span>`}>
-      <div class="m-tput">${rateCell(Math.max(0, last(s.rx) - last(s.mrx)), Math.max(0, last(s.tx) - last(s.mtx)))}</div><//>`;
-  }
+  // a phone draws the same chart, range and Peers / Mesh switch as a desktop and an interface's page (operator, 2026-10-29)
   const togP = () => { if (peers && !mesh) { setPeers(false); setMesh(true); } else setPeers(!peers); };
   const togM = () => { if (mesh && !peers) { setMesh(false); setPeers(true); } else setMesh(!mesh); };
   // Peers/Mesh sits on the LEFT (as the header's `lead`, right after the title); the range picker stays on the right.
