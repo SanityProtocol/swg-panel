@@ -400,7 +400,8 @@ export function attachBackCloses() {
   let url = location.href, eat = false, depth = 0;
   _onStack = n => { if (n > depth) for (; depth < n; depth++) history.pushState({ swgSheet: depth + 1 }, ""); else depth = n; };
   window.addEventListener("popstate", () => {
-    const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop");
+    const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop"), cat = document.querySelector(".catpick-pop .pop-x");
+    if (cat) { if (location.href !== url) { eat = true; history.pushState(history.state, "", url); } cat.click(); return; }   // a routing field's search
     if (!qr && !pop && !_stack.length) {
       if (location.href === url) history.back();   // a closed sheet's entry left behind: not a page, step past it
       return;
@@ -414,6 +415,18 @@ export function attachBackCloses() {
     if (eat) { eat = false; e.stopImmediatePropagation(); return; }
     url = location.href;
   }, true);
+}
+
+// A phone: the visible part of the page (above the keyboard) as --m-vvt / --m-vvh, for what is docked to it rather than to the
+// layout viewport the keyboard does not shrink (m/m.css: a routing field's search)
+export function attachViewportVars() {
+  const v = window.visualViewport, root = document.documentElement;
+  // --m-kbpad: the keyboard is up (the visible page much shorter than the window) — what is pinned to its bottom stands clear of a
+  // browser bar laid over that edge (Brave, measured on the operator's phone: ~30 px)
+  const set = () => { const h = v ? v.height : innerHeight;
+    root.style.setProperty("--m-vvt", (v ? v.offsetTop : 0) + "px"); root.style.setProperty("--m-vvh", h + "px");
+    root.style.setProperty("--m-kbpad", innerHeight - h > 150 ? "36px" : "0px"); };
+  set(); if (v) { v.addEventListener("resize", set); v.addEventListener("scroll", set); }
 }
 
 export function attachTitleTaps() {

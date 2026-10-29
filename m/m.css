@@ -763,7 +763,27 @@ html[data-ui="m"] {
   & .tf-text { font-size: 14px; }
   /* the target list under a rule's field: the screen's width, and a row's name over its id and what it is — "А…" and
      "Госсай…" were cut to make room for the chips beside them */
-  & .catpick-pop.tfpop { left: 8px !important; width: auto !important; right: 8px; max-width: none; }
+  /* a routing field's search (routing.js .m-tfsearch): its input pinned to the top of the visible page, the catalog under it to
+     the keyboard, the page dimmed behind — a list floating from a field in a scrolling sheet broke on scroll (operator, 2026-10-29) */
+  & .tfield.m-tfsearch > .tf-box {
+    position: fixed; z-index: 121; left: 0; right: 0; top: var(--m-vvt, 0px); height: 64px; box-sizing: border-box; margin: 0;
+    padding: 10px var(--m-gutter); border: 0; border-bottom: 1px solid var(--line-solid); border-radius: 0; background: var(--surface);
+    box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .55); display: flex; align-items: center;
+  }
+  & .tfield.m-tfsearch > .tf-box > :not(.tf-in) { display: none; }
+  & .tfield.m-tfsearch > .tf-box > .tf-in { flex: 1 1 auto; width: 100%; min-height: 44px; font-size: 16px; }
+  & .catpick-pop.tfpop {
+    position: fixed !important; z-index: 121; left: 0 !important; right: 0 !important; width: auto !important; max-width: none;
+    top: calc(var(--m-vvt, 0px) + 64px) !important; height: calc(var(--m-vvh, 100dvh) - 64px); max-height: none !important;
+    margin: 0; border: 0; border-radius: 0; transform: none !important; display: flex; flex-direction: column; box-sizing: border-box;
+    overflow: visible !important;   /* its Done sits on the search's line above it; the list scrolls itself */
+  }
+  & .catpick-pop.tfpop .catpick-list { flex: 1 1 auto; min-height: 0; max-height: none !important; overflow: auto; overscroll-behavior: contain; }
+  /* its Done floating at the bottom right (operator, 2026-10-29; no pager: the list grows as it scrolls). With the keyboard up a phone's
+     browser can lay its own bar over the bottom of the visible page (Brave): both stand --m-kbpad higher then (ui.js) */
+  & .catpick-pop.tfpop > .m-tfdone { position: absolute; right: var(--m-gutter); bottom: calc(14px + var(--m-kbpad, 0px)); z-index: 2;
+    min-height: 48px; padding: 0 22px; border-radius: 999px; font-size: 15px; box-shadow: 0 8px 24px -6px rgba(0, 0, 0, .55); }
+  & .catpick-pop.tfpop .catpick-list { padding-bottom: calc(76px + var(--m-kbpad, 0px)); }   /* the last row clear of it */
   & .catpick-pop .catrow { flex-wrap: wrap; row-gap: 4px; }
   & .catpick-pop .catrow-main { flex: 1 1 100%; min-width: 0; }
   & .catpick-pop .catrow-l1 { flex-wrap: wrap; row-gap: 2px; }

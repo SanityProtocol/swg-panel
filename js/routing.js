@@ -1802,6 +1802,11 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // If a third reading is ever added, replace the booleans with one mode enum rather than adding a flag —
   // two flags are already the most that can be checked by reading.
   const [q, setQ] = useState("");
+  // A phone: a pick clears the box for the next search but the list stays on what was being browsed, scrolled where the pick
+  // was, until something is typed (operator, 2026-10-29: "keep it where I just added an item")
+  const [holdQ, setHoldQ] = useState(null);
+  // …and has no pages: its list grows by a page as it is scrolled near its end (operator, 2026-10-29: "remove pagination")
+  const [more, setMore] = useState(1);
   const [open, setOpen] = useState(false);
   const onKeyRef = useRef(null);   // the latest `onKey`, for the dropdown's window-level Escape (its effect runs only on `open`)
   const [pos, setPos] = useState(null);
@@ -1847,7 +1852,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // showed a stale count beside AsnHint's fresh one; see the note on `_asnSubs`.
   useAsnCounts(badges.filter(b => b.t === "target" && b.kind === "asn").map(b => b.value));
 
-  const ql = q.trim().toLowerCase();
+  const lq = (holdQ != null && !q) ? holdQ : q;   // what the list is searched by: the typed box, or the search a pick left held
+  const ql = lq.trim().toLowerCase();
   // A `list:` TOKEN IS NOT A TARGET, and the classifier is right to refuse it — `list:youtube` is not a
   // hostname. But then typing one did nothing at all: Enter is gated on `readGate.ok`, so a valid list
   // pasted as text committed while the same text TYPED sat in the box being called a bad domain. Read here,
@@ -1937,7 +1943,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   const commit = b => {
     const { added } = addAll([b]);
     setEditing(null);
-    setQ(""); setPage(0); setAct(-1); setPending({ text: "", forQ: null });
+    if (isMobile() && b.t === "list" && q.trim()) { setHoldQ(q); setQ(""); setAct(-1); setPending({ text: "", forQ: null }); }   // page and scroll stay
+    else { setHoldQ(null); setQ(""); setPage(0); setAct(-1); setPending({ text: "", forQ: null }); }
     setSay(added.length ? T("Added {v1}", { v1: added[0] }) : T("Already in this rule."));
     if (inRef.current) inRef.current.focus();
   };
@@ -2028,13 +2035,11 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   const place = () => { const el = ref.current; if (!el) return; setPos(placeWide(el)); };
   useEffect(() => {
     if (!open) return; place();
+    // a phone's search takes a history entry as a sheet does, so Back closes it (ui.js attachBackCloses) rather than the page
+    if (isMobile()) history.pushState({ swgSearch: 1 }, "");
     // A phone scrolls the sheet under a list that is pinned to the screen: once its field leaves the sheet's view the list is
     // closed (and the keyboard with it) rather than drawn over the sheet's head or its buttons (operator, 2026-10-29)
-    const onMove = () => {
-      const el = ref.current, sc = el && isMobile() && el.closest(".sheet-body, .view");
-      if (sc) { const a = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
-        if (a.bottom < b.top + 8 || a.top > b.bottom - 40) { setOpen(false); if (inRef.current) inRef.current.blur(); return; } }
-      place(); };
+    const onMove = () => { if (!isMobile()) place(); };   // a phone's list is docked by m/m.css (.m-tfsearch), not placed
     const onDoc = e => { const t = e.target;
       // The foot's controls (the rule's settings button, its destination) sit inside this field but are not the search: a
       // click there closes it, or the list stays open under the window or the dropdown it opened.
@@ -2062,7 +2067,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // has to mean the same thing to Enter as it does to the eye. An empty query offers only the presets and the
   // operator's own lists: 3,000 alphabetical country files is not an answer to "what do you want to route",
   // and rendering a page of them would fire a page of list-info fetches on every focus.
-  const per = 50;
+  const per = isMobile() ? 50 * more : 50;
   const _curated = SMART_CATEGORIES().filter(([id]) => id !== "all")
     .map(([id, label]) => ({ id, provider: "curated", provider_label: T("Curated"), caps: catCap(id), disp: label }))
     .filter(it => !ql || it.id.toLowerCase().includes(ql) || it.disp.toLowerCase().includes(ql) || catDescOf(it.id).toLowerCase().includes(ql))
@@ -2084,7 +2089,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // A star means a PATTERN is being written, not a search (the empty-state note below says the same): `*meta*` must not
   // append all 1,796 MetaCubeX lists.
   const _qn = ql.replace(/[^a-z0-9]/g, "");
-  const _provHit = _qn.length >= 3 && !q.includes("*") ? (Store.catalogProviders || []).filter(p => !p.builtin && p.enabled
+  const _provHit = _qn.length >= 3 && !lq.includes("*") ? (Store.catalogProviders || []).filter(p => !p.builtin && p.enabled
     && String(p.label || "").toLowerCase().replace(/[^a-z0-9]/g, "").startsWith(_qn)) : [];
   const _provGroups = _provHit.map(p => ({ p, all: (cidx || []).filter(it => it.provider === p.id) }));
   const _hitIds = new Set(_hits.map(it => it.id));
@@ -2404,7 +2409,10 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     <span class="tf-live" aria-live="polite">${say}</span>
   </div>`;
 
-  return html`<div class="tfield" ref=${ref}>
+  // A PHONE SEARCHES IN A MODE OF ITS OWN: while the list is open the field's input is pinned to the top of what is visible and
+  // the catalog fills the rest down to the keyboard (m/m.css .m-tfsearch). A list anchored to a field in a scrolling sheet floated
+  // over the sheet's head and its buttons, and a scroll broke it (operator, 2026-10-29).
+  return html`<div class=${"tfield" + (open && isMobile() ? " m-tfsearch" : "")} ref=${ref}>
     ${/* Badges cannot be selected, so without this a rule can be built and never read back out. */""}
     ${listEditor ? null : vtog(false)}
     <div class="tf-box" onClick=${() => inRef.current && inRef.current.focus()}>
@@ -2424,7 +2432,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
         placeholder=${badges.length ? T("add another…")
           : listEditor ? T("Address, IP range, AS number or pattern…")
           : T("Search a service, or type an address, IP range or AS number…")}
-        value=${q} onInput=${e => { setQ(e.target.value); setPage(0); setAct(-1); setOpen(true); }}
+        value=${q} onInput=${e => { setHoldQ(null); setMore(1); setQ(e.target.value); setPage(0); setAct(-1); setOpen(true); }}
         onFocus=${() => setOpen(true)} onKeyDown=${onKey} onPaste=${onPaste}/>
     </div>
     <div class="tf-foot">
@@ -2456,8 +2464,9 @@ ${/* The reading and its consequence live in the dropdown's "use what you typed"
     ${open && pos && (!listEditor || rows.length) ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop wide tfpop" + (pos.flip ? " flip" : "")}
         style=${"left:" + pos.left + "px;top:" + pos.top + "px;width:" + pos.width + "px;--catpick-maxh:" + (pos.maxh - 119) + "px"}>
       ${/* 119 = the 90 the list always left for the pager and padding, plus the 29px ✕ strip above it */""}
-      <div class="tfpop-head"><button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${() => setOpen(false)}><${Ic} i="x"/></button></div>
-      <div class="catpick-list">
+      <div class="tfpop-head"><button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${() => { setOpen(false); setHoldQ(null); if (isMobile() && inRef.current) inRef.current.blur(); }}><${Ic} i="x"/></button></div>
+      <div class="catpick-list" onScroll=${isMobile() ? (e => { const l = e.currentTarget;
+          if (_cat.length > per && l.scrollTop + l.clientHeight > l.scrollHeight - 400) setMore(m => m + 1); }) : null}>
 ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch this node to…" control that
        used to live inside this row was dead to a real mouse — and it is rendered ONLY when `readGate.ok` is
        false, which is exactly when the row is disabled, so it was dead every single time it appeared. Script
@@ -2505,12 +2514,14 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
         ${!listEditor && ql.length === 1 ? html`<div class="catpick-empty">${T("Keep typing to search the provider catalog.")}</div>` : null}
         ${!listEditor && !rows.length && !ql ? html`<div class="catpick-empty">${T("Type a service name, an address, an IP range or an AS number.")}</div>` : null}
       </div>
-      ${_cat.length > per ? html`<div class="catpick-foot">
+      ${_cat.length > per && !isMobile() ? html`<div class="catpick-foot">
         <span class="catpick-count">${T("{v1}–{v2} of {v3}", { v1: page * per + 1, v2: Math.min(_cat.length, (page + 1) * per), v3: _cat.length })}</span><span class="grow"></span>
         <div class="catpick-nav">
-          <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => { setPage(p => Math.max(0, p - 1)); setAct(-1); }}>${T("‹ Prev")}</button>
-          <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => { setPage(p => Math.min(pages - 1, p + 1)); setAct(-1); }}>${T("Next ›")}</button>
+          <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => { setPage(p => Math.max(0, p - 1)); setAct(-1); }} >${T("‹ Prev")}</button>
+          <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => { setPage(p => Math.min(pages - 1, p + 1)); setAct(-1); }} >${T("Next ›")}</button>
         </div></div>` : null}
+      ${isMobile() ? html`<button type="button" class="btn btn-primary m-tfdone" onClick=${() => { setOpen(false); setHoldQ(null); if (inRef.current) inRef.current.blur(); }}>
+        <${Ic} i="check"/> ${T("Done")}</button>` : null}
     </div><//>` : null}
   </div>`;
 }

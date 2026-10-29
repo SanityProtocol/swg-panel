@@ -28,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | tfsearch | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +51,7 @@ PERTURBS = {
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
     "nodemore": ("js/screen-nodes.js", "        ${isMobile() ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}", "        ${false ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}"),
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
+    "tfsearch": ("js/routing.js", '(open && isMobile() ? " m-tfsearch" : "")', '(false ? " m-tfsearch" : "")'),
     "backclose": ("app.js", "attachToastSwipe(); attachBackCloses(); }", "attachToastSwipe(); }"),
     "bubdrag": ("js/ui.js", 'if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important");', 'if (d.dy) d.pop.style.transform = "translateY(" + d.dy + "px)";'),
     "bubtap": ("js/ui.js", "onClick=${hoverOnly && !isMobile() ? null :", "onClick=${hoverOnly ? null :"),
@@ -443,6 +444,30 @@ try:
         tap(tab, tg["x"] + tg["w"] / 2, tg["y"] + tg["h"] / 2)
         check("[9] a tag that names itself (an interface's protocol badge) opens no bubble", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
     tab.close()
+
+    # ── [14] a routing field's search on a phone: a mode of its own, docked to the visible page ──
+    with guard("[14]"):
+        print("\n[14] a routing field's search: the input pinned on top, the catalog under it, a scroll moves neither, Back closes it")
+        # the rig runs no routing, so the field is the component itself (the one Settings → Network and an interface's rules use)
+        tab = open_app("#/users")
+        tab.ev("(async () => { const P = await %s; const R = await %s('routing'); const c = document.createElement('div'); c.id = 'mtf';"
+               " c.style.cssText = 'margin-top:500px'; document.querySelector('#view .screen').append(c);"
+               " P.render(P.h(R.TargetField, {row: {badges: []}, mode: 'ip', node: %s, onChange: () => {}}), c); })()" % (PREACT, MOD, json.dumps(NID))); settle(tab, 600)
+        has = tab.ev("!!document.querySelector('#mtf .tf-in')")
+        check("[14] the routing field rendered", has)
+        if has:
+            tab.ev("(() => { const i = document.querySelector('.tfield .tf-in'); i.scrollIntoView({block: 'center'}); i.focus();"
+                   " i.value = 'ya'; i.dispatchEvent(new Event('input', {bubbles: true})); })()"); settle(tab, 1200)
+            r = lambda sel: tab.ev("(() => { const e = document.querySelector(%s); if (!e) return null; const b = e.getBoundingClientRect(); return [Math.round(b.top), Math.round(b.height), Math.round(b.width)]; })()" % json.dumps(sel))
+            fbox, fpop = r(".tfield.m-tfsearch > .tf-box"), r(".catpick-pop")
+            check("[14] the input is pinned to the top, the full width", bool(fbox) and fbox[0] == 0 and fbox[2] == 390, fbox)
+            check("[14] the catalog fills the rest of the screen under it", bool(fpop) and fpop[0] == 64 and fpop[0] + fpop[1] >= 840, fpop)
+            tab.ev("window.scrollBy(0, 300)"); settle(tab, 500)
+            check("[14] a scroll moves neither", r(".catpick-pop") == fpop and r(".tfield.m-tfsearch > .tf-box") == fbox)
+            tab.ev("history.back()"); settle(tab, 900)
+            st = tab.ev("({pop: !!document.querySelector('.catpick-pop'), hash: location.hash})")
+            check("[14] Back closes the search and keeps the page (its own history entry, the page the first in its tab)", not st["pop"] and st["hash"] == "#/users", st)
+        tab.close()
 
     # ── [13] the phone's Back closes the top sheet, the page stays ──
     with guard("[13]"):
