@@ -4240,7 +4240,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                              the CLIENT subnet's address, so packets leave carrying 10.x, leak the internal
                              subnet upstream and are dropped there while the device still reads up. That is
                              why this row keeps a marker: Auto here is a choice, but not a safe default. */""}
-          <div class="exg-c">${isImp(r)
+          <div class="exg-c" data-lbl=${T("Leaves as")}>${isImp(r)
             ? (() => {
                 const ins = exitInsideAddr(r, ((node.exits || []).find(x => String(x.id) === String(r.id)) || {}).live);
                 return ins ? html`<span class="mono faint" title=${T("The tunnel's own address — traffic leaves as this.")}>${ins}</span>`
@@ -4257,16 +4257,16 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                   ${risky ? html`<span class="exg-warn" title=${why}><${Ic} i="warn"/></span>` : null}
                 </span>`;
               })()}</div>
-          <div class="exg-c"><${ExitUsedBy} node=${node} id=${r.id}/></div>
+          <div class="exg-c" data-lbl=${T("Used by")}><${ExitUsedBy} node=${node} id=${r.id}/></div>
           ${/* ⚠️ BOTH SWITCHES SAY WHAT THEY DO. These two are the only controls on this screen that change
                 what happens to traffic and to an account, they are deliberately NOT in the editor sheet
                 ("one click in the grid"), and both shipped with no explanation at all — while the latency
                 number beside them carried two sentences of hover. `Active` is the switch that once destroyed
                 the account it claimed to be pausing; that it now keeps it is exactly the fact an operator
                 needs before flipping it. `Switch` already takes a `title`; it was simply never passed. */""}
-          <div class="exg-c c"><${Switch} on=${!!r.killswitch} title=${KS_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Kill-switch")}><${Switch} on=${!!r.killswitch} title=${KS_TITLE()}
             onChange=${v => put(i, { killswitch: v, _df: true })}/></div>
-          <div class="exg-c c"><${Switch} on=${!off} title=${ACTIVE_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Active")}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
             onChange=${v => put(i, { enabled: v, _df: true })}/></div>
           <div class="exg-c exg-act">
             ${r._kind === "custom"
@@ -5029,6 +5029,13 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);
     write([...exits, rec]);
   };
+  // the four ways to add one: the desktop's row of buttons, a phone's sheet (ExitKindSheet), the same records
+  const exitKinds = [
+    [T("Register with WARP"), { producer: "imported", provider: "warp", licence: "" }, T("A free Cloudflare account, registered for this node")],
+    [T("Paste a custom config"), { producer: "imported", provider: "profile", profile_text: "" }, T("A WireGuard or AmneziaWG profile from anywhere else")],
+    [T("Add a dial-in exit"), { producer: "imported", provider: "profile", profile_text: "", dialin: true }, T("An upstream that connects to this node, such as a router behind NAT")],
+    [T("Add a SOCKS5 proxy"), { producer: "imported", provider: "socks5", socks_text: "", socks_pass: "" }, T("A SOCKS5 proxy's address and login")],
+  ];
   const del = ex => openConfirm({
     title: T("Remove this exit?"), confirmLabel: T("Remove"), danger: true,
     body: exitProv(ex) === "profile"
@@ -5057,6 +5064,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           config. Said here, where the operator decides, rather than nowhere. */""}
     ${/* The node's name is in the section header two lines up, and where devices live is a fact about a
           different screen. What is left is the one thing the screen has to say. */""}
+    ${isMobile() ? html`<button class="btn btn-primary m-addtop" onClick=${() => openModal(html`<${ExitKindSheet} kinds=${exitKinds} onPick=${add}/>`)}><${Ic} i="plus"/> ${T("Add an exit")}</button>` : null}
     <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts, WireGuard profiles from anywhere else, SOCKS5 proxies, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.")}</p>
     ${exits.length ? html`<div class="exgrid g8">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
@@ -5139,17 +5147,19 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the
           choice is what the operator is actually deciding, and "Register" has to be one click for the path
           that needs no input at all. wgcf is never named — it is plumbing. */""}
-    <div class="exadd" style="margin-top:14px">
-      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "warp", licence: "" })}>
-        <${Ic} i="plus"/> ${T("Register with WARP")}</button>
-      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "profile", profile_text: "" })}>
-        <${Ic} i="plus"/> ${T("Paste a custom config")}</button>
-      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "profile", profile_text: "", dialin: true })}>
-        <${Ic} i="plus"/> ${T("Add a dial-in exit")}</button>
-      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "socks5", socks_text: "", socks_pass: "" })}>
-        <${Ic} i="plus"/> ${T("Add a SOCKS5 proxy")}</button>
-    </div>
+    ${isMobile() ? null : html`<div class="exadd" style="margin-top:14px">
+      ${exitKinds.map(([label, rec]) => html`<button class="btn btn-ghost btn-mini" onClick=${() => add(rec)}>
+        <${Ic} i="plus"/> ${label}</button>`)}
+    </div>`}
   </div>`;
+}
+// A phone adds an exit from the top of the section, not after the last card (operator, 2026-10-29): one button, and a sheet
+// that asks which kind — the same four the desktop's row of buttons offers.
+function ExitKindSheet({ kinds, onPick }) {
+  return html`<${Sheet} title=${T("Add an exit")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>`}>
+    <div class="m-pick">${kinds.map(([label, rec, about]) => html`<button type="button" class="m-pick-row" onClick=${() => { closeModal(); onPick(rec); }}>
+      <span class="m-pick-ic"><${Ic} i="plus"/></span><span class="m-pick-main"><b>${label}</b><span>${about}</span></span></button>`)}</div>
+  <//>`;
 }
 
 export function NodeIngressForm({ node, vals, set }) {

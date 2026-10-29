@@ -18,7 +18,10 @@ html[data-ui="m"] {
   /* ───── global ───── */
   & body { min-height: 100dvh; background-attachment: scroll; }
   /* 16px: below that, iOS Safari zooms the page when a field takes focus */
-  & :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea) { font-size: 16px; }
+  /* a field's text a size under the page's body, its monospace a little smaller still — 16 px of mono read as shouting next to
+     the labels (operator, 2026-10-29); 15 px keeps it legible */
+  & :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea) { font-size: 15px; }
+  & :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea):is(.mono, [class*="mono"]) { font-size: 14px; }
   & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }
   & .screen { animation: none; }
   /* a tap must never need a hover to be found; and no lingering grey flash on a tapped row */
@@ -112,7 +115,7 @@ html[data-ui="m"] {
   & .sheet-body > .card:only-child { border: 0; padding: 0; background: none; box-shadow: none; }
   & .fieldrow { flex-direction: column; gap: 15px; margin-bottom: 15px; }
   & .fieldrow > .field { width: 100%; }
-  & .ugroup-combo .uc-input, & .ugroup-combo .uc-size::before, & .ugroup-combo .uc-size::after { font-size: 16px; }
+  & .ugroup-combo .uc-input, & .ugroup-combo .uc-size::before, & .ugroup-combo .uc-size::after { font-size: 15px; }
   & .sheet.m-dragging { transition: none; }
   /* typed in: the full height, kept until it closes (ui.js attachTypingHold) — the field stays put while the rest changes */
   & .sheet.m-typed { height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px); }
@@ -193,6 +196,15 @@ html[data-ui="m"] {
     content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
   }
 
+  /* the CSS-only bubbles a hover opens (Turn proxies' "2 versions", a turn badge's) come up from the bottom the same way; a
+     platform button's own bubble is not drawn — its tap opens the server's clients sheet, which says more */
+  & :is(.tf-verwrap:hover .tf-verpop, .turnwrap:hover .turnbub:not(.tf-plbub)) {
+    position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important; z-index: 90;
+    min-width: 0; max-height: 60dvh; overflow: auto; box-sizing: border-box; white-space: normal;
+    padding: 22px var(--m-gutter) calc(16px + var(--m-safe-b)); border: 0; border-top: 1px solid var(--line-solid);
+    border-radius: 18px 18px 0 0; background: var(--surface); box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5); font-size: 14px;
+  }
+  & .tf-plbub { display: none !important; }
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
   /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
   & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
@@ -461,7 +473,7 @@ html[data-ui="m"] {
   & :is(.sublink-row, .vkfield-row) > .fieldbtns > .btn { width: 100%; min-height: 44px; justify-content: center; }
   & :is(.sublink-row, .vkfield-row) > .fieldbtns > .vk-status { grid-column: 1 / -1; }
   & .vkbox { min-height: 44px; }
-  & .vkbox-input { font-size: 16px; }
+  & .vkbox-input { font-size: 14px; }
   /* a device with no config to show: its sentence in a short box, not a QR-sized empty square */
   & .qrrow .deploy .qr-none, & .deploy .qr-none { width: auto; height: auto; aspect-ratio: auto; max-width: none; min-height: 0; padding: 22px 16px; font-size: 13.5px; line-height: 1.45; }
 
@@ -595,6 +607,27 @@ html[data-ui="m"] {
   & .dh-ver > .iconbtn::after { content: attr(data-lbl); }
   & .dh-ver > .iconbtn svg { width: 20px; height: 20px; }
   & .drag-grip { display: none; }   /* reordering by drag is a mouse gesture; the order set on a desktop stays */
+  /* ───── a routing rule (routing.js RulesEditor, in an interface's sheet and in Settings → Network's default exit): with no
+     grip there is no rail — the rule is one column: its targets' box (the </> switch in its corner), then the × and the count,
+     then where it goes, the dropdown the line's width. "Add rule" and "Everything else → …" each take a line of their own.
+     (Its target field sat in the 16 px rail the hidden grip left: "impossible to configure at all", operator 2026-10-29) ───── */
+  & .rrrow { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 10px 12px; }
+  & .rrrow > .tfield { grid-column: 1; }
+  & .tfield .tf-vtog { left: auto; right: 6px; top: 8px; opacity: .8; z-index: 1; }
+  & .tfield:has(> .tf-vtog) .tf-box { padding-right: 34px; }
+  & .tf-box { min-height: 56px; }
+  & .tf-in { min-width: 0; flex: 1 1 160px; font-size: 15px; padding: 6px 2px; }
+  & .tf-foot { align-items: center; gap: 8px 10px; font-size: 12px; }
+  & .tf-lead { position: static; transform: none; width: auto; left: auto; top: auto; }
+  & .tf-lead .xbtn { width: 32px; height: 32px; }
+  & .tf-foot .tf-trail { flex: 1 0 100%; margin: 0; flex-wrap: wrap; row-gap: 6px; }
+  & :is(.tf-trail .rrdest, .tf-trail .selwrap, .tf-trail:has(.whochip) .rrdest) { flex: 1 1 0; width: auto; min-width: 0; }
+  & .tf-trail .rrgear { width: 40px; height: 40px; }
+  & .rrfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; margin-top: 10px; }
+  & .rrfoot > .rrfoot-lead { flex: 1 0 100%; flex-wrap: wrap; gap: 8px; }
+  & .rrfoot-lead .btn-mini { margin-left: 0; min-height: 44px; flex: 1 0 100%; justify-content: center; }
+  & .rrfoot-label { margin: 4px 0 0; flex: 1 0 100%; }
+  & .rrfoot > .tf-trail { flex: 1 0 100%; margin: 0; }
   & .m-tput { font-family: var(--mono); font-size: 18px; font-weight: 600; padding: 4px 2px; }
   & .msheet-it:disabled { opacity: .45; }
   & .msheet-note { margin: 4px var(--m-gutter) 8px; }
@@ -684,6 +717,20 @@ html[data-ui="m"] {
   & .rltab-cap { flex: 1 0 100%; }
   & .rltab-group { flex: 1 0 100%; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
   & .lgrid-head { flex-wrap: wrap; row-gap: 8px; }
+  /* a list row (Routing's provider lists, Blocking's categories): its name on the first line, what it is under it — an
+     eight-column grid ran off the screen and collapsed the name to nothing (operator, 2026-10-29) */
+  & .lgrow { grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 6px 10px; padding: 10px 4px; }
+  & .lgrow > .lg-cat { grid-column: 1 / -1; min-width: 0; }
+  & .lgrow .lg-catmain { flex-wrap: wrap; row-gap: 4px; }
+  & .lgrow > .lg-fleet { min-width: 0; }
+  & .lgrow .lg-used { flex-wrap: wrap; gap: 4px; }
+  & .bkrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px 4px; }
+  & .bkrow > .lg-pull { order: 0; flex: none; }
+  & .bkrow > .bk-cat { order: 1; flex: 1 1 calc(100% - 150px); min-width: 0; }
+  & .bkrow > .bk-defchip { order: 2; flex: none; }
+  & .bkrow > :not(.lg-pull, .bk-cat, .bk-defchip) { order: 3; }
+  & .bkrow > :is(.bk-kind, .bk-size):empty { display: none; }
+  & .bkrow > .bk-addwrap { margin-left: auto; }
   & .lg-htitle { flex-wrap: wrap; flex: 1 1 auto; min-width: 0; row-gap: 4px; }
   & .lg-sub { flex: 1 0 100%; margin: 0; }
   /* Geo data providers: the switch and the colours on the first line, the provider's name, what it is and its source under them */
@@ -723,6 +770,57 @@ html[data-ui="m"] {
   & .exgrid.g8 > .exg-r > :nth-child(6)::before, & .exgrid.g8 > .exg-r > :nth-child(7)::before { content: attr(data-lbl); min-width: 96px; font-size: 13px; color: var(--dim); text-align: left; }
   & .exgrid.g8 > .exg-r > :nth-child(8) { grid-column: 2; grid-row: 4 / span 2; justify-self: end; align-self: center; }
   & .exgrid.g8 .exg-ed, & .exgrid.g8 .exg-qr, & .exgrid.g8 .exg-rm { width: 40px; height: 40px; }
+  /* the node's "Ways out" sheet (g8x): the same card — its title a field, the type beside it; the device; then what it leaves
+     as, what uses it and its two switches, each with its name; the actions at the foot */
+  & .exgrid.g8x { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+  & .exgrid.g8x > .exg-r:first-child { display: none; }
+  & .exgrid.g8x > .exg-r {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; padding: 12px;
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  }
+  & .exgrid.g8x > .exg-r > .exg-c { padding: 0; border: 0; background: none !important; min-width: 0; justify-content: flex-start; text-align: left; }
+  & .exgrid.g8x > .exg-r > :nth-child(1) { grid-column: 1; grid-row: 1; }
+  & .exgrid.g8x > .exg-r > :nth-child(3) { grid-column: 2; grid-row: 1; justify-self: end; }
+  & .exgrid.g8x > .exg-r > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  & .exgrid.g8x > .exg-r > :is(:nth-child(4), :nth-child(5), :nth-child(6), :nth-child(7)) { grid-column: 1 / -1; gap: 10px; }
+  & .exgrid.g8x > .exg-r > [data-lbl]::before { content: attr(data-lbl); flex: 0 0 96px; font-size: 13px; color: var(--dim); }
+  & .exgrid.g8x > .exg-r > :nth-child(8) { grid-column: 1 / -1; justify-content: flex-end; }
+  & .exgrid.g8x .exg-c input { min-height: 40px; }
+  & .exgrid.g8x .exg-c .dropdown { flex: 1 1 auto; min-width: 0; }
+  /* a section's add button at its top (WARP & exits), and the sheet that asks which kind: a row each, its word and a line */
+  & .m-addtop { width: 100%; min-height: 44px; justify-content: center; margin: 0 0 14px; }
+  /* an interface card says its name is the way to edit it: the pencil a desktop shows on hover is always there, in a tap box */
+  & .ifc-edit { padding: 6px 8px; margin: -6px -6px -6px -6px; }
+  & .ifc-pic { opacity: 1; width: 28px; height: 28px; justify-content: center; border: 1px solid var(--line); border-radius: 8px; margin-left: 4px; }
+  & .ifc-pic .ic { color: var(--brand); }
+  /* an interface's details panel: its actions (Start or Stop, Restart, Edit, Delete) in one row of equal cells, each an icon
+     over its word, as a node's page has them — not three buttons on two lines with no edge in common */
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head { flex-wrap: wrap; row-gap: 10px; }
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .grow { flex: 1 0 60%; }
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .btn-mini {
+    flex: 1 1 0; min-width: 0; min-height: 56px; flex-direction: column; gap: 4px; justify-content: center; padding: 6px 4px;
+    font-size: 12px; white-space: normal; line-height: 1.2; text-align: center; order: 2;
+  }
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .btn-mini .ic svg { width: 18px; height: 18px; }
+  & .m-pick { display: flex; flex-direction: column; margin: 0 calc(-1 * var(--m-gutter)); }
+  & .m-pick-row {
+    display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 10px var(--m-gutter); border: 0; border-top: 1px solid var(--line);
+    background: none; color: var(--ink); text-align: left; font: inherit; cursor: pointer;
+  }
+  & .m-pick-row:first-child { border-top: 0; }
+  & .m-pick-ic { flex: none; width: 36px; height: 36px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand); }
+  & .m-pick-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  & .m-pick-main b { font-size: 15px; font-weight: 600; }
+  & .m-pick-main span { font-size: 13px; color: var(--dim); line-height: 1.4; }
+  /* the VK call link pool (Settings → Turn proxies, and its sheet): a link on its own line, its date, holders and buttons
+     under it; the column sorts have no columns to sit over here */
+  & .vkpool-row { flex-wrap: wrap; row-gap: 6px; }
+  & .vkpool-row > .vkbox { flex: 1 0 100% !important; min-height: 44px; }
+  & .vkpool-row > :nth-child(2) { margin-left: auto; }
+  & .vkpool-head .vkh, & .vkpool-head .vkh-pad { display: none; }
+  & .vkpool-tot { flex-wrap: wrap; row-gap: 2px; }
+  & .vkpool-pager { flex-wrap: wrap; gap: 8px; }
 
   /* ───── the Logs view (T2): already full screen; clear of the notch and the home indicator, a thumb-sized close ───── */
   & .lv-full { padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: calc(12px + var(--m-safe-b)); }
