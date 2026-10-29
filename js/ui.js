@@ -600,7 +600,9 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
     // never grabs focus onto a button as a fallback
     let first = root.querySelector("[autofocus]") || root.querySelector("input:not([data-noautofocus]),textarea:not([data-noautofocus]),select,button.btn-primary");
     if (first && noGuardRef.current && first.tagName === "BUTTON") first = null;
-    if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
+    // A phone never focuses a field by itself (operator, 2026-10-29): that raises the on-screen keyboard over a sheet the
+    // operator opened to read. The field is one tap away.
+    if (first && !isMobile()) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
     const tok = {}; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab
     const onKey = e => {
       if (_qrZoomOpen()) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
@@ -1290,7 +1292,7 @@ export function usePopup({ keep = null, drop = "auto", onClose, disabled = false
   // Land on the SELECTED row, not the first one — opening a 40-node list on "Auto" and making the operator arrow down to
   // what is already chosen is the thing this control exists to be better than.
   // A list with a search box of its own: the box takes the focus at every open, mouse or keyboard.
-  useEffect(() => { if (!open || !pos || !search || !popRef.current) return;
+  useEffect(() => { if (!open || !pos || !search || !popRef.current || isMobile()) return;   // a phone: no keyboard over the list
     const s = popRef.current.querySelector(search); if (s) { kbd.current = null; s.focus(); } }, [open, !!pos]);
   useEffect(() => {
     if (!open || !pos || !kbd.current) return;

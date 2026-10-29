@@ -430,7 +430,7 @@ function showLogin() { if (_loginShown) return; _loginShown = true; document.bod
 function VaultRelinkCard({ panelPw, onDone }) {
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const ref = useRef(null);
-  useEffect(() => { ref.current && ref.current.focus(); }, []);
+  useEffect(() => { if (!isMobile() && ref.current) ref.current.focus(); }, []);   // a phone: no keyboard until a tap
   const submit = async e => {
     if (e) e.preventDefault();
     if (!pw || busy) return;
@@ -469,7 +469,7 @@ function LoginScreen() {
   // (Preact doesn't special-case it either). Focus explicitly — on mount, and again when the 2FA step
   // replaces the form, so the code can be typed without reaching for the mouse.
   const focusRef = useRef(null);
-  useEffect(() => { focusRef.current && focusRef.current.focus(); }, [twofa]);
+  useEffect(() => { if (!isMobile() && focusRef.current) focusRef.current.focus(); }, [twofa]);   // a phone: no keyboard until a tap
   const submit = async e => {
     if (e) e.preventDefault();
     if (busy) return;

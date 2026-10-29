@@ -19,7 +19,7 @@ import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
          customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers,
          portsClean, portsOf, portsReach, rowCovers } from "./rulerows.js";
-import { esc, seen } from "./util.js";
+import { esc, seen, isMobile } from "./util.js";
 import { isSelfContainedName, nodeStale, nodeStatusOf, kindOf, awgGen } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
 import { UserPicker } from "./peer-actions.js";
@@ -1324,7 +1324,7 @@ export function BlockListPicker({ providers, provLists, current, nodeMode, onAdd
       trigger=${html`<button class="btn btn-mini"><${Ic} i="plus"/> ${T("Add list")}</button>`}>
     ${close => html`<div class="bk-pick" onClick=${e => e.stopPropagation()}>
       <div class="bk-pickhead">
-        <input class="bk-picksearch" ref=${el => { if (el && !el._foc) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder=${T("Search lists…")} value=${q} onInput=${e => setQ(e.target.value)}/>
+        <input class="bk-picksearch" ref=${el => { if (el && !el._foc && !isMobile()) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder=${T("Search lists…")} value=${q} onInput=${e => setQ(e.target.value)}/>
         <button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${close}><${Ic} i="x"/></button>
       </div>
       <div class="bk-picklist">

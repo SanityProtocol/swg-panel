@@ -11,7 +11,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
   [2] the shell: the five tabs fixed at the bottom of the screen; the header shows the brand, the live pill and More, nothing
       else; More holds its eight actions and the version line; Desktop view stores "d"; on a desktop More and Mobile view
       are hidden
-  [3] swipe down closes a sheet; a dirty sheet asks "Discard?" and stays; a touch that starts on a field never closes; a sheet
+  [3] a sheet takes no field's focus as it opens (no keyboard); swipe down closes a sheet; a dirty sheet asks "Discard?" and stays; a touch that starts on a field never closes; a sheet
       that shows a secret once ignores the swipe; on a stacked sheet only the top one goes
   [4] a sheet's footer: Cancel and Save share the bottom line, Cancel left; the other actions sit in rows above it
   [5] render gates: the Overview draws no rail, charts, doughnuts or flow map and fetches no history; Users and Peers draw no
@@ -26,7 +26,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | rowswipe | tabpad
+                       drill | nodemore | roleword | titletap | rowswipe | tabpad | autofocus
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +51,7 @@ PERTURBS = {
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
     "titletap": ("app.js", "  if (isMobile()) attachTitleTaps();", "  if (false) attachTitleTaps();"),
     "tabpad": ("m/m.css", "  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }\n", ""),
+    "autofocus": ("js/ui.js", "    if (first && !isMobile()) setTimeout(", "    if (first) setTimeout("),
     "rowswipe": ("m/m.css", "    position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; gap: 0; scroll-snap-align: end;", "    display: flex;"),
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
@@ -288,6 +289,8 @@ try:
         swipe_sheet(tab)
         check("[3] a clean sheet closes on a swipe down", sheets(tab) == 0, sheets(tab))
         ev_mod(tab, "peer-ui", "M.openUserEdit((await %s('store')).Store.user(%s)); return true;" % (MOD, json.dumps(uid["boris"]))); settle(tab)
+        check("[3] a sheet that opens takes no field's focus (no keyboard until a tap)",
+              not tab.ev("!!(document.activeElement && document.activeElement.matches('input, textarea, select'))"), tab.ev("(document.activeElement || {}).tagName"))
         b = box(tab, "document.querySelector('.overlay.show .sheet input')")
         touch_drag(tab, b["x"] + 20, b["y"] + b["h"] / 2, 0, 380)
         check("[3] a touch that starts on a field never closes the sheet", sheets(tab) == 1, sheets(tab))
