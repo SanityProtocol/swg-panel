@@ -370,6 +370,27 @@ function nodesOfPeers(peers) {
   return Object.keys(nm).map(nid => ({ node: nid, ifaces: Object.values(nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
     .sort((a, b) => Store.byNode(a.node, b.node));
 }
+// A phone has no Nodes column and no hover: a third line on the row, "N nodes · N interfaces", whose tap opens a sheet with
+// each node's interfaces and peer counts, each a way to its page (operator, 2026-10-29)
+function nodesTap(srvNodes, title) {
+  if (!isMobile() || !srvNodes.length) return null;
+  const label = plural(srvNodes.length, "node") + " · " + plural(srvNodes.reduce((a, n) => a + n.ifaces.length, 0), "interface");
+  return html`<span class="u-srvtap" role="button" onClick=${e => { e.stopPropagation(); openModal(html`<${NodesSheet} title=${title} label=${label} srvNodes=${srvNodes}/>`); }}
+    onDblClick=${e => e.stopPropagation()}><${Ic} i="server"/>${label}<${Ic} i="arrow"/></span>`;
+}
+function NodesSheet({ title, label, srvNodes }) {
+  const to = h => { closeModal(); location.hash = h; };
+  return html`<${Sheet} title=${title} noGuard=${true} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}>
+    <div class="m-nodesheet">
+      <div class="m-ns-sum">${label}</div>
+      ${srvNodes.map(n => html`<div class="m-ns-node" key=${n.node}>
+        <button class="m-ns-nm" onClick=${() => to("#/node/" + encodeURIComponent(n.node))}><span class="nsrv" style=${"--c:" + Store.nodeColor(n.node)}>${Store.nodeName(n.node)}</span><${Ic} i="arrow"/></button>
+        ${n.ifaces.map(f => html`<button class="m-ns-if" key=${f.iface} onClick=${() => to("#/node/" + encodeURIComponent(n.node) + "/" + encodeURIComponent(f.iface))}>
+          <${Tag} kind=${f.type} label=${f.iface} gen3=${f.gen3}/><span class="m-ns-pc">${plural(f.count, "cap|Peer")}</span><${Ic} i="arrow"/></button>`)}
+      </div>`)}
+    </div>
+  <//>`;
+}
 // The Nodes cell (users and groups): one node's badge, or "N Nodes"; hover lists each node's interfaces and peer counts.
 function nodesChip(srvNodes) {
   if (!srvNodes.length) return html`<span class="faint">—</span>`;
@@ -417,7 +438,7 @@ export function UserRow({ user, live, onlineOnly, q, nested }) {
           const sep = html`<span class="u-dot"> · </span>`;
           return live ? html`${onc}${sep}${pc}` : html`${pc}${user.peerCount ? html`${sep}${onc}` : null}`;
         })()}</span>
-        <span class="u-servers">${nodesChip(srvNodes)}</span>
+        <span class="u-servers">${nodesChip(srvNodes)}</span>${nodesTap(srvNodes, user.name)}
         <span class="u-last">${st.last == null ? html`<span class="u-never">${T("Never")}</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
         ${live ? html`<span class="u-total">${xferCell(db, ub)}</span>`
@@ -507,7 +528,8 @@ function GroupRow({ g, st, q }) {
       <span class="u-right">
         <span class="u-counts"><span class="u-pc">${plural(st.members, "cap|Member")}</span>${st.members ? html`<span class="u-dot"> · </span><span class=${"u-onc" + (lit ? " on" : "")}>${T("{n} Online", { n: st.online })}</span>` : null}</span>
         <span class="u-counts g-peers"><span class="u-pc">${plural(st.peers, "cap|Peer")}</span>${st.peers ? html`<span class="u-dot"> · </span><span class=${"u-onc" + (st.peersOn ? " on" : "")}>${T("{n} Online", { n: st.peersOn })}</span>` : null}</span>
-        <span class="u-servers">${nodesChip(nodesOfPeers(g.users.flatMap(u => Store.peersByUser(u))))}</span>
+        ${(() => { const gn = nodesOfPeers(g.users.flatMap(u => Store.peersByUser(u)));
+          return html`<span class="u-servers">${nodesChip(gn)}</span>${nodesTap(gn, g.name)}`; })()}
         <span class="g-nets" onClick=${e => e.stopPropagation()}>
           <${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub" trigger=${html`<span class=${"grp-n" + (shares.length ? " lit-net" : " zero")}
               aria-label=${T("Devices whose networks are shared with {name}: {n}", { name: g.name, n: shares.length })}><${Ic} i="network"/>${shares.length}</span>`}>
