@@ -15,18 +15,18 @@
  * re-derives the freeze, pagination happens after.
  */
 
-import { tkey, seen, fmtBytes } from "./util.js";
+import { tkey, seen, fmtBytes, isMobile } from "./util.js";
 import { lossColor, lossColorMesh } from "./charts.js";
 import { Store, api, bus, isCustomKey, customKeyWindow, useStore } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
 import { go } from "./router.js";
-import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection, Sheet, closeModal } from "./ui.js";
+import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection, Sheet, closeModal, openChildOrRoot } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
 import { T, plural, pluralWord, fmtNum, srvText, locale } from "./i18n.js";
 import { trafficData, trafficFreezeTag, trafficView, chartsFirstDay } from "./traffic.js";
 import { h } from "preact";
-import { useState } from "preact/hooks";
+import { useState, useRef } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -953,6 +953,12 @@ export function wdttConnRows(nodeId, iface) {
 export function OnlPop({ title, rows, peer, orphans, orphHref, trigger, cls, count, hoverOnly }) {
   const tab = peer ? "peers" : "users";                  // this bubble lists peers, or users
   const n = count != null ? count : rows.length;         // the headline number (users tag overrides it: users + loose peers, not row count)
+  const src = useRef(null);
+  if (isMobile()) {
+    if (!src.current) src.current = {};
+    _onlSrc.set(src.current, { title, rows, peer, n, orphans });
+    return onlTap(cls, () => openChildOrRoot(html`<${OnlineListSheet} src=${src.current}/>`), trigger(n));
+  }
   const renderRow = peer
     ? r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.iface ? " · " + r.iface : ""}${r.ip ? " · " + r.ip : ""}</span></div>`
     : r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">${pluralWord(r.count, "peer")}</span></span></div>`;
@@ -1316,6 +1322,8 @@ export function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
   const dflt = (c, w) => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> ${pluralWord(c, w || "user")}`;
   // hoverOnly on the popover frees the click to TOGGLE the mode (rather than pin the bubble); the bubble updates live.
   const trig = c => html`<span class="onl-toggle" title=${T("Click to switch users / peers")} onClick=${e => { e.stopPropagation(); e.preventDefault(); setMode(m => m === "users" ? "peers" : "users"); }}>${(trigger || dflt)(c, word)}</span>`;
+  // a phone: the users count opens the node's (or the fleet's) Online sheet, its Users / Peers switch inside it
+  if (isMobile()) return onlTap(cls, () => openChildOrRoot(html`<${OnlineSheet} nodeId=${nodeId}/>`), (trigger || dflt)(onlineUserCount(onlineUserRows(nodeId)), "user"));
   return html`<${OnlPop} peer=${isPeers} title=${title} rows=${rows} count=${count} cls=${cls} hoverOnly=${true} trigger=${trig}/>`;
 }
 
@@ -1323,29 +1331,48 @@ export function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
 // update badge opens one — who is online, users or devices, the list capped like the bubble's (the rest is on Live), a row
 // opening its user, and Close + Open Live on the bottom line.
 const ONLINE_SHEET_CAP = 20;
-export function OnlineSheet() {
+// The rows, as the sheets draw them: a device (title; owner · interface · address; how long ago) or a person (name; devices)
+function onsheetRows(rows, peers) {
+  return html`<div class="onsheet-list">${rows.slice(0, ONLINE_SHEET_CAP).map((r, i) => {
+    const open = !peers && r.uid ? () => { closeModal(); revealUser(r.uid); } : null;
+    return html`<div class=${"onsheet-row" + (open ? " clk" : "")} key=${i} onClick=${open}>
+      <span class="dot"></span>
+      <span class="onsheet-main"><b>${peers ? r.title : r.name}</b>${peers ? html`<span class="onsheet-sub">${[r.user, r.iface, r.ip].filter(Boolean).join(" · ")}</span>` : null}</span>
+      <span class="onsheet-side">${peers ? (r.lastAge != null ? seen(r.lastAge) : "") : plural(r.count, "peer")}</span>
+    </div>`; })}</div>
+    ${rows.length > ONLINE_SHEET_CAP ? html`<div class="hint">${T("and {n} more", { n: rows.length - ONLINE_SHEET_CAP })}</div>` : null}`;
+}
+const onsheetFoot = tab => html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
+  <button class="btn btn-primary" onClick=${() => { closeModal(); openLiveTab(tab)({ stopPropagation() {} }); go("#/connections"); }}>${T("Open Live")}</button>`;
+// `nodeId`: one node's (a fleet card's count), else the whole fleet's (the app bar)
+export function OnlineSheet({ nodeId = null } = {}) {
   useStore();
   const [mode, setMode] = useState("users");
   const peers = mode === "peers";
-  const rows = peers ? onlinePeerRows(null, null) : onlineUserRows(null);
+  const rows = peers ? onlinePeerRows(nodeId, null) : onlineUserRows(nodeId);
   const count = peers ? rows.length : onlineUserCount(rows);
-  const live = () => { closeModal(); openLiveTab(mode)({ stopPropagation() {} }); go("#/connections"); };
-  return html`<${Sheet} title=${T("Online now · {n}", { n: count })} noGuard=${true}
-    foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
-      <button class="btn btn-primary" onClick=${live}>${T("Open Live")}</button>`}>
+  const name = nodeId ? Store.nodeName(nodeId) : null;
+  return html`<${Sheet} title=${(name ? name + " · " : "") + T("Online now · {n}", { n: count })} noGuard=${true} foot=${onsheetFoot(mode)}>
     <div class="dpsw netsw-share onsheet-sw" role="radiogroup" aria-label=${T("Users or peers")}>${[["users", T("Users")], ["peers", T("Peers")]].map(([v, l]) =>
       html`<button type="button" role="radio" aria-checked=${mode === v} class=${mode === v ? "on" : ""} onClick=${() => setMode(v)}>${l}</button>`)}</div>
-    ${!rows.length ? html`<div class="empty"><b>${peers ? T("No connections online") : T("No users online")}</b></div>`
-      : html`<div class="onsheet-list">${rows.slice(0, ONLINE_SHEET_CAP).map((r, i) => {
-          const open = !peers && r.uid ? () => { closeModal(); revealUser(r.uid); } : null;
-          return html`<div class=${"onsheet-row" + (open ? " clk" : "")} key=${i} onClick=${open}>
-            <span class="dot"></span>
-            <span class="onsheet-main"><b>${peers ? r.title : r.name}</b>${peers ? html`<span class="onsheet-sub">${r.user} · ${r.iface} · ${r.ip}</span>` : null}</span>
-            <span class="onsheet-side">${peers ? (r.lastAge != null ? seen(r.lastAge) : "") : plural(r.count, "peer")}</span>
-          </div>`; })}</div>
-        ${rows.length > ONLINE_SHEET_CAP ? html`<div class="hint">${T("and {n} more", { n: rows.length - ONLINE_SHEET_CAP })}</div>` : null}`}
+    ${!rows.length ? html`<div class="empty"><b>${peers ? T("No connections online") : T("No users online")}</b></div>` : onsheetRows(rows, peers)}
   <//>`;
 }
+// Any other online count on a phone (a node's peers, an interface's, a turn proxy's connections): the same sheet, for the
+// list its bubble would show. The count re-renders every poll and keeps its latest list here, so the open sheet stays live.
+const _onlSrc = new Map();
+function OnlineListSheet({ src }) {
+  useStore();
+  const d = _onlSrc.get(src) || { title: T("Online peers"), rows: [], peer: true, n: 0 };
+  return html`<${Sheet} title=${d.title + " · " + d.n} noGuard=${true} foot=${onsheetFoot(d.peer ? "peers" : "users")}>
+    ${!d.rows.length ? html`<div class="empty"><b>${d.peer ? T("no peers online") : T("no one online")}</b></div>` : onsheetRows(d.rows, d.peer)}
+    ${d.orphans ? html`<div class="hint">${T("{v1} unmanaged orphan", { v1: plural(d.orphans, "peer") })}</div>` : null}
+  <//>`;
+}
+// the tap target a phone draws instead of a hover bubble: the trigger as it is, its tap opening a sheet (and nothing under it —
+// these sit inside cards that are links)
+const onlTap = (cls, open, body) => html`<span class=${"onlinetag m-onltap " + (cls || "")} role="button"
+  onClick=${e => { e.stopPropagation(); e.preventDefault(); open(); }}>${body}</span>`;
 
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
 export function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref }) {
