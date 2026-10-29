@@ -535,7 +535,7 @@ html[data-ui="m"] {
   /* a 30 px button is under a thumb's size: its tap area reaches past it, the look stays the box's */
   & .m-icob::after { content: ""; position: absolute; inset: -7px -3px; }
 
-  & .m-icob-n { position: absolute; top: 2px; right: 3px; min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box; border-radius: 8px;
+  & .m-icob-n { position: absolute; top: -6px; right: -6px; z-index: 1; box-shadow: 0 0 0 2px var(--surface); min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box; border-radius: 8px;
     background: var(--brand); color: var(--bg); font: 700 9.5px/15px var(--mono); text-align: center; }
   & .vkbox { min-height: 0; }
   & .vkbox .vkbox-input { font-family: var(--mono); font-size: 12px !important; padding-top: 0; padding-bottom: 0; height: 100%; }   /* as .suburl-txt */
