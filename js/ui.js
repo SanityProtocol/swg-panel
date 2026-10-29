@@ -445,7 +445,7 @@ export function attachSwipePeek() {
 export function attachBubbleSwipe() {
   let d = null;
   document.addEventListener("touchstart", e => {
-    const pop = e.target && e.target.closest && e.target.closest(".deppop");
+    const pop = e.target && e.target.closest && e.target.closest(".deppop, .qr-overlay-inner");   // a QR enlargement is a sheet too
     if (!pop || e.touches.length !== 1) { d = null; return; }
     let sc = e.target;
     while (sc && sc !== pop && !(sc.scrollHeight > sc.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
@@ -466,6 +466,7 @@ export function attachBubbleSwipe() {
     const back = () => { pop.style.transition = "transform .2s var(--ease)"; pop.style.transform = ""; };
     if (dy < 70 && !(dy > 24 && dy / Math.max(1, Date.now() - t) > 0.5)) return back();
     if (pop.classList.contains("m-titletap")) return pop.remove();
+    if (pop.classList.contains("qr-overlay-inner")) return pop.parentElement.click();   // its own close (crypto.js qrZoom)
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));   // a pinned one
     pop.dispatchEvent(new MouseEvent("mouseleave"));                                                          // one a tap opened as a hover
     setTimeout(() => { if (pop.isConnected) back(); }, 260);

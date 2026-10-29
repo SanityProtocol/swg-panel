@@ -236,6 +236,20 @@ html[data-ui="m"] {
   & .deppop .bk-pickitem { min-height: 52px; justify-content: center; gap: 3px; padding: 10px 8px; border-radius: 0; border-top: 1px solid var(--line); }
   & .deppop :is(.bk-pickprov, .bk-pickgrp) + .bk-pickitem { border-top: 0; }
   & .deppop .bk-pickprov { padding-top: 16px; }
+  /* a QR enlargement (crypto.js qrZoom): a sheet docked at the bottom, as every other on a phone — its grab handle, the QR the
+     sheet's width on white, the caption under it; a swipe down or a tap closes it (operator, 2026-10-29: it overflowed the
+     screen's right edge, and could not be swiped away) */
+  & .qr-overlay { padding: 0; align-items: flex-end; overflow: hidden; }
+  & .qr-overlay-inner {
+    position: relative; margin: auto 0 0; width: 100%; max-width: none; box-sizing: border-box; gap: 14px;
+    padding: 26px var(--m-gutter) calc(20px + var(--m-safe-b)); background: var(--surface);
+    border-top: 1px solid var(--line-solid); border-radius: 18px 18px 0 0; animation: m-sheet-up .26s var(--ease); touch-action: none;
+  }
+  & .qr-overlay-inner::before {
+    content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
+  }
+  & .qr-overlay-card { width: 100%; box-sizing: border-box; padding: 14px; }
+  & .qr-overlay-card .qrimg { width: 100%; max-width: none; height: auto; max-height: 64dvh; object-fit: contain; }
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
   /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
   & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
