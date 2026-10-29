@@ -34,7 +34,7 @@
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
 | csqtt 2.5 | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) (csqtt 2.5 от amurcanov) | **PolyForm Noncommercial 1.0.0** | `001caa4` | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.3` ¶ |
-| Приложение csqtt 2.5 для Android (наша сборка приложения amurcanov) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) `app/` | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | в релизе: `csqtt-app-2.5.1.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.1` ¶ |
+| Приложение csqtt 2.5 для Android (наша сборка приложения amurcanov) | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) `app/` | **PolyForm Noncommercial 1.0.0** | `001caa4` | в релизе: `csqtt-app-2.5.3.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.3` ¶ |
 | Приложение csqtt 2.1.9 для Android (APK amurcanov без изменений) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (зеркало: его подписанные APK, хэши сверены) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (датапас AmneziaWG в пользовательском пространстве — запасной вариант bare-metal-нод) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
@@ -62,14 +62,16 @@ XXcipherX, скрытый в панели с 1.8.9, больше не предл
 скорости (закрепление мелкого UDP держало массовый QUIC-трафик на одном стриме ретранслятора); в приложении — клиентская
 половина, свой ID (`net.sanityprotocol.csqtt`) и наша подпись. В релизе сервера лежит точный архив исходников, из
 которого оба бинарника собираются бит в бит (патч лежит в том же релизе; `forks/csqtt/build.sh` собирает его с
-`CSQTT_PIN=d02da9b…` и этим патчем, как `forks/csqtt/2.5/build.sh` до 2.5.3). Приложение — единственная строка,
-чей рецепт не в этом репозитории: в его релизе лежат патч к `d02da9b`, `Dockerfile.android` и `build-apk.sh`.
+`CSQTT_PIN=d02da9b…` и `CSQTT_PATCH=` с этим патчем, как `forks/csqtt/2.5/build.sh` до 2.5.3). Рецепта приложения 2.5.1 нет в этом
+репозитории: в его релизе лежат патч к `d02da9b`, `Dockerfile.android` и `build-apk.sh`.
 `csqtt-app-2.1.9` — зеркало его приложения 2.1.9 для серверов 2.1, чтобы страницы подписки не зависели от его
 репозитория. Прежняя сборка `csqtt-2.5.0` (из его предрелизных исходников; релиз на GitHub 16–20.10.2026, ни в один выпуск
 панели не входила) отозвана. **csqtt 2.5.3** — сервер 2.5, который панель запускает с 1.8.11: сервер 2.5 от amurcanov в
 общем репозитории Afteroid/csqttr на `001caa4` (его `main`, с влитой интеграцией swg-panel) и наша метка версии —
 `forks/csqtt/2.5/csqtt-swgpanel-2.5.3.patch`, сборка `forks/csqtt/2.5/build.sh`; архив исходников лежит в его релизе.
-2.5.1-2 остаётся в списке для отката.
+2.5.1-2 остаётся в списке для отката. Приложение для Android, которое страницы подписки выдают для 2.5, —
+`csqtt-app-2.5.3`, собранное так же на `001caa4` (его ветка: SanityProtocol/csqttr `release-2.5.3`); в его релизе лежат
+патч к `001caa4`, `Dockerfile.android` и `build-apk.sh`.
 
 ### Исходники к бинарникам под GPL
 

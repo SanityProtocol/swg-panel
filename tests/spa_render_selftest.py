@@ -1241,8 +1241,13 @@ try:
             tab.ev(SETIN % (TOP, CELL % json.dumps("S4"), json.dumps("")))         # …and a cleared S4 at MTU 1420: room for 20
             tab.ev(SETIN % (TOP, "s.querySelector('.dinmtu input')", json.dumps("1420")))
             settle(tab, 300)
+            # the draw pinned for this Save: every value >= 0.3, so an S4 left unfitted is the generator's 15 + r(85) >= 40 and
+            # the check below cannot pass by chance (plant dins4fit stayed GREEN about 1 run in 14 on a free draw); a cycle,
+            # not a constant, or genAwg's `while (s2 === s1)` never ends
+            tab.ev("window.__rnd0 = Math.random; (() => { let i = 0; Math.random = () => [0.9, 0.5, 0.3][i++ % 3]; })()")
             click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
             settle(tab, 2500)
+            tab.ev("Math.random = window.__rnd0")
             st6 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
             a6 = (next((x for x in st6 if x.get("id") == tx.get("id")), {}).get("profile") or {}).get("awg") or {}
             check("[B18] (S9e) …Save draws the cleared cells as create does: I1 drawn, Jc the template's 7, I2 as typed",
