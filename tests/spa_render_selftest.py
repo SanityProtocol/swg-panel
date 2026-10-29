@@ -842,6 +842,8 @@ try:
         if lang == "en" and vp[0] == 1280:
             CSQ[0] = 3
             must(sync(), "sync from a node that reports csqtt_ar_pw")
+            # keep_syncing may post a snapshot it built before the line above: sync again once it has (as [B19] does)
+            time.sleep(3.5); must(sync(), "sync from a node that reports csqtt_ar_pw, again")
         tab = open_app(lang, viewport=vp)
         open_ar(tab)
         rows = tab.ev(ROWS)
@@ -852,7 +854,8 @@ try:
             check("[B17] %s: the summary counts them" % tag, "+ 2 exceptions" in (tab.ev("[...document.querySelectorAll('.overlay.show .disc-sum')].map(e => e.textContent).join('|')") or ""))
             need = "Exceptions need a node update" in (tab.ev("document.querySelector('.arx').textContent") or "")
             if vp[0] == 1280:
-                check("[B17] %s: a node that reports csqtt_ar_pw is not said to need an update" % tag, not need)
+                check("[B17] %s: a node that reports csqtt_ar_pw is not said to need an update" % tag, not need,
+                      ev_mod(tab, "store", "const st = M.Store.stats[%s] || {}; return {arpw: st.csqtt_ar_pw, keys: Object.keys(st).filter(k => /csqtt/.test(k))};" % json.dumps(NID)))
             else:
                 check("[B17] %s: a node that does not report csqtt_ar_pw is said to need an update" % tag, need)
             check("[B17] %s: the rows are numbered (the order decides; the panel names a refused one by its number)" % tag,
