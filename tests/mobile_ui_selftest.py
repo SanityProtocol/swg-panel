@@ -28,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | tfsearch | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | tfsearch | donetake | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +51,7 @@ PERTURBS = {
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
     "nodemore": ("js/screen-nodes.js", "        ${isMobile() ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}", "        ${false ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}"),
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
+    "donetake": ("js/routing.js", "if (q.trim() && rows.length === 1) {", "if (false) {"),
     "tfsearch": ("js/routing.js", '(open && isMobile() ? " m-tfsearch" : "")', '(false ? " m-tfsearch" : "")'),
     "backclose": ("app.js", "attachToastSwipe(); attachBackCloses(); }", "attachToastSwipe(); }"),
     "bubdrag": ("js/ui.js", 'if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important");', 'if (d.dy) d.pop.style.transform = "translateY(" + d.dy + "px)";'),
@@ -452,7 +453,7 @@ try:
         tab = open_app("#/users")
         tab.ev("(async () => { const P = await %s; const R = await %s('routing'); const c = document.createElement('div'); c.id = 'mtf';"
                " c.style.cssText = 'margin-top:500px'; document.querySelector('#view .screen').append(c);"
-               " P.render(P.h(R.TargetField, {row: {badges: []}, mode: 'ip', node: %s, onChange: () => {}}), c); })()" % (PREACT, MOD, json.dumps(NID))); settle(tab, 600)
+               " P.render(P.h(R.TargetField, {row: {badges: []}, mode: 'smart', node: %s, onChange: b => { window.__tfb = b; }}), c); })()" % (PREACT, MOD, json.dumps(NID))); settle(tab, 600)
         has = tab.ev("!!document.querySelector('#mtf .tf-in')")
         check("[14] the routing field rendered", has)
         if has:
@@ -467,6 +468,11 @@ try:
             tab.ev("history.back()"); settle(tab, 900)
             st = tab.ev("({pop: !!document.querySelector('.catpick-pop'), hash: location.hash})")
             check("[14] Back closes the search and keeps the page (its own history entry, the page the first in its tab)", not st["pop"] and st["hash"] == "#/users", st)
+            # one result is not a choice: Done takes it and closes
+            tab.ev("(() => { const i = document.querySelector('#mtf .tf-in'); i.focus(); i.value = 'telegram'; i.dispatchEvent(new Event('input', {bubbles: true})); })()"); settle(tab, 900)
+            tab.ev("document.querySelector('.m-tfdone').click()"); settle(tab, 700)
+            st = tab.ev("({pop: !!document.querySelector('.catpick-pop'), b: JSON.stringify(window.__tfb || null)})")
+            check("[14] Done with one result takes it and closes", not st["pop"] and "telegram" in st["b"], st)
         tab.close()
 
     # ── [13] the phone's Back closes the top sheet, the page stays ──

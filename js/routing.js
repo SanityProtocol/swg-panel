@@ -2520,7 +2520,15 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
           <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => { setPage(p => Math.max(0, p - 1)); setAct(-1); }} >${T("‹ Prev")}</button>
           <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => { setPage(p => Math.min(pages - 1, p + 1)); setAct(-1); }} >${T("Next ›")}</button>
         </div></div>` : null}
-      ${isMobile() ? html`<button type="button" class="btn btn-primary m-tfdone" onClick=${() => { setOpen(false); setHoldQ(null); if (inRef.current) inRef.current.blur(); }}>
+      ${isMobile() ? html`<button type="button" class="btn btn-primary m-tfdone" onClick=${() => {
+          // ONE RESULT IS NOT A CHOICE here either: Done takes it, as Enter does, then closes (operator, 2026-10-29). What could
+          // not be added stays in the box with its reason, and the search stays open on it.
+          if (q.trim() && rows.length === 1) {
+            const r0 = rows[0];
+            if (r0.k === "list") { if (!has(r0.it.id) && listGate(mode, r0.it.id, node).ok) commitList(r0.it.id); }
+            else if (readGate && readGate.ok && commitTyped()) return;
+          }
+          setOpen(false); setHoldQ(null); if (inRef.current) inRef.current.blur(); }}>
         <${Ic} i="check"/> ${T("Done")}</button>` : null}
     </div><//>` : null}
   </div>`;
