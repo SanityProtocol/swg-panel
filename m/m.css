@@ -921,6 +921,14 @@ html[data-ui="m"] {
   /* adding a device to a node's ways out (its own sheet on a phone): each field the sheet's width */
   & .overlay.show .sheet .exname { flex-direction: column; align-items: stretch; gap: 14px; margin: 0; }
   & .overlay.show .sheet .exname > .exname-f { flex: none; min-width: 0; width: 100%; }
+  /* a node page section's head (Interfaces, Turn proxies): the same shape for every one (operator, 2026-10-29) — its name and
+     count, then its icon actions (logs, settings) at the right of that line; its labelled actions (New interface, New proxy)
+     on a line of their own under it, at the right */
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) { flex-wrap: wrap; justify-content: flex-end; row-gap: 10px; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .grow { order: 1; flex: 1 1 auto; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini.ico { order: 2; width: 40px; min-height: 40px; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico))::after { content: ""; order: 3; flex: 1 0 100%; height: 0; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini:not(.ico) { order: 4; min-height: 40px; }
   /* an interface card says its name is the way to edit it: the pencil a desktop shows on hover is always there, in a tap box */
   & .ifc-edit { padding: 6px 8px; margin: -6px -6px -6px -6px; }
   & .ifc-pic { opacity: 1; width: 28px; height: 28px; justify-content: center; border: 1px solid var(--line); border-radius: 8px; margin-left: 4px; }
