@@ -1600,6 +1600,15 @@ export function trackIfaceOps() {
     if (op.verb === "apply") {                                 // up iface live-apply (no restart) → time-based
       if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
       else if (now - op.started > 6000) done = { phase: "ok" };   // node has had a sync to pick it up
+    } else if (_wSnap && (op.verb === "start" || op.verb === "stop")) {
+      // a WDTT / csqtt server: the node never lists it in starting/stopping, takes the flag on its next sync and then brings a
+      // service up — the 8 s "no request queued" rule below called a start that was still on its way "didn't come up", and that
+      // tag stayed while the server ran (operator, 2026-10-29). Done when the readback says so; failed on the node's error or
+      // after a minute.
+      const there = op.verb === "start" ? !notup : notup;
+      if (there) done = { phase: "ok" };
+      else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
+      else if (now - op.started > 60000) done = { phase: "fail", err: cerr || T("timed out") };
     } else if (op.verb === "start") {                          // success once the iface is actually UP (not just "not down")
       if (!notup) done = { phase: "ok" };
       else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
