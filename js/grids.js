@@ -121,8 +121,9 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
               const chip = !loc && !agg && gw ? gw : null;
               return priv || rtr || chip ? html`<span class="namewrap">${nm}${priv}${rtr}${chip}</span>` : nm;
             })()}</td>`;
-            const addrCell = html`<td data-label=${T("col|Address")}><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
-            const epCell = html`<td data-label=${T("col|Endpoint")}>${endpointCell(t)}</td>`;
+            // c-addr / c-ep and the actions' data-lbl are what the phone's card layout reads (m/m.css); nothing styles them on a desktop
+            const addrCell = html`<td data-label=${T("col|Address")} class="c-addr"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
+            const epCell = html`<td data-label=${T("col|Endpoint")} class="c-ep">${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label=${T("col|Node")} class="c-node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
             // The row's tooltip advertises "Double-click for QR / configs", but this cell is a SINGLE-click link to
             // the user — so it carries its own title, overriding the row's. A cell whose tooltip describes a
@@ -151,16 +152,16 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             : xferCell(...dlul(xf ? xf.rx_bytes : 0, xf ? xf.tx_bytes : 0))}</td>`; })()}
           ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             ${(() => { const gh = ghostIface(t.node, t.iface); return (gh && gh.ripe)
-              ? html`<button class="iconbtn ghost" title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
+              ? html`<button class="iconbtn ghost" data-lbl=${T("Recreate")} title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
               : t.restorable
-                ? html`<button class="iconbtn restore" title=${T("Restore interface {iface} (recreate the missing interface with its original identity — recovers every peer on it)", { iface: t.iface })} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
+                ? html`<button class="iconbtn restore" data-lbl=${T("Restore")} title=${T("Restore interface {iface} (recreate the missing interface with its original identity — recovers every peer on it)", { iface: t.iface })} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
                 : t.correctable
-                  ? html`<button class="iconbtn correct" title=${T("Fix address — {ip} is outside {iface}'s subnet", { ip: t.ip || "?", iface: t.iface })} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
-                  : html`<button class="iconbtn qr" title=${T("Show QR / configs")} onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`; })()}
-            <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Edit peer")} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
+                  ? html`<button class="iconbtn correct" data-lbl=${T("Fix")} title=${T("Fix address — {ip} is outside {iface}'s subnet", { ip: t.ip || "?", iface: t.iface })} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
+                  : html`<button class="iconbtn qr" data-lbl="QR" title=${T("Show QR / configs")} onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`; })()}
+            <button class="iconbtn" disabled=${blocked} data-lbl=${T("Edit")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Edit peer")} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
-              ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Delete peer")} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
-              : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Unassign peer")} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
+              ? html`<button class="iconbtn danger" disabled=${blocked} data-lbl=${T("Delete")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Delete peer")} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
+              : html`<button class="iconbtn danger" disabled=${blocked} data-lbl=${T("Unassign")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Unassign peer")} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
           </td>`}</tr>`;
       }) : html`<tr><td colspan=${((agg || loc) ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? T("No matches") : T("No peers here")}</b>${q ? T("Try a different search.") : (!agg ? T("Create one, or copy an existing peer onto this interface.") : T("No peers deployed yet."))}</td></tr>`}
     </tbody></table></div>`;

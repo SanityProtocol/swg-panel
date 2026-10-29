@@ -135,36 +135,45 @@ export function PeersScreen() {
   const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
   const setPage = p => { peersView.page = p; force(x => x + 1); };
 
-  return html`<div class="screen">
-    <${StoreOffBanner}/>
-    <${TrafficRail}/>
-    <div class="toolbar">
+  // The toolbar's pieces, drawn once for both layouts: a phone keeps the search and New peer, and puts the grouping and the
+  // three filters behind its Filters button (MOBILE-PLAN, Peers promoted to T1 on 2026-10-29). `r` redraws that sheet.
+  const re = r => { peersView.page = 1; force(x => x + 1); if (r) r(); };
+  const filters = r => html`<${Fragment}>
       <button class=${"onlbtn" + (grouped ? " on" : "")}
         title=${grouped ? T("One row per peer — its other deployments are behind the +N") : T("Collapse each peer's deployments into one row")}
-        onClick=${() => { peersView.group = !peersView.group; peersView.page = 1; force(x => x + 1); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>
-      <${SearchBox} placeholder=${T("Search title, user, address…")} value=${peersView.q} onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/>
+        onClick=${() => { peersView.group = !peersView.group; re(r); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>
+      ${search(false)}
       <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
-        onChange=${v => { peersView.node = v; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}
+        onChange=${v => { peersView.node = v; peersView.iface = ""; re(r); }}
         options=${[...(multiServer ? [{ value: "*", label: T("All nodes") }]
                      : !fleet.length ? [{ value: "*", label: T("No nodes") }] : []),
                    ...fleet.map(n => ({ value: n.id, label: n.name }))]}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${iface}
-        onChange=${v => { peersView.iface = v; peersView.page = 1; force(x => x + 1); }}
+        onChange=${v => { peersView.iface = v; re(r); }}
         options=${[...(ifaceOpts.length && (node === "*" || ifaceOpts.length > 1) ? [{ value: "*", label: T("All interfaces") }] : []),
                    ...(ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : [{ value: "", label: T("No interfaces") }])]}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All statuses")} value=${peersView.status || ""}
-        onChange=${v => { peersView.status = v || null; peersView.page = 1; force(x => x + 1); }}
-        options=${peerStatusFilters()}/>
+        onChange=${v => { peersView.status = v || null; re(r); }}
+        options=${peerStatusFilters()}/><//>`;
+  // the desktop draws the search between the grouping and the filters; a phone, in the toolbar (`on` = where it goes)
+  const search = on => on === isMobile() ? html`<${SearchBox} placeholder=${T("Search title, user, address…")} value=${peersView.q} onInput=${e => { peersView.q = e.target.value; re(); }}/>` : null;
+
+  return html`<div class="screen">
+    <${StoreOffBanner}/>
+    ${isMobile() ? null : html`<${TrafficRail}/>`}
+    <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
+      ${search(true)}
+      ${isMobile() ? filterBtn(grouped || node !== "*" || (iface !== "*" && !!iface) || !!peersView.status, filters) : filters()}
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
-      <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
+      <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
     </div>
 
     <div class="section-title"><h2>${agg ? T("Peers") : T("Peers on")}</h2><span class="tags">
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface} gen3=${itype === "awg" && awgGen(node, iface) === "3.1"}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} ranged=${true} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} ranged=${!isMobile()} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     <${RowsPager} total=${rows.length} page=${page} pageSize=${pageSize} onPage=${setPage}
       onSize=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
 

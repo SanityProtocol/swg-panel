@@ -7717,6 +7717,7 @@ export const STR = {
   "rowact|Device": "Устройство",
   "Check": "Проверить",
   "What this switch does": "Что делает этот переключатель",
+  "Fix": "Исправить",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
