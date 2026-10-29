@@ -298,8 +298,9 @@ export function ConnectionsScreen() {
     <button class=${"onlbtn" + (connView.online ? " on" : "")} title=${T("Show only online connections")} onClick=${() => { connView.online = !connView.online; r(); }}>${T("status|Online")}</button><//>`; };
   const toolbar = html`<div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
     <div class="pmode">
-      <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "")} onClick=${() => setMode("peers")}>${T("Peers")}</button>
-      <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>${T("Users")}</button>
+      ${/* a phone: the device and person icons, the words kept for a screen reader (operator, 2026-10-29: "to save space") */""}
+      <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "") + (isMobile() ? " pm-ico" : "")} aria-label=${isMobile() ? T("Peers") : null} onClick=${() => setMode("peers")}>${isMobile() ? html`<${Ic} i="device"/>` : T("Peers")}</button>
+      <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "") + (isMobile() ? " pm-ico" : "")} aria-label=${isMobile() ? T("Users") : null} onClick=${() => setMode("users")}>${isMobile() ? html`<${Ic} i="user"/>` : T("Users")}</button>
     </div>
     <${SearchBox} placeholder=${mode === "users" ? T("Search users, tags, peers…") : T("Search peer, user, endpoint, IP…")} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
     ${isMobile() ? filterBtn(!!(connView.node || connView.iface || connView.online), filters) : filters()}

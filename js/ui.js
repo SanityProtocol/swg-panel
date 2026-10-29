@@ -408,6 +408,27 @@ export function attachTitleTaps() {
   window.addEventListener("hashchange", drop);
 }
 
+// A phone: while a list or a bubble is open (a dropdown, the user picker, a bottom bubble), a tap anywhere outside it only
+// closes it and drops the keyboard — the tap does not also open what happened to be under the finger (operator,
+// 2026-10-29: "tapping anywhere else must only close the list and focus out"). The layers close themselves on that
+// pointerdown as they always did; this eats the click that follows.
+export function attachOutsideTapGuard() {
+  let eat = 0;
+  document.addEventListener("pointerdown", e => {
+    eat = 0;
+    const layer = document.querySelector(".ddpop, .uc-pop, .deppop");
+    const t = e.target, ae = document.activeElement;
+    if (!layer || (t && layer.contains(t)) || (ae && ae !== document.body && ae.contains && ae.contains(t))) return;
+    eat = Date.now();
+    if (ae && ae.blur && ae.matches && ae.matches("input, textarea, select")) ae.blur();
+    document.querySelectorAll(".deppop.m-titletap").forEach(b => b.remove());   // its own close rides the click eaten below
+  }, true);
+  document.addEventListener("click", e => {
+    if (!eat || Date.now() - eat > 800) return;
+    eat = 0; e.stopPropagation(); e.preventDefault();
+  }, true);
+}
+
 /* Every label table below is built ONCE, on first use — never at module load. T() only answers correctly
    after loadLang() has resolved, and these modules are imported before that; a table frozen at import time
    would be English forever. Caching for the process is safe because setLang() reloads the page. */

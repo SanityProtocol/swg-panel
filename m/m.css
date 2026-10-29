@@ -229,7 +229,10 @@ html[data-ui="m"] {
      past its right edge (absolute, so they add the scroll room), each with its word (data-lbl). No column header: the
      columns are gone. TrafficRail and the traffic column are render-gated (hook 4) ───── */
   & .toolbar.mtoolbar { display: flex; flex-wrap: nowrap; gap: 8px; align-items: stretch; margin-bottom: 4px; }
-  & .mtoolbar .search { flex: 1 1 auto; min-width: 0; min-height: 44px; }
+  & .mtoolbar .search { flex: 1 1 auto; min-width: 0; min-height: 44px; display: flex; }
+  /* one height for every control of the row (operator, 2026-10-29): the field is the visible box, not its wrapper */
+  & .mtoolbar .search input { height: 44px; box-sizing: border-box; width: 100%; }
+  & .mtoolbar > :is(.pmode, .onlbtn, .mfilter-btn, .search) { height: 44px; min-height: 44px; box-sizing: border-box; }
   & .mfilter-btn { flex: none; width: 46px; height: auto; min-height: 44px; border: 1px solid var(--line-solid); background: var(--surface); border-radius: var(--r-sm); position: relative; }
   & .mfilter-btn.on::after { content: ""; position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
   & .mfab {
@@ -334,8 +337,10 @@ html[data-ui="m"] {
   & table.peergrid td.c-status { grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: 6px; }
   & table.peergrid td.c-node { grid-column: 1; grid-row: 2; }
   & table.peergrid td.c-node .srvcell { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
-  & table.peergrid td.c-addr { grid-column: 2; grid-row: 2; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  & table.peergrid td.c-rate { grid-column: 3; grid-row: 2; justify-self: end; font-size: 12.5px; }
+  /* the address takes the rest of its line: the status above it (its badge, the interface tags) sizes the last column, and an
+     address held to the middle one was cut beside empty room (operator, 2026-10-29). The rate goes down by the last-online time */
+  & table.peergrid td.c-addr { grid-column: 2 / 4; grid-row: 2; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & table.peergrid td.c-rate { grid-column: 3; grid-row: 3; justify-self: end; font-size: 12.5px; }
   & table.peergrid td.c-rate .up { display: none; }
   /* the owner's cell opens the user: only the name and a little room around it, the rest of the card opens the device
      (operator, 2026-10-29) — the cell sizes to its content instead of spanning the card */
@@ -344,7 +349,7 @@ html[data-ui="m"] {
   & table.peergrid td.usercell .namecell > span { max-width: 230px; }
   & table.peergrid td.usercell .namecell svg { display: none; }
   & table.peergrid td.usercell .assigncell { max-width: 220px; }
-  & table.peergrid td.c-online { grid-column: 3; grid-row: 3; justify-self: end; font-size: 12.5px; color: var(--dim); }
+  & table.peergrid td.c-online { grid-column: 2; grid-row: 3; justify-self: end; font-size: 12.5px; color: var(--dim); }
   & table.peergrid td.c-ep { grid-column: 1 / -1; grid-row: 4; font-size: 12.5px; color: var(--dim); }
   & table.peergrid td.c-total { display: none; }
   & table.peergrid td.rowacts { position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; scroll-snap-align: end; }

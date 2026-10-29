@@ -20,13 +20,14 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
   [7] a node's page: Check / Settings / Logs / More as labelled cells; More holds the four lifecycle doors
   [8] the device editor's role toggle shows its word on a phone (no hover for its title)
   [9] a tap on a value that only lives in a title= shows it in the bottom bubble
+  [11] a tap outside an open list (the peer card's Assign to…) only closes it: nothing under the finger opens
   [10] Users: scrolled to the end, nothing of the list sits under the tab bar; a row's actions sit past its right edge and
        a swipe brings them on screen, labelled
 
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | rowswipe | tabpad | autofocus
+                       drill | nodemore | roleword | titletap | rowswipe | tabpad | autofocus | tapguard
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -52,6 +53,7 @@ PERTURBS = {
     "titletap": ("app.js", "  if (isMobile()) attachTitleTaps();", "  if (false) attachTitleTaps();"),
     "tabpad": ("m/m.css", "  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }\n", ""),
     "autofocus": ("js/ui.js", "    if (first && !isMobile()) setTimeout(", "    if (first) setTimeout("),
+    "tapguard": ("app.js", "  if (isMobile()) { attachTitleTaps(); attachOutsideTapGuard(); }", "  if (isMobile()) { attachTitleTaps(); }"),
     "rowswipe": ("m/m.css", "    position: absolute; top: 0; bottom: 0; left: calc(100% + 14px); display: flex; gap: 0; scroll-snap-align: end;", "    display: flex;"),
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
@@ -170,6 +172,8 @@ try:
     device("anna", ["awg0", "awg1"], "anna-laptop")
     device("anna", ["awg0"], "anna-phone")
     device("boris", ["awg0"], "boris-phone")
+    pk_spare = base64.b64encode(os.urandom(32)).decode(); PEERS[(pk_spare, "awg0")] = "10.70.0.40"
+    must(call("POST", "/api/peers/create", {"pubkey": pk_spare, "title": "spare", "targets": [{"node": NID, "iface": "awg0", "ip": "10.70.0.40"}]}), "an unassigned device")
     must(sync(), "sync with the devices")
     def keep_syncing():
         while not stop.wait(3):
@@ -404,6 +408,23 @@ try:
         tap(tab, b2["x"] + 5, b2["y"] + 5); close_all(tab)
         check("[9] a tap on a button is the button's, not a bubble's", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
     tab.close()
+
+    # ── [11] a tap outside an open list ──
+    with guard("[11]"):
+        print("\n[11] a tap outside an open list only closes it")
+        tab = open_app("#/peers")
+        tab.ev("document.querySelector('table.peergrid .assigncell input').scrollIntoView({block: 'center'})"); settle(tab, 300)
+        b = box(tab, "document.querySelector('table.peergrid .assigncell input')")
+        tap(tab, b["x"] + 20, b["y"] + b["h"] / 2); settle(tab, 600)
+        check("[11] the Assign to… list opens", tab.ev("!!document.querySelector('.uc-pop')"))
+        c = box(tab, "[...document.querySelectorAll('table.peergrid tr.clk td.c-name')].find(e => { const r = e.getBoundingClientRect();"
+                     " return !e.closest('tr').querySelector('.assigncell') && r.top > 60 && r.bottom < innerHeight - 80 && !document.querySelector('.uc-pop').contains(document.elementFromPoint(r.left + 10, r.top + r.height / 2)); })")
+        tap(tab, c["x"] + 10, c["y"] + c["h"] / 2); settle(tab, 800)
+        st = tab.ev("({list: !!document.querySelector('.uc-pop'), sheet: !!document.querySelector('.overlay.show .sheet'), focus: (document.activeElement || {}).tagName})")
+        check("[11] a tap on another card closes the list, drops the field's focus, and opens nothing", not st["list"] and not st["sheet"] and st["focus"] != "INPUT", st)
+        tap(tab, c["x"] + 10, c["y"] + c["h"] / 2); settle(tab, 800)
+        check("[11] …and the next tap on it does open it", tab.ev("!!document.querySelector('.overlay.show .sheet')"))
+        tab.close()
 finally:
     stop.set()
     if br:
