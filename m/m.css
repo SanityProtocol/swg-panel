@@ -555,8 +555,14 @@ html[data-ui="m"] {
     /* one column as wide as the widest line, centred in the cell, its lines left-aligned in it: the cell's content is centred as
        a whole, not line by line; the three labels stay on one line, at the top (operator, 2026-10-29) */
     grid-row: 2; display: grid; grid-template-columns: max-content; grid-template-rows: auto 1fr; justify-content: center; justify-items: start; align-content: stretch;
-    gap: 4px; min-width: 0; padding: 10px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); justify-self: stretch; align-self: stretch;
+    gap: 4px; min-width: 0; padding: 10px 8px; justify-self: stretch; align-self: stretch;
+    /* the three as one inset, tinted panel inside the card's margins — no lines run edge to edge (operator, 2026-10-29) */
+    position: relative; background: var(--surface-2);
   }
+  & .ncard .nc-peers { margin-left: 14px; border-radius: 12px 0 0 12px; }
+  & .ncard .nc-mesh { margin-right: 14px; border-radius: 0 12px 12px 0; }
+  /* short separators between the three, a third of the panel's height off each end */
+  & .ncard :is(.nc-thru, .nc-mesh)::before { content: ""; position: absolute; left: 0; top: 22%; bottom: 22%; width: 1px; background: var(--line-solid); opacity: .7; }
   & .ncard .nc-peers :is(.nm-peerpop, .onlinetag) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   /* under the labels, each value is centred in the room the tallest cell leaves (operator, 2026-10-29): Throughput's two lines
      in their row; Peers' and Mesh's wrappers fill the cell, their value(s) pushed to the middle by auto margins */
@@ -568,14 +574,14 @@ html[data-ui="m"] {
   & .ncard .nc-mesh .mh-tag > .mh-grp:last-child { margin-bottom: auto; }
   & .ncard .nc-name .platwrap::before { content: "·"; margin-right: 8px; color: var(--faint); }
   & .ncard .nc-peers { grid-column: 1; }
-  & .ncard .nc-thru { grid-column: 2; border-left: 1px solid var(--line); }
-  & .ncard .nc-mesh { grid-column: 3; border-left: 1px solid var(--line); }
+  & .ncard .nc-thru { grid-column: 2; }
+  & .ncard .nc-mesh { grid-column: 3; }
   & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) .nm-l { font-size: 10px; line-height: 14px; margin: 0; padding: 0; }
   & .ncard .nc-thru .nm-v { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; font-size: 13px; text-align: left; }
   & .ncard .nc-thru .nm-v > * { margin: 0; min-width: 0; text-align: left; }
   & .ncard .nc-peers .nm-v { font-size: 16px; }
   & .ncard .nc-mesh .mh-tag { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-  & .ncard .nc-ifaces { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; gap: 8px; padding: 12px 16px 0; }
+  & .ncard .nc-ifaces { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; gap: 8px; padding: 12px 14px 0; }
   & .ncard .nc-ifaces .nm-l { display: none; }
   & .ncard .nc-ifaces .tags { display: flex; flex-wrap: wrap; gap: 6px; }
   & .tg.m-sum.awg3::after { content: none; }
