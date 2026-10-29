@@ -425,6 +425,23 @@ html[data-ui="m"] {
   & .pv-dep-grid > span:nth-child(5) { grid-column: 1 / -1; grid-row: 3; font-size: 12px; color: var(--dim); }
   & .pv-dep-grid > span:nth-child(5)::before { content: "\03A3"; margin-right: 6px; color: var(--faint); }
 
+  /* ───── a mesh link's sheet (iface.js ConnectionEditSheet) and the sheets like it: the link's facts as rows, its label left
+     and its value right, as the link cards on a node's page read; two dropdowns side by side stack; a verdict reads as one
+     sentence; the long explanations are quieter than the controls they explain (operator, 2026-10-29) ───── */
+  & .conncard { padding: 4px 14px; }
+  & .conncard-top { margin: 10px 0 6px; }
+  & .conn-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  & .conn-cell:first-child { border-top: 0; }
+  & .conn-cell { display: flex; flex-direction: row; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+  & .conn-cell .cl { font: 400 14px var(--sans); text-transform: none; letter-spacing: 0; color: var(--dim); flex: none; margin: 0; }
+  & .conn-cell .cv { font-family: var(--mono); font-size: 13.5px; text-align: right; min-width: 0; overflow-wrap: anywhere; white-space: normal; overflow: visible; }
+  & .sheet-body .row2:has(.dropdown, select) { flex-direction: column; gap: 15px; }
+  & .field.meshgen .dpsw.awgsw { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; width: 100%; }
+  & .field.meshgen .dpsw.awgsw > button { min-height: 40px; white-space: nowrap; }
+  & .dp-verdict { display: block; line-height: 1.5; }
+  & .dp-verdict .ic, & .dp-verdict > svg { display: inline-block; vertical-align: -3px; margin-right: 6px; }
+  & .sheet-body .hint:not(.field .hint, .err, .warnish, .warn, .vk-warn, .dp-verdict) { font-size: 13.5px; line-height: 1.55; color: var(--dim); }
+
   /* ───── user detail: the user's configs sheet (peer-ui.js openUserConfigs) — its device pager (QRRow) already shows one device
      with the next one peeking; its footer counts share one line ───── */
   & .sheet-foot > .qrfoot-count { grid-column: 1 / 4; }
