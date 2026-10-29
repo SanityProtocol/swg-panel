@@ -535,6 +535,8 @@ html[data-ui="m"] {
   /* a 30 px button is under a thumb's size: its tap area reaches past it, the look stays the box's */
   & .m-icob::after { content: ""; position: absolute; inset: -7px -3px; }
 
+  & .upc-xn { flex: none; margin-left: 6px; padding: 2px 7px; border-radius: 999px; font: 700 12px/1.4 var(--mono);
+    color: var(--ready); background: color-mix(in srgb, var(--ready) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ready) 40%, transparent); }
   & .m-icob-n { position: absolute; top: -6px; right: -6px; z-index: 1; box-shadow: 0 0 0 2px var(--surface); min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box; border-radius: 8px;
     background: var(--brand); color: var(--bg); font: 700 9.5px/15px var(--mono); text-align: center; }
   & .vkbox { min-height: 0; }

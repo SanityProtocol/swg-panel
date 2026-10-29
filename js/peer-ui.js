@@ -255,8 +255,8 @@ export function UserPeerCard({ peer, onOpen }) {
       // This head is SHARED by every card kind in the configs modal, which is why fixing the deploy-head
       // below did not reach it — that branch only renders when no head is passed, and one always is.
       ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
-      : html`<${Badge} s=${lt.status}/>`}</div>
-    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
+      : html`<${Badge} s=${lt.status}/>`}${/* a phone: how many targets, ×N beside the status (operator, 2026-10-29) */""}${isMobile() && targets.length > 1 ? html`<span class="upc-xn" title=${kinds.join(" · ")}>×${targets.length}</span>` : null}</div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${targets.length > 1 && !isMobile() ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
   </div>`;
   // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
   // fully presented here). When it does: the whole card opens it EXCEPT the QR image (enlarges) and the action
