@@ -70,7 +70,7 @@ export function openPeerConfigs(peer, opts) {
   // In a subscription: subscription status in the header (right), the peer's own status on a line under it.
   // Not in a subscription: the peer's own status takes the header slot (nothing under it).
   const headExtra = vkUser ? html`<${SubStatusLine} user=${vkUser} pos="hr"/>` : html`<${PeerStatusLine} peer=${peer} pos="hr"/>`;
-  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
+  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child && !isMobile() ? closeModal : null}
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
     <${VaultUnlockPanel} need=${(peer.targets || []).some(t => !isSelfContainedKind(targetType(t)))}/>
