@@ -812,6 +812,17 @@ html[data-ui="m"] {
   & .exgrid.g8x .exg-c .dropdown { flex: 1 1 auto; min-width: 0; }
   /* a section's add button at its top (WARP & exits), and the sheet that asks which kind: a row each, its word and a line */
   & .m-addtop { width: 100%; min-height: 44px; justify-content: center; margin: 0 0 14px; }
+  /* a fork's client apps sheet (turn.js ServerClientsSheet): an app's name and author whole on a line, its badges under them;
+     the save line's sentence over a full-width Save; a sheet with a Back keeps it at the top left, the title under it */
+  & .cpick-opt { flex-wrap: wrap; row-gap: 6px; height: auto; min-height: 48px; padding-top: 8px; padding-bottom: 8px; }
+  & .cpick-opt .ce-name { flex: 1 1 100%; min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; font-size: 15px; }
+  & .cpick-opt .ce-badges { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+  & .cpick-opt.cpick-none .cpick-none-hint { flex: 1 1 100%; text-align: left; margin: 0; }
+  & .sheet-body:has(> .osapp) > div:last-child > div:last-child { flex-wrap: wrap; gap: 10px; }
+  & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .faint { flex: 1 1 100%; }
+  & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .btn-primary { flex: 1 1 100%; min-height: 44px; justify-content: center; }
+  & .sheet-head:has(> .sheet-back) > .sheet-back { order: -1; margin-right: auto; }
+  & .sheet-head:has(> .sheet-back) > h3 { flex: 1 1 100%; }
   /* Interfaces → colours: two even columns, each protocol's swatches then its name */
   & .palrow { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
   & .palrow > .palcell { width: auto !important; min-width: 0; margin: 0 !important; }
