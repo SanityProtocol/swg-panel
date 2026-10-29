@@ -756,20 +756,34 @@ html[data-ui="m"] {
   & .lgrow .lg-catmain { flex-wrap: wrap; row-gap: 4px; }
   & .lgrow > .lg-fleet { min-width: 0; }
   & .lgrow .lg-used { flex-wrap: wrap; gap: 4px; }
-  & .bkrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px 4px; }
-  & .bkrow > .lg-pull { order: 0; flex: none; }
-  & .bkrow > .bk-cat { order: 1; flex: 1 1 calc(100% - 150px); min-width: 0; }
-  & .bkrow > .bk-defchip { order: 2; flex: none; }
-  & .bkrow > :not(.lg-pull, .bk-cat, .bk-defchip) { order: 3; }
+  /* ───── Blocking's categories (operator, 2026-10-29: "looks like it's not from this project"): a card each, drawn as a user's
+     row is — the chevron in the left lane, the name with its lists under it, the switch at the right; then one row of
+     facts under the name (default, size, where it is on, what it matches). Add list belongs to an open category, at its foot;
+     its lists sit inside the card under a line ───── */
+  & .lgrid:has(> .bkitem) { gap: 8px; }
+  & .bkitem, & .bkitem.open, & .bkitem.open + .bkitem {
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden;
+  }
+  & .bkitem.open { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
+  & .bkrow {
+    position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+    padding: 12px 14px 12px 40px; min-height: 64px; box-sizing: border-box;
+  }
+  & .bkrow:hover { background: none; }
+  & .bkrow > .bk-cat { order: 0; flex: 1 1 calc(100% - 60px); min-width: 0; }
+  & .bkrow > .lg-pull { order: 1; flex: none; margin-left: auto; align-self: flex-start; }
+  & .bkrow > :not(.bk-cat, .lg-pull, .bk-addwrap) { order: 2; }
   & .bkrow > :is(.bk-kind, .bk-size):empty { display: none; }
-  & .bkrow > .bk-addwrap { margin-left: auto; }
-  /* a category opens on a tap — said the way a user's or a group's row says it (operator: "match the users/groups expanding
-     control"): a chevron in the row's left lane, pointing right, down when open */
-  & .bk-catline { align-items: center; }
-  & .bk-catline .lg-title { white-space: normal; overflow: visible; }
-  & .bkrow { position: relative; padding-left: 30px; }
+  & .bkrow > .bk-defchip { font-size: 12px; padding: 4px 10px; min-height: 28px; }
+  & .bkrow > .bk-fleet .fleet-trig { min-height: 28px; }
+  & .bkrow > .bk-addwrap { order: 3; display: none; }
+  & .bkrow.open > .bk-addwrap { display: flex; flex: 1 1 100%; }
+  & .bkrow.open > .bk-addwrap > .btn { flex: 1 1 auto; justify-content: center; min-height: 40px; }
+  & .bk-catline { display: block; }
+  & .bk-catline .lg-title { white-space: normal; overflow: visible; font-size: 15.5px; font-weight: 600; }
+  & .bk-lists { white-space: normal; margin-top: 2px; font-size: 12px; }
   & .bk-chev {
-    position: absolute; left: 0; top: 12px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+    position: absolute; left: 6px; top: 18px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
     font-size: 0; color: var(--dim); transform: none !important; border: 0; background: none;
   }
   & .bk-chev::before {
@@ -778,15 +792,18 @@ html[data-ui="m"] {
   }
   & .bkrow.open .bk-chev { color: var(--brand); }
   & .bkrow.open .bk-chev::before { transform: translateY(-2px) rotate(45deg); }
-  /* an open category's lists: a list's name and source on a line, what it is under them, its state, size and buttons last */
-  & .bk-expand { padding-left: 0; }
-  & .bk-lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-left: 0; padding: 10px 12px; }
+  /* an open category's lists: under a line, aligned with the name; a list's name and source, what it is, then its facts */
+  & .bk-expand { padding: 0; border-top: 1px solid var(--line); }
+  & .bk-lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 12px 14px 12px 40px; border-top: 1px solid var(--line); }
+  & .bk-lrow:first-child { border-top: 0; }
   & .bk-lrow > .bk-linfo { flex: 1 1 100%; min-width: 0; }
   & .bk-lrow > .grow { display: none; }
   & .bk-lrow .bk-ldesc { white-space: normal; overflow: visible; text-overflow: clip; }
   & .bk-lrow .bk-nabadge { white-space: normal; flex: 1 1 100%; }
   & .bk-lrow > .bk-lremove { margin-left: auto; width: 36px; height: 36px; }
   & .bk-lrow > .catrow-info { width: 36px; height: 36px; margin: 0; }
+  /* New category: the section's add, at the width of the cards */
+  & .lgrid-head > .btn-add { flex: 1 0 100%; min-height: 44px; justify-content: center; }
   & .lg-htitle { flex-wrap: wrap; flex: 1 1 auto; min-width: 0; row-gap: 4px; }
   & .lg-sub { flex: 1 0 100%; margin: 0; }
   /* Geo data providers: the switch and the colours on the first line, the provider's name, what it is and its source under them */
