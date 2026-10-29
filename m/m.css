@@ -962,6 +962,14 @@ html[data-ui="m"] {
   & .m-pick-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   & .m-pick-main b { font-size: 15px; font-weight: 600; }
   & .m-pick-main span { font-size: 13px; color: var(--dim); line-height: 1.4; }
+  /* Turn proxies → collected TURN IPs (turn.js): a row per address — the IP and how long ago on its line with the ×, the
+     forks that collected it under them, wrapping across the row; no column headers (they overlapped the addresses) */
+  & .tipgrid-h { display: none; }
+  & .tiprow { grid-template-columns: minmax(0, 1fr) auto 36px; grid-template-areas: "ip last x" "by by by"; gap: 6px 10px; padding: 10px 12px; }
+  & .tiprow > .tip-ip { grid-area: ip; font-size: 13.5px; }
+  & .tiprow > .tip-last { grid-area: last; white-space: nowrap; }
+  & .tiprow > .tip-by { grid-area: by; }
+  & .tiprow > :last-child { grid-area: x; justify-self: end; }
   /* the VK call link pool (Settings → Turn proxies, and its sheet): a link on its own line, its date, holders and buttons
      under it; the column sorts have no columns to sit over here */
   & .vkpool-row { flex-wrap: wrap; row-gap: 6px; }
