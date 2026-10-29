@@ -520,8 +520,9 @@ function GroupRow({ g, st, q }) {
         ${isMobile() ? null : html`<span class="u-total"><${TrafficCell} a=${st.traffic} e=${trafficTotals()} ctx=${{ group: true }}/></span>`}
         <span class="u-acts" onClick=${e => e.stopPropagation()} onDblClick=${e => e.stopPropagation()}>
           <button type="button" class="iconbtn" data-lbl=${T("Traffic")} title=${T("Traffic — graph and members")} aria-label=${T("Traffic — graph and members")} onClick=${() => openGroupView(g.id)}><${Ic} i="bars"/></button>
-          <button type="button" class="iconbtn" data-lbl=${T("Users")} title=${T("Show this group on the users list")} aria-label=${T("Show this group on the users list")}
-            onClick=${() => { usersView.mode = "users"; usersView.group = g.id; usersView.q = ""; usersView.page = 1; bus.emit(); }}><${Ic} i="user"/></button>
+          ${/* not on a phone: its swipe holds four actions at most (operator, 2026-10-29); the Filters sheet's group does the same */""}
+          ${isMobile() ? null : html`<button type="button" class="iconbtn" data-lbl=${T("Users")} title=${T("Show this group on the users list")} aria-label=${T("Show this group on the users list")}
+            onClick=${() => { usersView.mode = "users"; usersView.group = g.id; usersView.q = ""; usersView.page = 1; bus.emit(); }}><${Ic} i="user"/></button>`}
           <button type="button" class="iconbtn" data-lbl=${T("Edit")} title=${T("Edit group")} aria-label=${T("Edit group")} onClick=${() => openGroup(g.id)}><${Ic} i="pencil"/></button>
           <button type="button" class="iconbtn danger" data-lbl=${T("Delete")} title=${T("Delete group")} aria-label=${T("Delete group")} onClick=${() => confirmDeleteGroup(g, false)}><${Ic} i="trash"/></button>
         </span>
