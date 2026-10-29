@@ -520,7 +520,7 @@ export function attachOutsideTapGuard() {
   let eat = 0;
   document.addEventListener("pointerdown", e => {
     eat = 0;
-    const layer = document.querySelector(".ddpop, .uc-pop, .deppop");
+    const layer = document.querySelector(".ddpop, .uc-pop, .deppop, .osdd-menu");   // .osdd-menu: the OS / app pickers (turn.js)
     const t = e.target, ae = document.activeElement;
     if (!layer || (t && layer.contains(t)) || (ae && ae !== document.body && ae.contains && ae.contains(t))) return;
     eat = Date.now();
@@ -528,6 +528,7 @@ export function attachOutsideTapGuard() {
     document.querySelectorAll(".deppop.m-titletap").forEach(b => b.remove());   // its own close rides the click eaten below
   }, true);
   document.addEventListener("click", e => {
+    if (!e.isTrusted) return;                        // a click the app sends itself (a swipe's close) is never the eaten tap
     if (!eat || Date.now() - eat > 800) return;
     eat = 0; e.stopPropagation(); e.preventDefault();
   }, true);
