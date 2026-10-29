@@ -1009,7 +1009,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`
       : (_fixT && _fixT.correctable)
         ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> ${T("Fix address")}</button>`
-        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${
+        : html`<button class="btn btn-ghost m-rotate" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${
             (hasKeyed && (hasWdtt || hasCsqtt)) ? (rotating ? T("Rotating credentials…") : T("Rotate credentials"))
             : isKeyless ? (rotating ? T("Rotating link…") : T("Rotate link"))
             : (rotating ? T("Rotating keys…") : T("Rotate keys"))}</button>`;
