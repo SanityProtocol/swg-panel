@@ -411,7 +411,7 @@ export function attachTitleTaps() {
 // A row whose actions sit behind a left swipe says so (operator, 2026-10-29: "something for users to understand they can slide
 // left"): a grab bar on its right edge (m/m.css), and the first few times a list with such rows opens, its top row slides open
 // a little and back. Counted per device (localStorage), so it teaches and then stops.
-const SWIPE_ROW = ".urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts)";
+const SWIPE_ROW = ".urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger)";
 export function attachSwipePeek() {
   const peek = () => setTimeout(() => {
     let n = 0;
@@ -425,6 +425,15 @@ export function attachSwipePeek() {
   }, 1200);
   window.addEventListener("hashchange", peek);
   peek();
+  // the ⋮ in a closed row's right lane (m/m.css) opens it, as the swipe does — and nothing under it opens
+  document.addEventListener("click", e => {
+    if (document.documentElement.dataset.swipehint === "peek") return;
+    const row = e.target && e.target.closest && e.target.closest(SWIPE_ROW);
+    if (!row || row.scrollLeft > 4 || e.target.closest("button, a, input, .iconbtn")) return;
+    if (row.getBoundingClientRect().right - e.clientX > 26) return;
+    e.preventDefault(); e.stopPropagation();
+    row.scrollTo({ left: row.scrollWidth, behavior: "smooth" });
+  }, true);
 }
 
 // A phone draws a bubble as a sheet at the bottom (m/m.css), so it closes the way a sheet does: dragged down by more than

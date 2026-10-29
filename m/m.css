@@ -218,8 +218,6 @@ html[data-ui="m"] {
     box-sizing: border-box; padding: 12px 22px 12px 14px;
     overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
     scroll-padding-left: 14px;
-    background-image: linear-gradient(var(--line-solid), var(--line-solid)); background-size: 4px 26px;
-    background-position: right 5px center; background-repeat: no-repeat;
   }
   & .attn-row::-webkit-scrollbar { display: none; }
   & .attn-row > :first-child { grid-column: 1; grid-row: 1; justify-self: start; align-self: center; scroll-snap-align: start; }
@@ -269,8 +267,6 @@ html[data-ui="m"] {
   & .acthist .act-row {
     position: relative; padding-right: 22px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory;
     overscroll-behavior-x: contain; scrollbar-width: none; scroll-padding-left: 12px;
-    background-image: linear-gradient(var(--line-solid), var(--line-solid)); background-size: 4px 26px;
-    background-position: right 5px center; background-repeat: no-repeat;
   }
   & .acthist .act-row::-webkit-scrollbar { display: none; }
   & .acthist .act-row > :is(.act-link, .act-what) { scroll-snap-align: start; }   /* its icon, the first child, is not drawn here */
@@ -343,12 +339,18 @@ html[data-ui="m"] {
     scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
   }
   & .urow > .urow-head::-webkit-scrollbar { display: none; }
-  /* a row with actions behind its swipe wears a grab bar on its right edge — a background, so it stays put while the row
-     scrolls, and the actions cover it once they are out (ui.js attachSwipePeek also slides the top row open once or twice) */
-  & :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts)) {
-    background-image: linear-gradient(var(--line-solid), var(--line-solid)); background-size: 4px 26px;
-    background-position: right 5px center; background-repeat: no-repeat;
+  /* a row with actions behind its swipe says so (operator, 2026-10-29). Two looks while the operator chooses:
+     dots (the default) — a quiet ⋮ in the row's right lane; a tap on it opens the row the way the swipe does (ui.js
+     attachSwipePeek), and it slides away with the row; peek — the actions' edge, a strip of the brand tint on the card's right
+     side, covered once they are out. ui.js also slides the top row open once or twice. */
+  & :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger))::after {
+    content: "\22EE"; position: absolute; top: 0; bottom: 0; right: 0; width: 22px; display: flex; align-items: center; justify-content: center;
+    font: 700 18px/1 var(--sans); color: var(--faint); pointer-events: none;
   }
+  &[data-swipehint="peek"] :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger)) {
+    box-shadow: inset -6px 0 0 color-mix(in srgb, var(--brand) 38%, transparent);
+  }
+  &[data-swipehint="peek"] :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger))::after { content: none; }
   & .urow-head > .u-exp { grid-column: 1; grid-row: 1 / span 2; scroll-snap-align: start; }
   & .urow-head > .u-name { grid-column: 2 / -1; grid-row: 1; font-size: 15.5px; }
   & .urow-head > .ustat { grid-column: 2; grid-row: 2; }
@@ -487,8 +489,10 @@ html[data-ui="m"] {
   & .ncard .nc-name .tport::first-letter { text-transform: uppercase; }
   & .ncard .nc-name .reporting { font-family: var(--sans); font-size: 13px; text-transform: none; letter-spacing: 0; }
   & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) {
-    grid-row: 2; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; min-width: 0;   /* the three labels on one line (operator) */
-    padding: 10px 12px 10px 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); justify-self: stretch; align-self: stretch;
+    /* one column as wide as the widest line, centred in the cell, its lines left-aligned in it: the cell's content is centred as
+       a whole, not line by line; the three labels stay on one line, at the top (operator, 2026-10-29) */
+    grid-row: 2; display: grid; grid-template-columns: max-content; justify-content: center; justify-items: start; align-content: start;
+    gap: 4px; min-width: 0; padding: 10px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); justify-self: stretch; align-self: stretch;
   }
   & .ncard .nc-peers :is(.nm-peerpop, .onlinetag) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   & .ncard .nc-name .platwrap::before { content: "·"; margin-right: 8px; color: var(--faint); }
