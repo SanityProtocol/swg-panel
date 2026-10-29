@@ -506,13 +506,13 @@ function GroupRow({ g, st, q }) {
           <//>
         </span>
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
-        <span class="u-total"><${TrafficCell} a=${st.traffic} e=${trafficTotals()} ctx=${{ group: true }}/></span>
+        ${isMobile() ? null : html`<span class="u-total"><${TrafficCell} a=${st.traffic} e=${trafficTotals()} ctx=${{ group: true }}/></span>`}
         <span class="u-acts" onClick=${e => e.stopPropagation()} onDblClick=${e => e.stopPropagation()}>
-          <button type="button" class="iconbtn" title=${T("Traffic — graph and members")} aria-label=${T("Traffic — graph and members")} onClick=${() => openGroupView(g.id)}><${Ic} i="bars"/></button>
-          <button type="button" class="iconbtn" title=${T("Show this group on the users list")} aria-label=${T("Show this group on the users list")}
+          <button type="button" class="iconbtn" data-lbl=${T("Traffic")} title=${T("Traffic — graph and members")} aria-label=${T("Traffic — graph and members")} onClick=${() => openGroupView(g.id)}><${Ic} i="bars"/></button>
+          <button type="button" class="iconbtn" data-lbl=${T("Users")} title=${T("Show this group on the users list")} aria-label=${T("Show this group on the users list")}
             onClick=${() => { usersView.mode = "users"; usersView.group = g.id; usersView.q = ""; usersView.page = 1; bus.emit(); }}><${Ic} i="user"/></button>
-          <button type="button" class="iconbtn" title=${T("Edit group")} aria-label=${T("Edit group")} onClick=${() => openGroup(g.id)}><${Ic} i="pencil"/></button>
-          <button type="button" class="iconbtn danger" title=${T("Delete group")} aria-label=${T("Delete group")} onClick=${() => confirmDeleteGroup(g, false)}><${Ic} i="trash"/></button>
+          <button type="button" class="iconbtn" data-lbl=${T("Edit")} title=${T("Edit group")} aria-label=${T("Edit group")} onClick=${() => openGroup(g.id)}><${Ic} i="pencil"/></button>
+          <button type="button" class="iconbtn danger" data-lbl=${T("Delete")} title=${T("Delete group")} aria-label=${T("Delete group")} onClick=${() => confirmDeleteGroup(g, false)}><${Ic} i="trash"/></button>
         </span>
       </span>
     </div>
@@ -572,12 +572,13 @@ function GroupsView({ force }) {
   const setPage = p => { usersView.gpage = p; force(x => x + 1); };
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${TrafficRail}/>
-    <div class="toolbar">
+    ${isMobile() ? null : html`<${TrafficRail}/>`}
+    <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
       <${ModeIcons} users=${true} force=${force}/>
       <${SearchBox} placeholder=${T("Search groups or members…")} value=${usersView.gq} onInput=${e => { usersView.gq = e.target.value; usersView.gpage = 1; force(x => x + 1); }}/>
-      <${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); }}/>
-      <button class="btn btn-primary" onClick=${() => openCreateGroup()}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
+      ${isMobile() ? filterBtn(filtersOn(), r => html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); r(); }}/>`)
+        : html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); }}/>`}
+      <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreateGroup()}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
     </div>
     ${secTitle(T("Groups"), list.length, false)}
     ${!all.length ? html`<div class="empty"><b>${T("No groups yet")}</b>${T("Put people in a group to share a network with all of them at once, from a device's Networks window.")}</div>`

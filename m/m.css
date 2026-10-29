@@ -238,6 +238,11 @@ html[data-ui="m"] {
   }
   & .urow-head .u-acts > .iconbtn::after { content: attr(data-lbl); max-width: 58px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .urow-head .u-acts > .iconbtn svg { width: 20px; height: 20px; }
+  & .urow-head .u-acts > .iconbtn.danger { color: var(--dangling); }
+  /* a group's row: its members on line 2; the devices and networks counts are in its sheet */
+  & .gcard > .urow-head > .u-name { grid-column: 2 / -1; }
+  & .gcard > .urow-head .u-counts:first-child { grid-column: 2 / 4; }
+  & .gcard > .urow-head :is(.g-peers, .g-nets) { display: none; }
 
   /* ───── deployment rows (the target picker, a device's Deployments): TWO LINES (D4, option A) — the box, the node, the interface
      and the type tag; then the role with its word (hook 9), the address and the gear. The desktop's --topt-col is not touched:
@@ -366,6 +371,40 @@ html[data-ui="m"] {
   & .lanfold > .lanmsg { margin-top: 2px; }
   /* a panel's header actions wrap under its title instead of running off the card */
   & .panel-head { flex-wrap: wrap; row-gap: 8px; }
+
+  /* ───── Settings (T2 for Display and Authentication, T3 for the rest): a list of sections, then one section (hook 3). The
+     list keeps the dirty dots; a section has "‹ Panel settings" over it and its Back goes up to the list. A section's wide
+     block scrolls inside its card, never the page ───── */
+  & .setbody { flex-direction: column; gap: 12px; }
+  & .setbody:not(.m-list) .setrail { display: none; }
+  & .setbody.m-list .setpane > :not(.setfoot) { display: none; }
+  & .setbody.m-list .setrail {
+    position: static; width: 100%; flex-direction: column; flex-wrap: nowrap; gap: 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+  }
+  & .setrail-i { min-height: 52px; padding: 0 var(--m-gutter); border-radius: 0; font-size: 15.5px; color: var(--ink); }
+  & .setrail-i + .setrail-i { border-top: 1px solid var(--line); }
+  & .setrail-i::after { content: "›"; margin-left: auto; padding-left: 10px; color: var(--faint); font-size: 20px; }
+  & .setrail-i .dirtydot { margin-left: 10px; }
+  & .setpane { width: 100%; }
+  & .setpane > .card { overflow-x: auto; padding: 16px 14px; }
+  & .m-setback {
+    display: flex; align-items: center; gap: 6px; min-height: 44px; margin: -6px 0 6px; padding: 0; border: 0; background: none;
+    color: var(--brand); font: 600 14px var(--sans); cursor: pointer;
+  }
+  & .m-setcur { color: var(--ink); margin-left: 4px; }
+  & .m-setcur::before { content: "/"; color: var(--faint); margin-right: 8px; }
+  & .setfoot {
+    position: sticky; bottom: calc(var(--m-tabbar) + var(--m-safe-b)); z-index: 5; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    margin: 12px calc(-1 * var(--m-gutter)) 0; padding: 10px var(--m-gutter); background: var(--surface); border-top: 1px solid var(--line);
+  }
+  & .setfoot > :not(.btn) { grid-column: 1 / -1; }
+  & .setfoot > .grow { display: none; }
+  & .setfoot .btn { min-width: 0; min-height: 44px; padding: 0 8px; }
+
+  /* ───── the Logs view (T2): already full screen; clear of the notch and the home indicator, a thumb-sized close ───── */
+  & .lv-full { padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: calc(12px + var(--m-safe-b)); }
+  & .lv-full .lv-x { min-width: 44px; min-height: 44px; }
 
   /* ───── the More sheet (app.js MoreSheet) ───── */
   & .msheet { margin: -8px calc(-1 * var(--m-gutter)); }

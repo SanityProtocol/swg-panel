@@ -14,7 +14,7 @@ import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokRead, portokSame } from "./model.js";
 import {
-  BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
+  BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -2345,7 +2345,9 @@ export function PanelSettingsScreen() {
     if (secNp && secNp.length < 8) return T("New password must be at least 8 characters.");
     return null;
   };
-  const [section, setSection] = useState(takePendingSection() || "display");   // active left-rail section (a Settings activity click can deep-link here)
+  // A phone opens on the LIST of sections and drills into one (MOBILE-PLAN hook 3) — the rail does not fit beside a pane there.
+  // `null` is the list. A deep link (an activity row, a sheet's "go to settings") still lands on its section.
+  const [section, setSection] = useState(takePendingSection() || (isMobile() ? null : "display"));   // active left-rail section (a Settings activity click can deep-link here)
   useEffect(() => { registerSectionSetter(setSection); return () => registerSectionSetter(null); }, []);   // one-shot section pin + expose setSection so a modal can switch the rail (confirm modal → Access & TLS)
   const [routeTab, setRouteTab] = useState("routing");   // "Routing & Blocking" section: Routing (route→exit) | Blocking (drop) — both gated by the node's mode above
   useEffect(() => { if (routeTab === "blocking" || section === "geo") loadBlockCatalog(); }, [routeTab, section]);   // lazy-load the block catalog for the Blocking tab and the Geo-data Filters-providers list
@@ -2833,9 +2835,10 @@ const sectionLabel = k => ({
   return html`<div class="screen setscreen">
     <div class="sethead">${Trich("*Panel settings*")}</div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
-    <div class="setbody">
-      <nav class="setrail">${SECTIONS.map(([id]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${sectionLabel(id)}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
+    <div class=${"setbody" + (isMobile() && !section ? " m-list" : "")}>
+      <nav class="setrail">${SECTIONS.map(([id]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => { setSection(id); if (isMobile()) window.scrollTo(0, 0); }}>${sectionLabel(id)}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
       <div class="setpane">
+        ${isMobile() && section ? html`<button class="m-setback" onClick=${() => { setSection(null); window.scrollTo(0, 0); }}><${Ic} i="back"/> ${T("Panel settings")}<span class="m-setcur">${sectionLabel(section)}</span></button>` : null}
         ${perNodeSection && section !== "links" && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
           ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel;
@@ -3644,7 +3647,8 @@ const sectionLabel = k => ({
             ? null   /* access status (incl. "applying, be patient") is consolidated into the card's top banner, scrolled into view on Save */
             : (Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> ${T("All settings saved")}</span>` : null)}
           <span class="grow"></span>
-          <button class="btn btn-ghost btn-dismiss" onClick=${leaveSettings}>${T("Back")}</button>
+          ${/* a phone's Back goes up a level: from a section to the list, from the list out of Settings (hook 3) */""}
+          <button class="btn btn-ghost btn-dismiss" onClick=${isMobile() && section ? () => { setSection(null); window.scrollTo(0, 0); } : leaveSettings}>${T("Back")}</button>
           ${section === "access"
             ? html`<button class="btn btn-primary" disabled=${accessRef.current.busy || !accessRef.current.dirty} title=${!accessRef.current.dirty ? T("No changes to save") : ""} onClick=${() => accessRef.current.run()}>${accessRef.current.busy ? T("Saving…") : T("Save")}</button>`
             : html`<button class="btn btn-primary" disabled=${!!secErr() || !!exitErr() || !anyDirty} title=${secErr() || exitErr() || (!anyDirty ? T("No changes to save") : "")} onClick=${confirmSave}>${T("Save")}</button>`}</div>
