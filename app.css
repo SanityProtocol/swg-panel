@@ -1741,6 +1741,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
    that OS) + the per-app config reference */
 /* Per-OS app matrix — one two-line button per OS (icon · app name · author in author colour); hover bubble = tags +
    offer; click makes the OS active and expands its app list below. Wraps responsively (auto-fit) on narrow modals. */
+.csq-linesw{margin:0 0 8px}   /* csqtt's 2.1 / 2.5 switch over the client apps (a default per line, 2026-10-29) */
+.csq-linehint{margin:0 0 18px;font-size:12px;line-height:1.5;color:var(--dim)}
 .osapp-hd{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:8px}
 .osapp{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
 @media (max-width:640px){.osapp{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}}

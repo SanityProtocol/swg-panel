@@ -74,7 +74,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub | lineskey | linehold
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub | lineskey | linehold | lineswall | linefilter
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -104,6 +104,10 @@ if not CHROME:
 
 # ── the web root: the repo's SPA, or a copy with one fix undone ─────────────────────────────────────────────────────────────
 PERTURBATIONS = {
+    # [B20]: the line switch shown on a one-line panel too
+    "lineswall": ("js/turn.js", "const linesOn = isCsq && (csqttLinesOn() ||", "const linesOn = isCsq && (true ||"),
+    # [B20]: a line's list not filtered to its apps (FOCSQ listed under 2.5)
+    "linefilter": ("js/turn.js", ".filter(en => !linesOn || speaks(en.cid))", ".filter(en => true)"),
     # [B19]: one bubble row per node again — a box running csqtt 2.1 and 2.5 shows one of them
     "lineskey": ("js/screen-settings.js", 'const line = all && csqttOtherLine(w) ? w.line : "", k = line ? nid + "@" + line : nid;', 'const line = "", k = nid;'),
     # [B19]: a 2.5 row read under the fork's own hold key — a 2.5 hold never shows
@@ -1349,6 +1353,50 @@ try:
     check("[B19] a hold on the 2.5 server shows on its own row (Held on 2.5.1), the 2.1 row keeps its version",
           bool(row) and any("Held on 2.5.1" in x for x in row["pop"]) and any("2.1.9-4" in x and "Held" not in x for x in row["pop"]), row)
     check("[console] Turn proxies with two csqtt versions: clean", not console_bad(tab), console_bad(tab)[:3])
+    tab.close()
+
+    # ── [B20] a default app per csqtt LINE (operator, 2026-10-29): the client apps sheet has a 2.1 / 2.5 switch while both are
+    # on offer; 2.5 lists only apps of its line and shows the app it would hand out; a save writes "csqtt@2.5" alone ────────
+    must(call("POST", "/api/panel/settings", {"turn_client_default": {"csqtt": {"windows": "focsq"}}}), "2.1's Windows default FOCSQ")
+    SW = "[...document.querySelectorAll('.overlay.show .csq-linesw button')].map(b => b.textContent.trim() + (b.classList.contains('on') ? '*' : ''))"
+    CELL = "(() => { const c = [...document.querySelectorAll('.overlay.show .osapp-cell')].find(b => b.querySelector('.osapp-ic svg') && b.classList.contains('on')); return c ? c.querySelector('.osapp-col').textContent.trim() : null; })()"
+    MENU = "[...document.querySelectorAll('.overlay.show .osapp-menu .cpick-opt:not(.cpick-none) .ce-name b')].map(b => b.textContent.trim())"
+    for lang in ("en", "ru"):
+        for vp in (None, (390, 844)):
+            tab = open_app(lang, viewport=vp) if vp else open_app(lang)
+            ev_mod(tab, "turn", "M.openServerClients('csqtt', 'windows'); return true;"); settle(tab, 900)
+            sw = tab.ev(SW)
+            check("[B20] %s %s: both lines on offer → the switch, on 2.1" % (lang, "390" if vp else "desktop"),
+                  sw == ["csqtt 2.1*", "csqtt 2.5"], sw)
+            c21 = tab.ev(CELL)
+            tab.ev("[...document.querySelectorAll('.overlay.show .csq-linesw button')][1].click()"); settle(tab, 400)
+            c25 = tab.ev(CELL)
+            check("[B20] %s %s: Windows shows FOCSQ for 2.1 and, with nothing chosen for 2.5, La Lune (FOCSQ speaks 2.1 only)" % (lang, "390" if vp else "desktop"),
+                  (c21 or "").startswith("FOCSQ") and (c25 or "").startswith("La Lune"), [c21, c25])
+            tab.ev("document.querySelector('.overlay.show .osapp-cell.on').click()"); settle(tab, 400)
+            menu = tab.ev(MENU)
+            check("[B20] %s %s: 2.5's Windows list holds only apps of the line (La Lune, csq-socks — no FOCSQ)" % (lang, "390" if vp else "desktop"),
+                  "FOCSQ" not in menu and "La Lune" in menu and "csq-socks" in menu, menu)
+            shot(tab, "b20-%s-%s" % (lang, "390" if vp else "desk"))
+            tab.close()
+    tab = open_app("en")
+    ev_mod(tab, "turn", "M.openServerClients('csqtt', 'windows', '2.5'); return true;"); settle(tab, 900)
+    check("[B20] opened for a 2.5 server, the sheet starts on 2.5", tab.ev(SW) == ["csqtt 2.1", "csqtt 2.5*"], tab.ev(SW))
+    tab.ev("document.querySelector('.overlay.show .osapp-cell.on').click()"); settle(tab, 300)
+    tab.ev("[...document.querySelectorAll('.overlay.show .osapp-menu .cpick-opt')].find(b => /csq-socks/.test(b.textContent)).click()"); settle(tab, 300)
+    tab.ev("[...document.querySelectorAll('.overlay.show .btn-primary')].pop().click()"); settle(tab, 1500)
+    tcd = ev_mod(tab, "store", "await M.Store.poll(); return (M.Store.panelSettings || {}).turn_client_default || {};") or {}
+    check("[B20] saving under 2.5 writes csqtt@2.5 and leaves 2.1's choice alone",
+          (tcd.get("csqtt@2.5") or {}).get("windows") == "csqsocks" and (tcd.get("csqtt") or {}).get("windows") == "focsq", tcd)
+    tab.close()
+    # one line on offer and none other running: no switch, and the list is as it always was
+    tab = open_app("en")
+    ev_mod(tab, "store", "const S = M.Store; S.csqttLines = ['2.1']; (S.nodes || []).forEach(n => Object.values(n.csqtt_cfg || {}).forEach(c => { if (c) c.line = '2.1'; })); S.poll = () => Promise.resolve(); return true;")
+    ev_mod(tab, "turn", "M.openServerClients('csqtt', 'windows'); return true;"); settle(tab, 900)
+    check("[B20] a panel offering one line shows no switch", tab.ev(SW) == [], tab.ev(SW))
+    tab.ev("document.querySelector('.overlay.show .osapp-cell.on').click()"); settle(tab, 300)
+    check("[B20] …and its Windows list is unfiltered (FOCSQ still there)", "FOCSQ" in tab.ev(MENU), tab.ev(MENU))
+    check("[console] the client apps sheet with its line switch: clean", not console_bad(tab), console_bad(tab)[:3])
     tab.close()
 finally:
     stop.set()

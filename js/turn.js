@@ -954,11 +954,11 @@ export function AppDropdown({ value, options, onChange }) {
       ${lbl(o)}${o.id === cur.id ? html`<${Ic} i="check"/>` : null}</button>`)}</div>` : null}
   </div>`;
 }
-export function openServerClients(fork, os) { pushModal(html`<${ServerClientsSheet} fork=${fork} initialOs=${os}/>`); }
-export function ServerClientsSheet({ fork, initialOs }) {
+export function openServerClients(fork, os, line) { pushModal(html`<${ServerClientsSheet} fork=${fork} initialOs=${os} initialLine=${line}/>`); }
+export function ServerClientsSheet({ fork, initialOs, initialLine }) {
   const f = turnForkList().find(x => x.id === fork) || {};
   return html`<${Sheet} title=${html`${T("Default client apps")} <span class="faint" style="text-transform:none;letter-spacing:0">— <b style=${"color:" + (turnColor(fork) || "var(--fg)") + ";font-weight:700"}>${f.label}</b></span>`} width=${880} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
-    <${ServerClientsBody} fork=${fork} initialOs=${initialOs}/>
+    <${ServerClientsBody} fork=${fork} initialOs=${initialOs} initialLine=${initialLine}/>
   <//>`;
 }
 // ── Client-picker entry model ── the apps/CLIs that can drive THIS fork's server, each a rich row for the styled
@@ -1059,12 +1059,20 @@ export function autostartIcon(on) {
 // ── Shared client-picker state: OS tab + selected app + staged in-app settings — one hook so a proxy sheet can show
 // the app picker inline (under "Forwards to") and its settings in the "Client parameters" section, both driven off the
 // same selection. `commitRef` (embedded) lets the parent sheet's Save commit the staged default+settings (true iff changed). ──
-export function useTurnClients(fork, commitRef, initialOs) {
+export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   useStore();
   const f = turnForkList().find(x => x.id === fork) || {};
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  // csqtt's two lines do not speak to each other, so each has its own default (operator, 2026-10-29): 2.1's is stored under
+  // "csqtt", 2.5's under "csqtt@2.5". The switch exists only while more than one line is on offer, or a server already runs
+  // a line other than 2.1 — a one-line panel sees exactly what it saw before.
+  const isCsq = fork === "csqtt";
+  const linesOn = isCsq && (csqttLinesOn() || (Store.nodes || []).some(n => Object.values(n.csqtt_cfg || {}).some(c => c && c.line && c.line !== CSQTT_DEFAULT_LINE)));
+  const [line, setLineRaw] = useState(linesOn && initialLine === "2.5" ? "2.5" : CSQTT_DEFAULT_LINE);
+  const dkey = isCsq && line === "2.5" ? "csqtt@2.5" : fork;                   // the turn_client_default key this line's choice lives under
+  const speaks = cid => (((cmap[cid] || {}).csqtt_lines) || [CSQTT_DEFAULT_LINE]).includes(line);
   const byOs = {};
-  _OS_TABS.forEach(([o]) => { byOs[o] = pickerEntries(f, o); });               // rich entries (GUI apps + per-author CLIs), native-first
+  _OS_TABS.forEach(([o]) => { byOs[o] = pickerEntries(f, o).filter(en => !linesOn || speaks(en.cid)); });   // rich entries, native-first; a csqtt line lists only its apps
   const first = (_OS_TABS.find(([o]) => byOs[o].length) || [])[0] || "android";
   const [os, setOs] = useState((initialOs && (byOs[initialOs] || []).length) ? initialOs : first);   // opened from a specific OS button → land on that tab
   const [sel, setSel] = useState({});                                          // {os: entry key}
@@ -1072,14 +1080,18 @@ export function useTurnClients(fork, commitRef, initialOs) {
   const [flash, setFlash] = useState(null); const [busy, setBusy] = useState(false);
   const entries = byOs[os] || [];
   // the admin's saved end-user default (an entry key) for this (fork, OS); falls back to the top-priority entry if unset / stale
-  const savedDefault = (o) => (((Store.panelSettings || {}).turn_client_default || {})[fork] || {})[o];
+  const savedOf = (k, o) => (((Store.panelSettings || {}).turn_client_default || {})[k] || {})[o];
+  const savedDefault = (o) => savedOf(dkey, o);
+  // 2.5 with no choice of its own hands out what the sub page does: 2.1's choice if it speaks 2.5 (or "not offered"), else
+  // the line's top app — shown, so an operator sees that FOCSQ on Windows becomes La Lune there
+  const inherited = (o) => dkey === "csqtt@2.5" && savedDefault(o) === undefined;
   // NONE_KEY = "don't offer this server on this OS": a real, storable choice, not the absence of one — so it is
   // valid wherever a client id is, and it round-trips through settings. It has no `cid`, so anything keyed by
   // client id must skip it (see save()).
   const noneEntry = (o) => ({ key: NONE_KEY, cid: null, none: true, isCli: false, native: false, obf: "",
                               autostart: false, coreFork: null, author: "", color: "",
                               name: T("Not offered on {v1}", { v1: (_OS_TABS.find(([x]) => x === o) || [])[1] || o }) });
-  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; if (sd === NONE_KEY) return NONE_KEY; if (sd && es.some(e => e.key === sd)) return sd; return (es[0] || {}).key || null; };
+  const validDefault = (o) => { const sd = inherited(o) ? savedOf(fork, o) : savedDefault(o), es = byOs[o] || []; if (sd === NONE_KEY) return NONE_KEY; if (sd && es.some(e => e.key === sd)) return sd; return (es[0] || {}).key || null; };
   const selEntry = (o) => { const es = byOs[o] || []; if (!es.length) return null; const k = sel[o] !== undefined ? sel[o] : validDefault(o); if (k === NONE_KEY) return noneEntry(o); return es.find(x => x.key === k) || es[0]; };   // the chosen entry for ANY os (each OS button shows its own)
   const selKey = sel[os] !== undefined ? sel[os] : validDefault(os);
   const e = selKey === NONE_KEY ? noneEntry(os) : (entries.find(x => x.key === selKey) || entries[0] || null);
@@ -1100,7 +1112,7 @@ export function useTurnClients(fork, commitRef, initialOs) {
   const save = async (close) => {
     setBusy(true);
     const def = { ...((Store.panelSettings || {}).turn_client_default || {}) };
-    const dfo = { ...(def[fork] || {}) }; dfo[os] = e.key; def[fork] = dfo;    // record this ENTRY (app or CLI-author, or NONE_KEY) as the (fork, OS) default
+    const dfo = { ...(def[dkey] || {}) }; dfo[os] = e.key; def[dkey] = dfo;    // record this ENTRY (app or CLI-author, or NONE_KEY) as the (fork[@line], OS) default
     const all = { ...((Store.panelSettings || {}).turn_client_settings || {}) };
     if (!e.none) {                                                            // T("not offered") has no client id — writing settings under it would key the map on null
       const fo = { ...(all[fork] || {}) }; const co = { ...(fo[cid] || {}) };
@@ -1117,7 +1129,10 @@ export function useTurnClients(fork, commitRef, initialOs) {
     return false;
   };
   if (commitRef) commitRef.current = () => (dirty && !busy ? save().then(() => true) : Promise.resolve(false));   // the parent proxy-sheet's Save commits the staged client default/settings; resolves true iff it actually changed something
-  return { f, byOs, os, setOs, setSel, selEntry, entries, e, cSchema, osLabel, cName, appColor, effVals, stageSetting, dirty, isDefault, settingsDirty, save, busy, flash };
+  // a switch of line drops the staged picks: each line saves its own key, and a pick shown under the other line was never its
+  const setLine = l => { setSel({}); setLineRaw(l); };
+  return { f, byOs, os, setOs, setSel, selEntry, entries, e, cSchema, osLabel, cName, appColor, effVals, stageSetting, dirty, isDefault, settingsDirty, save, busy, flash,
+           linesOn, line, setLine, inherited };
 }
 // The app picker — OS tabs + the styled client dropdown (the app the fork's sub page hands out). Shown inline, right
 // under "Forwards to", so the choice is visible without opening a section.
@@ -1134,7 +1149,7 @@ export function clientAppLabel(e) {
 // reveals the tags + "offered to <OS> users"; clicking a button makes that OS active (drives the Client-parameters
 // body) and expands its app list to pick from. `offered` → phrase the bubble as an end-user offer (proxy sheets).
 export function TurnAppsPicker({ ctl, offered }) {
-  const { f, byOs, os, setOs, setSel, selEntry } = ctl;
+  const { f, byOs, os, setOs, setSel, selEntry, linesOn, line, setLine } = ctl;
   const [openOs, setOpenOs] = useState(null);
   useEffect(() => { if (!openOs) return; const h = () => setOpenOs(null); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [openOs]);
   const anyApp = _OS_TABS.some(([o]) => byOs[o].length);
@@ -1143,6 +1158,11 @@ export function TurnAppsPicker({ ctl, offered }) {
   const openCur = openOs ? selEntry(openOs) : null;
   const pick = (o, key) => { setSel(m => ({ ...m, [o]: key })); setOs(o); setOpenOs(null); };
   return html`<${Fragment}>
+    ${linesOn ? html`<div class="dpsw awgsw csq-linesw" role="radiogroup" aria-label=${T("csqtt version")}>${["2.1", "2.5"].map(l =>
+        html`<button type="button" role="radio" aria-checked=${line === l} class=${line === l ? "on" : ""} onClick=${() => { setOpenOs(null); setLine(l); }}>csqtt ${l}</button>`)}</div>
+      <div class="hint csq-linehint">${line === "2.5"
+        ? T("The apps 2.5 servers hand out. Where you haven't chosen, 2.5 gets 2.1's app if it speaks 2.5, else the first that does — shown below.")
+        : T("The apps 2.1 servers hand out — and 2.5 servers too, where you haven't chosen for 2.5 and the app speaks it.")}</div>` : null}
     <div class="osapp-hd">${T("Select an app for each OS")}</div>
     <div class=${"osapp" + (openOs ? " menuopen" : "")} onClick=${ev => ev.stopPropagation()}>
       ${_OS_TABS.map(([o, label]) => {
@@ -1200,8 +1220,8 @@ export function TurnClientParams({ ctl, embedded }) {
   <//>`;
 }
 // Standalone client picker (opened from a fork-row platform button): app picker + its Default settings + a Save.
-export function ServerClientsBody({ fork, initialOs }) {
-  const ctl = useTurnClients(fork, null, initialOs);
+export function ServerClientsBody({ fork, initialOs, initialLine }) {
+  const ctl = useTurnClients(fork, null, initialOs, initialLine);
   return html`<${Fragment}>
     <${TurnAppsPicker} ctl=${ctl}/>
     <div style="margin-top:16px"><${TurnClientParams} ctl=${ctl} embedded=${false}/></div>

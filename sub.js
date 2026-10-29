@@ -306,6 +306,15 @@
     // 1) the admin's chosen END-USER default for this (fork, OS): a client id, or "sidecar@<author>" (a CLI build).
     //    Honoured ONLY if that client is still COMPATIBLE with the fork — a saved default goes stale when a pairing is
     //    retired (e.g. VK TURN Proxy dropped from MYSOREZ), and a stale default must never resurrect a dead pairing.
+    // A csqtt 2.5 server reads the operator's default for its line first (turn_client_default["csqtt@2.5"]; operator,
+    // 2026-10-29): "none" hides only 2.5 servers on this OS, an app of the line is handed out, and anything else — unset,
+    // stale, of the other line — falls through to the path below, unchanged (the "csqtt" default if it speaks 2.5, else
+    // the rank).
+    if (forkId === "csqtt" && line === "2.5") {
+      var d25 = (((_lastData && _lastData.turn_client_default) || {})["csqtt@2.5"] || {})[os];
+      if (d25 === "none") return null;
+      if (d25 && clients[d25] && (compat[d25] || !hasCompat)) { var b25 = build(d25); if (b25) return b25; }
+    }
     var def = (((_lastData && _lastData.turn_client_default) || {})[forkId] || {})[os];
     // "none" = the operator chose DON'T OFFER this server on this OS. Return nothing and stop — every caller
     // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the

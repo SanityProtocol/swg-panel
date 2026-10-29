@@ -26494,10 +26494,14 @@ def api(method, path, qs, body, deps):
             dmerged = dict(cur.get("turn_client_default") or {})
             for fk, osmap_in in list(tcd.items())[:32]:
                 fk = str(fk)
-                if fk not in TURN_SERVERS or not isinstance(osmap_in, dict):
+                # "csqtt@2.5": csqtt's default for its 2.5 line (operator, 2026-10-29) — the plain "csqtt" key stays 2.1's. Only
+                # an app that speaks 2.5 (catalog csqtt_lines) can be stored under it; validated against csqtt's own compat.
+                line = fk.split("@", 1)[1] if fk == "csqtt@2.5" else None
+                base = "csqtt" if line else fk
+                if base not in TURN_SERVERS or not isinstance(osmap_in, dict):
                     continue
-                compat = _turn_compat(fk)                # a hidden app (TURN_HIDDEN_CLIENTS) is no default a visible fork can save
-                cli_authors = _turn_cli_authors(fk)
+                compat = _turn_compat(base)              # a hidden app (TURN_HIDDEN_CLIENTS) is no default a visible fork can save
+                cli_authors = _turn_cli_authors(base)
                 fout = {}
                 for osk, cidv in list(osmap_in.items())[:8]:
                     osk = str(osk); cidv = str(cidv)
@@ -26508,7 +26512,8 @@ def api(method, path, qs, body, deps):
                     elif cidv.startswith("sidecar@"):   # per-author CLI: sidecar@<author> — the author must drive this fork
                         if "sidecar" in compat and cidv.split("@", 1)[1] in cli_authors:
                             fout[osk] = cidv
-                    elif cidv in TURN_CLIENTS and cidv in compat:   # a GUI/app client that actually connects to this fork
+                    elif cidv in TURN_CLIENTS and cidv in compat and (
+                            not line or line in (TURN_CLIENTS[cidv].get("csqtt_lines") or [CSQTT_DEFAULT_LINE])):   # …of the key's line
                         fout[osk] = cidv
                 dmerged[fk] = fout                       # replace THIS fork's default map (frontend sends the complete subtree)
             cur["turn_client_default"] = dmerged

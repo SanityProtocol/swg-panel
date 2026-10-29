@@ -52,6 +52,9 @@ Fixture — node q-node, three deployments per device:
   [13] the 2.5 clients on the desktop (S13a): Dana's 2.5 server on Linux/Windows gets La Lune (FOCSQ speaks 2.1 only) and its
       Start shows the CSQTTR step; with the operator's choice csq-socks serves both lines, with its download and its own
       terminal steps (EN, RU); Anna's 2.1 server still offers FOCSQ — csq-socks, a command-line client, ranks after the apps
+  [14] a default per csqtt line (operator, 2026-10-29): with turn_client_default["csqtt@2.5"], Dana's 2.5 server gets 2.5's
+      own choice (csq-socks on Linux; "none" on Windows hides only it) while her 2.1 server keeps 2.1's FOCSQ; a 2.1-only
+      app stored under it is passed over (La Lune, as with no choice)
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -84,6 +87,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-subport    runs a swg-sub that never puts the device's incoming port on a deployment → RED on [12]
      --perturb-csqrank    serves a sub.js that ranks csq-socks as an app (it sorts first on a 2.1 desktop) → RED on [13]
      --perturb-csqsteps   serves a sub.js whose csq-socks cell shows the generic app steps → RED on [13]
+     --perturb-line25     serves a sub.js that ignores the 2.5 line's own default ("csqtt@2.5") → RED on [14]
      --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
      --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
      --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
@@ -123,11 +127,12 @@ P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
 P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
 P_CSQRANK = "--perturb-csqrank" in sys.argv
 P_CSQSTEPS = "--perturb-csqsteps" in sys.argv
+P_LINE25 = "--perturb-line25" in sys.argv
 P_LL25 = "--perturb-ll25" in sys.argv
 P_LLFIRE = "--perturb-llfire" in sys.argv
 P_LL21 = "--perturb-ll21" in sys.argv
 PERTURB = (P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21)
+           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -311,6 +316,8 @@ if P_PICKMARK:
     perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
 if P_CSQRANK:
     perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
+if P_LINE25:
+    perturbed_web('    if (forkId === "csqtt" && line === "2.5") {', '    if (false) {', "the 2.5 line's own default")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -869,6 +876,27 @@ try:
                   any(x.startswith("csqtt://") and not x.startswith("csqtt://connect") for x in clip)
                   and any(SOCKS[(os_, lang)] in x for x in steps) and not any(u.startswith("csqtt:") for u in navs), (res, [x[:30] for x in clip], steps))
             tab.close()
+    # [14] a default per csqtt LINE (operator, 2026-10-29): "csqtt@2.5" is 2.5's own — csq-socks for Linux, "none" for
+    # Windows — while 2.1 keeps FOCSQ; a 2.1-only app stored there anyway (macOS has none; on Linux FOCSQ) changes nothing
+    serve["turn_client_default"] = {"csqtt": {"linux": "focsq", "windows": "focsq"}, "csqtt@2.5": {"linux": "csqsocks", "windows": "none"}}
+    J("subs/serve.json", serve)
+    for lang in ("en", "ru"):
+        tab, rd = render("u4", "linux", lang)
+        r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]; r21 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
+        check("[14] linux/%s: 2.5's own default csq-socks serves the 2.5 server, 2.1's FOCSQ the 2.1 one" % lang,
+              len(r25) == 1 and "csq-socks" in (r25[0] or "") and len(r21) == 1 and "FOCSQ" in (r21[0] or ""), [r21, r25])
+        tab.close()
+        tab, rd = render("u4", "windows", lang)
+        r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]; r21 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
+        check("[14] windows/%s: 2.5's \"none\" hides only the 2.5 server; the 2.1 one keeps FOCSQ" % lang,
+              r25 == [] and len(r21) == 1 and "FOCSQ" in (r21[0] or ""), [r21, r25])
+        tab.close()
+    serve["turn_client_default"] = {"csqtt": {"linux": "focsq"}, "csqtt@2.5": {"linux": "focsq"}}
+    J("subs/serve.json", serve)
+    tab, rd = render("u4", "linux", "en")
+    r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[14] a 2.1-only app under csqtt@2.5 is passed over: the 2.5 server gets La Lune, as with no choice", len(r25) == 1 and "La Lune" in (r25[0] or ""), r25)
+    tab.close()
     serve["turn_client_default"] = {}
     J("subs/serve.json", serve)
 
