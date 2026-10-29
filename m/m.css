@@ -205,6 +205,10 @@ html[data-ui="m"] {
     border-radius: 18px 18px 0 0; background: var(--surface); box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5); font-size: 14px;
   }
   & .tf-plbub { display: none !important; }
+  /* a list picker inside a bubble (Blocking's "Add list"): the bubble's width, not the desktop's 288 px, and its own height */
+  & .deppop .bk-pick { width: auto; max-height: none; }
+  & .deppop .bk-picklist { max-height: 55dvh; }
+  & .deppop .bk-pickitem { min-height: 48px; justify-content: center; }
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
   /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
   & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
@@ -821,7 +825,7 @@ html[data-ui="m"] {
   & .sheet-body:has(> .osapp) > div:last-child > div:last-child { flex-wrap: wrap; gap: 10px; }
   & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .faint { flex: 1 1 100%; }
   & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .btn-primary { flex: 1 1 100%; min-height: 44px; justify-content: center; }
-  & .sheet-head:has(> .sheet-back) > .sheet-back { order: -1; margin-right: auto; }
+  & .sheet-head:has(> .sheet-back) > .sheet-back { order: -1; margin: 0 auto 0 -8px; }
   & .sheet-head:has(> .sheet-back) > h3 { flex: 1 1 100%; }
   /* Interfaces → colours: two even columns, each protocol's swatches then its name */
   & .palrow { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
