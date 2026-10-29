@@ -613,8 +613,15 @@ html[data-ui="m"] {
      (Its target field sat in the 16 px rail the hidden grip left: "impossible to configure at all", operator 2026-10-29) ───── */
   & .rrrow { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 10px 12px; }
   & .rrrow > .tfield { grid-column: 1; }
-  & .tfield .tf-vtog { left: auto; right: 6px; top: 8px; opacity: .8; z-index: 1; }
-  & .tfield:has(> .tf-vtog) .tf-box { padding-right: 34px; }
+  /* the list / text switch: a 40 px tap box in the field's corner, the field's text kept clear of it (operator, 2026-10-29: "very
+     difficult to tap") */
+  & .tfield .tf-vtog {
+    left: auto; right: 4px; top: 4px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+    opacity: 1; z-index: 2; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line);
+  }
+  & .tfield .tf-vtog .ic svg { width: 20px; height: 20px; }
+  & .tfield:has(> .tf-vtog) .tf-box, & .tfield:has(> .tf-vtog) .tf-text { padding-right: 52px; }
+  & .tf-text { font-size: 14px; }
   & .tf-box { min-height: 56px; }
   & .tf-in { min-width: 0; flex: 1 1 160px; font-size: 15px; padding: 6px 2px; }
   & .tf-foot { align-items: center; gap: 8px 10px; font-size: 12px; }
