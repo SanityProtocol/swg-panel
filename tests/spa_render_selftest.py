@@ -864,13 +864,15 @@ try:
             # S13 (the S7 backlog): the server sheet's other click-only edits arm its guard, and a flip back disarms it
             REACH = "[...document.querySelectorAll('.overlay.show .reachfield [role=radio]')]"
             r0 = tab.ev("%s.findIndex(b => b.getAttribute('aria-checked') === 'true')" % REACH)
-            tab.ev("%s[%d].click()" % (REACH, 0 if r0 else 1)); settle(tab, 300)
+            tab.ev("(%s[%d] || {click() {}}).click()" % (REACH, 0 if r0 else 1)); settle(tab, 300)
             tab.ev(ESC); settle(tab, 300)
-            check("[B17] a click edit on the server sheet (Device access) asks before Esc discards it", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
-            click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
-            tab.ev("%s[%d].click()" % (REACH, r0)); settle(tab, 300)
-            tab.ev(ESC); settle(tab, 400)
-            check("[B17] …and flipped back, Esc closes it without asking", not tab.ev("!!document.querySelector('.overlay.show .sheet')"), tab.ev(ASKS))
+            asked = "Discard unsaved changes?" in tab.ev(ASKS)
+            check("[B17] a click edit on the server sheet (Device access) asks before Esc discards it", asked, tab.ev(ASKS))
+            if asked:                                  # (it closed when it did not ask: nothing left to flip back)
+                click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
+                tab.ev("(%s[%d] || {click() {}}).click()" % (REACH, r0)); settle(tab, 300)
+                tab.ev(ESC); settle(tab, 400)
+                check("[B17] …and flipped back, Esc closes it without asking", not tab.ev("!!document.querySelector('.overlay.show .sheet')"), tab.ev(ASKS))
         if lang == "en" and vp[0] == 1280:
             # edit the second row: its person is listed in the picker with the devices on this server, its rule is "No App routing"
             tab.ev("document.querySelectorAll('.arx-row')[1].querySelector('button[aria-label=\"Edit exception\"]').click()"); settle(tab, 700)
@@ -883,8 +885,10 @@ try:
             check("[B17] Own rule opens the App routing form", tab.ev("[...document.querySelectorAll('.overlay.show .sheet')].pop().textContent.includes('Every app uses the tunnel')"))
             n1 = tab.ev("document.querySelectorAll('.overlay.show .sheet').length")
             tab.ev(ESC); settle(tab, 300)
-            check("[B17] an Own rule that sets nothing is no change: Esc closes the exception's sheet without asking (S13, F46)",
-                  tab.ev("document.querySelectorAll('.overlay.show .sheet').length") == n1 - 1, tab.ev(ASKS))
+            closed = tab.ev("document.querySelectorAll('.overlay.show .sheet').length") == n1 - 1
+            check("[B17] an Own rule that sets nothing is no change: Esc closes the exception's sheet without asking (S13, F46)", closed, tab.ev(ASKS))
+            if not closed:                             # it asked: discard, so the steps below start where they expect
+                click_text(tab, ".overlay.show .sheet-foot button", "/^Discard$/"); settle(tab, 300)
             tab.ev("document.querySelectorAll('.arx-row')[1].querySelector('button[aria-label=\"Edit exception\"]').click()"); settle(tab, 700)
             click_text(tab, ".overlay.show [role=radio]", "/^Own rule$/"); settle(tab, 400)
             tab.ev("(() => { const ta = [...[...document.querySelectorAll('.overlay.show .sheet')].pop().querySelectorAll('textarea')][0];"
