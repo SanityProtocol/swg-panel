@@ -346,7 +346,7 @@ export function TargetSettingsSheet({ node, iface, opts, meta, onSave, readOnly 
   const save = () => { if (Object.keys(errs).length) return; onSave(cur); closeModal(); };
   return html`<${Sheet} title=${T("Settings — {v1}", { v1: iface })} width=${560} onBack=${closeModal}
     foot=${readOnly ? footRow({ onCancel: closeModal, cancelLabel: T("Close"), action: null })
-      : footRow({ left: html`<button class="btn btn-ghost" onClick=${() => { setDns(d.dns); setMtu(d.mtu); setKa(d.keepalive); setAllowed(d.allowed); }}>${T("Reset to interface defaults")}</button>`,
+      : footRow({ left: html`<button class="btn btn-ghost m-wide" onClick=${() => { setDns(d.dns); setMtu(d.mtu); setKa(d.keepalive); setAllowed(d.allowed); }}>${T("Reset to interface defaults")}</button>`,
                   onCancel: closeModal, onAction: save, action: T("Apply"), disabled: !!Object.keys(errs).length })}>
     <div class="hint" style="margin-bottom:10px">${T("These apply to this deployment only — {v1} on {v2}. The peer's other deployments keep their own.", { v1: iface, v2: Store.nodeName(node) })}</div>
     <div class="field"><label>${T("Client allowed IPs (routing)")}</label>

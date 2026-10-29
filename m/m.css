@@ -136,6 +136,8 @@ html[data-ui="m"] {
   /* one other action, not a destructive one (New user's "Create only"): as wide as the main action, right above it (operator) */
   & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn)))
     > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) { grid-column: 4 / span 3; }
+  /* …except one that resets the form (.m-wide, the deployment settings' "Reset to interface defaults"): the whole width (operator) */
+  & :is(.sheet-foot, .editfoot) > .m-wide { grid-column: 1 / -1 !important; }
   & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
   & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
   & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
