@@ -7725,6 +7725,7 @@ export const STR = {
   "Open node": "Открыть ноду",
   "Add an exit": "Добавить выход",
   "rowact|Restart": "Рестарт",
+  "rowact|New": "Новый",
   "rowact|Stop": "Стоп",
   "rowact|Start": "Старт",
   "csqtt version": "Версия csqtt",

@@ -934,14 +934,14 @@ html[data-ui="m"] {
   /* adding a device to a node's ways out (its own sheet on a phone): each field the sheet's width */
   & .overlay.show .sheet .exname { flex-direction: column; align-items: stretch; gap: 14px; margin: 0; }
   & .overlay.show .sheet .exname > .exname-f { flex: none; min-width: 0; width: 100%; }
-  /* a node page section's head (Interfaces, Turn proxies): one shape for every one (operator, 2026-10-29) — its name and count
-     on the first line; every action (logs, settings, New interface / New proxy) on one line under it, at the right; what does
-     not fit wraps, still to the right */
-  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) { flex-wrap: wrap; justify-content: flex-end; row-gap: 10px; }
-  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .grow { order: 1; flex: 1 1 auto; }
-  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico))::after { content: ""; order: 2; flex: 1 0 100%; height: 0; }
+  /* a node page section's head (Interfaces, Turn proxies): ONE line (operator, 2026-10-29) — its name and count, then every
+     action at the right: logs, settings, "+ New" (the section says what is new). The section's own icon is not drawn here, to
+     give the line its room; a rare second add (a turn proxy on a node with none) wraps, at the right */
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) { flex-wrap: wrap; justify-content: flex-end; row-gap: 10px; column-gap: 8px; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .panel-ic { display: none; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .grow { order: 1; flex: 1 1 0; min-width: 0; }
   & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini.ico { order: 3; width: 40px; min-height: 40px; }
-  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini:not(.ico) { order: 4; min-height: 40px; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini:not(.ico) { order: 4; min-height: 40px; padding: 0 12px; }
   /* an interface card says its name is the way to edit it: the pencil a desktop shows on hover is always there, in a tap box */
   & .ifc-edit { padding: 6px 8px; margin: -6px -6px -6px -6px; }
   & .ifc-pic { opacity: 1; width: 28px; height: 28px; justify-content: center; border: 1px solid var(--line); border-radius: 8px; margin-left: 4px; }
