@@ -152,6 +152,9 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
   & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
   & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
+  /* …unless it has exactly one other button (Arrived here's Clear beside Close): the two share the line in halves (operator) */
+  & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)):has(> .btn-primary):has(> :is(.btn, button):not(.btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-primary, .m-wide))) > :is(.btn, button):not(.btn-primary, .m-wide) { grid-column: 1 / span 3 !important; }
+  & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)):has(> .btn-primary):has(> :is(.btn, button):not(.btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-primary, .m-wide))) > .btn-primary { grid-column: 4 / span 3; }
 
   /* ───── bubbles: a bottom sheet, like More (operator, 2026-10-29) — full width, rounded top, a grab handle, the page dimmed
      behind it (its own shadow; a bubble has no overlay element) — over whatever place() computed. A tap outside closes it,
