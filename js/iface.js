@@ -11,7 +11,7 @@
  */
 
 import { T, Trich, Tsplit, plural, pluralWord, srvText, fmtNum } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge} from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
@@ -95,6 +95,12 @@ function adoptPreselect(type, why) {
   const [a, b] = Tsplit(". Preselected {type} because {why}", "type", { why });
   return html`<${Fragment}>${a}<b>${type}</b>${b}<//>`;
 }
+
+// An interface's AmneziaWG values: on a phone folded under their heading, a tap away — a dozen lines of numbers pushed the
+// rest of the page down (operator, 2026-10-29); a desktop shows them as before
+const awgFold = body => isMobile()
+  ? html`<details class="iface-amnezia m-awgfold"><summary><span class="ig-l">AmneziaWG</span></summary>${body}</details>`
+  : html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span>${body}</div>`;
 
 export function IgnoredIfacesCard() {
   useStore();
@@ -702,7 +708,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             <div class="ig-item"><span class="ig-l">${T("Subnet")}</span><span class="ig-v">${missIf.subnet || "—"}</span></div>
             <div class="ig-item"><span class="ig-l">${T("Listen port")}</span><span class="ig-v">${missIf.listen_port || "—"}</span></div>
           </div>
-          ${type === "awg" ? html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span><div class="iface-grid" style="margin-top:8px">${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}</div><${Awg3Row} ap=${ap}/></div>` : null}
+          ${type === "awg" ? awgFold(html`<div class="iface-grid" style="margin-top:8px">${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}</div><${Awg3Row} ap=${ap}/>`) : null}
         <//></>`
       : ghostIf ? html`<${Fragment}>
           <div class="notice danger"><${Ic} i="warn"/><span>${Trich("Interface *{iface}* is gone from {node} with *no recoverable key*, so it can't be restored — this view is *read-only*. Recreating it means a *new server key*, and every peer below must *re-import* a fresh QR / config. The only action here is *Recreate and rekey interface*.", { iface, node: dname })}</span></div>
@@ -721,7 +727,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
             : html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${ifopDone(op.verb)}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${ifopFail(op.verb)} msg=${op.err || T("the action failed on the node")} title=${T("Action failed on the node")}/>` : null}${(op && op.phase === "busy") ? null : notup
               ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bring this interface up on the node")} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
-              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Take this interface down on the node (stays down until started)")} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/>${T("Edit interface")}</button><//>`}>
+              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Take this interface down on the node (stays down until started)")} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/>${(isMobile() ? T("Edit") : T("Edit interface"))}</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -736,13 +742,10 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
               : html`<span class="faint" title=${T("This node hasn't reported drop counters for this interface yet.")}>—</span>`}</span></div>`;
           })()}
         </div>
-        ${type === "awg" ? html`<div class="iface-amnezia">
-          <span class="ig-l">AmneziaWG</span>
-          <div class="iface-grid" style="margin-top:8px">
+        ${type === "awg" ? awgFold(html`<div class="iface-grid" style="margin-top:8px">
             ${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}
           </div>
-          <${Awg3Row} ap=${ap}/>
-        </div>` : null}
+          <${Awg3Row} ap=${ap}/>`) : null}
       <//>`}
 
     ${meta ? html`<${IfaceThroughput} node=${node} iface=${iface}/>` : null}
@@ -898,7 +901,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
               reclaiming ? T("Reclaiming…") : T("Reclaim")}</button>`
           : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") || awaiting ? null : notup
           ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : (isCsq ? T("Bring this csqtt server up on the node") : T("Bring this WDTT server up on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
-          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Take this csqtt server down (stays down until started)") : T("Take this WDTT server down (stays down until started)"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Bounce this csqtt server on the node") : T("Bounce this WDTT server on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => (isCsq ? openEditCsqtt(node, iface) : openEditWdtt(node, iface))}><${Ic} i="pencil"/>${T("Edit interface")}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${(isCsq ? T("Stop + remove this csqtt server and disconnect its users") : T("Stop + remove this WDTT server and disconnect its users"))} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
+          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Take this csqtt server down (stays down until started)") : T("Take this WDTT server down (stays down until started)"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Bounce this csqtt server on the node") : T("Bounce this WDTT server on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "restart")}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => (isCsq ? openEditCsqtt(node, iface) : openEditWdtt(node, iface))}><${Ic} i="pencil"/>${(isMobile() ? T("Edit") : T("Edit interface"))}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${(isCsq ? T("Stop + remove this csqtt server and disconnect its users") : T("Stop + remove this WDTT server and disconnect its users"))} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
@@ -2064,7 +2067,7 @@ export function EditIfaceSheet({ node, iface }) {
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
-        : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}
+        : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}
       <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !!mimErr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || mimErr || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     <div class="iface-intro"><div>${Trich("Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.")}</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("This interface is *down* on the node. Change the *Listen port* to a free one and *Save* — the panel will write the new port and restart the interface to bring it up.")}</span></div>` : null}

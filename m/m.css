@@ -722,6 +722,15 @@ html[data-ui="m"] {
   & .dpsw.netsw-share:has(> :nth-child(3)) > button { min-height: 40px; }
   /* a pending node's Restore / move: a whole row under the four cells, in plain words */
   & .dh-ver > .iconbtn.recover { grid-column: 1 / -1; flex-direction: row; gap: 8px; min-height: 44px; height: auto; text-transform: none; letter-spacing: 0; font: 600 14px var(--sans); }
+  /* …folded under their heading (iface.js awgFold): a row with a chevron that turns when open */
+  & .m-awgfold > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; list-style: none; cursor: pointer; }
+  & .m-awgfold > summary::-webkit-details-marker { display: none; }
+  & .m-awgfold > summary::after {
+    content: ""; margin-left: auto; width: 7px; height: 7px; border-right: 1.8px solid var(--dim); border-bottom: 1.8px solid var(--dim);
+    transform: rotate(45deg); transition: transform .15s ease;
+  }
+  & .m-awgfold[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
+  & .m-awgfold > summary .ig-l { margin: 0; }
   /* an interface's AmneziaWG values: their list takes the card's width and flows, the short ones beside each other */
   & .ig-item:has(> .ig-v > span + span) { grid-column: 1 / -1; }
   & .ig-item > .ig-v:has(> span + span) { display: flex; flex-wrap: wrap; column-gap: 20px; row-gap: 2px; }
