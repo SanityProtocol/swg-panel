@@ -16,7 +16,8 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
   [4] a sheet's footer: Cancel and Save share the bottom line, Cancel left; the other actions sit in rows above it
   [5] render gates: the Overview draws no rail, charts, doughnuts or flow map and fetches no history; Users and Peers draw no
       traffic rail
-  [6] Settings opens on its list of sections, a section hides the list, its Back goes up to the list
+  [6] Settings opens on its list of sections, a section hides the list, its "Panel settings" line goes up to the list, the
+       footer's Back leaves Settings for where it was opened from
   [7] a node's page: Check / Settings / Logs / More as labelled cells; More holds the four lifecycle doors
   [8] the device editor's role toggle shows its word on a phone (no hover for its title)
   [9] a tap on a value that only lives in a title= shows it in the bottom bubble
@@ -27,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | rowswipe | tabpad | autofocus | nativefocus | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -54,6 +55,8 @@ PERTURBS = {
     "tabpad": ("m/m.css", "  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }\n", ""),
     "nativefocus": ("app.js", "  options.vnode = v => { const p = v.props; if (typeof v.type === \"string\" && p && p.autofocus) delete p.autofocus; if (prev) prev(v); };",
                     "  options.vnode = v => { if (prev) prev(v); };"),
+    "settingsback": ("js/screen-settings.js", "<button class=\"btn btn-ghost btn-dismiss\" onClick=${leaveSettings}>${T(\"Back\")}</button>",
+                     "<button class=\"btn btn-ghost btn-dismiss\" onClick=${isMobile() && section ? () => setSection(null) : leaveSettings}>${T(\"Back\")}</button>"),
     "autofocus": ("js/ui.js", "    if (first && !isMobile()) setTimeout(", "    if (first) setTimeout("),
     "tapguard": ("app.js", "  if (isMobile()) { attachTitleTaps(); attachOutsideTapGuard(); }", "  if (isMobile()) { attachTitleTaps(); }"),
     "dots": ("m/m.css", '    content: "\\22EE"; position: absolute;', '    content: none; position: absolute;'),
@@ -392,14 +395,18 @@ try:
     # ── [6] the Settings drill-down ──
     with guard("[6]"):
         print("\n[6] Settings: a list of sections, then one")
-        tab = open_app("#/panel/settings")
+        tab = open_app("#/peers")
+        tab.ev("location.hash = '#/panel/settings'"); settle(tab, 900)
         st0 = tab.ev("({list: !!document.querySelector('.setbody.m-list'), rail: getComputedStyle(document.querySelector('.setrail')).display})")
         check("[6] it opens on the list of sections", st0["list"] and st0["rail"] != "none", st0)
         tab.ev("document.querySelectorAll('.setrail-i')[1].click()"); settle(tab)
         st1 = tab.ev("({back: !!document.querySelector('.m-setback'), rail: getComputedStyle(document.querySelector('.setrail')).display, cur: (document.querySelector('.m-setcur') || {}).textContent})")
         check("[6] a section hides the list and says where it is", st1["back"] and st1["rail"] == "none" and st1["cur"] == "Authentication", st1)
-        tab.ev("document.querySelector('.setfoot .btn-dismiss').click()"); settle(tab)
-        check("[6] its Back goes up to the list", tab.ev("!!document.querySelector('.setbody.m-list') && location.hash === '#/panel/settings'"))
+        tab.ev("document.querySelector('.m-setback').click()"); settle(tab)
+        check("[6] the \"Panel settings\" line above it goes up to the list", tab.ev("!!document.querySelector('.setbody.m-list') && location.hash === '#/panel/settings'"))
+        tab.ev("document.querySelectorAll('.setrail-i')[1].click()"); settle(tab)
+        tab.ev("document.querySelector('.setfoot .btn-dismiss').click()"); settle(tab, 900)
+        check("[6] the footer's Back leaves Settings for where it was opened from (Peers), as on a desktop", tab.ev("location.hash") == "#/peers", tab.ev("location.hash"))
         tab.close()
 
     # ── [7] the node's page ──

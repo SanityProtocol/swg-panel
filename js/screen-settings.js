@@ -3647,8 +3647,9 @@ const sectionLabel = k => ({
             ? null   /* access status (incl. "applying, be patient") is consolidated into the card's top banner, scrolled into view on Save */
             : (Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> ${T("All settings saved")}</span>` : null)}
           <span class="grow"></span>
-          ${/* a phone's Back goes up a level: from a section to the list, from the list out of Settings (hook 3) */""}
-          <button class="btn btn-ghost btn-dismiss" onClick=${isMobile() && section ? () => { setSection(null); window.scrollTo(0, 0); } : leaveSettings}>${T("Back")}</button>
+          ${/* Back leaves Settings for where the operator came from, on a phone as on a desktop (operator, 2026-10-29: it went to
+                the list of sections, wherever Settings was opened from); the list is the sticky "Panel settings" line above */""}
+          <button class="btn btn-ghost btn-dismiss" onClick=${leaveSettings}>${T("Back")}</button>
           ${section === "access"
             ? html`<button class="btn btn-primary" disabled=${accessRef.current.busy || !accessRef.current.dirty} title=${!accessRef.current.dirty ? T("No changes to save") : ""} onClick=${() => accessRef.current.run()}>${accessRef.current.busy ? T("Saving…") : T("Save")}</button>`
             : html`<button class="btn btn-primary" disabled=${!!secErr() || !!exitErr() || !anyDirty} title=${secErr() || exitErr() || (!anyDirty ? T("No changes to save") : "")} onClick=${confirmSave}>${T("Save")}</button>`}</div>
