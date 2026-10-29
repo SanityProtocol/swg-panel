@@ -796,7 +796,7 @@ html[data-ui="m"] {
   /* an interface's details panel: its actions (Start or Stop, Restart, Edit, Delete) in one row of equal cells, each an icon
      over its word, as a node's page has them — not three buttons on two lines with no edge in common */
   & .panel:has(> .panel-body > .iface-grid) > .panel-head { flex-wrap: wrap; row-gap: 10px; }
-  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .grow { flex: 1 0 60%; }
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .grow { flex: 1 0 100%; height: 0; order: 1; }   /* the break before the row */
   & .panel:has(> .panel-body > .iface-grid) > .panel-head > .btn-mini {
     flex: 1 1 0; min-width: 0; min-height: 56px; flex-direction: column; gap: 4px; justify-content: center; padding: 6px 4px;
     font-size: 12px; white-space: normal; line-height: 1.2; text-align: center; order: 2;
@@ -821,6 +821,11 @@ html[data-ui="m"] {
   & .vkpool-head .vkh, & .vkpool-head .vkh-pad { display: none; }
   & .vkpool-tot { flex-wrap: wrap; row-gap: 2px; }
   & .vkpool-pager { flex-wrap: wrap; gap: 8px; }
+  /* its foot: Add links on a line of its own, then the pages and View all */
+  & .vkpool-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  & .vkpool-bar > .btn:first-child { flex: 1 0 100%; min-height: 44px; justify-content: center; }
+  & .vkpool-bar .vkpool-pager-in { flex: 1 1 auto; display: flex; align-items: center; gap: 8px; }
+  & .vkpool-bar .btn { min-height: 40px; }
 
   /* ───── the Logs view (T2): already full screen; clear of the notch and the home indicator, a thumb-sized close ───── */
   & .lv-full { padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: calc(12px + var(--m-safe-b)); }
