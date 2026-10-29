@@ -339,18 +339,13 @@ html[data-ui="m"] {
     scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
   }
   & .urow > .urow-head::-webkit-scrollbar { display: none; }
-  /* a row with actions behind its swipe says so (operator, 2026-10-29). Two looks while the operator chooses:
-     dots (the default) — a quiet ⋮ in the row's right lane; a tap on it opens the row the way the swipe does (ui.js
-     attachSwipePeek), and it slides away with the row; peek — the actions' edge, a strip of the brand tint on the card's right
-     side, covered once they are out. ui.js also slides the top row open once or twice. */
+  /* a row with actions behind its swipe says so (operator, 2026-10-29, chosen over a tinted edge): a quiet ⋮ in its right lane;
+     a tap on it opens the row the way the swipe does (ui.js attachSwipePeek), and it slides away with the row. ui.js also
+     slides the top row open the first few times a list opens. */
   & :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger))::after {
     content: "\22EE"; position: absolute; top: 0; bottom: 0; right: 0; width: 22px; display: flex; align-items: center; justify-content: center;
     font: 700 18px/1 var(--sans); color: var(--faint); pointer-events: none;
   }
-  &[data-swipehint="peek"] :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger)) {
-    box-shadow: inset -6px 0 0 color-mix(in srgb, var(--brand) 38%, transparent);
-  }
-  &[data-swipehint="peek"] :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger))::after { content: none; }
   & .urow-head > .u-exp { grid-column: 1; grid-row: 1 / span 2; scroll-snap-align: start; }
   & .urow-head > .u-name { grid-column: 2 / -1; grid-row: 1; font-size: 15.5px; }
   & .urow-head > .ustat { grid-column: 2; grid-row: 2; }
@@ -491,10 +486,18 @@ html[data-ui="m"] {
   & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) {
     /* one column as wide as the widest line, centred in the cell, its lines left-aligned in it: the cell's content is centred as
        a whole, not line by line; the three labels stay on one line, at the top (operator, 2026-10-29) */
-    grid-row: 2; display: grid; grid-template-columns: max-content; justify-content: center; justify-items: start; align-content: start;
+    grid-row: 2; display: grid; grid-template-columns: max-content; grid-template-rows: auto 1fr; justify-content: center; justify-items: start; align-content: stretch;
     gap: 4px; min-width: 0; padding: 10px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); justify-self: stretch; align-self: stretch;
   }
   & .ncard .nc-peers :is(.nm-peerpop, .onlinetag) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  /* under the labels, each value is centred in the room the tallest cell leaves (operator, 2026-10-29): Throughput's two lines
+     in their row; Peers' and Mesh's wrappers fill the cell, their value(s) pushed to the middle by auto margins */
+  & .ncard :is(.nc-thru, .nc-peers) > .nm-v { align-self: center; }
+  & .ncard :is(.nc-peers, .nc-mesh) > :not(.nm-l, .nm-v) { grid-row: 1 / -1; align-self: stretch; display: flex; flex-direction: column; align-items: flex-start; }
+  & .ncard .nc-mesh .mh-tag { flex: 1 1 auto; }
+  & .ncard .nc-peers .nm-peerpop > .nm-v { margin: auto 0; }
+  & .ncard .nc-mesh .mh-tag > .mh-grp:nth-child(2) { margin-top: auto; }
+  & .ncard .nc-mesh .mh-tag > .mh-grp:last-child { margin-bottom: auto; }
   & .ncard .nc-name .platwrap::before { content: "·"; margin-right: 8px; color: var(--faint); }
   & .ncard .nc-peers { grid-column: 1; }
   & .ncard .nc-thru { grid-column: 2; border-left: 1px solid var(--line); }

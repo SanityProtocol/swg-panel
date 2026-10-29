@@ -9,7 +9,7 @@
    tree, so open inputs/editors are preserved without the old manual update()
    regions. */
 
-import { h, render, Fragment } from "preact";
+import { h, render, Fragment, options } from "preact";
 import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
 import htm from "htm";
 import { T, Tsplit, loadLang, plural, srvText } from "./js/i18n.js";
@@ -64,6 +64,14 @@ import {
   AccountScreen, PanelSettingsScreen,
 } from "./js/screen-settings.js";
 import { LogOverlay, openLogOverlay } from "./js/journal.js";   // the header's Logs button: nothing loads until it is clicked
+
+// A phone: no field takes the focus by itself, so no keyboard comes up as a sheet or a form opens (operator, 2026-10-29) — the
+// fields that ask for it with `autofocus` (node settings, a rename, a type-to-confirm…) lose the ask before Preact sets it;
+// the Sheet's own first-field focus is skipped the same way (ui.js). A tap on a field still focuses it.
+if (isMobile()) {
+  const prev = options.vnode;
+  options.vnode = v => { const p = v.props; if (typeof v.type === "string" && p && p.autofocus) delete p.autofocus; if (prev) prev(v); };
+}
 
 // Fill the Store's callback slots (see js/store.js). These live above the Store in the module graph, so it
 // cannot import them — it calls back into them instead. Each assignment moves into the owning module as the

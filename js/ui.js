@@ -427,7 +427,6 @@ export function attachSwipePeek() {
   peek();
   // the ⋮ in a closed row's right lane (m/m.css) opens it, as the swipe does — and nothing under it opens
   document.addEventListener("click", e => {
-    if (document.documentElement.dataset.swipehint === "peek") return;
     const row = e.target && e.target.closest && e.target.closest(SWIPE_ROW);
     if (!row || row.scrollLeft > 4 || e.target.closest("button, a, input, .iconbtn")) return;
     if (row.getBoundingClientRect().right - e.clientX > 26) return;
