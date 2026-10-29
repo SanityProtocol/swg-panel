@@ -373,7 +373,11 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   useNoNativeTitle(ref, show);
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
-    onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
+    onMouseEnter=${clickOnly ? null : () => {
+      // a phone has no hover: the tap that "enters" a hover-only bubble around a BUTTON is that button's own action (Reset
+      // routing opens its sheet), and the bubble would stay drawn over the sheet it opened (operator, 2026-10-29)
+      if (hoverOnly && isMobile() && ref.current && ref.current.querySelector("button")) return;
+      cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${typeof children === "function"
         ? children(() => { setPinned(false); setOpen(false); }) : children}</div><//>` : null}
