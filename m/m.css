@@ -425,7 +425,7 @@ html[data-ui="m"] {
   & .msort .msort-dir { min-height: 44px; padding: 0; font-size: 18px; justify-content: center; }
   & .urows { gap: 6px; }
   & .urow > .urow-head {
-    position: relative; display: grid; grid-template-columns: 20px max-content minmax(0, 1fr) max-content; grid-template-rows: auto auto;
+    position: relative; display: grid; grid-template-columns: 20px max-content minmax(0, 1fr) max-content max-content; grid-template-rows: auto auto;
     gap: 4px 8px; align-items: center; min-height: 64px; box-sizing: border-box; padding: 11px 22px 11px 14px;   /* 22: the grab bar's lane */
     overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
     scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
@@ -461,11 +461,14 @@ html[data-ui="m"] {
   & .urow-head .u-acts > .iconbtn::after { content: attr(data-lbl); max-width: 58px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .urow-head .u-acts > .iconbtn svg { width: 20px; height: 20px; }
   & .urow-head .u-acts > .iconbtn.danger { color: var(--dangling); }
-  /* line 3: "N nodes · N interfaces", its tap the nodes sheet (the desktop's Nodes column and its hover) */
-  & .urow-head .u-srvtap { grid-column: 2 / -1; grid-row: 3; justify-self: start; display: inline-flex; align-items: center; gap: 6px;
-    min-height: 32px; margin: 2px 0 -6px; padding: 0 2px; font-size: 13px; color: var(--brand); }
+  /* on line 2, right: two counts with their icons — nodes in the brand colour, interfaces in another — its tap the nodes sheet
+     (the desktop's Nodes column and its hover); its own column, so a live rate beside it keeps its place */
+  & .urow-head .u-srvtap { grid-column: 5; grid-row: 2; justify-self: end; display: inline-flex; align-items: center; gap: 10px;
+    min-height: 32px; margin: -6px 0; padding: 0 2px; font: 600 13px/1 var(--mono); }
+  & .urow-head .u-srvtap > span { display: inline-flex; align-items: center; gap: 4px; }
+  & .urow-head .u-srv-n { color: var(--brand); }
+  & .urow-head .u-srv-i { color: var(--awg3); }
   & .urow-head .u-srvtap .ic svg { width: 14px; height: 14px; }
-  & .urow-head .u-srvtap .ic:last-child { opacity: .7; }
   & .m-nodesheet .m-ns-sum { font-size: 13px; color: var(--ink-3); margin: 0 0 8px; }
   & .m-nodesheet .m-ns-node { border-top: 1px solid var(--line); padding: 4px 0 8px; }
   & .m-nodesheet :is(.m-ns-nm, .m-ns-if) { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0; border: 0;

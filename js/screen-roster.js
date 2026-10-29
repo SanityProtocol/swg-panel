@@ -370,13 +370,15 @@ function nodesOfPeers(peers) {
   return Object.keys(nm).map(nid => ({ node: nid, ifaces: Object.values(nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
     .sort((a, b) => Store.byNode(a.node, b.node));
 }
-// A phone has no Nodes column and no hover: a third line on the row, "N nodes · N interfaces", whose tap opens a sheet with
-// each node's interfaces and peer counts, each a way to its page (operator, 2026-10-29)
+// A phone has no Nodes column and no hover: on the row's second line, two counts with their icons (nodes, interfaces), whose
+// tap opens a sheet with each node's interfaces and peer counts, each a way to its page (operator, 2026-10-29: two lines, no
+// long text)
 function nodesTap(srvNodes, title) {
   if (!isMobile() || !srvNodes.length) return null;
-  const label = plural(srvNodes.length, "node") + " · " + plural(srvNodes.reduce((a, n) => a + n.ifaces.length, 0), "interface");
-  return html`<span class="u-srvtap" role="button" onClick=${e => { e.stopPropagation(); openModal(html`<${NodesSheet} title=${title} label=${label} srvNodes=${srvNodes}/>`); }}
-    onDblClick=${e => e.stopPropagation()}><${Ic} i="server"/>${label}<${Ic} i="arrow"/></span>`;
+  const nif = srvNodes.reduce((a, n) => a + n.ifaces.length, 0);
+  const label = plural(srvNodes.length, "node") + " · " + plural(nif, "interface");
+  return html`<span class="u-srvtap" role="button" aria-label=${label} onClick=${e => { e.stopPropagation(); openModal(html`<${NodesSheet} title=${title} label=${label} srvNodes=${srvNodes}/>`); }}
+    onDblClick=${e => e.stopPropagation()}><span class="u-srv-n"><${Ic} i="server"/>${srvNodes.length}</span><span class="u-srv-i"><${Ic} i="key"/>${nif}</span></span>`;
 }
 function NodesSheet({ title, label, srvNodes }) {
   const to = h => { closeModal(); location.hash = h; };
