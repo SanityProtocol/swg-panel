@@ -28,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +51,8 @@ PERTURBS = {
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
     "nodemore": ("js/screen-nodes.js", "        ${isMobile() ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}", "        ${false ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}"),
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
+    "bubdrag": ("js/ui.js", 'if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important");', 'if (d.dy) d.pop.style.transform = "translateY(" + d.dy + "px)";'),
+    "bubtap": ("js/ui.js", "onClick=${hoverOnly && !isMobile() ? null :", "onClick=${hoverOnly ? null :"),
     "tagtap": ("js/ui.js", '    if (el.matches(".tg, .iftype, .tag, .capb, .ce-tag")) return;\n', ''),
     "titletap": ("app.js", "  if (isMobile()) attachTitleTaps();", "  if (false) attachTitleTaps();"),
     "tabpad": ("m/m.css", "  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }\n", ""),
@@ -440,6 +442,36 @@ try:
         tap(tab, tg["x"] + tg["w"] / 2, tg["y"] + tg["h"] / 2)
         check("[9] a tag that names itself (an interface's protocol badge) opens no bubble", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
     tab.close()
+
+    # ── [12] a hover-only bubble on a phone: a tap's, swiped away, opened again ──
+    with guard("[12]"):
+        print("\n[12] a hover-only bubble: a tap opens it, a swipe down drags and closes it, the next tap opens it again")
+        # the rig has no blocking stats or groups, so the bubble is the component itself: a hover-only Popover as the
+        # Protection tiles and the grid chips use it, rendered into the page
+        tab = open_app("#/users")
+        tab.ev("(async () => { const P = await %s; const U = await %s('ui'); const c = document.createElement('div'); c.id = 'mhov';"
+               " document.querySelector('#view .screen').prepend(c);"
+               " P.render(P.h(U.Popover, {hoverOnly: true, cls: 'mhov-t', trigger: P.h('span', {style: 'display:inline-block;padding:16px 40px'}, 'tile')},"
+               " P.h('div', {style: 'height:220px'}, 'who')), c); })()" % (PREACT, MOD)); settle(tab, 500)
+        b = box(tab, "document.querySelector('.mhov-t')")
+        found = ("#/users", "mhov-t") if b else None
+        check("[12] the test bubble rendered", bool(found))
+        if found:
+            pops = "document.querySelectorAll('.deppop:not(.m-titletap)').length"
+            tap(tab, b["x"] + b["w"] / 2, b["y"] + b["h"] / 2); settle(tab, 400)
+            check("[12] a tap opens it", tab.ev(pops) == 1, found)
+            pb = box(tab, "document.querySelector('.deppop')")
+            x0, y0 = pb["x"] + 40, pb["y"] + 14
+            br.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x0, "y": y0}]}, session=tab.s)
+            for i in range(1, 7):
+                br.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x0, "y": y0 + 20 * i}]}, session=tab.s); time.sleep(0.03)
+            moved = tab.ev("Math.round(document.querySelector('.deppop').getBoundingClientRect().top - %f)" % pb["y"])
+            br.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []}, session=tab.s); settle(tab, 700)
+            check("[12] the bubble follows the finger down", moved >= 100, moved)
+            check("[12] the swipe closes it", tab.ev(pops) == 0)
+            tap(tab, b["x"] + b["w"] / 2, b["y"] + b["h"] / 2); settle(tab, 400)
+            check("[12] the next tap opens it again", tab.ev(pops) == 1)
+            tab.close()
 
     # ── [11] a tap outside an open list ──
     with guard("[11]"):

@@ -372,12 +372,13 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   useEffect(() => () => clearTimeout(closeT.current), []);
   useNoNativeTitle(ref, show);
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
-    onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
-    onMouseEnter=${clickOnly ? null : () => {
-      // a phone has no hover: the tap that "enters" a hover-only bubble around a BUTTON is that button's own action (Reset
-      // routing opens its sheet), and the bubble would stay drawn over the sheet it opened (operator, 2026-10-29)
-      if (hoverOnly && isMobile() && ref.current && ref.current.querySelector("button")) return;
-      cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
+    onClick=${hoverOnly && !isMobile() ? null : (e => {
+      // a phone has no hover: a hover-only bubble is a tap's, PINNED — opened by the emulated hover it closed on a swipe while
+      // the phone still counted the finger as hovering, and the next tap opened nothing (operator, 2026-10-29). A link or a
+      // button inside keeps its own tap, and the tap still reaches the row around it as the hover's did.
+      if (hoverOnly) { if (!e.target.closest("a, button") && !(ref.current && ref.current.querySelector("button"))) setPinned(p => !p); return; }
+      e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
+    onMouseEnter=${clickOnly || (hoverOnly && isMobile()) ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${typeof children === "function"
         ? children(() => { setPinned(false); setOpen(false); }) : children}</div><//>` : null}
@@ -461,12 +462,15 @@ export function attachBubbleSwipe() {
     if (!d) return;
     d.dy = Math.max(0, e.touches[0].clientY - d.y);
     if (d.dy > 0 && e.cancelable) e.preventDefault();
-    d.pop.style.transition = "none"; d.pop.style.transform = d.dy ? "translateY(" + d.dy + "px)" : "";
+    // important: m.css docks a bubble with `transform: none !important`, which a plain inline transform loses to — the
+    // bubble stood still under the finger (operator, 2026-10-29: "glitching")
+    d.pop.style.setProperty("transition", "none", "important");
+    if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important"); else d.pop.style.removeProperty("transform");
   }, { passive: false, capture: true });
   const bubbleEnd = () => {
     if (!d) return;
     const { pop, dy, t } = d; d = null;
-    const back = () => { pop.style.transition = "transform .2s var(--ease)"; pop.style.transform = ""; };
+    const back = () => { pop.style.setProperty("transition", "transform .2s var(--ease)", "important"); pop.style.removeProperty("transform"); };
     if (dy < 70 && !(dy > 24 && dy / Math.max(1, Date.now() - t) > 0.5)) return back();
     if (pop.classList.contains("m-titletap")) return pop.remove();
     if (pop.classList.contains("qr-overlay-inner")) return pop.parentElement.click();   // its own close (crypto.js qrZoom)
@@ -1579,7 +1583,11 @@ export function trackIfaceOps() {
     if (IFOP_PANEL.has(op.verb)) continue;   // panel-side: settled by its own handler, not by watching the node
     const cut = key.indexOf("|"); const node = key.slice(0, cut), iface = key.slice(cut + 1);
     const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-    const _wSnap = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface);   // WDTT lives in snap.wdtt, not snap.interfaces
+    // WDTT lives in snap.wdtt, csqtt in snap.csqtt — not snap.interfaces. ⚠️ csqtt was read from snap.interfaces, where it is
+    // not: nothing read as "up", so a Start said "Started" at once and the page offered Start again while the node was still
+    // bringing it up (operator, 2026-10-29)
+    const _snap = Store.stats[node] || {};
+    const _wSnap = (_snap.wdtt || []).find(w => w && w.iface === iface) || (_snap.csqtt || []).find(c => c && c.iface === iface);
     const istate = _wSnap
       ? { down: _wSnap.active !== "active" && !_wSnap.stopped, stopped: !!_wSnap.stopped }   // active state from the WDTT readback
       : (((Store.stats[node] || {}).interfaces || {})[iface] || {});

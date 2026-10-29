@@ -1325,6 +1325,11 @@ export function Protection({ range, bs }) {
             ? html`<${WhoBubble} rows=${w} color=${t.color} foot=${t.foot}/>`
             : (t.bcats ? html`<${CatsBubble} cats=${t.bcats} color=${t.color} counts/>`
               : (t.cats ? html`<${CatsBubble} cats=${t.cats} color=${t.color}/>` : null));
+          // a phone: the drill-down is a sheet, as the online and updates lists are — a bubble was too thin there (operator,
+          // 2026-10-29). Its title is the tile's name; the bubble's own head line keeps only its note and count (m/m.css).
+          if (pop && isMobile()) return html`<div class="prot-tile haswho" role="button" key=${t.k} onClick=${() => openModal(html`<${Sheet}
+              title=${t.k} noGuard=${true} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}>
+              <div class="m-protsheet">${pop}</div><//>`)}>${inner}</div>`;
           return pop
             ? html`<${Popover} key=${t.k} hoverOnly flipFit cls="prot-tile haswho" popCls="prot-who-pop" trigger=${inner}>
                 ${pop}

@@ -259,6 +259,15 @@ html[data-ui="m"] {
   }
   & .qr-overlay-card { width: 100%; box-sizing: border-box; padding: 14px; }
   & .qr-overlay-card .qrimg { width: 100%; max-width: none; height: auto; max-height: 64dvh; object-fit: contain; }
+  /* a Protection tile's drill-down as a sheet: the rows a thumb's height, the head line only its note and count (the sheet's
+     title already names it) */
+  & .m-protsheet .prot-who-h { display: flex; align-items: baseline; gap: 8px; font-size: 0; margin: 0 0 6px; }
+  & .m-protsheet .prot-who-h > * { font-size: 13px; }
+  & .m-protsheet .prot-who-sub { margin: 0; }
+  & .m-protsheet .prot-who-tot { margin-left: auto; font-size: 14px; }
+  & .m-protsheet .prot-who-list { max-height: none; overflow: visible; }
+  & .m-protsheet .prot-who-r { min-height: 48px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 15px; gap: 12px; }
+  & .m-protsheet .prot-who-ago { font-size: 14px; flex: none; }
   & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
   /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
   & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
@@ -564,6 +573,9 @@ html[data-ui="m"] {
   & table.peergrid > tbody > tr.clk::-webkit-scrollbar { display: none; }
   & table.peergrid > tbody > tr > td { display: block; padding: 0; border: 0; text-align: left; min-width: 0; background: none; }
   & table.peergrid > tbody > tr > td::before { display: none; }
+  /* the "here it is" glow (a just-created peer, an Overview click): the card glows, not each cell (operator, 2026-10-29) */
+  & table.peergrid > tbody > tr.pcreate > td { animation: none; }
+  & table.peergrid > tbody > tr.pcreate { animation: pcreate 1.5s var(--ease); }
   & table.peergrid td.c-name { grid-column: 1 / 3; grid-row: 1; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; scroll-snap-align: start; }
   & table.peergrid td.c-status { grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: 6px; }
   & table.peergrid td.c-node { grid-column: 1; grid-row: 2; }
