@@ -392,6 +392,12 @@ Its limits:
   and never forwards it again.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
+  Where a server runs both csqtt lines, **Settings → Turn proxies → Default client apps** keeps a default app per line:
+  a **2.1 / 2.5** switch above the operating systems picks which line you are choosing for, and each line lists only
+  the apps that speak it. Leave 2.5 unset and its servers follow 2.1's choice, as before.
+- **Manage it from your phone.** On a phone the panel opens in its own layout — a tab bar at the bottom, lists as cards,
+  windows that slide up and close with a swipe down or the phone's Back. Swipe a row left (or tap its ⋮) for its actions.
+  **More → Desktop view** switches to the full desktop layout and back. It can be added to the home screen as an app.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
   **Uptime Kuma**, and ping a webhook when a server goes offline — **Settings → Integrations**.
 

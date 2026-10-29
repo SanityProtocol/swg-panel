@@ -1473,7 +1473,7 @@ export function VaultPromptSheet({ opts, onDone }) {
   };
   return html`<${Sheet} title=${opts.title || T("Enter your password to continue")} width=${480} onClose=${() => done(false)}
     foot=${html`<${Fragment}><span class="grow"></span>
-      <button class="btn btn-ghost" disabled=${busy} onClick=${() => done(false)}>${T("Skip")}</button>
+      <button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${() => done(false)}>${T("Skip")}</button>
       <button class="btn btn-primary" disabled=${busy || !pw || exists === false} onClick=${unlock}>${busy ? T("Unlocking…") : T("Unlock vault")}</button></>`}>
     <div class="vaultprompt">
       <p class="vp-reason">${opts.reason || T("This action needs your Encryption Vault, which isn’t unlocked in this session.")}</p>

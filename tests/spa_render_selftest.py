@@ -907,6 +907,13 @@ try:
             shot(tab, "b17-edit")
             click_text(tab, ".overlay.show .sheet-foot button", "/^Apply$/"); settle(tab, 600)
             check("[B17] Apply puts the edited rule on its row", tab.ev(ROWS) == [["family", "Own rule: Apps"], ["anna", "Own rule: Domains"]], tab.ev(ROWS))
+            # a CLICK alone is an edit too: an own rule switched to No App routing asks (the sheet's dirtyRef; typing is guarded by the
+            # Sheet on its own, so only a click proves it — review plant arxguard)
+            tab.ev("document.querySelectorAll('.arx-row')[0].querySelector('button[aria-label=\"Edit exception\"]').click()"); settle(tab, 700)
+            click_text(tab, ".overlay.show [role=radio]", "/^No App routing$/"); settle(tab, 300)
+            tab.ev(ESC); settle(tab, 300)
+            check("[B17] a click edit (Own rule → No App routing) asks before Esc discards it", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Discard$/"); settle(tab, 400)
             click_text(tab, ".overlay.show button", "/Add exception/"); settle(tab, 700)
             add = tab.ev("(() => { const sh = [...document.querySelectorAll('.overlay.show .sheet')].pop(); const ap = [...sh.querySelectorAll('.sheet-foot button')].pop();"
                          " return { empty: (sh.querySelector('.sharegrid-empty') || {}).textContent, disabled: ap.disabled }; })()")

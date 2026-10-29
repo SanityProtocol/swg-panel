@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Mount point. Served at "/" by default; the panel rewrites this to the subpath
      (e.g. /swg/) when SWG_PANEL_BASE is set, so all relative URLs resolve correctly. -->
 <base href="/">
@@ -39,11 +39,14 @@
 <script>(function(){try{var l=localStorage.getItem("swg-lang");if(!l){l=(navigator.language||"").slice(0,2).toLowerCase();if(l!=="ru")l="en";}document.documentElement.lang=l;}catch(e){document.documentElement.lang="en";}})();</script>
 <!-- Phone or desktop UI, before first paint. A touch phone judged by the DEVICE, not the window (a phone in landscape stays a
      phone, a narrowed desktop window stays desktop, a tablet is desktop); localStorage "swg-ui" = "m" | "d" overrides it. A
-     browser without CSS nesting always gets desktop: m.css would not apply there. A phone browser asked for the "desktop
+     browser without CSS nesting or :has() always gets desktop: m.css would not apply there (Firefox shipped :has() in 121, after
+     nesting — review F25). Only the phone UI covers the notch (viewport-fit=cover, its safe-area insets in m.css; the desktop UI
+     has none — F24), and on iOS only it pins the scale: Safari zooms a page whose focused field is under 16 px, which the
+     phone's 15 px fields are (F23); iOS still lets the user pinch-zoom, Android's pinch is left alone. A phone browser asked for the "desktop
      site" lays the page out ~980 px wide whatever the viewport tag says, where the phone UI would be drawn at a third of its
      size: the automatic default gives it the desktop UI it asked for (the layout is wider than the screen's longest side). Read once: js/util.js isMobile() reads the
      attribute, never this test. The status-bar colour follows the panel's resolved theme (set just above), not the system's. -->
-<script>(function(){var d=document.documentElement;try{if(window.CSS&&CSS.supports&&CSS.supports("selector(&)")){var u=null;try{u=localStorage.getItem("swg-ui");}catch(e){}if(u!=="m"&&u!=="d")u=matchMedia("(pointer: coarse)").matches&&Math.min(screen.width,screen.height)<600&&d.clientWidth<=Math.max(screen.width,screen.height)+40?"m":"d";if(u==="m")d.dataset.ui="m";}var t=document.querySelector('meta[name="theme-color"]');if(t)t.content=d.dataset.theme==="light"?"#FFFFFF":"#10151E";}catch(e){}})();</script>
+<script>(function(){var d=document.documentElement;try{if(window.CSS&&CSS.supports&&CSS.supports("selector(&)")&&CSS.supports("selector(:has(*))")){var u=null;try{u=localStorage.getItem("swg-ui");}catch(e){}if(u!=="m"&&u!=="d")u=matchMedia("(pointer: coarse)").matches&&Math.min(screen.width,screen.height)<600&&d.clientWidth<=Math.max(screen.width,screen.height)+40?"m":"d";if(u==="m"){d.dataset.ui="m";var vp=document.querySelector('meta[name="viewport"]');if(vp)vp.content+=", viewport-fit=cover"+(/iP(hone|ad|od)/.test(navigator.userAgent)?", maximum-scale=1":"");}}var t=document.querySelector('meta[name="theme-color"]');if(t)t.content=d.dataset.theme==="light"?"#FFFFFF":"#10151E";}catch(e){}})();</script>
 </head>
 <body>
 <header class="appbar">
@@ -167,8 +170,9 @@
     /* The module list comes from this page's own <link rel="modulepreload"> tags — the graph is declared
        right above, in the file being served, so the list can never be out of date with what the panel
        ships. It replaced a fetched js/manifest.json of stored hashes, which had to be regenerated on every
-       edit and failed a release build the first time someone forgot. The stylesheets are listed too: a missing
-       m/m.css fires this guard as well, and without it in the list it would report "all files loaded". */
+       edit and failed a release build the first time someone forgot. The stylesheets are listed too: once the guard
+       HAS fired (a module failed), a stylesheet missing beside it is named with the rest. A stylesheet missing ALONE does not
+       fire it — app.js still renders, unstyled (review F26). */
     var links = document.querySelectorAll('link[rel="modulepreload"], link[rel="stylesheet"]'), names = [];
     for (var i = 0; i < links.length; i++) {
       var href = links[i].getAttribute("href") || "";

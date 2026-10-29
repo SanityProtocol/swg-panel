@@ -1168,7 +1168,8 @@ export function clientAppLabel(e) {
 export function TurnAppsPicker({ ctl, offered }) {
   const { f, byOs, os, setOs, setSel, selEntry, linesOn, line, setLine } = ctl;
   const [openOs, setOpenOs] = useState(null);
-  useEffect(() => { if (!openOs) return; const h = () => setOpenOs(null); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [openOs]);
+  useEffect(() => { if (!openOs) return; const h = () => setOpenOs(null); document.addEventListener("click", h); document.addEventListener("m-outside-tap", h);   // a phone eats the outside click (ui.js)
+    return () => { document.removeEventListener("click", h); document.removeEventListener("m-outside-tap", h); }; }, [openOs]);
   const anyApp = _OS_TABS.some(([o]) => byOs[o].length);
   const openEntries = openOs ? (byOs[openOs] || []) : [];
   const openLabel = openOs ? (_OS_TABS.find(([o]) => o === openOs) || [])[1] : "";
@@ -1364,7 +1365,7 @@ export function RosterP4ReviewSheet({ cid, rep, onDone }) {
   };
   const color = turnClientColor(cid);
   return html`<${Sheet} title=${T("Review changes")} width=${580} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
-      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" disabled=${busy} onClick=${closeModal}>${T("Preserve current")}</button><button class="btn btn-primary" disabled=${busy || !adoptable.length} onClick=${adopt}>${busy ? T("adopting…") : T("Adopt changes")}</button><//>`}>
+      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${closeModal}>${T("Preserve current")}</button><button class="btn btn-primary" disabled=${busy || !adoptable.length} onClick=${adopt}>${busy ? T("adopting…") : T("Adopt changes")}</button><//>`}>
     <p class="hint" style="margin:2px 0 12px">${T("Schema changes for")} <b style=${color ? "color:" + color : ""}>${rep.name || cid}</b>${rep.app_version ? T(" (upstream {ver})", { ver: rep.app_version }) : ""}. <b style="color:var(--fault)">${T("Needs-wiring")}</b> ${T("items can't be adopted until a panel update teaches the encoder to emit them.")}</p>
     <div class="revlist">
       ${adoptable.length ? html`<label class="rev-all"><input type="checkbox" checked=${allOn} ref=${el => el && (el.indeterminate = !allOn && someOn)} onChange=${toggleAll}/><span>${T("Check all")}</span></label>` : null}
@@ -1413,7 +1414,7 @@ export function RosterReviewSheet({ cid, client, onAdopt }) {
   const adopt = async () => { setBusy(true); try { await onAdopt(cid); } finally { closeModal(); } };
   const color = turnClientColor(cid);
   return html`<${Sheet} title=${T("Review changes")} width=${520} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
-      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" disabled=${busy} onClick=${closeModal}>${T("Preserve current")}</button><button class="btn btn-primary" disabled=${busy} onClick=${adopt}>${busy ? T("adopting…") : T("Adopt changes")}</button><//>`}>
+      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${closeModal}>${T("Preserve current")}</button><button class="btn btn-primary" disabled=${busy} onClick=${adopt}>${busy ? T("adopting…") : T("Adopt changes")}</button><//>`}>
     <p class="hint" style="margin:2px 0 12px">${T("Upstream changes to")} <b style=${color ? "color:" + color : ""}>${client.name}</b>${T("'s config schema since you last reviewed it. Adopting records you've caught up — the schema edit itself, if one's needed, is a code change.")}</p>
     ${!items.length
       ? html`<div class="notice"><${Ic} i="info"/><span>${T("The source moved but nothing field-level was parsed — adopt to acknowledge the new commit.")}</span></div>`
@@ -2857,7 +2858,8 @@ export function EditCsqttSheet({ node, iface, pick }) {
   const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);   // the csqtt version, here too (operator, 2026-10-17)
   // The sheet's other click-only edits — the egress mode, the Block traffic toggles, Device access, the version — are
   // judged the same way: against what the sheet opened with, so a flip and a flip back asks nothing.
-  const clickKey = useRef(null), clickNow = JSON.stringify([reach, egressBody(eg), blk]);
+  // `blk` as a SET: the Block toggles re-append an id, so a flip and a flip back reordered it and Cancel asked (F19)
+  const clickKey = useRef(null), clickNow = JSON.stringify([reach, egressBody(eg), [...(blk || [])].sort()]);
   if (clickKey.current === null) clickKey.current = clickNow;
   dirtyRef.current = arNow !== arKey.current || axNow !== axKey.current || clickNow !== clickKey.current || !!lineDirty;
   const sw = csqttSwitchState(node, iface);

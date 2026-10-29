@@ -256,7 +256,7 @@ check("[11] an own rule that sets nothing is no App routing (the panel stores it
 check("[11] the save sends the rule and the list only on 2.5, and only when they changed (an untouched copy never goes back over a newer one)",
       sheet.includes("...(is25 && arNow !== arKey.current ? { app_routing: arBody(ar) } : {}),")
       && sheet.includes("...(is25 && axNow !== axKey.current ? { app_routing_except: arxSend(ax) } : {})"));
-check("[11] …and the fold's draft is what the discard guard watches", sheet.includes("dirtyRef.current = arNow !== arKey.current || axNow !== axKey.current;")
+check("[11] …and the fold's draft is what the discard guard watches", sheet.includes("dirtyRef.current = arNow !== arKey.current || axNow !== axKey.current")
       && sheet.includes("dirtyRef=${dirtyRef} closeRef=${closeRef}"));
 Store.stats.nnew.csqtt[0].line = "2.5";   // q runs 2.5 again; its record holds a rule, and a switch to 2.1 asks
 const a4 = ask("q", { line: "2.5" }, "2.1");

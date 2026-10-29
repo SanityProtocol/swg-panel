@@ -4148,17 +4148,19 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
       // Deleting commits ONLY the deletion — every survivor goes as it was saved.
       await commit(next.map(r => ({ ...(r._src || r), id: r.id })), "d" + i, next); },
   });
-  const addRow = (v = nv) => {
-    const nv = v;
-    const d = String(nv.device || "").trim();
+  // The phone's sheet hands its own fields; the inline form (desktop) reads its state — called with NO argument there, not as
+  // the Add button's onClick, which would hand it the click event (F1)
+  const addRow = v => {
+    const r = v || nv;
+    const d = String(r.device || "").trim();
     if (!d) return;
     dirtyRef.current = true;
-    setRows(rs => [...rs, { id: newExitId(), label: String(nv.title || "").trim(), device: d,
+    setRows(rs => [...rs, { id: newExitId(), label: String(r.title || "").trim(), device: d,
                             enabled: true, killswitch: false, producer: "adopted",
-                            egress_ip: String(nv.egress_ip || "").trim(),
+                            egress_ip: String(r.egress_ip || "").trim(),
                             // …and the typed gateway, for the same reason `addDevice` carries it: the form
                             // asks for it, and a row built without it is refused by the server.
-                            gw: String(nv.gw || "").trim(),
+                            gw: String(r.gw || "").trim(),
                             _kind: isCand(d) ? "found" : "custom", _dd: true, _added: true }]);
     setAdding(false); setNv({});
   };
@@ -4292,7 +4294,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
       ? html`<${ExitFields} value=${nv} onChange=${p => setNv(x => ({ ...x, ...p }))}
           discovered=${candAddr(node, nv.device)} addrs=${cardAddrs(node, nv.device)}
           isNic=${isCardName(node, nv.device)} gw=${cardGateway(node, nv.device)} devEditable=${true}
-          submitLabel=${T("val|Add")} onSubmit=${addRow} onCancel=${() => { setAdding(false); setNv({}); }}
+          submitLabel=${T("val|Add")} onSubmit=${() => addRow()} onCancel=${() => { setAdding(false); setNv({}); }}
           hint=${T("A device this node hasn't reported. Add it if you know it is there — nothing is checked until the node next syncs.")}/>`
       : html`<button class="btn btn-ghost btn-mini" style="margin-top:14px" onClick=${() => setAdding(true)}>
           <${Ic} i="plus"/> ${T("Add an interface by name")}</button>`}
@@ -5169,7 +5171,10 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
 function AddExitDeviceSheet({ onAdd, fields }) {
   const [v, setV] = useState({});
   const ok = !!String(v.device || "").trim();
-  const submit = () => { if (!ok) return; onAdd(v); closeModal(); };
+  // once: Enter in its field reaches both the field's own submit and the Sheet's Enter (the footer's Add) — a second closeModal
+  // popped the parent Ways out sheet past its unsaved-changes guard (F3)
+  const sent = useRef(false);
+  const submit = () => { if (!ok || sent.current) return; sent.current = true; onAdd(v); closeModal(); };
   return html`<${Sheet} title=${T("Add an interface by name")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${!ok} onClick=${submit}>${T("val|Add")}</button>`}>
     ${fields(v, setV, submit)}

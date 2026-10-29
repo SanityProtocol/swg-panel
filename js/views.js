@@ -370,7 +370,8 @@ export function groupStats(g) {
     rx += s.rx; tx += s.tx;
   }
   return { members: g.users.length, online, peers, peersOn, nodes: nodes.size, nets: groupShares(g.id).length, rx, tx,
-    traffic: groupTraffic(trafficData(), g.id) };
+    // a phone draws no traffic cell, so it asks the ledger for nothing — trafficData() fetched it on open and every minute (F17)
+    traffic: isMobile() ? null : groupTraffic(trafficData(), g.id) };
 }
 // Groups-grid sorting, over the stats computed once per render (`st` = gid -> groupStats).
 export const GROUP_SORT = {

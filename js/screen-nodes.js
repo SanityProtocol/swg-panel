@@ -1304,7 +1304,10 @@ function NodeLanPanel({ nrec }) {
 function NodeMoreSheet({ id }) {
   useStore();
   const nrec = (Store.nodes || []).find(n => n.id === id);
-  if (!nrec) { closeModal(); return null; }
+  // the node gone (force-removed, a poll later): closed from an effect, never from render — a render pass may run twice and
+  // popped the sheet under this one too (F42)
+  useEffect(() => { if (!nrec) closeModal(); }, [!nrec]);
+  if (!nrec) return null;
   const blocked = !!nrec.migrating || Store.recon.nodeStatus[id] !== "live" || inProc(nrec.proc_status);   // NodeDetail's own rule
   const row = (icon, label, on, off, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} disabled=${off} onClick=${() => { closeModal(); on(); }}>
     <${Ic} i=${icon}/><span class="msheet-l">${label}</span></button>`;
@@ -1313,6 +1316,8 @@ function NodeMoreSheet({ id }) {
       ${row("key", T("Rotate token"), () => openNodeRotate(nrec))}
       ${row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked)}
       ${row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked)}
+      ${/* flagged for removal: the way back, which the desktop has on the Health panel (F5) */""}
+      ${nrec.removing ? row("refresh", T("Cancel removal — keep this node"), () => unflagNode(nrec)) : null}
       ${row("trash", nrec.removing ? T("Force remove node") : T("Remove node"), () => openNodeRemove(nrec), false, "danger")}
     </div>${blocked ? html`<p class="hint msheet-note">${T("Unavailable while the node is down / converting")}</p>` : null}</div>
   <//>`;

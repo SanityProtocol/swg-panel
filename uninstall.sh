@@ -807,7 +807,7 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
          "$DOCKER_DIR/.dockerignore" "$DOCKER_DIR/VERSION" "$DOCKER_DIR/docker" "$DOCKER_DIR/vendor" \
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js" \
-         "$DOCKER_DIR/js"
+         "$DOCKER_DIR/js" "$DOCKER_DIR/m"   # m/: the phone UI's stylesheet, staged beside js/ since 1.8.11 (S13)
     # Say what that .env still holds. A panel-only install has no node token — its NODE_TOKEN is the placeholder
     # set-in-nodes-screen — and "(node token)" named a key the box never had (1.8.8 qualification, q5).
     local _tok _held="" _env=""

@@ -403,7 +403,7 @@ check("[7] the header shows it beside the version, hidden without one",
       and 'ar.textContent = T("from {ref}", { ref });' in _AP)
 check("[7] a master's own node shows the host updater's ref, not its own",
       '${viaHost ? T("Update installs {ref}, not the latest release — this host\'s updater' in _SN
-      and (_SN + _AP).count('Run `sudo bash -c \\"SWG_REF=main swg-update\\"` once to follow releases again.') == 2)
+      and (_SN + _AP).count('Run `sudo bash -c \\"SWG_REF=main swg-update\\"` once to follow releases again.') == 3)   # the node page, the header, the phone's More sheet (S13)
 check("[7] …in Russian too", "this host's updater (/usr/local/bin/swg-update) was installed or last updated from it" in _RU
       and "программу обновления этого хоста (/usr/local/bin/swg-update)" in _RU and '`sudo bash -c \\"SWG_REF=main swg-update\\"`.' in _RU)
 

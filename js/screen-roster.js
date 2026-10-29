@@ -165,7 +165,8 @@ export function PeersScreen() {
     <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
       ${isMobile() ? groupBtn : null}
       ${search(true)}
-      ${isMobile() ? filterBtn(node !== "*" || (iface !== "*" && !!iface) || !!peersView.status,
+      ${/* "set" = not the screen's own default: a one-node fleet defaults to its node and its only interface (F22) */""}
+      ${isMobile() ? filterBtn(node !== (multiServer ? "*" : (fleet[0] ? fleet[0].id : "")) || iface !== ifaceDefault() || !!peersView.status,
         r => html`${filters(r)}${sortField(peersView, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => re(r))}`) : filters()}
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}

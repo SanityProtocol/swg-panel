@@ -377,7 +377,8 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
       // a phone has no hover: a hover-only bubble is a tap's, PINNED — opened by the emulated hover it closed on a swipe while
       // the phone still counted the finger as hovering, and the next tap opened nothing (operator, 2026-10-29). A link or a
       // button inside keeps its own tap, and the tap still reaches the row around it as the hover's did.
-      if (hoverOnly) { if (!e.target.closest("a, button") && !(ref.current && ref.current.querySelector("button"))) setPinned(p => !p); return; }
+      // A trigger with an action of its own (a gateway chip, role=button) is that action's, too (F10).
+      if (hoverOnly) { if (!e.target.closest("a, button, [role=button]") && !(ref.current && ref.current.querySelector("button, [role=button]"))) setPinned(p => !p); return; }
       e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
     onMouseEnter=${clickOnly || (hoverOnly && isMobile()) ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
@@ -402,6 +403,10 @@ export function attachBackCloses() {
   window.addEventListener("popstate", () => {
     const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop"), cat = document.querySelector(".catpick-pop .pop-x");
     if (cat) { if (location.href !== url) { eat = true; history.pushState(history.state, "", url); } cat.click(); return; }   // a routing field's search
+    if (document.querySelector(".osapp-menu")) {   // a client app menu inside a sheet: Back closes the menu, not the sheet (F4)
+      if (location.href !== url) { eat = true; history.pushState(history.state, "", url); }
+      history.pushState({ swgSheet: depth }, "");    // the sheet keeps an entry for its own Back
+      document.dispatchEvent(new CustomEvent("m-outside-tap")); return; }
     if (!qr && !pop && !_stack.length) {
       if (location.href === url) history.back();   // a closed sheet's entry left behind: not a page, step past it
       return;
@@ -491,16 +496,21 @@ export function attachBubbleSwipe() {
   document.addEventListener("touchstart", e => {
     const pop = e.target && e.target.closest && e.target.closest(".deppop, .qr-overlay-inner");   // a QR enlargement is a sheet too
     if (!pop || e.touches.length !== 1) { d = null; return; }
+    // the sheet swipe's own guards (F13): a drag that starts in a field is the field's; one in a scroller that is not at its
+    // top — the bubble itself included, which m.css makes the scroller — scrolls it
+    if (e.target.closest("input, textarea, select")) { d = null; return; }
     let sc = e.target;
-    while (sc && sc !== pop && !(sc.scrollHeight > sc.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
-    if (sc && sc !== pop && sc.scrollTop > 0) { d = null; return; }
-    d = { pop, y: e.touches[0].clientY, t: Date.now(), dy: 0 };
+    for (; sc; sc = sc === pop ? null : sc.parentElement) if (sc.scrollHeight > sc.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(sc).overflowY)) break;
+    if (sc && sc.scrollTop > 0) { d = null; return; }
+    d = { pop, x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), dy: 0 };
   }, { passive: true, capture: true });
   // ⚠️ NOT PASSIVE: on a real phone the page under a bubble took the drag as its own scroll and Chrome sent touchcancel —
   // the bubble never closed (operator, 2026-10-29). A downward drag on it is the bubble's, so the page is told no.
   document.addEventListener("touchmove", e => {
     if (!d) return;
-    d.dy = Math.max(0, e.touches[0].clientY - d.y);
+    const ddx = Math.abs(e.touches[0].clientX - d.x), ddy = e.touches[0].clientY - d.y;
+    if (!d.dy && ddx > 10 && ddx > Math.abs(ddy)) { d.pop.style.removeProperty("transform"); d = null; return; }   // sideways: not a close
+    d.dy = Math.max(0, ddy);
     if (d.dy > 0 && e.cancelable) e.preventDefault();
     // important: m.css docks a bubble with `transform: none !important`, which a plain inline transform loses to — the
     // bubble stood still under the finger (operator, 2026-10-29: "glitching")
@@ -567,7 +577,7 @@ export function attachOutsideTapGuard() {
   let eat = 0;
   document.addEventListener("pointerdown", e => {
     eat = 0;
-    const layer = document.querySelector(".ddpop, .uc-pop, .deppop, .osdd-menu");   // .osdd-menu: the OS / app pickers (turn.js)
+    const layer = document.querySelector(".ddpop, .uc-pop, .deppop, .osdd-menu, .osapp-menu");   // the OS / app pickers (turn.js)
     const t = e.target, ae = document.activeElement;
     if (!layer || (t && layer.contains(t)) || (ae && ae !== document.body && ae.contains && ae.contains(t))) return;
     eat = Date.now();
@@ -578,6 +588,7 @@ export function attachOutsideTapGuard() {
     if (!e.isTrusted) return;                        // a click the app sends itself (a swipe's close) is never the eaten tap
     if (!eat || Date.now() - eat > 800) return;
     eat = 0; e.stopPropagation(); e.preventDefault();
+    document.dispatchEvent(new CustomEvent("m-outside-tap"));   // a layer that closes on a document click closes on this instead (turn.js)
   }, true);
 }
 
@@ -728,8 +739,10 @@ function attachSheetSwipe(root, canSwipe, wantsGuard, close) {
   root.addEventListener("touchstart", onStart, { passive: true });
   root.addEventListener("touchmove", onMove, { passive: false });
   root.addEventListener("touchend", onEnd);
-  root.addEventListener("touchcancel", () => { if (st && st.on) reset(true); st = null; });
-  return () => { root.removeEventListener("touchstart", onStart); root.removeEventListener("touchmove", onMove); root.removeEventListener("touchend", onEnd); };
+  const onCancel = () => { if (st && st.on) reset(true); st = null; };
+  root.addEventListener("touchcancel", onCancel);
+  return () => { root.removeEventListener("touchstart", onStart); root.removeEventListener("touchmove", onMove); root.removeEventListener("touchend", onEnd);
+    root.removeEventListener("touchcancel", onCancel); };   // all four (F43)
 }
 export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, noSwipe, subject, err }) {
   useStore();                                    // track live block/unblock while the modal is open

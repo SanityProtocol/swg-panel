@@ -185,12 +185,18 @@ export function UsersHeader({ sort, dir, onSort, live }) {
 // A list's toolbar on a phone (MOBILE-PLAN P0): the search stays, the filters go behind one Filters button into a sheet — five
 // controls do not fit a 390 px row. A dot on the button while one is set. `controls(redraw)` draws them; each filter's own
 // handler re-renders the screen, `redraw` the sheet.
+// ⚠️ THE SCREEN'S LATEST CONTROLS, not the ones it opened with: its node and interface dropdowns are built from that render's
+// values, so a closure kept from the opening tap showed the old selection and the old node's interfaces after a pick (review
+// F6). Every render of the screen hands filterBtn its controls; the open sheet draws those and redraws when they arrive.
+// Which button: `key` (a grid's own view object where one screen draws several), else the call site's code.
+let _fsCtl = null, _fsRedraw = null, _fsKey = null;
 export function FilterSheet({ controls }) {
   useStore();
   const [, redraw] = useState(0);
+  useEffect(() => { _fsRedraw = () => redraw(x => x + 1); return () => { _fsRedraw = null; _fsCtl = null; _fsKey = null; }; }, []);
   return html`<${Sheet} title=${T("Filters")} noGuard=${true}
     foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
-    <div class="mfilters">${controls(() => redraw(x => x + 1))}</div>
+    <div class="mfilters">${(_fsCtl || controls)(() => redraw(x => x + 1))}</div>
   <//>`;
 }
 // …and the list's ORDER there too: a phone draws no column headers to click (operator, 2026-10-29). `view[sk]` / `view[dk]` are
@@ -208,8 +214,11 @@ export const USER_SORT = live => [["status", T("col|Status")], ["name", T("col|U
   ["last", T("col|Online")], ["rate", T("col|Rate")], ...(live ? [["total", T("col|Total")]] : [])];
 export const GROUP_SORT = () => [["name", T("col|Group")], ["members", T("col|Members")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
   ["nets", T("col|Networks")], ["rate", T("col|Rate")]];
-export const filterBtn = (on, controls) => html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
-  onClick=${() => openModal(html`<${FilterSheet} controls=${controls}/>`)}><${Ic} i="sliders"/></button>`;
+export const filterBtn = (on, controls, key) => {
+  const k = key || String(controls);
+  if (_fsRedraw && _fsKey === k && _fsCtl !== controls) { _fsCtl = controls; queueMicrotask(_fsRedraw); }
+  return html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
+    onClick=${() => { _fsKey = k; _fsCtl = controls; openModal(html`<${FilterSheet} controls=${controls}/>`); }}><${Ic} i="sliders"/></button>`; };
 
 export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly, freezeKey, owner }) {
   const [, force] = useState(0);
@@ -276,7 +285,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
         onChange=${v => { view.iface = v; view.page = 1; bump(); if (r) r(); }}
         options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}`;
         // a phone: the search, and the filters (and the order) behind the Filters button, as on every list there
-        return isMobile() ? filterBtn(node !== (multiServer ? "*" : (nodes[0] || "*")) || iface !== ifaceDefault(), r => html`${dd(r)}${sortField(view, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => { view.page = 1; bump(); r(); })}`) : dd(); })()}
+        return isMobile() ? filterBtn(node !== (multiServer ? "*" : (nodes[0] || "*")) || iface !== ifaceDefault(), r => html`${dd(r)}${sortField(view, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => { view.page = 1; bump(); r(); })}`, view) : dd(); })()}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || T("New peer")}</button>` : null}
     </div>`}
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} ranged=${!live && !isMobile()} owner=${owner} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
