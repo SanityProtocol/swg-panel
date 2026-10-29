@@ -663,7 +663,7 @@ export function TurnManageSheet({ node, tp }) {
             <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${T("Restart service")}</button>
           <//>`
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
+      <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${dis || !!tperr || !turnDirty} title=${tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     ${looping ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${turnLoopText(tp)}</span></div>` : null}
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${T("This node is busy or offline")}${nrec.proc_status ? html` (${procLabel(nrec.proc_status)})` : ""}${T(" — turn-proxy actions are disabled until it's reporting again.")}</span></div>` : null}

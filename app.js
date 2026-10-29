@@ -14,7 +14,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks"
 import htm from "htm";
 import { T, Tsplit, loadLang, plural, srvText } from "./js/i18n.js";
 import {
-  $, $$, esc,
+  $, $$, esc, isMobile,
 } from "./js/util.js";
 import {
   confirmLeave, matchRoute,
@@ -23,11 +23,13 @@ import {
   Store, api, hooks as storeHooks, setUnauthorizedHandler, useStore,
 } from "./js/store.js";
 import {
-  ConfirmSheet, applyForkColors, applyThemeColors, clearModalStack, closeModal, cycleLang, cycleThemeMode,
+  ConfirmSheet, Ic, Sheet, THEME_ICON, applyForkColors, applyThemeColors, clearModalStack, closeModal, cycleLang, cycleThemeMode,
   dismissHostProc, gotoSettingsSection, inProc, openConfirm, openModal, paintLangBtn, paintThemeBtn,
   procAborted, procFailed, procInClass, procLabel, procSuccess, setModalRenderer, setPendingSection,
   setQrZoomProbe, toast, trackIfaceOps,
 } from "./js/ui.js";
+import { themeMode } from "./js/theme.js";
+import { LANGS, lang } from "./js/i18n.js";
 import {
   cryptoReady, ifaceKeyAutoRestore, escrowAutoVerify, lockVault, looksLikeVaultKey, qrZoomEl, subAutoHeal, subBootRestore, subForget, subRewrap,
   subSKCached, subUnlock, subUnlockWithKey, subVaultCreate,
@@ -168,6 +170,9 @@ function oldAddrCurrent() {   // → the current canonical addr {host,scheme,por
   const showPort = !((c.scheme === "https" && c.port === "443") || (c.scheme === "http" && c.port === "80"));
   return { ...c, label: c.scheme + "://" + c.host + (showPort ? ":" + c.port : "") + c.base };
 }
+// An installed app (the manifest's start_url) keeps the address it was installed from for good: after a move it can only be
+// installed again from the new one, so the ribbon says so there (docs/MOBILE-PLAN.md hook 6).
+const standalone = () => { try { return matchMedia("(display-mode: standalone)").matches; } catch (_) { return false; } };
 // The ONE address-migration ribbon — global, on every screen, server-driven so it survives navigation + reload.
 // Shows a live countdown while a confirmed migration is still gracing out (panel_migrate_until), then falls back to
 // "you're on a previous address" until this tab moves to the current one.
@@ -201,7 +206,7 @@ function OldAddrRibbon() {
     else toast(srvText(r) || T("Couldn't cancel the move."), "err");
   };
   return html`<div class="addr-old-ribbon" ref=${ref} role="status">
-    <span><b>${T("You're on a previous panel address.")}</b> ${ribbonNow(c.label)}</span>
+    <span><b>${T("You're on a previous panel address.")}</b> ${ribbonNow(c.label)}${standalone() ? " " + T("This app opens the old address for good: open the new one in the browser and install the app from there again.") : ""}</span>
     ${canRevert ? html`<button class="btn btn-mini" onClick=${revertMove}>${T("Cancel the move — keep this address")}</button>` : null}
     <a class="btn btn-mini" href=${c.label}>${T("Go to the current address ↗")}</a>
   </div>`;
@@ -392,6 +397,12 @@ function App() {
     const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
     const lb = $("#lang-btn"); if (lb && !lb._wired) { lb._wired = true; lb.onclick = cycleLang; paintLangBtn(lb); }            // EN / RU
     const lg = $("#logs-btn"); if (lg && !lg._wired) { lg._wired = true; lg.hidden = false; lg.onclick = openLogOverlay; }      // the live logs, full screen, from any screen
+    const mb = $("#more-btn");        // the phone's More: the header's actions that carry no status (docs/MOBILE-PLAN.md hook 1)
+    if (mb && !mb._wired) { mb._wired = true; mb.onclick = () => openModal(html`<${MoreSheet}/>`); }
+    // The way to the phone UI from the desktop one: only where the primary pointer is a finger (a tablet, or a phone switched to
+    // the desktop view), so a mouse desktop's header is unchanged.
+    const mv = $("#mview-btn");
+    if (mv && !mv._wired) { mv._wired = true; mv.hidden = isMobile() || !matchMedia("(pointer: coarse)").matches; mv.onclick = () => setUiMode("m"); }
     const vl = $("#vaultlock-btn");   // padlock: removed from the header by request — kept (wired to lockVault) but always hidden
     if (vl) { vl.hidden = true; if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
   });
@@ -524,6 +535,47 @@ function LoginScreen() {
     `}
   </form></div>`;
 }
+// ───────────────────────── the phone's More sheet (docs/MOBILE-PLAN.md hook 1) ─────────────────────────
+// The header actions that carry no status, one tap away. The status badges stay in #updslot (the strip under the app bar), its
+// one renderer: nothing here repeats them. The version line carries the host updater's branch when it is not main, with the
+// sentence the desktop shows in #appref's tooltip, because a phone has no hover.
+function setUiMode(m) { try { localStorage.setItem("swg-ui", m); } catch (_) {} location.reload(); }
+const LOGOUT_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>`;
+const DESKTOP_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`;
+function MoreSheet() {
+  useStore();
+  const [, force] = useState(0);
+  const go = (fn) => () => { closeModal(); fn(); };
+  const v = Store.versions || {}, ref = Store.panelUpdateRef || "";
+  const env = Store.env || {};
+  const kind = !("docker" in env) ? "" : env.docker ? (env.runtime === "podman" ? T("kind|podman") : T("kind|docker")) : T("kind|bare-metal");
+  const tm = themeMode();
+  const item = (icon, label, onClick, value, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} onClick=${onClick}>
+    <span class="ic" dangerouslySetInnerHTML=${{ __html: icon }}></span><span class="msheet-l">${label}</span>${value ? html`<span class="msheet-v">${value}</span>` : null}</button>`;
+  return html`<${Sheet} title=${T("More")} noGuard=${true}>
+    <div class="msheet">
+      <div class="msheet-g">
+        <button class="msheet-it" onClick=${go(() => checkForUpdate())}><${Ic} i="refresh"/><span class="msheet-l">${T("Check status")}</span></button>
+        <button class="msheet-it" onClick=${go(openLogOverlay)}><${Ic} i="doc"/><span class="msheet-l">${T("Logs")}</span></button>
+      </div>
+      <div class="msheet-g">
+        ${item(THEME_ICON[tm], T("Theme"), () => { cycleThemeMode(); force(x => x + 1); },
+               tm === "auto" ? T("theme|Auto") : tm === "light" ? T("theme|Light") : T("theme|Dark"))}
+        <button class="msheet-it" onClick=${cycleLang}><${Ic} i="globe"/><span class="msheet-l">${T("Language")}</span><span class="msheet-v">${(LANGS.find(([c]) => c === lang()) || [])[1] || lang()}</span></button>
+        ${item(DESKTOP_SVG, T("Desktop view"), () => setUiMode("d"))}
+      </div>
+      <div class="msheet-g">
+        <button class="msheet-it" onClick=${go(() => { location.hash = "#/panel/settings"; })}><${Ic} i="gear"/><span class="msheet-l">${T("Settings")}</span></button>
+        <button class="msheet-it" onClick=${go(() => { location.hash = "#/account"; })}><${Ic} i="user"/><span class="msheet-l">${T("Account")}</span></button>
+        ${item(LOGOUT_SVG, T("Log out"), go(doLogout), null, "danger")}
+      </div>
+      ${v.panel ? html`<div class="msheet-ver">
+        <div class="msheet-verl"><b>${v.panel}</b>${kind ? html`<span>${kind}</span>` : null}${ref ? html`<span class="appref">${T("from {ref}", { ref })}</span>` : null}</div>
+        ${ref ? html`<p>${T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.", { ref })}</p>` : null}
+      </div>` : null}
+    </div>
+  <//>`;
+}
 function doLogout() {
   openConfirm({ title: T("Log out"), confirmLabel: T("Log out"),
     body: T("Are you sure you want to logout?"),
@@ -576,7 +628,8 @@ function paintChrome() {
   const brand = $(".brand"); if (brand) brand.setAttribute("aria-label", T("nav|Overview"));
   const hint = [["#host-tport", T("How this panel is deployed")], ["#vaultlock-btn", T("Lock encryption key")],
                 ["#lang-btn", T("Language")], ["#theme-btn", T("Theme")],
-                ["#logs-btn", T("Logs")], ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")]];
+                ["#logs-btn", T("Logs")], ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")],
+                ["#mview-btn", T("Mobile view")], ["#more-btn", T("More")]];
   for (const [sel, label] of hint) {
     const el = $(sel);
     if (!el) continue;

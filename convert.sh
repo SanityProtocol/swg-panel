@@ -573,6 +573,7 @@ PY
   for f in Dockerfile Dockerfile.node .dockerignore VERSION swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$DOCKER_DIR/" 2>/dev/null || true; done
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$DOCKER_DIR/" 2>/dev/null || true
+  [ -d "$SRC/m" ] && cp -a "$SRC/m" "$DOCKER_DIR/" 2>/dev/null || true     # m/ = the phone UI (docs/MOBILE-PLAN.md)
   [ -d "$SRC/js" ] && cp -a "$SRC/js" "$DOCKER_DIR/" 2>/dev/null || true   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true
 

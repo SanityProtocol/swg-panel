@@ -9,7 +9,7 @@
  */
 
 import { openLogs, NODE_SOURCES } from "./journal.js";   // the node's live logs, from its page
-import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS } from "./util.js";
+import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
@@ -1524,6 +1524,8 @@ function parkTitles(anchor) {
 // Rich hover bubble for the innerHTML header update widget (no Preact there) — right-aligned under the anchor;
 // contentFn() returns HTML (empty string → no bubble). Replaces the plain title= tooltip.
 export function hostHoverBubble(anchor, contentFn, onAction) {
+  // A phone has no hover: the tap that opens the badge's own sheet would also raise this bubble over it (MOBILE-PLAN hook 1).
+  if (isMobile()) return;
   // SINGLETON, self-hiding bubble. The header is innerHTML-driven and re-renders every poll, replacing `anchor` —
   // so the anchor's own mouseleave can't be trusted to clean up. Guard against orphans (remove any stray bubble
   // before showing) and hide when the pointer leaves the BUBBLE too, so it never gets stuck or stacks a glow.
@@ -1601,6 +1603,7 @@ export function loadChangelog(want) {
 // is not (that was 1.8.8's publish-day bug: the previous release's notes under the new version).
 export const changelogEntry = (version) => ((_changelogCache && _changelogCache.entries) || []).find(e => e.version === version) || null;
 export function versionHoverBubble(anchor) {
+  if (isMobile()) return;   // the version is a line of the More sheet on a phone (MOBILE-PLAN hook 1)
   let bub = null, t = null, detach = null, untitle = null;
   const drop = () => { if (untitle) { untitle(); untitle = null; } if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
   const hide = () => { if (bub && bub.matches(":hover")) { later(); return; } clearTimeout(t); drop(); };

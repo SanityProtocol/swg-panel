@@ -448,7 +448,7 @@ function VkPoolSheet() {
           onConfirm: () => { P.removeAll(); return true; } })}>
         <${Ic} i="trash"/> ${T("Remove all")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button></>`}>
+      <button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button></>`}>
     <${VkCheckLine} P=${P}/>
     <${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc} withDate=${true}
       left=${html`<${VkPoolTotals} P=${P} big=${true}/>`}/>
@@ -607,10 +607,10 @@ export function WebhookSheet({ hook, onSaved, onClose }) {
     if (r.data && r.data.secret && !hook) { setSecret(r.data.secret); onSaved && onSaved(); return; }   // creation: reveal the secret, keep the sheet open
     onSaved && onSaved(); onClose && onClose();
   };
-  return html`<${Sheet} title=${hook ? T("Edit webhook") : T("Add webhook")} onClose=${onClose}
+  return html`<${Sheet} title=${hook ? T("Edit webhook") : T("Add webhook")} onClose=${onClose} noSwipe=${!!secret}
     foot=${secret ? html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${onClose}>${T("Done")}</button></>`
       : html`<${Fragment}><span class="grow"></span>
-        <button class="btn btn-ghost" onClick=${onClose}>${T("Cancel")}</button>
+        <button class="btn btn-ghost btn-dismiss" onClick=${onClose}>${T("Cancel")}</button>
         <button class="btn btn-primary" disabled=${busy || !valid} onClick=${save}>${hook ? T("Save") : T("Add webhook")}</button></>`}>
     ${secret ? html`<div class="notice ok"><${Ic} i="check"/><span>${Trich("Webhook saved. This is its *signing secret* — shown once. Every delivery carries an `X-SWG-Signature: sha256=HMAC(secret, body)` header so you can verify it's from this panel.")}</span></div>
       <div class="tokreveal"><code class="tokval">${secret}</code><button class="btn btn-mini" onClick=${() => copy(secret, T("Secret"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>`
@@ -3644,7 +3644,7 @@ const sectionLabel = k => ({
             ? null   /* access status (incl. "applying, be patient") is consolidated into the card's top banner, scrolled into view on Save */
             : (Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> ${T("All settings saved")}</span>` : null)}
           <span class="grow"></span>
-          <button class="btn btn-ghost" onClick=${leaveSettings}>${T("Back")}</button>
+          <button class="btn btn-ghost btn-dismiss" onClick=${leaveSettings}>${T("Back")}</button>
           ${section === "access"
             ? html`<button class="btn btn-primary" disabled=${accessRef.current.busy || !accessRef.current.dirty} title=${!accessRef.current.dirty ? T("No changes to save") : ""} onClick=${() => accessRef.current.run()}>${accessRef.current.busy ? T("Saving…") : T("Save")}</button>`
             : html`<button class="btn btn-primary" disabled=${!!secErr() || !!exitErr() || !anyDirty} title=${secErr() || exitErr() || (!anyDirty ? T("No changes to save") : "")} onClick=${confirmSave}>${T("Save")}</button>`}</div>
@@ -3680,7 +3680,7 @@ function ReachEveryoneSheet() {
   const rows = ql ? all.filter(r => (Store.nodeName(r.node) + " " + r.iface).toLowerCase().includes(ql)) : all;
   const pg = Math.min(page, Math.max(1, Math.ceil(rows.length / LIST_PAGE)));
   return html`<${Sheet} title=${T("Interfaces set to “Everyone on this node”")} width=${560} noGuard=${true}
-    foot=${html`<span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
+    foot=${html`<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}>
     <div class="hint">${T("Any device on the node can open connections to devices on these interfaces. Open one to change its level.")}</div>
     ${all.length > LIST_PAGE ? html`<input class="reachev-filter" value=${q} data-enter="self" placeholder=${T("Filter by node or interface…")}
       aria-label=${T("Filter by node or interface…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
@@ -3802,7 +3802,7 @@ export function CustomListSheet({ list, onSave, onClose }) {
   const save = () => { if (err) return; onSave({ ...(list || { _rid: newRid() }),
     title: title.trim() || "Untitled list",   // i18n-keys: the STORED default — roster data, read back by the nodes
     targets: badges.map(b => b.raw).join(", ") }); onClose(); };
-  const foot = html`<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? T("Save") : T("Add")}</button>`;
+  const foot = html`<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${onClose}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? T("Save") : T("Add")}</button>`;
   return html`<${Sheet} title=${list ? T("Edit list") : T("New list")} width=${640} onClose=${onClose} foot=${foot}>
     <div class="field"><label>${T("Title")}</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. Streaming")}/></div>
     <div class="field"><label>${T("Addresses, domains and patterns")}</label>
@@ -5723,7 +5723,7 @@ export function TwoFactorCard({ enabled, disabled, onChange }) {
             <input autofocus value=${code} onInput=${e => setCode(e.target.value)} inputmode="text" autocomplete="one-time-code" placeholder="123 456"/></div>
           <div class="btnrow" style="margin-top:8px">
             <button class="btn btn-primary" disabled=${busy || code.trim().length < 6} onClick=${doEnable}>${busy ? T("Verifying…") : T("Verify & enable")}</button>
-            <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
+            <button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
           </div>
         </div>
       </div>
@@ -5742,7 +5742,7 @@ export function TwoFactorCard({ enabled, disabled, onChange }) {
       <div class="field"><label>${T("Authentication code (or recovery code)")}</label><input value=${disCode} onInput=${e => setDisCode(e.target.value)} autocomplete="one-time-code" placeholder="123 456"/></div>
       <div class="btnrow" style="margin-top:8px">
         <button class="btn btn-danger" disabled=${busy || !disPw || !disCode.trim()} onClick=${doDisable}>${busy ? T("Disabling…") : T("Disable two-factor")}</button>
-        <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
+        <button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
       </div>
     ` : null}
   <//>`;

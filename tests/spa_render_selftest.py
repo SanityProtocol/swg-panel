@@ -194,7 +194,7 @@ if PERTURB:
         print("PERTURB FAILED — %s: the anchor is not in %s exactly once (%d), so it cannot be undone" % (PERTURB, f, src.count(old)))
         sys.exit(1)
     WEB = tempfile.mkdtemp(prefix="spa-perturb-")
-    for item in ("js", "vendor", "fonts", "img", "icons"):
+    for item in ("js", "m", "vendor", "fonts", "img", "icons"):
         if os.path.isdir(os.path.join(ROOT, item)):
             shutil.copytree(os.path.join(ROOT, item), os.path.join(WEB, item))
     for item in os.listdir(ROOT):

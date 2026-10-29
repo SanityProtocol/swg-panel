@@ -1247,6 +1247,7 @@ if $BUILD; then
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   done
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+  [ -d "$SRC/m" ] && cp -a "$SRC/m" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true     # m/ = the phone UI (docs/MOBILE-PLAN.md)
   [ -d "$SRC/js" ] && cp -a "$SRC/js" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   # flip compose: uncomment the build: blocks. The `image:` lines STAY.

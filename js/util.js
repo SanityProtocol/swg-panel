@@ -24,6 +24,9 @@ export const panelNow = () => Date.now() - clock.skewMs;         // ms, on the p
 export const panelNowS = () => Math.floor(panelNow() / 1000);    // epoch seconds, as the panel stamps them
 
 // ───────────────────────── tiny helpers ─────────────────────────
+// The phone UI is on (docs/MOBILE-PLAN.md). index.html's inline bootstrap decides it once, before first paint, and marks
+// <html data-ui="m">; this only reads that mark, so the decision is never taken twice. Changing it reloads the page.
+export const isMobile = () => document.documentElement.dataset.ui === "m";
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 export const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));

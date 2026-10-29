@@ -57,7 +57,7 @@ export function CreateUserSheet() {
   const createOnly = async () => { const u = await createUser(); if (u) stayExpanded(u.id); };
   const createAndAdd = async () => { const u = await createUser(); if (u) openModal(html`<${AddPeersSheet} userId=${u.id} userName=${u.name}/>`); };
   return html`<${Sheet} title=${T("New user")}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-ghost" disabled=${busy} onClick=${createOnly}>${T("Create only")}</button><button class="btn btn-primary" disabled=${busy} onClick=${createAndAdd}>${T("Add peers ▸")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-ghost" disabled=${busy} onClick=${createOnly}>${T("Create only")}</button><button class="btn btn-primary" disabled=${busy} onClick=${createAndAdd}>${T("Add peers ▸")}</button></>`}>
     <div class="field"><label>${T("Name")}</label><input autofocus value=${name} onInput=${e => setName(e.target.value)} placeholder=${T("Alex")}/></div>
     <div class="field"><label>${T("Tag")}</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend")}/></div>
     <div class="field"><label>${T("Note")}</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")}/></div>
@@ -624,7 +624,7 @@ export function PeerViewSheet({ pid, node, iface }) {
   useStore();
   const p = Store.peer(pid);
   const depsOrdered = useStableOrder(p ? p.targets : []);   // frozen at open — toggling ★ won't re-shuffle the cards
-  if (!p) return html`<${Sheet} title=${T("sheet|Peer")} foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
+  if (!p) return html`<${Sheet} title=${T("sheet|Peer")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
   const u = p.user_id ? Store.user(p.user_id) : null;
   // Editing is peer-WIDE (keys, AmneziaWG params, DNS, address apply to every deployment), so it's locked while any
   // deployment is on a missing (dangling) or misconfigured (broken) interface — a change there can't reach that
@@ -639,7 +639,7 @@ export function PeerViewSheet({ pid, node, iface }) {
   // still wraps (the sheet caps itself at calc(100vw - 32px)).
   return html`<${Sheet} title=${p.title || (u ? u.name : T("Unassigned peer"))} width=${760} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
-      <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+      <button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/>QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p)}><${Ic} i="copy"/> ${T("Targets")}</button>
       ${editLocked
@@ -721,7 +721,7 @@ export function UserViewSheet({ uid }) {
   };
   const title = u ? u.name : (rows[0] && rows[0].owner_name) || T("Deleted user");
   return html`<${Sheet} title=${title} width=${760}
-    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+    foot=${html`<${Fragment}><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       ${u ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openUserEdit(u); }}><${Ic} i="pencil"/> ${T("Edit user")}</button>` : null}<//>`}>
     <${TrafficBlock} by="user" id=${uid}/>
     <div class="lbl" style="margin:18px 2px 6px">${T("Devices · {n}", { n: all.length })}${gone ? html` <span class="faint">${T("({n} no longer theirs)", { n: gone })}</span>` : null}</div>
@@ -751,7 +751,7 @@ export function GroupViewSheet({ gid }) {
   const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE));
   const pg = Math.min(page, pages);
   return html`<${Sheet} title=${g ? g.name : T("Deleted group")} width=${760}
-    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+    foot=${html`<${Fragment}><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       ${g ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openGroup(gid); }}><${Ic} i="pencil"/> ${T("Edit group")}</button>` : null}<//>`}>
     ${g ? html`<${Fragment}>
       <${TrafficBlock} by="group" id=${gid}/>
@@ -1381,7 +1381,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
     subject=${{ kind: "peer", id: peer.id }}
     foot=${html`<${Fragment}><span class="faint">${allG.length && all.length ? T("{groups} and {users} chosen", { groups: plural(allG.length, "group"), users: plural(all.length, "user") })
         : allG.length ? T("{groups} chosen", { groups: plural(allG.length, "group") }) : T("{users} chosen", { users: plural(all.length, "user") })}</span><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${!!err} onClick=${apply}>${T("Apply")}</button><//>`}>
     ${owner ? html`<div class="hint sharelead">${T("{name} always has access, as the owner.", { name: owner.name })}</div>` : null}
     <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
@@ -1551,13 +1551,13 @@ function NetworksSheet({ pid }) {
       if (r && r.ok) { dirtyRef.current = false; toast(T("Networks removed."), "ok"); closeModals(2); Store.poll(); }
       else toast(srvText(r) || T("Networks weren't saved."), "err");
     }}/>`);
-  if (!found) return html`<${Sheet} title=${T("Networks")} foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
+  if (!found) return html`<${Sheet} title=${T("Networks")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
   return html`<${Sheet} title=${T("Networks · {name}", { name })} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       ${stored.length ? html`<button class="btn btn-danger" disabled=${busy} onClick=${remove}>${T("Remove networks")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       ${/* An emptied field saves as a removal, through the same confirm — Save used to just grey out, which read as broken. */""}
       <button class="btn btn-primary" disabled=${busy || !dirty || stale || nobody || (!want.length && !stored.length) || refusals.length > 0}
         onClick=${want.length ? save : remove}>${busy ? T("saving…") : T("Save")}</button><//>`}>
@@ -2366,7 +2366,7 @@ export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, r
   return html`<${Sheet} title=${(isNew ? T("Node created")
       : rebuild ? (rebuild.was_reporting ? T("Migrate") : T("Restore or migrate"))
       : T("New token")) + " · " + name}
-    foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
+    noSwipe=${true} foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
     ${/* THE SUBJECT OF THIS STEP IS THE COMMAND. Everything below used to arrive at once: the whole
           pre-flight again, the enrolment token, the transfer token, both commands and the credential-only
           repair — on a screen whose one job is "run this on the new box". The operator read the outcome on
@@ -2895,7 +2895,7 @@ export function NodeRemoveSheet({ node }) {
   }); };
   const force = () => pushModal(html`<${ForceRemoveNodeSheet} node=${node}/>`);   // typed "DELETE <name>" confirmation (matches interface/turn-proxy deletes)
   return html`<${Sheet} title=${T("Remove {v1}", { v1: node.name })}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
       ${flagged ? null : html`<button class="btn btn-primary" onClick=${flag}>${T("Flag for removal")}</button>`}
       <button class="btn btn-danger" onClick=${force}>${T("Force remove now")}</button></>`}>
     ${flagged

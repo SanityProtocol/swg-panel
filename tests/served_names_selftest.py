@@ -20,13 +20,14 @@ Run: python3 tests/served_names_selftest.py    (0 = pass)
      --plant joined    serves js/trackerList.js (camelCase, one word lowercased); expects RED
      --plant stem      serves js/trackerlist.js (one all-lowercase word: only the in-word stem check sees it); expects RED
      --plant acronym   serves js/UIStats.js (an acronym before the word); expects RED
+     --plant nom       the scan skips m/ (the phone UI's directory); expects RED
 """
 import os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PLANTS = {"logview": "serve js/logview.js again", "nojs": "skip js/ in the scan", "joined": "serve js/trackerList.js",
-          "stem": "serve js/trackerlist.js", "acronym": "serve js/UIStats.js"}
+          "stem": "serve js/trackerlist.js", "acronym": "serve js/UIStats.js", "nom": "skip m/ in the scan"}
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 assert PLANT in ("",) + tuple(PLANTS), "unknown plant %r" % PLANT
 
@@ -44,10 +45,10 @@ STEM = re.compile(r"track|analytic|telemetr|beacon|logview|syslog|fingerprint|ad
 ALLOW = {}   # "<file name>": "why a list does not block it" — none today
 
 def served():
-    """Every .js / .css the two servers hand a browser: the root assets, js/ (with js/lang/), vendor/."""
+    """Every .js / .css the two servers hand a browser: the root assets, js/ (with js/lang/), m/ (the phone UI), vendor/."""
     out = [f for f in os.listdir(ROOT) if f.endswith((".js", ".css")) and os.path.isfile(os.path.join(ROOT, f))]
-    for d in ("js", "vendor"):
-        if d == "js" and PLANT == "nojs":
+    for d in ("js", "m", "vendor"):
+        if (d == "js" and PLANT == "nojs") or (d == "m" and PLANT == "nom"):
             continue
         for root, _dirs, files in os.walk(os.path.join(ROOT, d)):
             out += [os.path.relpath(os.path.join(root, f), ROOT) for f in files if f.endswith((".js", ".css"))]
@@ -61,6 +62,7 @@ names = served()
 print("[1] the served scripts and stylesheets (%d)" % len(names))
 check("[1] the scan sees the SPA's modules (js/ has 30+ of them)", sum(n.startswith("js/") for n in names) >= 30,
       "%d under js/" % sum(n.startswith("js/") for n in names))
+check("[1] the scan sees the phone UI's stylesheet (m/m.css)", "m/m.css" in names)
 for n in names:
     base = os.path.basename(n)
     stem = os.path.splitext(base)[0]

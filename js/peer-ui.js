@@ -435,7 +435,7 @@ export function VkLinksSheet({ user }) {
       <button class="btn btn-ghost" disabled=${adding || busy || !poolLeft} onClick=${addFromPool}
         title=${poolLeft ? T("Give this user one more link from the shared pool") : T("No unused link left in the shared pool")}>
         <${Ic} i="users"/> ${adding ? T("Adding…") : T("Add from pool")}</button>
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
+      <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || bad} onClick=${save}>${busy ? T("Saving…") : T("Save")}</button></>`}>
     <div class="iface-intro" style="margin-top:2px"><div>${vkLinksIntro()}</div></div>
     <div class="vklinks-grid">
@@ -563,7 +563,7 @@ function vkLinksIntro() {
 export function VaultKeySheet() {
   const k = subKeyB64();
   if (!k) return null;
-  return html`<${Sheet} title=${T("Save your encryption key")} width=${560} onClose=${closeModal}
+  return html`<${Sheet} title=${T("Save your encryption key")} width=${560} onClose=${closeModal} noSwipe=${true}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${closeModal}>${T("I've saved it")}</button></>`}>
     <div class="vaultprompt">
       <p class="vp-reason">${keyOnlyCopy()}</p>
@@ -1157,7 +1157,7 @@ function GroupSheet({ gid, seed }) {
   const add = list.filter(u => !base.current.users.includes(u)), remove = base.current.users.filter(u => !members.includes(u));
   dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0;
   if (gid && !g) return html`<${Sheet} title=${T("Group · {name}", { name: base.current.name })}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><//>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><//>`}>
     <div class="empty"><b>${T("This group no longer exists.")}</b></div><//>`;
   const ql = q.trim().toLowerCase();
   const rows = ql ? list.filter(id => uname(id).toLowerCase().includes(ql)) : list;
@@ -1191,7 +1191,7 @@ function GroupSheet({ gid, seed }) {
     foot=${html`<${Fragment}>
       ${gid ? html`<button class="btn btn-danger" onClick=${() => confirmDeleteGroup(g, true)}><${Ic} i="trash"/> ${T("Delete group")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>
     <div class="field"><label>${T("Name")}</label><input value=${name} maxlength="64" placeholder=${T("Ivanov family")} onInput=${e => setName(e.target.value)}/></div>
     <div class="field"><label>${T("Members")} <span class="faint gcount">${list.length}</span></label>
@@ -1270,7 +1270,7 @@ export function UserEditCard({ user, done }) {
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
     <${UserNetworksPanel} user=${user}/>
     ${saveErr ? html`<div class="formmsg err" role="alert">${saveErr}</div>` : null}
-    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${save}>${T("Save")}</button></div>
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${save}>${T("Save")}</button></div>
   </div>`;
 }
 

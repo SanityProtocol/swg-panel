@@ -54,7 +54,7 @@ let
 
   # Directories copied whole, exactly as the installers and the Dockerfile copy them, so adding
   # a module or a font never touches this file.
-  trees = [ "js" "vendor" ];
+  trees = [ "js" "m" "vendor" ];
 
   programs = [
     "swg-panel-server"   # the panel: UI + node-sync API

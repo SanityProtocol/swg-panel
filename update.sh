@@ -1931,6 +1931,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     [ -d "$SRC/vendor" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp -a "$SRC/vendor/." "$PANEL_DIR/vendor/"; }
     # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
     [ -d "$SRC/js" ] && { run mkdir -p "$PANEL_DIR/js"; run cp -a "$SRC/js/." "$PANEL_DIR/js/"; }
+    [ -d "$SRC/m" ] && { run mkdir -p "$PANEL_DIR/m"; run cp -a "$SRC/m/." "$PANEL_DIR/m/"; }   # m/ = the phone UI (docs/MOBILE-PLAN.md)
     if ! $DRYRUN && ! _jsbad="$(verify_js_tree "$SRC/js" "$PANEL_DIR/js")"; then   # a partial copy = a blank panel, silently
       DID_FAIL=yes
       warn "the SPA module tree is INCOMPLETE after the update — the panel will load blank:"
@@ -2451,6 +2452,7 @@ PYDRIFT
         [ -e "$SRC/$f" ] && run cp -a "$SRC/$f" "$DOCKER_DIR/"
       done
       [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
+      [ -d "$SRC/m" ] && run cp -a "$SRC/m" "$DOCKER_DIR/"     # m/ = the phone UI (docs/MOBILE-PLAN.md)
       [ -d "$SRC/js" ] && run cp -a "$SRC/js" "$DOCKER_DIR/"   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
       [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
       rescue_container_confs "$prof"

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- Mount point. Served at "/" by default; the panel rewrites this to the subpath
      (e.g. /swg/) when SWG_PANEL_BASE is set, so all relative URLs resolve correctly. -->
 <base href="/">
@@ -24,11 +24,24 @@
 <!-- inline SVG favicon (the cyan indicator-LED mark); offline-safe, no extra request -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231FC8D6'/%3E%3Ccircle cx='16' cy='14.5' r='5.5' fill='%230A0E15'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="app.css">
+<!-- The phone UI (docs/MOBILE-PLAN.md): one rule nested under html[data-ui="m"], so nothing in it can match on a desktop.
+     Always loaded, render-blocking like app.css: a phone never paints the desktop layout first. -->
+<link rel="stylesheet" href="m/m.css">
+<!-- Installable as an app from a trusted https:// address. No service worker: a cached shell would run a stale app.js against
+     an updated panel. Relative URLs, so a subpath mount (SWG_PANEL_BASE) needs no rewrite. -->
+<link rel="manifest" href="m/manifest.webmanifest">
+<link rel="apple-touch-icon" href="m/icon-maskable-512.png">
+<meta name="theme-color" content="#10151E">
 <!-- Set the light/dark theme before first paint so there's no dark→light flash. Mirrors app.js's
      resolvedTheme(): stored mode (else "auto"), auto → prefers-color-scheme. -->
 <script>(function(){try{var m=localStorage.getItem("swg-theme");if(["light","dark"].indexOf(m)<0)m=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.theme=m;}catch(e){document.documentElement.dataset.theme="dark";}})();</script>
 <!-- Language before first paint, mirroring the theme bootstrap above: stored pick, else the browser's. -->
 <script>(function(){try{var l=localStorage.getItem("swg-lang");if(!l){l=(navigator.language||"").slice(0,2).toLowerCase();if(l!=="ru")l="en";}document.documentElement.lang=l;}catch(e){document.documentElement.lang="en";}})();</script>
+<!-- Phone or desktop UI, before first paint. A touch phone judged by the DEVICE, not the window (a phone in landscape stays a
+     phone, a narrowed desktop window stays desktop, a tablet is desktop); localStorage "swg-ui" = "m" | "d" overrides it. A
+     browser without CSS nesting always gets desktop: m.css would not apply there. Read once: js/util.js isMobile() reads the
+     attribute, never this test. The status-bar colour follows the panel's resolved theme (set just above), not the system's. -->
+<script>(function(){var d=document.documentElement;try{if(window.CSS&&CSS.supports&&CSS.supports("selector(&)")){var u=null;try{u=localStorage.getItem("swg-ui");}catch(e){}if(u!=="m"&&u!=="d")u=matchMedia("(pointer: coarse)").matches&&Math.min(screen.width,screen.height)<600?"m":"d";if(u==="m")d.dataset.ui="m";}var t=document.querySelector('meta[name="theme-color"]');if(t)t.content=d.dataset.theme==="light"?"#FFFFFF":"#10151E";}catch(e){}})();</script>
 </head>
 <body>
 <header class="appbar">
@@ -51,6 +64,9 @@
     <button class="iconbtn lg" id="vaultlock-btn" title="Lock encryption key" aria-label="Lock encryption key" hidden>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
     </button>
+    <button class="iconbtn lg" id="mview-btn" title="Mobile view" aria-label="Mobile view" hidden>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></svg>
+    </button>
     <button class="iconbtn lg" id="lang-btn" title="Language" aria-label="Language"></button>
     <button class="iconbtn lg" id="theme-btn" title="Theme" aria-label="Theme"></button>
     <button class="iconbtn lg" id="logs-btn" title="Logs" aria-label="Logs" hidden>
@@ -59,6 +75,9 @@
     <a class="iconbtn lg" id="panel-settings-btn" href="#/panel/settings" title="Panel settings" aria-label="Panel settings">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </a>
+    <button class="iconbtn lg" id="more-btn" title="More" aria-label="More" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
     <div class="acct-wrap">
       <button class="iconbtn lg" id="acct-btn" title="Log out" aria-label="Log out">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>
@@ -146,8 +165,9 @@
     /* The module list comes from this page's own <link rel="modulepreload"> tags — the graph is declared
        right above, in the file being served, so the list can never be out of date with what the panel
        ships. It replaced a fetched js/manifest.json of stored hashes, which had to be regenerated on every
-       edit and failed a release build the first time someone forgot. */
-    var links = document.querySelectorAll('link[rel="modulepreload"]'), names = [];
+       edit and failed a release build the first time someone forgot. The stylesheets are listed too: a missing
+       m/m.css fires this guard as well, and without it in the list it would report "all files loaded". */
+    var links = document.querySelectorAll('link[rel="modulepreload"], link[rel="stylesheet"]'), names = [];
     for (var i = 0; i < links.length; i++) {
       var href = links[i].getAttribute("href") || "";
       if (href) names.push(href.split("?")[0]);

@@ -1,0 +1,150 @@
+/* m/m.css — the panel on a phone (docs/MOBILE-PLAN.md).
+ *
+ * THE WHOLE FILE IS ONE RULE, html[data-ui="m"] { … }, and nothing may stand outside it but @keyframes m-*. index.html's
+ * bootstrap sets data-ui="m" on a touch phone (or by the "swg-ui" override), so on a desktop no selector here can match:
+ * the scope is structural, not a prefix someone has to remember. tests/mobile_css_shape_selftest.py enforces that shape.
+ * app.css is never edited for the phone; its own narrow-width rules (the @media(max-width:…) blocks) still apply and this
+ * builds on them. Specificity: a nested rule reads as html[data-ui="m"] .x and beats app.css's .x / .a .x; the inline
+ * style= some sheets and bubbles carry (a width, a position) needs !important here, and only here.
+ *
+ * The class names below are the desktop's. A desktop markup change can move the phone layout without a word, which is
+ * what the phone-layout gate (the screens cell's -390 arms) is for.
+ */
+html[data-ui="m"] {
+  --m-tabbar: 60px;                                   /* the bottom tab bar, without the home indicator's inset */
+  --m-safe-b: env(safe-area-inset-bottom, 0px);
+  --m-gutter: 16px;
+
+  /* ───── global ───── */
+  & body { min-height: 100dvh; background-attachment: scroll; }
+  /* 16px: below that, iOS Safari zooms the page when a field takes focus */
+  & :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea) { font-size: 16px; }
+  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }
+  & .screen { animation: none; }
+  /* a tap must never need a hover to be found; and no lingering grey flash on a tapped row */
+  & * { -webkit-tap-highlight-color: transparent; }
+
+  /* ───── the app bar: brand · live pill · More ───── */
+  & .appbar {
+    position: sticky; top: 0; z-index: 30; flex-wrap: wrap; height: auto; min-height: 56px; gap: 0 8px;
+    padding: env(safe-area-inset-top, 0px) max(4px, env(safe-area-inset-right, 0px)) 0 max(var(--m-gutter), env(safe-area-inset-left, 0px));
+    background: var(--surface); backdrop-filter: none;
+  }
+  & .brand { margin-right: auto; height: 56px; }
+  & .brand-name { font-size: 17px; }
+  & .appver, & #appref { display: none; }
+  & .appbar-right { display: contents; }
+  & .appbar-right > :not(#livepill, #more-btn, #updslot) { display: none; }
+  & #livepill { order: 1; height: 32px; padding: 0 12px; font-size: 12px; }
+  & #more-btn { order: 2; display: inline-flex; width: 48px; height: 48px; color: var(--ink-2); }
+  /* #updslot stays the header's ONE status renderer (hook 1): while it holds a badge it is a strip under the bar, its check
+     button left to the More sheet; with nothing to say it takes no room */
+  & #updslot { order: 3; display: none; }
+  & #updslot:has(.updpill, .hostproc-tag, .upd-busy) {
+    display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 8px; margin: 0 calc(-1 * max(4px, env(safe-area-inset-right, 0px))) 0 calc(-1 * max(var(--m-gutter), env(safe-area-inset-left, 0px)));
+    padding: 8px var(--m-gutter); border-top: 1px solid var(--line);
+  }
+  & #updslot #upd-check { display: none; }
+  & #updslot :is(.updpill, .hostproc-tag, .upd-busy, .upd-uptodate) { min-height: 32px; padding: 0 12px; font-size: 12px; display: inline-flex; align-items: center; }
+  & body.loggedout #more-btn { display: none; }
+
+  /* ───── the bottom tab bar: #tabs, its five links as they are; the icons are masks, so no markup changes ───── */
+  & .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; order: 9; flex: none;
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0;
+    padding: 4px max(2px, env(safe-area-inset-right, 0px)) var(--m-safe-b) max(2px, env(safe-area-inset-left, 0px));
+    background: var(--surface); border-top: 1px solid var(--line);
+  }
+  & .tabs a {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 52px; padding: 0 2px;
+    font-family: var(--sans); font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  &[lang="ru"] .tabs a { font-size: 10.5px; letter-spacing: -.01em; }
+  & .tabs a::before {
+    content: ""; width: 24px; height: 24px; flex: none; background: currentColor;
+    -webkit-mask: var(--m-tab-ic) center / 24px 24px no-repeat; mask: var(--m-tab-ic) center / 24px 24px no-repeat;
+  }
+  & .tabs a.active { color: var(--brand); }
+  & .tabs a.active::after { display: none; }
+  & .tabs a[data-tab="overview"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='7' height='7' rx='1.5'/%3E%3Crect x='13' y='4' width='7' height='7' rx='1.5'/%3E%3Crect x='4' y='13' width='7' height='7' rx='1.5'/%3E%3Crect x='13' y='13' width='7' height='7' rx='1.5'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="connections"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l2.5-6 5 12 2.5-6h4'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="users"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'%3E%3Ccircle cx='9' cy='8.5' r='3.5'/%3E%3Cpath d='M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5'/%3E%3Cpath d='M16 5.2a3.5 3.5 0 0 1 0 6.6M18 14.8c1.8.7 3 2.6 3 5.2'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="nodes"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'%3E%3Crect x='4' y='4' width='16' height='7' rx='2'/%3E%3Crect x='4' y='13' width='16' height='7' rx='2'/%3E%3Cpath d='M8 7.5h.01M8 16.5h.01'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="peers"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'%3E%3Crect x='7' y='3' width='10' height='18' rx='2.5'/%3E%3Cpath d='M11 17.5h2'/%3E%3C/svg%3E"); }
+  /* the on-screen keyboard is up: the bar would ride on top of it, over the form */
+  &:has(:is(input:not([type=checkbox]):not([type=radio]), textarea, select):focus) .tabs { display: none; }
+  & body.loggedout .tabs { display: none; }
+
+  /* toasts sit above the tab bar, across the screen */
+  & .toasts { left: 12px; right: 12px; bottom: calc(var(--m-tabbar) + var(--m-safe-b) + 12px); max-width: none; }
+
+  /* ───── sheets: docked at the bottom, full width, a grab handle; the body scrolls, the head and foot stay ───── */
+  & .overlay { padding: 0; align-items: flex-end; overflow: hidden; overscroll-behavior: contain; }
+  & .sheet {
+    width: 100% !important; max-width: none !important; box-sizing: border-box;
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px); display: flex; flex-direction: column;
+    border-width: 1px 0 0; border-radius: 18px 18px 0 0; animation: m-sheet-up .26s var(--ease);
+    touch-action: pan-y;
+  }
+  & .sheet::before { content: ""; flex: none; align-self: center; width: 40px; height: 5px; margin: 8px 0 0; border-radius: 3px; background: var(--line-solid); }
+  & .sheet-head { flex: none; padding: 4px 4px 10px var(--m-gutter); flex-wrap: wrap; gap: 4px 8px; }
+  & .sheet-head h3 { font-size: 17px; flex: 1 1 auto; min-width: 0; }
+  & .sheet-head .x { width: 44px; height: 44px; font-size: 26px; top: 0; }
+  & .sheet-head .sheet-back { min-height: 40px; }
+  & .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px var(--m-gutter); }
+  & .sheet.m-dragging { transition: none; }
+  & .sheet.m-springback { transition: transform .22s var(--ease); }
+
+  /* ───── sheet footers (the operator's rule, 2026-10-21): the dismiss button (Close / Cancel / Back — .btn-dismiss) and the
+     main action share the BOTTOM line, dismiss left, in equal halves; every other action sits above in a grid of equal cells,
+     three to a row, on the same edges; a status line from the footer goes just above the bottom line, left aligned ───── */
+  & :is(.sheet-foot, .editfoot) {
+    flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; align-items: stretch;
+    padding: 10px var(--m-gutter) calc(10px + var(--m-safe-b));
+  }
+  & .editfoot { padding: 0; }
+  & :is(.sheet-foot, .editfoot) > * { order: 1; grid-column: span 2; min-width: 0; }
+  & :is(.sheet-foot, .editfoot) > :is(.btn, button) {
+    min-height: 44px; justify-content: center; text-align: center; white-space: normal; line-height: 1.2; padding-left: 8px; padding-right: 8px;
+  }
+  & :is(.sheet-foot, .editfoot) > .grow { display: none; }
+  & :is(.sheet-foot, .editfoot) > :not(.btn, button, .grow) { order: 2; grid-column: 1 / -1; justify-self: start; align-self: center; }
+  & :is(.sheet-foot, .editfoot) > .btn-dismiss { order: 3; grid-column: 1 / span 3; }
+  & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
+  & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
+  & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
+
+  /* ───── bubbles: docked at the bottom, full width, over whatever place() computed ───── */
+  & .deppop {
+    position: fixed !important; left: 8px !important; right: 8px !important; top: auto !important;
+    bottom: calc(8px + var(--m-safe-b)) !important; transform: none !important;
+    width: auto !important; min-width: 0 !important; max-width: none !important; max-height: 60dvh !important; overflow: auto !important;
+    box-sizing: border-box; margin: 0 !important;
+  }
+
+  /* ───── sign-in ───── */
+  & .login-wrap { min-height: calc(100dvh - 56px - env(safe-area-inset-top, 0px)); padding: 16px var(--m-gutter) calc(24px + var(--m-safe-b)); align-items: flex-start; }
+  & .login-card { max-width: none; margin-top: 8vh; padding: 24px 20px; }
+  & .login-card .btn { min-height: 48px; font-size: 15px; }
+
+  /* ───── the More sheet (app.js MoreSheet) ───── */
+  & .msheet { margin: -8px calc(-1 * var(--m-gutter)); }
+  & .msheet-g + .msheet-g { border-top: 1px solid var(--line); }
+  & .msheet-g { padding: 4px 0; }
+  & .msheet-it {
+    display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 0 var(--m-gutter);
+    border: 0; background: none; color: var(--ink); font: 500 15.5px var(--sans); text-align: left; cursor: pointer;
+  }
+  & .msheet-it .ic, & .msheet-it > span:first-child { display: inline-flex; color: var(--ink-2); flex: none; }
+  & .msheet-it svg { width: 21px; height: 21px; }
+  & .msheet-it.danger, & .msheet-it.danger .ic { color: var(--dangling); }
+  & .msheet-l { flex: 1 1 auto; min-width: 0; }
+  & .msheet-v { margin-left: auto; font-size: 13.5px; color: var(--dim); }
+  & .msheet-ver { border-top: 1px solid var(--line); padding: 12px var(--m-gutter) 6px; font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  & .msheet-verl { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+  & .msheet-verl b { color: var(--ink-2); font-weight: 600; }
+  & .msheet-ver p { margin: 6px 0 0; font-family: var(--sans); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+}
+
+@keyframes m-sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }

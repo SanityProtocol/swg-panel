@@ -2403,6 +2403,8 @@ def _stamp_imports(data, rel):
 # allow-list would have to stay in lockstep with the six installer copy loops that ship them — this repo has
 # already shipped that bug once (four swg-sub images allow-listed but absent from every copy loop, e5b1033).
 _JS_MODULE_RE = re.compile(r"^/js/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.js$")
+# The phone UI's directory (docs/MOBILE-PLAN.md): its stylesheet, the app manifest and the icons. Flat, three kinds only.
+_M_ASSET_RE = re.compile(r"^/m/[A-Za-z0-9_.-]+\.(?:css|png|webmanifest)$")
 
 
 def static_rel(path):
@@ -2410,7 +2412,7 @@ def static_rel(path):
     enforced by _static's realpath check — this only decides what is offered."""
     if path in STATIC:
         return STATIC[path]
-    if ".." not in path and _JS_MODULE_RE.match(path):
+    if ".." not in path and (_JS_MODULE_RE.match(path) or _M_ASSET_RE.match(path)):
         return path.lstrip("/")
     return None
 
@@ -2443,7 +2445,7 @@ STATIC = {
 }
 CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",
           ".js": "text/javascript", ".json": "application/json",
-          ".woff2": "font/woff2"}
+          ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json"}
 
 
 def strip_base(path):
@@ -33822,6 +33824,7 @@ class Handler(BaseHTTPRequestHandler):
             data = re.sub(rb'href="(js/[A-Za-z0-9_.-]+\.js)"',
                           lambda m: b'href="' + m.group(1) + _js_tree_q() + b'"', data)
             data = (data.replace(b'href="app.css"', b'href="app.css' + _asset_q("app.css") + b'"')
+                        .replace(b'href="m/m.css"', b'href="m/m.css' + _asset_q("m/m.css") + b'"')
                         .replace(b'src="app.js"', b'src="app.js' + _asset_q("app.js") + b'"')
                         .replace(b'src="turn-artifacts.js"', b'src="turn-artifacts.js' + _asset_q("turn-artifacts.js") + b'"'))
         elif rel.endswith(".js"):

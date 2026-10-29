@@ -13,7 +13,7 @@
  * handles Esc/Enter/Tab. Without it a child sheet's Escape would close its parent too.
  */
 
-import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen, panelNowS } from "./util.js";
+import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen, panelNowS, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
@@ -461,8 +461,10 @@ export function SearchBox({ placeholder, value, onInput }) {
 // Collapses the ~15 dialogs that share this exact shape into one call; irregular footers (multiple actions,
 // a left-aligned Cancel) stay inline. `danger` paints the action red; `actionCls` overrides the class outright;
 // `title`/`disabled` are only emitted when passed, so the rendered DOM stays byte-identical to the old inline form.
+// `btn-dismiss` marks the footer's Close / Cancel / Back — the same `btn-ghost` as QR or Targets, so CSS could not find it — for
+// the phone's footer rule (m/m.css: the dismiss and the main action share the bottom line). It styles nothing on a desktop.
 export function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
-  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || T("Cancel")}</button>${action != null ? html`<button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button>` : null}<//>`;
+  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${onCancel}>${cancelLabel || T("Cancel")}</button>${action != null ? html`<button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button>` : null}<//>`;
 }
 // subject = {kind:"peer"|"user", id} — when that peer/user is blocked, the whole modal takes the red "blocked"
 // treatment (border + header tint + a BLOCKED chip). Looked up live (useStore) so it reacts to block/unblock
@@ -472,7 +474,63 @@ export function subjectBlocked(subject) {
   const rec = subject.kind === "user" ? Store.user(subject.id) : Store.peer(subject.id);
   return !!(rec && rec.disabled);
 }
-export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, subject, err }) {
+// Swipe down to close, on a phone (docs/MOBILE-PLAN.md hook 2; sub.js attachSwipeClose's gesture, downward only). Only the
+// TOPMOST sheet takes it. It yields to an inner scroller that can still scroll up, a sideways move is never a close, and a touch
+// that starts on a field never closes (selecting text in a config). A committed swipe goes through the sheet's own tryClose, so
+// a dirty sheet shows its "Discard?" and springs back, and a sheet with onBack goes Back. `noSwipe`: a sheet holding a secret
+// shown once (a node token, the encryption key, a router config) ignores it, since tryClose closes a CLEAN sheet without asking.
+function attachSheetSwipe(root, isTop, canSwipe, wantsGuard, close) {
+  let st = null;
+  const scrollerAbove = el => {        // an element between the touch and the sheet that can still scroll content down
+    for (; el && el !== root; el = el.parentElement) {
+      if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) { const o = getComputedStyle(el).overflowY; if (o === "auto" || o === "scroll") return true; }
+    }
+    return false;
+  };
+  const reset = spring => {
+    root.classList.remove("m-dragging");
+    if (spring) { root.classList.add("m-springback"); setTimeout(() => root.classList.remove("m-springback"), 240); }
+    root.style.transform = "";
+  };
+  const onStart = e => {
+    st = null;
+    if (e.touches.length !== 1 || !isTop() || !canSwipe()) return;
+    const t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .ddpop")) return;
+    if (scrollerAbove(t)) return;
+    st = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), dy: 0, on: false };
+  };
+  const onMove = e => {
+    if (!st) return;
+    const dx = e.touches[0].clientX - st.x, dy = e.touches[0].clientY - st.y;
+    if (!st.on) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) { st = null; return; }   // sideways: a rail, a pager — never a close
+      if (dy < -6) { st = null; return; }                                              // up: the content scrolls
+      if (dy < 10) return;
+      st.on = true; root.classList.add("m-dragging");
+    }
+    e.preventDefault();
+    st.dy = Math.max(0, dy);
+    root.style.transform = "translateY(" + st.dy + "px)";
+  };
+  const onEnd = () => {
+    if (!st) return;
+    const s = st; st = null;
+    if (!s.on) return;
+    const fast = s.dy > 40 && s.dy / Math.max(1, Date.now() - s.t) > 0.6;
+    if (!(s.dy > Math.min(140, root.offsetHeight * 0.3) || fast)) return reset(true);
+    if (wantsGuard()) { reset(true); close(); return; }              // the discard prompt shows; the sheet stays
+    root.classList.remove("m-dragging"); root.classList.add("m-springback");
+    root.style.transform = "translateY(100%)";
+    setTimeout(() => { close(); if (root.isConnected) reset(false); root.classList.remove("m-springback"); }, 180);
+  };
+  root.addEventListener("touchstart", onStart, { passive: true });
+  root.addEventListener("touchmove", onMove, { passive: false });
+  root.addEventListener("touchend", onEnd);
+  root.addEventListener("touchcancel", () => { if (st && st.on) reset(true); st = null; });
+  return () => { root.removeEventListener("touchstart", onStart); root.removeEventListener("touchmove", onMove); root.removeEventListener("touchend", onEnd); };
+}
+export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, noSwipe, subject, err }) {
   useStore();                                    // track live block/unblock while the modal is open
   onClose = onClose || closeModal;
   const blocked = subjectBlocked(subject);
@@ -485,7 +543,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
   // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog. `dirtyRef`
   // lets a caller flag changes the input/change listener can't see (e.g. click-toggled grids). `noGuard` opts out
   // entirely — view modals (QR / turn configs) save every field inline, so there's nothing to discard.
-  const tryClose = () => { if (!noGuard && (dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
+  const wantsGuard = () => !noGuard && (dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current;
+  const tryClose = () => { if (wantsGuard()) { setDiscarding(true); return; } onClose(); };
   if (closeRef) closeRef.current = tryClose;   // expose the guarded close so a footer Cancel routes through it too
   // ⚠️ A SHEET THAT SAVES ITSELF NEEDS A WAY TO SAY SO. `dirty` is set by any input/change event and was
   // never cleared, so a sheet whose own body writes to the server (rather than closing through the footer
@@ -500,6 +559,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
   // correctly went back. Route Esc through the live tryClose instead.
   const tryCloseRef = useRef(tryClose); tryCloseRef.current = tryClose;
   const noGuardRef = useRef(noGuard); noGuardRef.current = noGuard;   // read live (the Sheet instance is reused across openModal)
+  const noSwipeRef = useRef(noSwipe); noSwipeRef.current = noSwipe;
+  const wantsGuardRef = useRef(wantsGuard); wantsGuardRef.current = wantsGuard;
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -541,7 +602,10 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       }
     };
     document.addEventListener("keydown", onKey, true);          // capture so it works regardless of focus
+    const unswipe = isMobile() ? attachSheetSwipe(root, () => _sheetStack[_sheetStack.length - 1] === tok, () => !noSwipeRef.current,
+                                                  () => wantsGuardRef.current(), () => tryCloseRef.current()) : null;
     return () => {
+      if (unswipe) unswipe();
       document.removeEventListener("keydown", onKey, true);
       _sheetStack = _sheetStack.filter(t => t !== tok);
       root.removeEventListener("input", onEdit, true);
@@ -557,7 +621,7 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       <div class="sheet-body">${children}${err ? html`<div class="formmsg err" role="alert">${err}</div>` : null}</div>
       ${(foot || discard) ? html`<div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> ${T("Discard unsaved changes?")}</span><span class="grow"></span>
-            <button class="btn btn-ghost" onClick=${() => setDiscarding(false)}>${T("Keep editing")}</button>
+            <button class="btn btn-ghost btn-dismiss" onClick=${() => setDiscarding(false)}>${T("Keep editing")}</button>
             <button class="btn btn-danger" onClick=${onClose}>${T("Discard")}</button></>`
         : foot}</div>` : null}
     </div></div>`;
@@ -604,7 +668,7 @@ export function ConfirmSheet({ title, body, note, log, confirmLabel, busyLabel, 
     foot=${html`<${Fragment}>
       ${canToggle ? html`<button class="btn btn-ghost logtoggle" onClick=${() => setRaw(r => !r)}>${raw ? T("Display rendered") : T("Display raw")}</button>` : null}
       <span class="grow"></span>
-      <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? (cancelLabel || T("Cancel")) : (confirmLabel || T("Close"))}</button>
+      <button class=${"btn " + (onConfirm ? "btn-ghost btn-dismiss" : "btn-primary")} onClick=${back}>${onConfirm ? (cancelLabel || T("Cancel")) : (confirmLabel || T("Close"))}</button>
       ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy || !typeOk} onClick=${go}>${busy ? html`<span class="spin sm"></span>${busyLabel || T("Working…")}` : (confirmLabel || T("Confirm"))}</button>` : null}</>`}>
     ${isLog
       ? html`<${LogBody} text=${log} raw=${raw}/>`
@@ -1865,6 +1929,8 @@ export function applyFavicon(accent) {
 // an inline <head> script in index.html sets data-theme before first paint so there's no dark→light flash.
 export function applyThemeMode() {
   document.documentElement.dataset.theme = resolvedTheme();
+  // The phone's status bar follows the panel's theme, not the system's (MOBILE-PLAN hook 7; index.html sets it at load).
+  const tc = document.querySelector('meta[name="theme-color"]'); if (tc) tc.content = resolvedTheme() === "light" ? "#FFFFFF" : "#10151E";
   _themeSig = null;            // force the accent injection to re-pick this mode's brand colour
   applyThemeColors();
   applyForkColors();           // turn-fork tints are per-mode too
