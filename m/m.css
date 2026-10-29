@@ -921,6 +921,12 @@ html[data-ui="m"] {
   & .panel-head:has(> .rangetabs) > .grow { display: none; }
   & .panel-head > .rangetabs { flex: 1 1 170px; min-width: 0; display: flex; margin-left: auto; }
   & .panel-head > .rangetabs > .rtab { flex: 1 1 auto; min-width: 0; padding: 0 3px; font-size: 9.5px; letter-spacing: 0; justify-content: center; text-align: center; }
+  /* a node's Traffic (it has Peers / Mesh too): always two lines (operator, 2026-10-29) — the name, Peers / Mesh at the right;
+     then the five range tabs across the width in equal cells */
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) { flex-wrap: wrap; }
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) > .hdr-lead { margin-left: auto; }
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) > .rangetabs { flex: 1 0 100%; margin-left: 0; }
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) > .rangetabs > .rtab { flex: 1 1 0; }
   & .ifrow .m-onltap { padding: 8px 6px; margin: -8px -6px; }
   /* a label over a value (a tile's, an interface's facts, a node's health, a sort's) at 11 px at the least */
   & :is(.stat .k, .ig-l, .hcol-l, .msort-l, .netshare-l, .act-cat) { font-size: 11px; }
