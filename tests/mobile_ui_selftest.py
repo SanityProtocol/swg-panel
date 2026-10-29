@@ -458,6 +458,17 @@ try:
         tab.ev("history.back()"); settle(tab, 900)
         check("[13] with nothing open, Back is the browser's", tab.ev("location.hash") == "#/peers")
         tab.close()
+        # nested, and the page the first one in its tab — no earlier entry to borrow: each Back closes one
+        tab = open_app("#/users")
+        tab.ev("(async () => { const P = await %s; const U = await %s('ui'); U.openModal(P.h(U.Sheet, {title: 'Parent'}, P.h('p', null, 'x')));"
+               " setTimeout(() => U.pushModal(P.h(U.Sheet, {title: 'Child', onBack: U.closeModal}, P.h('p', null, 'c'))), 200); })()" % (PREACT, MOD)); settle(tab, 900)
+        check("[13] two sheets open, one over the other", sheets(tab) == 2)
+        tab.ev("history.back()"); settle(tab, 800)
+        check("[13] the first Back closes the child only", sheets(tab) == 1)
+        tab.ev("history.back()"); settle(tab, 800)
+        st = tab.ev("({n: document.querySelectorAll('.overlay.show .sheet').length, hash: location.hash})")
+        check("[13] the second Back closes the parent, the page stays", st["n"] == 0 and st["hash"] == "#/users", st)
+        tab.close()
 
     # ── [12] a hover-only bubble on a phone: a tap's, swiped away, opened again ──
     with guard("[12]"):

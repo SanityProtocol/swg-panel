@@ -225,7 +225,8 @@ export function dismissError(key) { if (Store.rowErrors[key]) { delete Store.row
 let _setStack = () => {};
 let _stack = [];
 let _modalSeq = 0;   // bumps on every open/close — lets a confirm tell if onConfirm replaced the modal
-function _applyStack(next) { _stack = next; _modalSeq++; _setStack(next); }
+let _onStack = null;   // a phone: attachBackCloses keeps one history entry per open sheet
+function _applyStack(next) { _stack = next; _modalSeq++; _setStack(next); if (_onStack) _onStack(next.length); }
 export function openModal(node) { _applyStack(_stack.length ? [..._stack.slice(0, -1), node] : [node]); }
 export function pushModal(node) { _applyStack([..._stack, node]); }
 function _blurActive() { requestAnimationFrame(() => { const a = document.activeElement; if (a && a.blur && a.tagName !== "BODY") a.blur(); }); }
@@ -390,18 +391,24 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
 // bubble. A tap that belongs to something else never does: on a link, a button, a field, or anything with a pointer cursor (a
 // clickable row or card) the tap is that thing's, and a title-less tap anywhere just closes the bubble.
 // A phone's Back closes what is on top — a QR, a bubble, a sheet — and leaves the page under it where it was (operator, 2026-10-29:
-// "must close the slider, not go back to the previous page"). The browser has already gone back one entry when popstate fires: the
-// address the page had is put back (pushState fires no event), and the hashchange that back navigation is about to fire is eaten
-// before the router sees it. Nothing open → Back is the browser's, untouched.
+// "must close the slider, not go back to the previous page"). Every sheet opened pushes an entry with the same address, so each
+// Back has one to take, however deep the sheets are nested ("the next one just minimizes the browser"). A sheet closed by its X
+// or a swipe leaves its entry behind: a Back that lands on one with nothing open goes on back by itself, never a dead press. A
+// bubble or a QR has no entry of its own: the address the page had is put back (pushState fires no event) and the hashchange
+// that back navigation fires is eaten before the router sees it. Nothing open → Back is the browser's.
 export function attachBackCloses() {
-  let url = location.href, eat = false;
+  let url = location.href, eat = false, depth = 0;
+  _onStack = n => { if (n > depth) for (; depth < n; depth++) history.pushState({ swgSheet: depth + 1 }, ""); else depth = n; };
   window.addEventListener("popstate", () => {
     const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop");
-    if (!qr && !pop && !_stack.length) { url = location.href; return; }
+    if (!qr && !pop && !_stack.length) {
+      if (location.href === url) history.back();   // a closed sheet's entry left behind: not a page, step past it
+      return;
+    }
     if (location.href !== url) { eat = true; history.pushState(history.state, "", url); }
     if (qr) qr.click();
     else if (pop) { if (pop.classList.contains("m-titletap")) pop.remove(); else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
-    else closeModal();
+    else { depth = Math.max(0, _stack.length - 1); closeModal(); }   // its entry is the one this Back took
   });
   window.addEventListener("hashchange", e => {
     if (eat) { eat = false; e.stopImmediatePropagation(); return; }
