@@ -147,8 +147,14 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot) > .m-wide { grid-column: 1 / -1 !important; }
   /* two actions of weight side by side (Reset routing's learned IPs / everything): both on the top line in halves, the dismiss
      under them at the full width (operator) */
-  & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss) > :is(.btn-warn, .btn-danger) { order: 1 !important; grid-column: span 3 !important; }
-  & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss) > .btn-dismiss { order: 4 !important; grid-column: 1 / -1 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss):not(:has(> .btn-primary)) > :is(.btn-warn, .btn-danger) { order: 1 !important; grid-column: span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss):not(:has(> .btn-primary)) > .btn-dismiss { order: 4 !important; grid-column: 1 / -1 !important; }
+  /* an editor with a Save, a key rotation and destructive actions (the user editor): Rotate keys on the first line at the full
+     width, Delete and Block on the second in halves, Cancel and Save on the last (operator, 2026-10-29) */
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-warn { order: 0 !important; grid-column: 1 / -1 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-danger { order: 1 !important; grid-column: span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-dismiss { order: 3 !important; grid-column: 1 / span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-primary { order: 4 !important; grid-column: 4 / span 3 !important; }
   & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
   & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
   & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
