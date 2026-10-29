@@ -763,6 +763,24 @@ html[data-ui="m"] {
   & .bkrow > :not(.lg-pull, .bk-cat, .bk-defchip) { order: 3; }
   & .bkrow > :is(.bk-kind, .bk-size):empty { display: none; }
   & .bkrow > .bk-addwrap { margin-left: auto; }
+  /* a category opens on a tap — said by a chevron in a tap box at the end of its name's line, turning when open (operator:
+     "difficult to tell that those are expandable") */
+  & .bk-catline { align-items: center; }
+  & .bk-catline .lg-title { white-space: normal; overflow: visible; }
+  & .bk-chev {
+    margin-left: auto; flex: none; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 50%; font-size: 13px; color: var(--dim); background: var(--surface-2);
+  }
+  & .bkrow.open .bk-chev { border-color: var(--brand); }
+  /* an open category's lists: a list's name and source on a line, what it is under them, its state, size and buttons last */
+  & .bk-expand { padding-left: 0; }
+  & .bk-lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-left: 0; padding: 10px 12px; }
+  & .bk-lrow > .bk-linfo { flex: 1 1 100%; min-width: 0; }
+  & .bk-lrow > .grow { display: none; }
+  & .bk-lrow .bk-ldesc { white-space: normal; overflow: visible; text-overflow: clip; }
+  & .bk-lrow .bk-nabadge { white-space: normal; flex: 1 1 100%; }
+  & .bk-lrow > .bk-lremove { margin-left: auto; width: 36px; height: 36px; }
+  & .bk-lrow > .catrow-info { width: 36px; height: 36px; margin: 0; }
   & .lg-htitle { flex-wrap: wrap; flex: 1 1 auto; min-width: 0; row-gap: 4px; }
   & .lg-sub { flex: 1 0 100%; margin: 0; }
   /* Geo data providers: the switch and the colours on the first line, the provider's name, what it is and its source under them */
