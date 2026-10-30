@@ -28,7 +28,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | tfsearch | donetake | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -53,6 +53,7 @@ PERTURBS = {
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
     "donetake": ("js/routing.js", "if (q.trim() && rows.length === 1) {", "if (false) {"),
     "tfsearch": ("js/routing.js", '(open && isMobile() ? " m-tfsearch" : "")', '(false ? " m-tfsearch" : "")'),
+    "backguard": ("js/ui.js", "if (top && top.close) top.close(); else closeModal();", "closeModal();"),
     "backclose": ("app.js", "attachToastSwipe(); attachBackCloses(); }", "attachToastSwipe(); }"),
     "bubdrag": ("js/ui.js", 'if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important");', 'if (d.dy) d.pop.style.transform = "translateY(" + d.dy + "px)";'),
     "bubtap": ("js/ui.js", "onClick=${hoverOnly && !isMobile() ? null :", "onClick=${hoverOnly ? null :"),
@@ -499,6 +500,12 @@ try:
         tab.ev("history.back()"); settle(tab, 800)
         st = tab.ev("({n: document.querySelectorAll('.overlay.show .sheet').length, hash: location.hash})")
         check("[13] the second Back closes the parent, the page stays", st["n"] == 0 and st["hash"] == "#/users", st)
+        # an edit in it: Back goes through the sheet's guarded close and asks, as the X, the swipe and Esc do (review F51)
+        tab.ev("(async () => { const P = await %s; const U = await %s('ui'); U.openModal(P.h(U.Sheet, {title: 'Edit'}, P.h('input', {id: 'mbk'}))); })()" % (PREACT, MOD)); settle(tab, 700)
+        tab.ev("(() => { const i = document.getElementById('mbk'); i.value = 'x'; i.dispatchEvent(new Event('input', {bubbles: true})); })()"); settle(tab, 200)
+        tab.ev("history.back()"); settle(tab, 800)
+        st = tab.ev("({n: document.querySelectorAll('.overlay.show .sheet').length, ask: !!document.querySelector('.discard-msg'), hash: location.hash})")
+        check("[13] Back on an edited sheet asks before discarding it, and the sheet stays", st["n"] == 1 and st["ask"] and st["hash"] == "#/users", st)
         tab.close()
 
     # ── [12] a hover-only bubble on a phone: a tap's, swiped away, opened again ──

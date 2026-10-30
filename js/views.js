@@ -1014,7 +1014,7 @@ function MeshSheet({ nodeId, mode }) {
   return html`<${Sheet} title=${(mode === "in" ? T("Inbound links") : T("Mesh connections")) + " · " + h.total} noGuard=${true}
     foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
       ${/* opened on the node's own page: it is already open (operator, 2026-10-29) */""}
-      ${location.hash.split("/").slice(0, 3).join("/") === "#/node/" + encodeURIComponent(nodeId) ? null
+      ${location.hash === "#/node/" + encodeURIComponent(nodeId) ? null   /* the node's own page only: from one of its interfaces it is the way back (F59) */
         : html`<button class="btn btn-primary" onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(nodeId)); }}>${T("Open node")}</button>`}`}>
     <div class="m-meshsheet"><${MeshStat} nodeId=${nodeId} mode=${mode} rows=${true}/></div>
   <//>`;

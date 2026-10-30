@@ -1197,7 +1197,7 @@ function GroupSheet({ gid, seed }) {
     foot=${html`<${Fragment}>
       ${gid ? html`<button class="btn btn-danger" onClick=${() => confirmDeleteGroup(g, true)}><${Ic} i="trash"/> ${T("Delete group")}</button>` : null}
       ${/* a phone: the group's traffic from its editor, as its row's swipe offers it (operator, 2026-10-29) */""}
-      ${gid && isMobile() ? html`<button class="btn btn-ghost" onClick=${() => openGroupView(gid)}><${Ic} i="bars"/> ${T("Traffic")}</button>` : null}
+      ${gid && isMobile() ? html`<button class="btn btn-ghost" onClick=${() => openGroupView(gid, true)}><${Ic} i="bars"/> ${T("Traffic")}</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>

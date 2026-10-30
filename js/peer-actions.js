@@ -12,7 +12,7 @@
  * injected opener rather than an import.
  */
 
-import { T, Tsplit, plural, locale } from "./i18n.js";   // locale: dates in the panel's language, not the browser's
+import { T, Tsplit, plural, locale, srvText } from "./i18n.js";   // locale: dates in the panel's language, not the browser's
 import { tkey, seen, targetRole } from "./util.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides, isSelfContainedTgt, awgDict3 } from "./model.js";
@@ -110,23 +110,47 @@ export function rotateAllUserKeys(user, after) {
 
 // Rotate one device's keys — every credential it holds, as rotateAllUserKeys does per peer (a phone's device sheet; operator,
 // 2026-10-29). Confirmed once; the row shows "Rotating" until the poll brings the new key.
+// what that rotate is called for this device — the editor's words (Rotate keys / Rotate link / Rotate credentials)
+export function rotateOneLabel(peer) {
+  const p = (peer && peer.id && Store.peer(peer.id)) || peer || {};
+  const kinds = (p.targets || []).map(t => targetType(t));
+  const keyless = !!p.csqtt_password || !!p.wdtt_password || kinds.includes("csqtt") || kinds.includes("wdtt");
+  const keyed = (p.targets || []).some(t => !isSelfContainedTgt(t));
+  return keyed && keyless ? T("Rotate credentials") : !keyed ? T("Rotate link") : T("Rotate keys");
+}
 export function rotateOnePeerKeys(peer) {
+  // The phone's Rotate on a device's view: the same three cases, wording and answers as the editor's (EditPeerSheet's rotate) —
+  // a keyed device rotates its keypair, a csqtt / WDTT one its access password (a new LINK, not a QR), a mixed one all of them.
+  // Each turn rotate's answer is READ: api.post resolves {ok:false} rather than throwing, and a refused one was reported as
+  // done (review F52, F58, F62).
   const p = (peer && peer.id && Store.peer(peer.id)) || peer;
-  openConfirm({ title: T("Rotate keys"), confirmLabel: T("Rotate keys"), warn: true,
-    body: T("A fresh keypair and preshared key are generated. The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked."),
+  const kinds = (p.targets || []).map(t => targetType(t));
+  const hasCsqtt = !!p.csqtt_password || kinds.includes("csqtt"), hasWdtt = !!p.wdtt_password || kinds.includes("wdtt");
+  const hasKeyed = (p.targets || []).some(t => !isSelfContainedTgt(t));
+  const mixed = hasKeyed && (hasCsqtt || hasWdtt);
+  const title = mixed ? T("Rotate credentials") : !hasKeyed ? T("Rotate link") : T("Rotate keys");
+  const body = mixed ? T("This peer holds several credentials — a WireGuard keypair and an access password per turn server. All of them are replaced: every config, QR and link this peer already handed out stops working and must be re-imported.")
+    : !hasKeyed ? (hasCsqtt ? T("A fresh access password is generated. The current csqtt link stops working — send the user their new link (from the subscription page) to re-import.")
+                            : T("A fresh access password is generated. The current WDTT link stops working — send the user their new link (from the subscription page) to re-import."))
+    : T("A fresh keypair and preshared key are generated. The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.");
+  openConfirm({ title, confirmLabel: title, warn: true, body,
     onConfirm: () => {
       Store.rotating[p.id] = Date.now(); Store.apply();
       (async () => {
-        let did = false;
+        let err = "";
+        const read = r => { if (!err && !(r && r.ok)) err = srvText(r) || T("Rotate failed."); };
         try {
-          if (p.csqtt_password) { await api.csqttPeerRotate({ peer_id: p.id }); did = true; }
-          if (p.wdtt_password)  { await api.wdttPeerRotate({ peer_id: p.id });  did = true; }
-          if ((p.targets || []).some(t => !isSelfContainedTgt(t))) { await rotatePeerKeys(p); did = true; }
-        } catch (_) { did = false; }
-        if (!did) delete Store.rotating[p.id];
+          if (hasCsqtt) read(await api.csqttPeerRotate({ peer_id: p.id }));
+          if (hasWdtt) read(await api.wdttPeerRotate({ peer_id: p.id }));
+          if (hasKeyed && !err) await rotatePeerKeys(p);   // LAST: this changes the pubkey, and the two above address by id
+        } catch (_) { err = err || T("Rotate failed."); }
+        if (err || !hasKeyed) delete Store.rotating[p.id];
         await Store.poll();
         const re = Store.rowErrors["peer:" + p.id];
-        toast(did && !re ? T("Keys rotated — send the user the new QR / config; the old one no longer works.") : ((re && re.msg) || T("Rotate failed.")), did && !re ? "ok" : "err");
+        if (err || re) return toast(err || (re && re.msg) || T("Rotate failed."), "err");
+        toast(mixed ? T("Credentials rotated — send the user their new QR and links; the old ones no longer work.")
+          : !hasKeyed ? T("Link rotated — the old one no longer works.")
+          : T("Keys rotated — send the user the new QR / config; the old one no longer works."), "ok");
       })();
     } });
 }

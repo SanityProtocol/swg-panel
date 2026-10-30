@@ -403,18 +403,24 @@ export function attachBackCloses() {
   window.addEventListener("popstate", () => {
     const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop"), cat = document.querySelector(".catpick-pop .pop-x");
     if (cat) { if (location.href !== url) { eat = true; history.pushState(history.state, "", url); } cat.click(); return; }   // a routing field's search
-    if (document.querySelector(".osapp-menu")) {   // a client app menu inside a sheet: Back closes the menu, not the sheet (F4)
-      if (location.href !== url) { eat = true; history.pushState(history.state, "", url); }
-      history.pushState({ swgSheet: depth }, "");    // the sheet keeps an entry for its own Back
-      document.dispatchEvent(new CustomEvent("m-outside-tap")); return; }
-    if (!qr && !pop && !_stack.length) {
+    if (!qr && !pop && !_stack.length && !document.querySelector(".osapp-menu")) {
       if (location.href === url) history.back();   // a closed sheet's entry left behind: not a page, step past it
       return;
     }
-    if (location.href !== url) { eat = true; history.pushState(history.state, "", url); }
-    if (qr) qr.click();
-    else if (pop) { if (pop.classList.contains("m-titletap")) pop.remove(); else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
-    else { depth = Math.max(0, _stack.length - 1); closeModal(); }   // its entry is the one this Back took
+    // what this Back took: the top sheet's own entry when the address did not change, a page's when it did (no sheet entry left)
+    const tookSheet = location.href === url;
+    if (!tookSheet) { eat = true; history.pushState(history.state, "", url); }
+    // a layer inside a sheet (a client app menu, a QR, a bubble) has no entry of its own: the sheet gets back the one this took (F55)
+    const giveBack = () => { if (tookSheet && _stack.length) history.pushState({ swgSheet: depth }, ""); };
+    if (document.querySelector(".osapp-menu")) { document.dispatchEvent(new CustomEvent("m-outside-tap")); giveBack(); return; }   // F4
+    if (qr) { qr.click(); giveBack(); return; }
+    if (pop) { if (pop.classList.contains("m-titletap")) pop.remove(); else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); giveBack(); return; }
+    // the top sheet, through its GUARDED close — the X's, the swipe's and Esc's — so unsaved edits ask first (F51). Its entry is the
+    // one this Back took; a sheet that stays (it asked, in place) gets one back, and a confirm it opened gets its own.
+    depth = Math.max(0, _stack.length - 1);
+    const top = _sheetStack[_sheetStack.length - 1];
+    if (top && top.close) top.close(); else closeModal();
+    queueMicrotask(() => { if (_stack.length > depth) _onStack(_stack.length); });
   });
   window.addEventListener("hashchange", e => {
     if (eat) { eat = false; e.stopImmediatePropagation(); return; }
@@ -789,7 +795,7 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
     // A phone never focuses a field by itself (operator, 2026-10-29): that raises the on-screen keyboard over a sheet the
     // operator opened to read. The field is one tap away.
     if (first && !isMobile()) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
-    const tok = {}; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab
+    const tok = { close: () => tryCloseRef.current() }; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab; a phone's Back closes it through `close`
     const onKey = e => {
       if (_qrZoomOpen()) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
       if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it

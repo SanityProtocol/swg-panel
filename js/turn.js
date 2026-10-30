@@ -464,7 +464,11 @@ export function ProxyDropsHeader({ node, svc }) {
       r ? dropRate(r) + T("unit|/min") : "0"}</b></span>`}/>`;
 }
 
-export function TurnIpsHeader({ node, svc }) {
+// One proxy's collected VK relay IPs, live: the header's count and bubble, and on a phone the sheet its tap opens, each read it
+// for themselves — a sheet built from the header's values at the tap never changed again (review F54: still "No connections seen
+// yet" after the list arrived, flushed IPs still listed).
+function useTurnIps(node, svc) {
+  useStore();
   const [data, setData] = useState(null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
   useEffect(() => { load(); }, [node]);
@@ -483,25 +487,31 @@ export function TurnIpsHeader({ node, svc }) {
   const flush = () => openConfirm({ title: T("Flush offline recorded IPs"), confirmLabel: T("Flush"), danger: true,
     body: Trich(T("Remove {count} offline recorded for *this turn-proxy only*. Currently-online relays are kept, and other proxies are untouched.", { count: plural(offlineN, "IP") })),
     onConfirm: async () => { await api.turnIpsFlush({ node, service: svc }); load(); } });   // service-scoped on the backend → this proxy's offline IPs only
-  const openSettings = () => goSettingsTurnIps();
-  const label = html`${T("Turn IPs")}${active.size ? html` · <b>${active.size}</b>` : ""}`;
-  // a phone: the tap shows the list in a sheet, as the desktop's hover does, Settings one button away (operator, 2026-10-29:
-  // "don't take me to settings directly")
-  if (isMobile()) return html`<span class="turnips-wrap"><span class="turnips-hd" role="button" onClick=${() => pushModal(html`<${Sheet}
-      title=${T("Collected VK IPs")} noGuard=${true} foot=${html`<button class="btn btn-ghost" onClick=${openSettings}><${Ic} i="gear"/> ${T("Open Settings")}</button>
-        <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
-      <div class="m-tiplist">${tipRows()}</div><//>`)}>${label}</span></span>`;
-  const trigger = html`<span class="turnips-hd" onClick=${openSettings}>${label}</span>`;
-  return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
-    <div class="onpop-h">${T("Collected VK IPs")}</div>
-    ${tipRows()}
-  <//>`;
-  function tipRows() { return html`${rows.length ? html`<${Fragment}>
+  const tipRows = () => html`${rows.length ? html`<${Fragment}>
       ${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? T("val|online") : _lastSeen(r.last)}</span></div>`)}
       ${all.length > rows.length ? html`<div class="tipbub-more">${T("+{n} more in Settings", { n: all.length - rows.length })}</div>` : null}
       ${offlineN ? html`<button class=${"tipbub-flush" + (isMobile() ? " btn btn-danger" : "")} onClick=${flush}><${Ic} i="trash"/> ${T("Flush offline recorded IPs")}</button>` : null}
     <//>`
-      : html`<div class="tipbub-empty">${T("No connections seen yet.")}</div>`}`; }
+      : html`<div class="tipbub-empty">${data === null ? T("Loading…") : T("No connections seen yet.")}</div>`}`;
+  return { active, tipRows };
+}
+// a phone: the list in a sheet, as the desktop's hover shows it, Settings one button away (operator, 2026-10-29: "don't take me to
+// settings directly")
+function TurnIpsSheet({ node, svc }) {
+  const { tipRows } = useTurnIps(node, svc);
+  return html`<${Sheet} title=${T("Collected VK IPs")} noGuard=${true} foot=${html`<button class="btn btn-ghost" onClick=${() => goSettingsTurnIps()}><${Ic} i="gear"/> ${T("Open Settings")}</button>
+      <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
+    <div class="m-tiplist">${tipRows()}</div><//>`;
+}
+export function TurnIpsHeader({ node, svc }) {
+  const { active, tipRows } = useTurnIps(node, svc);
+  const label = html`${T("Turn IPs")}${active.size ? html` · <b>${active.size}</b>` : ""}`;
+  if (isMobile()) return html`<span class="turnips-wrap"><span class="turnips-hd" role="button" onClick=${() => pushModal(html`<${TurnIpsSheet} node=${node} svc=${svc}/>`)}>${label}</span></span>`;
+  const trigger = html`<span class="turnips-hd" onClick=${() => goSettingsTurnIps()}>${label}</span>`;
+  return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
+    <div class="onpop-h">${T("Collected VK IPs")}</div>
+    ${tipRows()}
+  <//>`;
 }
 
 // The "Collected IPs" grid in Settings → Turn proxies: every unique VK relay IP across the fleet's proxies,

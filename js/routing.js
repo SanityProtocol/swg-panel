@@ -1807,6 +1807,9 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   const [holdQ, setHoldQ] = useState(null);
   // …and has no pages: its list grows by a page as it is scrolled near its end (operator, 2026-10-29: "remove pagination")
   const [more, setMore] = useState(1);
+  // one page per render: a fling fires many scroll events before the grown list is drawn (F57); a closed search starts over
+  const growing = useRef(false);
+  useEffect(() => { growing.current = false; }, [more]);
   const [open, setOpen] = useState(false);
   const onKeyRef = useRef(null);   // the latest `onKey`, for the dropdown's window-level Escape (its effect runs only on `open`)
   const [pos, setPos] = useState(null);
@@ -2032,6 +2035,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // reload. Not keyed on `cidx` either: an empty answer would then re-run this on every render.
   const ckey = catalogKey();
   useEffect(() => { if (open) { let live = true; loadCatalogIndex().then(x => live && setCidx(x)); return () => { live = false; }; } }, [open, ckey]);
+  useEffect(() => { if (!open) { setMore(1); setHoldQ(null); } }, [open]);   // a closed search starts over (F57)
   const place = () => { const el = ref.current; if (!el) return; setPos(placeWide(el)); };
   useEffect(() => {
     if (!open) return; place();
@@ -2466,7 +2470,7 @@ ${/* The reading and its consequence live in the dropdown's "use what you typed"
       ${/* 119 = the 90 the list always left for the pager and padding, plus the 29px ✕ strip above it */""}
       <div class="tfpop-head"><button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${() => { setOpen(false); setHoldQ(null); if (isMobile() && inRef.current) inRef.current.blur(); }}><${Ic} i="x"/></button></div>
       <div class="catpick-list" onScroll=${isMobile() ? (e => { const l = e.currentTarget;
-          if (_cat.length > per && l.scrollTop + l.clientHeight > l.scrollHeight - 400) setMore(m => m + 1); }) : null}>
+          if (!growing.current && _cat.length > per && l.scrollTop + l.clientHeight > l.scrollHeight - 400) { growing.current = true; setMore(m => m + 1); } }) : null}>
 ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch this node to…" control that
        used to live inside this row was dead to a real mouse — and it is rendered ONLY when `readGate.ok` is
        false, which is exactly when the row is disabled, so it was dead every single time it appeared. Script
@@ -2525,7 +2529,11 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
           // not be added stays in the box with its reason, and the search stays open on it.
           if (q.trim() && rows.length === 1) {
             const r0 = rows[0];
-            if (r0.k === "list") { if (!has(r0.it.id) && listGate(mode, r0.it.id, node).ok) commitList(r0.it.id); }
+            if (r0.k === "list" && !has(r0.it.id)) {   // already in the rule: nothing to add, Done closes
+              const g = listGate(mode, r0.it.id, node);
+              if (!g.ok) { setSay(gateReason(g, modeLabel)); return; }   // refused: stays open on its row, which says why (F56)
+              commitList(r0.it.id);
+            }
             else if (readGate && readGate.ok && commitTyped()) return;
           }
           setOpen(false); setHoldQ(null); if (inRef.current) inRef.current.blur(); }}>

@@ -26,7 +26,7 @@ import {
 import {
   confirmDeletePeer, confirmUnassign, peerBlockBtn, userBlockBtn, PeerStatusLine, SubStatusLine,
   fmtDate, expiryInputVal, expiryFromInput, UserCombo, UserPicker, RoleToggle, assignPeer,
-  confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, rotateOnePeerKeys, PubTag,
+  confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, rotateOnePeerKeys, rotateOneLabel, PubTag,
   pubState, pubCls,
 } from "./peer-actions.js";
 import { searchMatch, usersView, revealUser, privateUnenforced, namedFew, privateOffOpens, clearUserFilters } from "./views.js";
@@ -651,7 +651,7 @@ export function PeerViewSheet({ pid, node, iface }) {
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, null, true)}>${T("Delete")}</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>${T("Unassign")}</button>`}
       ${/* a phone: the device's keys from its view, amber as everywhere (operator, 2026-10-29) */""}
-      ${isMobile() ? html`<button class="btn btn-warn m-pvrot" onClick=${() => rotateOnePeerKeys(p)}><${Ic} i="key"/> ${T("Rotate keys")}</button>` : null}<//>`}>
+      ${isMobile() ? html`<button class="btn btn-warn m-pvrot" onClick=${() => rotateOnePeerKeys(p)}><${Ic} i="key"/> ${rotateOneLabel(p)}</button>` : null}<//>`}>
     ${u ? html`<${PeerStatusLine} peer=${p} pos="bar"/>` : null}
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
@@ -743,8 +743,10 @@ export function UserViewSheet({ uid }) {
 
 // Read-only group view: the group's graph (its members' slots added together) over the windows' own window, and each member
 // with what they carried in it — the list adds up to the figure above. A member opens their own view. Paged like the devices.
-export function openGroupView(gid) { openModal(html`<${GroupViewSheet} gid=${gid}/>`); }
-export function GroupViewSheet({ gid }) {
+// child: over the sheet it was opened from (the group editor's Traffic on a phone), which stays under it with its edits and comes
+// back when this closes — openModal replaced the editor and its unsaved changes with no question (review F53)
+export function openGroupView(gid, child) { (child ? pushModal : openModal)(html`<${GroupViewSheet} gid=${gid} child=${!!child}/>`); }
+export function GroupViewSheet({ gid, child }) {
   useStore();
   const [page, setPage] = useState(1);
   const g = Store.group(gid);
@@ -754,7 +756,7 @@ export function GroupViewSheet({ gid }) {
     .sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx) || a.name.localeCompare(b.name));
   const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE));
   const pg = Math.min(page, pages);
-  return html`<${Sheet} title=${g ? g.name : T("Deleted group")} width=${760}
+  return html`<${Sheet} title=${g ? g.name : T("Deleted group")} width=${760} onBack=${child && !isMobile() ? closeModal : null}
     foot=${html`<${Fragment}><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       ${g ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openGroup(gid); }}><${Ic} i="pencil"/> ${T("Edit group")}</button>` : null}<//>`}>
     ${g ? html`<${Fragment}>
