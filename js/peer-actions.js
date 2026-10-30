@@ -68,7 +68,7 @@ export async function rotatePeerKeys(peer) {
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
       published = subPublishOrPrompt(peer.user_id, peer.id, keys.priv, psk); },
   });
-  return published ? { ...r, published } : r;
+  return { ...r, published };
 }
 
 // Rotate EVERY key a user holds — each WG/AWG peer gets a fresh keypair + PSK (rotatePeerKeys), each WDTT peer a
@@ -132,8 +132,9 @@ export function rotateOnePeerKeys(peer) {
   // Every credential is tried on its own and each answer READ (api.post resolves {ok:false} rather than throwing; the keypair's is
   // rotatePeerKeys' own answer to the rekey, F76, F77): a refused turn rotate no longer stops the keypair's (review F66), every
   // refusal is named (F79), and when only some went through the toast names what was already replaced — that user needs the new
-  // one (F68). An accepted rekey whose config never reached the subscription is replaced AND says why (F83); only the keypair's
-  // own refusal ends "Rotating" early (F85).
+  // one (F68). Only the keypair's own refusal ends "Rotating" early (F85). An accepted rekey whose config never reached the
+  // subscription says so in a toast of its own when the publish ends (F83) — the outcome never waits on its vault prompt (F86),
+  // and a missed publish is not a partial rotate (F87).
   const { p, hasCsqtt, hasWdtt, hasKeyed, mixed, none, title } = rotateParts(peer);
   if (none) return toast(T("This peer has nothing to rotate."), "err");   // F67: never "rotated" with no call made
   const body = mixed ? T("This peer holds several credentials — a WireGuard keypair and an access password per turn server. All of them are replaced: every config, QR and link this peer already handed out stops working and must be re-imported.")
@@ -153,9 +154,8 @@ export function rotateOnePeerKeys(peer) {
         if (hasCsqtt) await step(T("the csqtt link"), () => api.csqttPeerRotate({ peer_id: p.id }));
         if (hasWdtt) await step(T("the WDTT link"), () => api.wdttPeerRotate({ peer_id: p.id }));
         const kr = hasKeyed ? await step(T("the keypair"), () => rotatePeerKeys(p)) : null;   // LAST: this changes the pubkey, and the two above address by id
-        const unpub = kr && kr.ok && kr.published ? await kr.published.catch(() => null) : null;
-        if (unpub) why.push(unpub.replace(/[.\s]+$/, ""));
         if (!(kr && kr.ok)) delete Store.rotating[p.id];
+        if (kr && kr.published) kr.published.then(e => { if (e) toast(T("The keypair was replaced, but {why}. Its new QR is only in this tab until you reload — show it to the user from here.", { why: e.replace(/[.\s]+$/, "") }), "err"); }, () => {});
         await Store.poll();
         if (why.length) return toast(done.length ? T("Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.", { why: why.join("; "), done: done.join(", ") }) : why.join("; ") + ".", "err");
         toast(mixed ? T("Credentials rotated — send the user their new QR and links; the old ones no longer work.")

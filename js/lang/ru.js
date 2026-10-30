@@ -882,6 +882,8 @@ export const STR = {
   "tag|alien": "чужой",
   "its config wasn't published to the subscription — {v1}":
     "его конфиг не попал в подписку — {v1}",
+  "The keypair was replaced, but {why}. Its new QR is only in this tab until you reload — show it to the user from here.":
+    "Ключи заменены, но {why}. Новый QR есть только в этой вкладке до перезагрузки — покажите его пользователю отсюда.",
   "Another program is running this server — taking it over stops it first":
     "Этот сервер запущен другой программой — при перенятии он будет сначала остановлен",
   "tag|failed": "не удалось",

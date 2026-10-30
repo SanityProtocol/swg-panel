@@ -61,7 +61,7 @@ PERTURBS = {
     "rotnone": ("js/peer-actions.js", "  if (none) return toast(", "  if (false) return toast("),
     "grpedit": ("js/sheets-crud.js", "closeModal(); if (!child) openGroup(gid);", "closeModal(); openGroup(gid);"),
     "rotrekey": ("js/peer-actions.js", 'await step(T("the keypair"), () => rotatePeerKeys(p)) : null;', 'await step(T("the keypair"), () => rotatePeerKeys(p).then(() => ({ ok: true }))) : null;'),
-    "rotunpub": ("js/peer-actions.js", "        if (unpub) why.push(", "        if (false) why.push("),
+    "rotunpub": ("js/peer-actions.js", "        if (kr && kr.published) kr.published.then(", "        if (false) kr.published.then("),
     "rotspin": ("js/peer-actions.js", "        if (!(kr && kr.ok)) delete Store.rotating[p.id];", "        if (!hasKeyed || why.length) delete Store.rotating[p.id];"),
     "tiptap": ("js/turn.js", 'role="button" onClick=${() => pushModal(html`<${TurnIpsSheet}', 'role="button" onClick=${() => null && pushModal(html`<${TurnIpsSheet}'),
     "tipfetch": ("js/turn.js", "  useEffect(() => { load(); }, [node]);\n  const _snap", "  const _snap"),
@@ -475,8 +475,9 @@ try:
                     " S.api.wdttPeerRotate = async () => ({ok: false, error: 'not a WDTT peer.'}); S.api.peerRekey = async b => { window.__rk = b; return {ok: true}; };"
                     " PA.rotateOnePeerKeys(fake); return true; })()" % (MOD, MOD, json.dumps(PID["anna-phone"]))); settle(tab, 700)
         check("[15] the mixed device's Rotate asks first", ok and sheets(tab) == 1)
-        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].find(b => /Rotate credentials/.test(b.textContent) && !b.closest('.sheet-head')).click()"); settle(tab, 3500)
-        st = tab.ev("(async () => { const S = await %s('store'); return {rk: !!window.__rk, spin: !!S.Store.rotating[%s], t: [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')}; })()"
+        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].find(b => /Rotate credentials/.test(b.textContent) && !b.closest('.sheet-head')).click()")
+        st = tab.ev("(async () => { const S = await %s('store'); const t0 = Date.now(); while (!document.querySelector('#toasts .toast') && Date.now() - t0 < 3000) await new Promise(r => setTimeout(r, 25));"
+                    " return {rk: !!window.__rk, spin: !!S.Store.rotating[%s], t: [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')}; })()"
                     % (MOD, json.dumps(PID["anna-phone"])))
         check("[15] a refused WDTT rotate still rotates the keypair", st["rk"], st)
         check("[15] …and the row stays Rotating until the new key is live (F85)", st["spin"], st)
@@ -500,8 +501,9 @@ try:
         tab.ev("(async () => { const S = await %s('store'); Object.defineProperty(S.Store, 'storeMode', {get: () => 'encrypted', set() {}, configurable: true});"
                " [...document.querySelectorAll('.overlay.show .sheet button')].find(b => /Rotate (credentials|keys)/.test(b.textContent) && !b.closest('.sheet-head')).click(); })()" % MOD); settle(tab, 3500)
         st = tab.ev("[...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')")
-        check("[15] an accepted rekey whose config was not published says so, and calls the keypair replaced", "wasn't published" in st and "Already replaced" in st and "keypair" in st.split("Already replaced")[-1], st)
-        close_all(tab); tab.ev("(async () => { const C = await %s('crypto'); C.subForget(); })()" % MOD); tab.close()
+        check("[15] an accepted rekey whose config was not published says so in a toast of its own", "keypair was replaced, but its config wasn't published" in st and "only in this tab" in st, st)
+        check("[15] …beside the rotate's own outcome, not as a partial rotate", "rotated" in st and "Not everything" not in st, st)
+        close_all(tab); tab.close()
         tab = open_app("#/users")
         # nothing to rotate: no confirm, no "rotated" (F67)
         tab.ev("(async () => { const PA = await %s('peer-actions'); PA.rotateOnePeerKeys({id: 'mnone', targets: []}); })()" % MOD); settle(tab, 600)
@@ -523,7 +525,7 @@ try:
                " S.api.turnIps = async () => { window.__tips++; return {ok: true, data: {nodes: {}}}; };"
                " const c = document.createElement('div'); c.id = 'mtip'; document.querySelector('#view .screen').prepend(c);"
                " P.render(P.h(TU.TurnIpsHeader, {node: %s, svc: 'swg-turn-x'}), c); })()" % (PREACT, MOD, MOD, json.dumps(NID))); settle(tab, 700)
-        tab.ev("(async () => { const S = await %s('store'); S.Store.stats[%s] = Object.assign({}, S.Store.stats[%s], {turn_proxies: [{service: 'swg-turn-x', src_ips: ['198.51.100.7']}]}); S.Store.apply(); })()"
+        tab.ev("(async () => { const S = await %s('store'); S.Store.poll = async () => {}; S.Store.stats[%s] = Object.assign({}, S.Store.stats[%s], {turn_proxies: [{service: 'swg-turn-x', src_ips: ['198.51.100.7']}]}); S.Store.apply(); })()"
                % (MOD, json.dumps(NID), json.dumps(NID))); settle(tab, 300)
         live = tab.ev("document.querySelector('#mtip .turnips-hd').textContent")
         check("[15] the Turn IPs header follows the store (F78)", "· 1" in live, live)
