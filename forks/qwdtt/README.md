@@ -19,12 +19,14 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
 - Pinned upstream: **`a296c57e`** (`v1.4.4`, 2026-09-13).
   ⚠️ **Pin a commit, never a tag** — `v1.3.8`/`v1.3.9`/`v1.4.0`/`v1.4.0-beta` all still point at the
   July commit `2dd5d37f`.
-- swg-panel build label: **`1.4.4-1`**. That is pin `a296c57e` plus this patch, which carries the RAW keyless-gap
-  fixes (build `1.4.3-2`), the two fixes under "One config on several devices" (`1.4.3-3`) and the downlink crash fix
-  (`1.4.3-4`), all below.
-  - Published as `wdtt-qwdtt-1.4.4-1` (2026-10-30), amd64 `c4641fa4…`, arm64 `ce691814…` (Go 1.27.1,
+- swg-panel build label: **`1.4.4-2`**. That is pin `a296c57e` plus this patch, which carries the RAW keyless-gap
+  fixes (build `1.4.3-2`), the two fixes under "One config on several devices" (`1.4.3-3`), the downlink crash fix
+  (`1.4.3-4`) and the RAW store-write fix (`1.4.4-2`), all below.
+  - Published as `wdtt-qwdtt-1.4.4-2` (2026-10-30), amd64 `22d52c3a…`, arm64 `871f0191…` (Go 1.27.1,
     `golang:1.27.1-bookworm`). Rig-proven on the published amd64 bytes; the arm64 build comes from the same recipe but was
     not run.
+  - `wdtt-qwdtt-1.4.4-1` (amd64 `c4641fa4…`) is published but never listed by the panel: the same build without the
+    store-write fix. Its release says it is superseded.
   - `wdtt-qwdtt-1.4.3-4` (pin `fae121ef`, v1.4.3; amd64 `d90c7501…`, arm64 `85de0e28…`) is its rollback target. The
     store format is the same both ways. `1.4.3-3` and `1.4.3-2` stay listed too, but both carry the downlink crash.
 - What v1.4.4 changed upstream (`d90930ea`, "Fix device rebinding for renewed subscriptions"): the device-owner check
@@ -33,7 +35,7 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
   exemption and the fixed-config keys all re-anchored unchanged. The only thing dropped is the AUTH save exception for
   an owner stamp (see below), which no longer has anything to save. The patch applies to `a296c57e` with no fuzz.
 - Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published builds use Go 1.27.1.
-- Tests: upstream ships no Go tests of its own. Ours (`swgpanel_raw_test.go`) pass on `1.4.3-4` and `1.4.4-1`, the
+- Tests: upstream ships no Go tests of its own. Ours (`swgpanel_raw_test.go`) pass on `1.4.3-4`, `1.4.4-1` and `1.4.4-2`, the
   downlink race test 20 times in a row; `go_client` does not build its tests on either (`go.sum` lacks entries).
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
@@ -199,12 +201,13 @@ every earlier build; `1.4.3-3`'s takeover made it easy to hit.
 - **Result:** no panic in repeated runs.
 - **Test:** `TestRawDownlinkSurvivesTakeoversUnderTraffic`.
 
-### Rebased onto v1.4.4 (build `1.4.4-1`, 2026-10-30)
+### Rebased onto v1.4.4 (builds `1.4.4-1` and `1.4.4-2`, 2026-10-30)
 
-Rigs on the published amd64 bytes (`c4641fa4…`), with the published `1.4.3-4` (`d90c7501…`) as the control and the
-unpatched v1.4.4 qWDTT client. Each check also ran against a build with one defect planted, which it must fail.
+Rigs on the published amd64 bytes of `1.4.4-1` (`c4641fa4…`) and of `1.4.4-2` (`22d52c3a…`), with the published `1.4.3-4`
+(`d90c7501…`) as the control and the unpatched v1.4.4 qWDTT client. Each check also ran against a build with one defect
+planted, which it must fail. `1.4.4-2` gave the same result as `1.4.4-1` on every row of this table.
 
-| rig | check | `1.4.3-4` | `1.4.4-1` | planted defect → result |
+| rig | check | `1.4.3-4` | `1.4.4-1` / `-2` | planted defect → result |
 |---|---|---|---|---|
 | `keyless-qwdtt-wg.sh` | T1 reach, T2 spoof 0, T4 same address | pass | pass | — |
 | | T5 unrelated change (SIGHUP): session and address kept | pass | pass | — |
@@ -219,7 +222,22 @@ unpatched v1.4.4 qWDTT client. Each check also ran against a build with one defe
 
 On WG the "reap a no-op" plant still cut the live tunnel: dropping the password's WRAP key already ends a WG session,
 which is why the disconnect is load-bearing for RAW only. Host firewall and links unchanged by every run; server CPU after
-a revoke 0–2 ticks/10 s on both builds.
+a revoke 0–2 ticks/10 s on every build.
+
+**RAW store writes (build `1.4.4-2`).** v1.4.4 re-stamps a device's owner on every RAW session start (`GETCONF_RAW`) and
+marks it changed unconditionally, so the whole store — serialised, fsynced, renamed, under `dbMutex` — was written again
+for a device the server already knew, on top of the write upstream keeps for `canConnectAndBind`, which `-fixed-config`
+skips. 1.4.4-2 skips that write under `-fixed-config` and stamps and saves only what differs. Counted with strace on the
+server (`.campaign/rigs/qwdtt-raw-writes.sh`, one rename per write):
+
+| store writes per RAW session start | `1.4.3-4` | `1.4.4-1` | `1.4.4-2` |
+|---|---|---|---|
+| a new password's first session (the record is created) | 2 | 2 | 1 |
+| the same device, a new session | 1 | **2** | 0 |
+| the same password from another device ID (the same record) | 1 | **2** | 0 |
+
+A burst of RAW reconnects (a node restart, a network blip) no longer queues full-store writes behind the lock every
+connect waits on.
 
 ### `desired.json` schema (panel writes; the server reads)
 

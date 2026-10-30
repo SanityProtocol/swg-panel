@@ -1509,17 +1509,19 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # writes, so every client got 1.1.1.1. swg-noded passes -dns only to a build whose -h lists it, so rolling back to
     # 1.5.0-3 just drops the flag (docs/DNS-SETTINGS-PLAN.md §3.5).
     "ildarmaga": [("1.5.0-4",  "wdtt-ildarmaga-1.5.0-4"),  ("1.5.0-3",  "wdtt-ildarmaga-1.5.0-3"),  ("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
-    # wdttplus "20-1" / qwdtt "1.4.4-1": upstream's newest server source (WDTT-Plus v20, qWDTT v1.4.4) with the same patch,
+    # wdttplus "20-1" / qwdtt "1.4.4-2": upstream's newest server source (WDTT-Plus v20, qWDTT v1.4.4) with the same patch,
     # re-anchored. The v20 app speaks to 18-2 too (it asks for its uplink transport only where the server advertises it),
     # and qWDTT 1.4.4 dropped the device-owner check our AUTH save exception worked around. 18-2 and 1.4.3-4 stay as the
-    # rollback targets; the store format is unchanged both ways.
+    # rollback targets; the store format is unchanged both ways. qwdtt 1.4.4-1 is published but NOT listed: v1.4.4 as
+    # released writes the whole store twice per RAW session start; 1.4.4-2 writes it only when something differs. No
+    # node ever ran 1.4.4-1.
     "wdttplus":  [("20-1",     "wdtt-wdttplus-20-1"),      ("18-2",     "wdtt-wdttplus-18-2"),      ("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
     # xxcipherx: NO builds since 2026-10-14 (the operator: hidden, its releases removed from GitHub, archived locally in
     # ~/swg-archive/wdtt-xxcipherx). Not listed → no `ver` reaches a node (desired_wdtt_for_node), so a server already
     # running keeps the binary it has and is never sent after a download that no longer exists.
     # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
     # on a fresh install has no panel mirror to pull from, so mirror-only meant the fork simply did not work there.
-    "qwdtt":     [("1.4.4-1",  "wdtt-qwdtt-1.4.4-1"),      ("1.4.3-4",  "wdtt-qwdtt-1.4.3-4"),      ("1.4.3-3",  "wdtt-qwdtt-1.4.3-3"),      ("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
+    "qwdtt":     [("1.4.4-2",  "wdtt-qwdtt-1.4.4-2"),      ("1.4.3-4",  "wdtt-qwdtt-1.4.3-4"),      ("1.4.3-3",  "wdtt-qwdtt-1.4.3-3"),      ("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
 }
 _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
     "amurcanov/proxy-turn-vk-android": "amurcanov",
@@ -6673,11 +6675,11 @@ NET_SHARE_MAX = 500        # grantees (users + groups) on one provider — bound
 KEYLESS_SHARE_BUILDS = {
     "amurcanov": {"wg": ("1.2.4-3", "1.2.4-2")},  # rig 2026-09-14: its source as control — reach, spoof dropped, revocation cut, stable address;
                                                   # 1.2.4-3 on the published bytes (7c73acd9, 2026-09-17), owner device kept too
-    "qwdtt":     {"wg": ("1.4.4-1", "1.4.3-4", "1.4.3-3", "1.4.3-2", "1.4.3"),  # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k; 1.4.3-2 WG rig on the
+    "qwdtt":     {"wg": ("1.4.4-2", "1.4.3-4", "1.4.3-3", "1.4.3-2", "1.4.3"),  # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k; 1.4.3-2 WG rig on the
                                                             # published bytes (fe01bc1b); 1.4.3-3 (6913a4e8) and 1.4.3-4 (d90c7501) WG + RAW rigs
-                                                            # on their published bytes, 2026-09-25; 1.4.4-1 (c4641fa4, 2026-10-30) WG + RAW + T6 with
+                                                            # on their published bytes, 2026-09-25; 1.4.4-2 (22d52c3a, 2026-10-30) WG + RAW + T6 with
                                                             # 1.4.3-4 as the control, the WG rig now also proving the owner device kept
-                  "raw": ("1.4.4-1", "1.4.3-4", "1.4.3-3", "1.4.3-2")},  # RAW rig + T6 hijack probe on the published bytes, 1.4.3 as the control that fails T6
+                  "raw": ("1.4.4-2", "1.4.3-4", "1.4.3-3", "1.4.3-2")},  # RAW rig + T6 hijack probe on the published bytes, 1.4.3 as the control that fails T6
     "wdttplus":  {"wg": ("20-1", "18-2", "18", "15")},    # rig: 15 as the 2026-09-14 control; 18 on the PUBLISHED asset (4b766a2d, 2026-09-16) — reach, spoof 0 at the
                                                   # server, revocation cut + reconnect refused, stable address, owner device kept (kernel backend);
                                                   # 18-2 the same on its published asset (dffd34f7, 2026-09-25); 20-1 (29d9b791, 2026-10-30) the

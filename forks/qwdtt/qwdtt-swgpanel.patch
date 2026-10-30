@@ -375,7 +375,7 @@ index 8d4024d..bef48ca 100644
  	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
  	if strings.Contains(out, "bbr") {
 diff --git a/raw.go b/raw.go
-index 184ec43..289f747 100644
+index 184ec43..34bea73 100644
 --- a/raw.go
 +++ b/raw.go
 @@ -68,14 +68,16 @@ const downlinkWorkerBuf = 256
@@ -546,7 +546,13 @@ index 184ec43..289f747 100644
  			dbMutex.Unlock()
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
-@@ -385,12 +457,17 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -381,22 +453,32 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			}
+ 			return
+ 		}
+-		if isGenPass {
++		// swg-panel: under -fixed-config canConnectAndBind is skipped above, so there is no binding to save here.
++		if isGenPass && !fixedConfig {
  			saveDB()
  		}
  
@@ -566,8 +572,21 @@ index 184ec43..289f747 100644
 +			db.Devices[dkey] = dev
  			saveDB()
  		} else {
++			// swg-panel: v1.4.4 re-stamps the owner on every session start and so saved the whole store each time, under
++			// dbMutex. Stamp and save only what differs: a known device starting a session writes nothing.
  			changed := false
-@@ -420,8 +497,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+-			setDeviceOwner(dev, password)
+-			dev.RawOwnerID = wrapKeyID(password)
+-			changed = true
++			if owner := wrapKeyID(password); dev.OwnerID != owner || dev.RawOwnerID != owner {
++				setDeviceOwner(dev, password)
++				dev.RawOwnerID = owner
++				changed = true
++			}
+ 			if dev.RawIP == "" {
+ 				dev.RawIP = getNextRawIP()
+ 				changed = true
+@@ -420,8 +502,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  		isMainPass := password != "" && password == db.MainPassword
  		entry, isGenPass := db.Passwords[password]
  		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
@@ -584,7 +603,7 @@ index 184ec43..289f747 100644
  			bound = entry.DeviceID == deviceID
  			if !bound {
  				for _, id := range entry.DeviceIDs {
-@@ -437,7 +520,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -437,7 +525,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
@@ -597,7 +616,7 @@ index 184ec43..289f747 100644
  		if exists {
  			setDeviceOwner(dev, password)
  			dev.RawOwnerID = wrapKeyID(password)
-@@ -459,19 +546,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -459,19 +551,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	untrackCredential := trackCredentialConnection(password, deviceID, clientConn)
  	defer untrackCredential()
  
@@ -628,7 +647,7 @@ index 184ec43..289f747 100644
  		}
  		activeDevicesMu.Unlock()
  	}()
-@@ -526,7 +619,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -526,7 +624,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			continue
  		}
  		atomic.AddInt64(&totalBytesFromClient, int64(nn))
