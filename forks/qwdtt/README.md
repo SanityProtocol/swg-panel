@@ -22,8 +22,9 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
 - swg-panel build label: **`1.4.4-1`**. That is pin `a296c57e` plus this patch, which carries the RAW keyless-gap
   fixes (build `1.4.3-2`), the two fixes under "One config on several devices" (`1.4.3-3`) and the downlink crash fix
   (`1.4.3-4`), all below.
-  - Built amd64 `c4641fa4…`, arm64 `ce691814…` (Go 1.27.1, `golang:1.27.1-bookworm`), to be published as
-    `wdtt-qwdtt-1.4.4-1`.
+  - Published as `wdtt-qwdtt-1.4.4-1` (2026-10-30), amd64 `c4641fa4…`, arm64 `ce691814…` (Go 1.27.1,
+    `golang:1.27.1-bookworm`). Rig-proven on the published amd64 bytes; the arm64 build comes from the same recipe but was
+    not run.
   - `wdtt-qwdtt-1.4.3-4` (pin `fae121ef`, v1.4.3; amd64 `d90c7501…`, arm64 `85de0e28…`) is its rollback target. The
     store format is the same both ways. `1.4.3-3` and `1.4.3-2` stay listed too, but both carry the downlink crash.
 - What v1.4.4 changed upstream (`d90930ea`, "Fix device rebinding for renewed subscriptions"): the device-owner check
@@ -200,7 +201,7 @@ every earlier build; `1.4.3-3`'s takeover made it easy to hit.
 
 ### Rebased onto v1.4.4 (build `1.4.4-1`, 2026-10-30)
 
-Rigs on the amd64 bytes to be published (`c4641fa4…`), with the published `1.4.3-4` (`d90c7501…`) as the control and the
+Rigs on the published amd64 bytes (`c4641fa4…`), with the published `1.4.3-4` (`d90c7501…`) as the control and the
 unpatched v1.4.4 qWDTT client. Each check also ran against a build with one defect planted, which it must fail.
 
 | rig | check | `1.4.3-4` | `1.4.4-1` | planted defect → result |

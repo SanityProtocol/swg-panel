@@ -10,7 +10,7 @@ tunnel are off under our flags.
 | | |
 |---|---|
 | upstream commit | `d450e132d2477a80d7079282c200ac3fb97ad0ae` (tag `v20`, 2026-09-30) |
-| our build label | **20-1**: 20 plus this patch, unchanged in what it does from 18-2. Built amd64 `29d9b791…`, arm64 `0448de1e…` (Go 1.27.1), to be published as `wdtt-wdttplus-20-1`. `wdtt-wdttplus-18-2` (v18 `b3935b94`; amd64 `dffd34f7…`, arm64 `b51ceb51…`) stays as its rollback target; the store format is the same both ways. |
+| our build label | **20-1**: 20 plus this patch, unchanged in what it does from 18-2. Published as `wdtt-wdttplus-20-1` (2026-10-30; amd64 `29d9b791…`, arm64 `0448de1e…`, Go 1.27.1) and rig-proven on the published amd64 bytes. `wdtt-wdttplus-18-2` (v18 `b3935b94`; amd64 `dffd34f7…`, arm64 `b51ceb51…`) stays as its rollback target; the store format is the same both ways. |
 | note | `wdttServerVersion` is `"20"` at this tag, so `--version` prints `20` (18-2 printed `17`) |
 
 Tags move; the commit is the pin. Earlier pins: v18 `b3935b94`, v15 `3038b8dd`. The patch was regenerated against v20
@@ -75,7 +75,7 @@ wdtt-server -iface wdtt0 -wg-addr 10.66.66.1/24 -listen 0.0.0.0:56000 -wg-port 5
 
 ## Validation: 20-1 (rigs, 2026-10-30)
 
-On the amd64 bytes to be published (`29d9b791…`), with the published 18-2 (`dffd34f7…`) as the control. Each check also
+On the published amd64 bytes (`29d9b791…`), with the published 18-2 (`dffd34f7…`) as the control. Each check also
 ran against 20-1 with one defect planted, which it must fail.
 
 | rig | check | 18-2 | 20-1 | planted defect → result |
