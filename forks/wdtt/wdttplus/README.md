@@ -31,9 +31,11 @@ the WARP interface manager (an installer-side script) and the app. So the tag is
   only the app's own SSH deploy (`deploy.sh` refuses a mismatched binary it installs itself), which never runs
   against a panel-managed node. Proven on the rig below with the real v20 client.
 - **No new in-tunnel request makes the node act.** `-no-panel` still refuses the same five (`WDTT_UPDATE1`,
-  `WDTT_UPDATE_APK1`, `WDTT_HTTPS_POST1`, `WDTT_DEPLOY1`, `WDTT_DEPLOY_CHUNK1`). The refusal now runs after the uplink
-  frame is unwrapped, where upstream's own handlers read the request. `WDTT_TRANSPORT_METRICS` is only an environment
-  switch for the server's own log.
+  `WDTT_UPDATE_APK1`, `WDTT_HTTPS_POST1`, `WDTT_DEPLOY1`, `WDTT_DEPLOY_CHUNK1`). The refusal sits right before
+  upstream's own handlers, after the uplink unwrap. Where exactly does not change what it catches: an unwrapped uplink
+  payload that is not a WireGuard packet ends the session, so a request always arrives unframed (a build with the refusal
+  moved before the unwrap refused all four too). `WDTT_TRANSPORT_METRICS` is only an environment switch for the server's
+  own log.
 - Tests: upstream's 90 server tests plus ours pass on 18-2, its 92 on 20-1 (Go 1.25.14 and 1.27.1), and its `go_client`
   tests on both (Go 1.27.1: the client needs Go ≥ 1.26).
 
@@ -82,6 +84,7 @@ ran against 20-1 with one defect planted, which it must fail.
 | | T7 owner device kept | pass | pass | owner reaped → **owner 0/3** |
 | | T3 revoke: live cut 0/3, reconnect refused | pass | pass | no reload → **3/3, config served**; password never removed → **3/3, config served** |
 | `keyless-wdttplus.sh`, the real v20 client | T1–T7, T3 | pass (`WDTT_MUX1`) | pass (`uplink2` advertised) | — |
+| `keyless-wdttplus.sh gate`, the real v20 client | `UPDATE_METADATA`, `OPAQUE_HTTPS_POST`, `UPDATE_APK`, `DEPLOY_SAFE` | all `ERR … (-no-panel)`, 0 DNS | the same | refusal switched off → **20 DNS queries, `DEPLOY_SAFE` OK** |
 | `two-device-wdttplus.sh` | P1 one password, device A / B / A | 30/30 each, same address | the same | — |
 | | P2 a store bound to `phone-old` | both at .7, binding moved | the same | no migration → **refused on both** |
 
