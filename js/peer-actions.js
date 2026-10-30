@@ -38,6 +38,8 @@ export const setLoadIfaceOpener = fn => { _openLoadIface = fn; };
 // module). Mints a new keypair in the browser, preserves each target's current config settings
 // (DNS/MTU/AllowedIPs/keepalive) where readable, and re-issues. The old config stops working,
 // so the client must re-import the fresh QR/config. Only meaningful for an assigned peer.
+// Resolves to the panel's answer to the rekey ({ok:false, error} when it never got that far), so a caller can tell a refused rekey
+// from an accepted one whose row error came from something after it (review F76, F77).
 export async function rotatePeerKeys(peer) {
   const key = "peer:" + peer.id;
   Store.rotating[peer.id] = Date.now();   // grid shows "rotating" until the new key is live
@@ -50,15 +52,15 @@ export async function rotatePeerKeys(peer) {
     // roster written outside the API, where it stops one impossible target taking the rotation down with it.
     for (const t of (peer.targets || []).filter(t => !isSelfContainedTgt(t))) {
       const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: T("{v1} hasn't reported {v2} yet", { v1: Store.nodeName(t.node), v2: t.iface }), at: Date.now(), node: t.node, iface: t.iface }; Store.apply(); return; }
+      if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: T("{v1} hasn't reported {v2} yet", { v1: Store.nodeName(t.node), v2: t.iface }), at: Date.now(), node: t.node, iface: t.iface }; Store.apply(); return { ok: false, error: Store.rowErrors[key].msg }; }
       const cur = await getConfig(peer.pubkey, t.node, t.iface);
       const s = cur ? parseFullConf(cur) : null;
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: (t.ip || "").split("/")[0] + "/32",
         dns: s ? s.dns : m.dns, mtu: s ? s.mtu : 1280, awg_params: m.awg_params, server_pubkey: m.public_key,
         psk, endpoint: m.endpoint, allowed: s ? s.allowed : "0.0.0.0/0, ::/0", keepalive: s ? s.keepalive : 25 });
     }
-  } catch (e) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
-  await mutate({
+  } catch (e) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return { ok: false, error: Store.rowErrors[key].msg }; }
+  return mutate({
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk }),   // no plaintext to the server
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
@@ -108,8 +110,8 @@ export function rotateAllUserKeys(user, after) {
     } });
 }
 
-// What one device's rotate replaces, and what it is called — the phone's button and confirm and the editor's Rotate all read this
-// one copy, so the label and the confirm cannot drift apart (review F72). `none`: a device with nothing to rotate (no target, no
+// What one device's rotate replaces, and what it is called — the phone's button label and its confirm read this one copy, so they
+// cannot drift apart (review F72); the editor's Rotate takes its three flags from it (its own wording stays its own, F82). `none`: a device with nothing to rotate (no target, no
 // access password) offers no Rotate.
 export function rotateParts(peer) {
   const p = (peer && peer.id && Store.peer(peer.id)) || peer || {};
@@ -124,9 +126,10 @@ export const rotateOneLabel = peer => rotateParts(peer).title;
 export function rotateOnePeerKeys(peer) {
   // The phone's Rotate on a device's view: the same three cases and wording as the editor's (EditPeerSheet's rotate) — a keyed
   // device rotates its keypair, a csqtt / WDTT one its access password (a new LINK, not a QR), a mixed one all of them.
-  // Every credential is tried on its own and each answer READ (api.post resolves {ok:false} rather than throwing): a refused turn
-  // rotate no longer stops the keypair's (review F66), and when only some went through the toast names what was already replaced
-  // — that user needs the new one (F68).
+  // Every credential is tried on its own and each answer READ (api.post resolves {ok:false} rather than throwing; the keypair's is
+  // rotatePeerKeys' own answer to the rekey, F76, F77): a refused turn rotate no longer stops the keypair's (review F66), every
+  // refusal is named (F79), and when only some went through the toast names what was already replaced — that user needs the new
+  // one (F68).
   const { p, hasCsqtt, hasWdtt, hasKeyed, mixed, none, title } = rotateParts(peer);
   if (none) return toast(T("This peer has nothing to rotate."), "err");   // F67: never "rotated" with no call made
   const body = mixed ? T("This peer holds several credentials — a WireGuard keypair and an access password per turn server. All of them are replaced: every config, QR and link this peer already handed out stops working and must be re-imported.")
@@ -137,24 +140,17 @@ export function rotateOnePeerKeys(peer) {
     onConfirm: () => {
       Store.rotating[p.id] = Date.now(); Store.apply();
       (async () => {
-        let err = "";
-        const done = [];
+        const done = [], why = [];
         const step = async (name, call) => {
-          try { const r = await call(); if (r && r.ok) done.push(name); else err = err || srvText(r) || T("Rotate failed."); }
-          catch (_) { err = err || T("Rotate failed."); }
+          let r; try { r = await call(); } catch (_) { r = null; }
+          if (r && r.ok) done.push(name); else why.push((srvText(r) || T("Rotate failed.")).replace(/[.\s]+$/, ""));
         };
         if (hasCsqtt) await step(T("the csqtt link"), () => api.csqttPeerRotate({ peer_id: p.id }));
         if (hasWdtt) await step(T("the WDTT link"), () => api.wdttPeerRotate({ peer_id: p.id }));
-        let keyed = false;
-        if (hasKeyed) {   // LAST: this changes the pubkey, and the two above address by id
-          try { await rotatePeerKeys(p); keyed = true; } catch (_) { err = err || T("Rotate failed."); }
-        }
-        if (!hasKeyed) delete Store.rotating[p.id];
+        if (hasKeyed) await step(T("the keypair"), () => rotatePeerKeys(p));   // LAST: this changes the pubkey, and the two above address by id
+        if (!hasKeyed || why.length) delete Store.rotating[p.id];
         await Store.poll();
-        const re = hasKeyed && Store.rowErrors["peer:" + p.id];
-        if (re) { err = err || re.msg || T("Rotate failed."); delete Store.rotating[p.id]; }
-        else if (keyed) done.push(T("the keypair"));
-        if (err) return toast(done.length ? T("Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.", { why: err, done: done.join(", ") }) : err, "err");
+        if (why.length) return toast(done.length ? T("Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.", { why: why.join("; "), done: done.join(", ") }) : why.join("; ") + ".", "err");
         toast(mixed ? T("Credentials rotated — send the user their new QR and links; the old ones no longer work.")
           : !hasKeyed ? T("Link rotated — the old one no longer works.")
           : T("Keys rotated — send the user the new QR / config; the old one no longer works."), "ok");
