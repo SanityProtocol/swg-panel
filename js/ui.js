@@ -1220,10 +1220,11 @@ export function gridStatusBadge(t, p, re) {
     return uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(st)}</span>`);
   }
   // A csqtt / WDTT deployment always comes in through its own turn server: the same badge, in that server's fork colour
-  // (keylessVia, beside endpointCell) — once its node reports the server, so there is a colour to give.
-  const kv = t.online && !t.viaTurn ? keylessVia(t) : null;
+  // (keylessVia, beside endpointCell) — once its node reports the server, so there is a colour to give. Not over a pinned
+  // action failure: that bubble (below) is the row's only trace of it once the toast is gone.
+  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;
   if (t.online && (t.viaTurn || (kv && kv.fork))) {
-    const tf = kv ? kv.fork : turnFork(t.viaTurn), tn = forkLabel(tf) + (kv && kv.line ? " " + kv.line : ""), tc = turnColor(tf);   // the id picks the colour, the name is shown
+    const tf = kv ? kv.fork : turnFork(t.viaTurn), tn = kv ? kv.label : forkLabel(tf), tc = turnColor(tf);   // the id picks the colour, the name is shown
     const ptitle = kv ? "" : turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap" title="">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${statusLabel(st)}</span>
@@ -1281,22 +1282,26 @@ export function connDot(r) {
 // carries wg meaning other widgets read), so it printed "—". It gets the same cell here, named after the server that
 // carries it: the fork of that interface as its node reports it (matched by iface, as reconcile matches it), and the line
 // for csqtt, as the interface card's badge. Only what the server's own report says: ONLINE is traffic now ("Connected
-// via"); READY is a password the server holds, idle or never used — dimmed, the server named with no claim of a past
-// connection (a keyless deployment has no last endpoint to remember). Creating, dangling or unknown name no path: "—".
+// via"); READY with an address is a password the server reported holding, idle or never used — dimmed, the server named
+// with no claim of a past connection (a keyless deployment has no last endpoint to remember). Ready with no address (the
+// server never reported it), creating, dangling or unknown name no path: "—".
+// The kind is the target's own type, as reconcile reads it; only a target with none is classified like its tag (an
+// explicit wg/awg type is never keyless, and a plain WG row pays one compare).
 function keylessVia(t) {
-  const k = targetType(t);
+  const k = t.type || targetType(t);
   if (k !== "csqtt" && k !== "wdtt") return null;
   const r = ((Store.stats[t.node] || {})[k] || []).find(x => x && x.iface === t.iface);
-  return { fork: r ? (r.fork || (k === "csqtt" ? "csqtt" : "amurcanov")) : null, line: r && k === "csqtt" ? (r.line || CSQTT_DEFAULT_LINE) : "" };
+  const fork = r ? (r.fork || (k === "csqtt" ? "csqtt" : "amurcanov")) : null, line = r && k === "csqtt" ? (r.line || CSQTT_DEFAULT_LINE) : "";
+  return { fork, label: fork ? forkLabel(fork) + (line ? " " + line : "") : null };
 }
 export function endpointCell(t) {
   const obs = t.observed;
-  const kv = keylessVia(t), kvShown = kv && (t.status === "online" || t.status === "ready");
-  if (t.via === "turn" || kvShown) {
-    const tf = kv ? kv.fork : t.viaTurn ? turnFork(t.viaTurn) : null, tn = tf ? forkLabel(tf) + (kv && kv.line ? " " + kv.line : "") : null;
+  const kv = keylessVia(t), ks = kv && (t.status === "online" || (t.status === "ready" && !!t.ip)) ? kv : null;
+  if (t.via === "turn" || ks) {
+    const tf = ks ? ks.fork : t.viaTurn ? turnFork(t.viaTurn) : null, tn = ks ? ks.label : tf ? forkLabel(tf) : null;
     const tc = tf ? turnColor(tf) : "var(--dim)";
-    const ptitle = !kv && t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
-    const verb = t.online ? T("Connected via") : kv ? "" : T("Last connected via");
+    const ptitle = !ks && t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
+    const verb = t.online ? T("Connected via") : ks ? "" : T("Last connected via");
     return html`<span class="turnwrap" title="">
       <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>${T("turn-proxy")}</span>
       <span class="turnbub">${verb ? verb + " " : null}${tn

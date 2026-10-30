@@ -36,7 +36,9 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
   an owner stamp (see below), which no longer has anything to save. The patch applies to `a296c57e` with no fuzz.
 - Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published builds use Go 1.27.1.
 - Tests: upstream ships no Go tests of its own. Ours (`swgpanel_raw_test.go`) pass on `1.4.3-4`, `1.4.4-1` and `1.4.4-2`, the
-  downlink race test 20 times in a row; `go_client` does not build its tests on either (`go.sum` lacks entries).
+  downlink race test 20 times in a row. Upstream's `go_client` does not build its tests at v1.4.3 or v1.4.4 (`go.sum` lacks
+  entries); our patch does not touch the client. The RAW store-write fix (`1.4.4-2`) has no Go test — it needs a full
+  connection harness — so re-run `.campaign/rigs/qwdtt-raw-writes.sh` on every rebase: a known device must write 0.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
   ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus
