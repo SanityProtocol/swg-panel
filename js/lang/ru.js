@@ -5373,6 +5373,12 @@ export const STR = {
   "Link rotated — the old one no longer works.": "Ссылка сменена — прежняя больше не работает.",
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
   "Rotate failed.": "Сменить не удалось.",
+  // a phone's Rotate on one device: what it says when there is nothing to rotate, or only some credentials went through (review F67, F68)
+  "This peer has nothing to rotate.": "У этого пира нечего менять.",
+  "the csqtt link": "ссылка csqtt",
+  "the WDTT link": "ссылка WDTT",
+  "the keypair": "ключи",
+  "Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.": "Сменено не всё: {why}. Уже заменено: {done} — отправьте пользователю новое.",
   "Keys rotated — send the user the new QR / config; the old one no longer works.":
     "Ключи сменены — отправьте пользователю новый QR или конфиг, прежний не работает.",
   "Pick a user to assign this peer to — the existing key and config are kept, applied when you Save.":

@@ -24,11 +24,14 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
   [11] a tap outside an open list (the peer card's Assign to…) only closes it: nothing under the finger opens
   [10] Users: scrolled to the end, nothing of the list sits under the tab bar; a row's actions sit past its right edge and
        a swipe brings them on screen, labelled; the row shows a ⋮, and a tap on it opens the row's actions (not the row)
+  [15] review F65–F70: a device's Rotate tries each credential on its own (a refused turn rotate still rotates the keypair, and
+       the toast names what was replaced); a device with nothing to rotate says so and opens no confirm; a group editor's
+       Traffic → Edit group returns to that editor, not a second one; the Turn IPs sheet takes the header's list, no second fetch
 
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | grpedit | tipseed | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,6 +54,11 @@ PERTURBS = {
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
     "nodemore": ("js/screen-nodes.js", "        ${isMobile() ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}", "        ${false ? html`<button class=\"iconbtn\" data-lbl=${T(\"More\")}"),
     "roleword": ("js/sheets-crud.js", "<${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>", "<${RoleToggle} peer=${peer} t=${t} compact=${true}/>"),
+    "rotkeyed": ("js/peer-actions.js", "        if (hasKeyed) {   // LAST:", "        if (hasKeyed && !err) {   // LAST:"),
+    "rotpartial": ("js/peer-actions.js", "toast(done.length ? T(\"Not everything", "toast(false ? T(\"Not everything"),
+    "rotnone": ("js/peer-actions.js", "  if (none) return toast(", "  if (false) return toast("),
+    "grpedit": ("js/sheets-crud.js", "closeModal(); if (!child) openGroup(gid);", "closeModal(); openGroup(gid);"),
+    "tipseed": ("js/turn.js", "useEffect(() => { if (!seed) load(); }, [node]);", "useEffect(() => { load(); }, [node]);"),
     "donetake": ("js/routing.js", "if (q.trim() && rows.length === 1) {", "if (false) {"),
     "tfsearch": ("js/routing.js", '(open && isMobile() ? " m-tfsearch" : "")', '(false ? " m-tfsearch" : "")'),
     "backguard": ("js/ui.js", "if (top && top.close) top.close(); else closeModal();", "closeModal();"),
@@ -190,6 +198,7 @@ try:
     pk_spare = base64.b64encode(os.urandom(32)).decode(); PEERS[(pk_spare, "awg0")] = "10.70.0.40"
     must(call("POST", "/api/peers/create", {"pubkey": pk_spare, "title": "spare", "targets": [{"node": NID, "iface": "awg0", "ip": "10.70.0.40"}]}), "an unassigned device")
     must(sync(), "sync with the devices")
+    GID = must(call("POST", "/api/groups/create", {"name": "crew", "users": [uid["anna"]]}), "group crew")["data"]["id"]
     def keep_syncing():
         while not stop.wait(3):
             try:
@@ -446,6 +455,48 @@ try:
         tap(tab, tg["x"] + tg["w"] / 2, tg["y"] + tg["h"] / 2)
         check("[9] a tag that names itself (an interface's protocol badge) opens no bubble", not tab.ev("!!document.querySelector('.deppop.m-titletap')"))
     tab.close()
+
+    # ── [15] review F65–F70 ──
+    with guard("[15]"):
+        print("\n[15] a device's Rotate, a group editor's Traffic, the Turn IPs sheet")
+        tab = open_app("#/users")
+        # a keyed device that also holds a WDTT password the server refuses to rotate: the keypair still goes (F66), and the toast
+        # says what was replaced (F68)
+        ok = tab.ev("(async () => { const S = await %s('store'); const PA = await %s('peer-actions'); const p = S.Store.peer(%s); if (!p) return false;"
+                    " const fake = Object.assign({}, p, {wdtt_password: 'x'}); const o = S.Store.peer; S.Store.peer = function (id) { return id === p.id ? fake : o.call(this, id); };"
+                    " S.api.wdttPeerRotate = async () => ({ok: false, error: 'not a WDTT peer'}); S.api.peerRekey = async b => { window.__rk = b; return {ok: true}; };"
+                    " PA.rotateOnePeerKeys(fake); return true; })()" % (MOD, MOD, json.dumps(PID["anna-phone"]))); settle(tab, 700)
+        check("[15] the mixed device's Rotate asks first", ok and sheets(tab) == 1)
+        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].find(b => /Rotate credentials/.test(b.textContent) && !b.closest('.sheet-head')).click()"); settle(tab, 3500)
+        st = tab.ev("({rk: !!window.__rk, t: [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')})")
+        check("[15] a refused WDTT rotate still rotates the keypair", st["rk"], st)
+        check("[15] …and the toast names what was already replaced", "Already replaced" in st["t"] and "keypair" in st["t"], st)
+        close_all(tab); tab.ev("document.getElementById('toasts').replaceChildren()")
+        # nothing to rotate: no confirm, no "rotated" (F67)
+        tab.ev("(async () => { const PA = await %s('peer-actions'); PA.rotateOnePeerKeys({id: 'mnone', targets: []}); })()" % MOD); settle(tab, 600)
+        st = tab.ev("({n: document.querySelectorAll('.overlay.show .sheet').length, t: [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')})")
+        check("[15] a device with nothing to rotate opens no confirm and says so", st["n"] == 0 and "nothing to rotate" in st["t"], st)
+        tab.close()
+        # a group editor → Traffic → Edit group: back to that editor, one sheet (F65)
+        tab = open_app("#/users")
+        ev_mod(tab, "peer-ui", "M.openGroup(%s); return true;" % json.dumps(GID)); settle(tab, 700)
+        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].find(b => b.textContent.trim() === 'Traffic').click()"); settle(tab, 800)
+        n2 = sheets(tab)
+        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].reverse().find(b => /Edit group/.test(b.textContent)).click()"); settle(tab, 800)
+        check("[15] Traffic opens over the group editor", n2 == 2, n2)
+        check("[15] its Edit group returns to that editor — no second one over it", sheets(tab) == 1, sheets(tab))
+        close_all(tab); tab.close()
+        # the Turn IPs sheet starts from the header's list: one fetch, not two (F70)
+        tab = open_app("#/users")
+        tab.ev("(async () => { const P = await %s; const S = await %s('store'); const TU = await %s('turn'); window.__tips = 0;"
+               " S.api.turnIps = async () => { window.__tips++; return {ok: true, data: {nodes: {}}}; };"
+               " const c = document.createElement('div'); c.id = 'mtip'; document.querySelector('#view .screen').prepend(c);"
+               " P.render(P.h(TU.TurnIpsHeader, {node: %s, svc: 'swg-turn-x'}), c); })()" % (PREACT, MOD, MOD, json.dumps(NID))); settle(tab, 700)
+        tab.ev("document.querySelector('#mtip .turnips-hd').click()"); settle(tab, 800)
+        st = tab.ev("({n: document.querySelectorAll('.overlay.show .sheet').length, f: window.__tips})")
+        check("[15] the Turn IPs header's tap opens its sheet", st["n"] == 1, st)
+        check("[15] …which takes the header's list rather than fetching it again", st["f"] == 1, st)
+        tab.close()
 
     # ── [14] a routing field's search on a phone: a mode of its own, docked to the visible page ──
     with guard("[14]"):

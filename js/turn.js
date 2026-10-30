@@ -466,12 +466,12 @@ export function ProxyDropsHeader({ node, svc }) {
 
 // One proxy's collected VK relay IPs, live: the header's count and bubble, and on a phone the sheet its tap opens, each read it
 // for themselves — a sheet built from the header's values at the tap never changed again (review F54: still "No connections seen
-// yet" after the list arrived, flushed IPs still listed).
-function useTurnIps(node, svc) {
-  useStore();
-  const [data, setData] = useState(null);
+// yet" after the list arrived, flushed IPs still listed). `seed`: the list the header already holds, so the sheet does not fetch
+// the fleet's again on opening (F70); a flush there reloads its own.
+function useTurnIps(node, svc, seed) {
+  const [data, setData] = useState(seed || null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
-  useEffect(() => { load(); }, [node]);
+  useEffect(() => { if (!seed) load(); }, [node]);
   const _snap = Store.stats[node] || {};
   // a turn-proxy OR a self-contained VK-turn server (WDTT/csqtt) — all key their captured relay IPs off `service`
   const _ent = (_snap.turn_proxies || []).find(t => t.service === svc)
@@ -493,20 +493,21 @@ function useTurnIps(node, svc) {
       ${offlineN ? html`<button class=${"tipbub-flush" + (isMobile() ? " btn btn-danger" : "")} onClick=${flush}><${Ic} i="trash"/> ${T("Flush offline recorded IPs")}</button>` : null}
     <//>`
       : html`<div class="tipbub-empty">${data === null ? T("Loading…") : T("No connections seen yet.")}</div>`}`;
-  return { active, tipRows };
+  return { active, tipRows, data };
 }
 // a phone: the list in a sheet, as the desktop's hover shows it, Settings one button away (operator, 2026-10-29: "don't take me to
 // settings directly")
-function TurnIpsSheet({ node, svc }) {
-  const { tipRows } = useTurnIps(node, svc);
+function TurnIpsSheet({ node, svc, seed }) {
+  useStore();   // its online dots follow the poll; a header is redrawn by the section it sits in (F71)
+  const { tipRows } = useTurnIps(node, svc, seed);
   return html`<${Sheet} title=${T("Collected VK IPs")} noGuard=${true} foot=${html`<button class="btn btn-ghost" onClick=${() => goSettingsTurnIps()}><${Ic} i="gear"/> ${T("Open Settings")}</button>
       <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
     <div class="m-tiplist">${tipRows()}</div><//>`;
 }
 export function TurnIpsHeader({ node, svc }) {
-  const { active, tipRows } = useTurnIps(node, svc);
+  const { active, tipRows, data } = useTurnIps(node, svc);
   const label = html`${T("Turn IPs")}${active.size ? html` · <b>${active.size}</b>` : ""}`;
-  if (isMobile()) return html`<span class="turnips-wrap"><span class="turnips-hd" role="button" onClick=${() => pushModal(html`<${TurnIpsSheet} node=${node} svc=${svc}/>`)}>${label}</span></span>`;
+  if (isMobile()) return html`<span class="turnips-wrap"><span class="turnips-hd" role="button" onClick=${() => pushModal(html`<${TurnIpsSheet} node=${node} svc=${svc} seed=${data}/>`)}>${label}</span></span>`;
   const trigger = html`<span class="turnips-hd" onClick=${() => goSettingsTurnIps()}>${label}</span>`;
   return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
     <div class="onpop-h">${T("Collected VK IPs")}</div>
