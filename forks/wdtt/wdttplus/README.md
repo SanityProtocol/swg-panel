@@ -9,12 +9,33 @@ tunnel are off under our flags.
 
 | | |
 |---|---|
-| upstream commit | `b3935b947acd81d95107869c8f33507f3f5c1309` (tag `v18`) |
-| our build label | **18-2**: 18 plus the stale-binding fix below. Published as `wdtt-wdttplus-18-2` (2026-09-25; amd64 `dffd34f7…`, arm64 `b51ceb51…`) and rig-proven on the published amd64 bytes. `wdtt-wdttplus-18` stays as its rollback target. |
-| note | upstream's `wdttServerVersion` const at this tag still reads `"17"`, so `--version` prints `17` |
+| upstream commit | `d450e132d2477a80d7079282c200ac3fb97ad0ae` (tag `v20`, 2026-09-30) |
+| our build label | **20-1**: 20 plus this patch, unchanged in what it does from 18-2. Built amd64 `29d9b791…`, arm64 `0448de1e…` (Go 1.27.1), to be published as `wdtt-wdttplus-20-1`. `wdtt-wdttplus-18-2` (v18 `b3935b94`; amd64 `dffd34f7…`, arm64 `b51ceb51…`) stays as its rollback target; the store format is the same both ways. |
+| note | `wdttServerVersion` is `"20"` at this tag, so `--version` prints `20` (18-2 printed `17`) |
 
-Tags move; the commit is the pin. The previous pin was v15 `3038b8dd`. The patch was regenerated against v18 with
-`git diff`. It applies with no fuzz.
+Tags move; the commit is the pin. Earlier pins: v18 `b3935b94`, v15 `3038b8dd`. The patch was regenerated against v20
+with `git diff`. It applies with no fuzz.
+
+Upstream's head is past v20 (`f706ccd3`, 2026-10-11), but nothing after the tag touches the server: those commits are
+the WARP interface manager (an installer-side script) and the app. So the tag is the pin.
+
+### What v19–v20 changed on the server, and the v20 app against 18-2
+
+- **A new uplink transport.** The server adds `# WDTT_TRANSPORTS=uplink2` to the GETCONF reply, and a client that
+  sees it opens its workers with `WDTT_UPLINK2` (framed, loss-adaptive uplink, `pathprobe/`) instead of `WDTT_MUX1`.
+  Every connect is still WG + DTLS + WRAP.
+- **The v20 app still works with 18-2.** It always runs in `auto` (`TransportMode.kt`), and `auto` picks `uplink2`
+  only when the authenticated GETCONF advertises it (`go_client/transport_modes.go`). Against 18-2, which advertises
+  nothing, it falls back to `WDTT_MUX1`, which 18 serves. The changelog says the same ("Приложение и сервер
+  сохраняют совместимость с предыдущими версиями"). `compatibility-contract.env` (`WDTT_SERVER_VERSION="20"`) binds
+  only the app's own SSH deploy (`deploy.sh` refuses a mismatched binary it installs itself), which never runs
+  against a panel-managed node. Proven on the rig below with the real v20 client.
+- **No new in-tunnel request makes the node act.** `-no-panel` still refuses the same five (`WDTT_UPDATE1`,
+  `WDTT_UPDATE_APK1`, `WDTT_HTTPS_POST1`, `WDTT_DEPLOY1`, `WDTT_DEPLOY_CHUNK1`). The refusal now runs after the uplink
+  frame is unwrapped, where upstream's own handlers read the request. `WDTT_TRANSPORT_METRICS` is only an environment
+  switch for the server's own log.
+- Tests: upstream's 90 server tests plus ours pass on 18-2, its 92 on 20-1 (Go 1.25.14 and 1.27.1), and its `go_client`
+  tests on both (Go 1.27.1: the client needs Go ≥ 1.26).
 
 ## Build
 
@@ -23,8 +44,9 @@ Tags move; the commit is the pin. The previous pin was v15 `3038b8dd`. The patch
 GOARCH=arm64 ./build.sh
 ```
 
-Needs Go ≥ 1.25 (upstream `go.mod`: `go 1.25.0`). The build is reproducible: `golang:1.25.14-bookworm`, amd64, gives
-the same binary from a fresh clone as from a local tree.
+Needs Go ≥ 1.25 (upstream `go.mod`: `go 1.25.0`). The published builds use Go 1.27.1 (`golang:1.27.1-bookworm`; `go version` on
+the 18-2 and 20-1 binaries says so). The build is reproducible: one image gives the same binary from a fresh clone as from a
+local tree.
 
 ## What the patch adds (`wdtt-wdttplus.patch`, `server.go` only)
 
@@ -48,6 +70,23 @@ The node runs it as (`swg-noded` `_wdtt_unit_text` / `_wdtt_argv`):
 wdtt-server -iface wdtt0 -wg-addr 10.66.66.1/24 -listen 0.0.0.0:56000 -wg-port 56001 -config-dir <dir> \
   -desired <dir>/desired.json -no-nat -password <owner> -max-passwords <n> -fixed-config -no-panel
 ```
+
+## Validation: 20-1 (rigs, 2026-10-30)
+
+On the amd64 bytes to be published (`29d9b791…`), with the published 18-2 (`dffd34f7…`) as the control. Each check also
+ran against 20-1 with one defect planted, which it must fail.
+
+| rig | check | 18-2 | 20-1 | planted defect → result |
+|---|---|---|---|---|
+| `keyless-wdttplus.sh`, qWDTT client | T1 reach, T2 spoof 0, T4 same address, T5 unrelated change | pass | pass | — |
+| | T7 owner device kept | pass | pass | owner reaped → **owner 0/3** |
+| | T3 revoke: live cut 0/3, reconnect refused | pass | pass | no reload → **3/3, config served**; password never removed → **3/3, config served** |
+| `keyless-wdttplus.sh`, the real v20 client | T1–T7, T3 | pass (`WDTT_MUX1`) | pass (`uplink2` advertised) | — |
+| `two-device-wdttplus.sh` | P1 one password, device A / B / A | 30/30 each, same address | the same | — |
+| | P2 a store bound to `phone-old` | both at .7, binding moved | the same | no migration → **refused on both** |
+
+The v20 client against 18-2 is the compatibility answer: 18-2 does not know `WDTT_UPLINK2`, so the session can only have
+come up on `WDTT_MUX1`, and every check passed. Kernel WireGuard backend in every run; host firewall and links unchanged.
 
 ## Validation (rig, 2026-09-14)
 

@@ -1,5 +1,5 @@
 diff --git a/connections.go b/connections.go
-index 393a64c..bc4b9d9 100644
+index 1053e67..a4a2412 100644
 --- a/connections.go
 +++ b/connections.go
 @@ -1,6 +1,7 @@
@@ -22,7 +22,7 @@ index 393a64c..bc4b9d9 100644
  				return 0, err
  			}
  			continue
-@@ -169,7 +173,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -163,7 +167,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
  			dbMutex.Unlock()
  			return
@@ -31,7 +31,7 @@ index 393a64c..bc4b9d9 100644
  			// Достигнут лимит устройств или привязано к другому устройству
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
-@@ -182,9 +186,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -176,9 +180,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			// Сохраняем БД, так как canConnectAndBind мог внести привязку нового устройства
  			saveDB()
  
@@ -43,10 +43,10 @@ index 393a64c..bc4b9d9 100644
  			if !exists {
 -				dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP()}
 +				dev = &ClientDevice{DeviceID: dkey, IP: getNextIP()}
- 				setDeviceOwner(dev, password)
  			}
+ 			setDeviceOwner(dev, password)
  			// Устройство могло быть создано раньше только Raw-путём
-@@ -202,9 +209,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -196,9 +203,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  				if keyErr == nil && dev.IP != "" {
  					dev.PrivKey = privB64
  					dev.PubKey = pubB64
@@ -58,7 +58,7 @@ index 393a64c..bc4b9d9 100644
  				} else {
  					dev = nil
  				}
-@@ -257,17 +264,34 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -251,8 +258,13 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  		isMainPass := password != "" && password == db.MainPassword
  		entry, isGenPass := db.Passwords[password]
  		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
@@ -68,29 +68,22 @@ index 393a64c..bc4b9d9 100644
 +		// unbound on purpose — so the upstream binding test can never pass here. The client sends AUTH on every
 +		// worker except the one that fetched the config and never reads the reply (go_client SendAuth), so each of
 +		// those workers was closed without a sign: the tunnel ran on its config worker alone. Same exemption as the
-+		// RAW data path (raw.go) and the GETCONF branch above. authorizeDeviceOwnerLocked still runs.
++		// RAW data path (raw.go) and the GETCONF branch above.
 +		bound := isMainPass || (fixedConfig && isGenPass)
 +		if valid && isGenPass && !fixedConfig {
  			bound = passwordEntryHasDevice(entry, deviceID)
  		}
-+		// A row keyed by this client's own ID with no owner yet is the only thing authorizeDeviceOwnerLocked can stamp.
-+		mayStamp := false
-+		if dev := db.Devices[deviceID]; dev != nil && dev.OwnerID == "" {
-+			mayStamp = true
-+		}
- 		ownerAllowed := valid && authorizeDeviceOwnerLocked(deviceID, password, isMainPass, entry)
- 		if !valid || !bound || !ownerAllowed {
- 			dbMutex.Unlock()
+ 		if !valid || !bound {
+@@ -260,7 +272,13 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
 -		saveDB()
-+		// swg-panel: a fixed-config generated password's AUTH normally has nothing to save — its device is keyed
-+		// "pw:<password>", not by this client's device ID. It saves when authorizeDeviceOwnerLocked may have stamped
-+		// an owner (mayStamp: a row keyed by the client's own ID, from before -fixed-config). Every worker of every
-+		// connect and redial now reaches this point (it used to be refused above), and each write is the whole store
-+		// under dbMutex.
-+		if !(fixedConfig && isGenPass) || mayStamp {
++		// swg-panel: a fixed-config generated password's AUTH has nothing to save — its device is keyed
++		// "pw:<password>", not by this client's device ID, and since 1.4.4 this branch stamps no owner. Every worker
++		// of every connect and redial now reaches this point (it used to be refused above), and each write is the
++		// whole store under dbMutex.
++		if !(fixedConfig && isGenPass) {
 +			saveDB()
 +		}
  		dbMutex.Unlock()
@@ -136,7 +129,7 @@ index b745846..f4ab175 100644
  	// заголовок + 16 байт AEAD tag + до 60 байт padding в video-режиме) и TURN
  	// ChannelData/Send Indication framing (4-24 байта). Даже в худшем случае
 diff --git a/database_bot.go b/database_bot.go
-index cf10a70..667eae9 100644
+index c565267..ebe4fba 100644
 --- a/database_bot.go
 +++ b/database_bot.go
 @@ -125,6 +125,16 @@ func generatedOwnerEntryLocked(dev *ClientDevice, deviceID string) *PasswordEntr
@@ -174,7 +167,7 @@ index cf10a70..667eae9 100644
  func generatePassword() (string, error) {
  	b := make([]byte, generatedPasswordLen)
  	randomBytes := make([]byte, len(b))
-@@ -650,6 +663,11 @@ func getNextIP() string {
+@@ -649,6 +662,11 @@ func getNextIP() string {
  	for _, dev := range db.Devices {
  		used[dev.IP] = true
  	}
@@ -186,7 +179,7 @@ index cf10a70..667eae9 100644
  	for b3 := 0; b3 <= 255; b3++ {
  		for b4 := 1; b4 <= 254; b4++ {
  			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
-@@ -671,6 +689,11 @@ func getNextRawIP() string {
+@@ -670,6 +688,11 @@ func getNextRawIP() string {
  			used[dev.RawIP] = true
  		}
  	}
@@ -382,7 +375,7 @@ index 8d4024d..bef48ca 100644
  	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
  	if strings.Contains(out, "bbr") {
 diff --git a/raw.go b/raw.go
-index d9e0554..0537ce3 100644
+index 184ec43..289f747 100644
 --- a/raw.go
 +++ b/raw.go
 @@ -68,14 +68,16 @@ const downlinkWorkerBuf = 256
@@ -544,8 +537,8 @@ index d9e0554..0537ce3 100644
  
  	if isGetConf {
  		// Только этот воркер проверяет пароль и (при необходимости) создаёт
-@@ -374,7 +446,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 			clientConn.Write([]byte("DENIED:device_mismatch"))
+@@ -367,7 +439,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			clientConn.Write([]byte("DENIED:deactivated"))
  			return
  		}
 -		if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
@@ -553,7 +546,7 @@ index d9e0554..0537ce3 100644
  			dbMutex.Unlock()
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
-@@ -392,11 +464,16 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -385,12 +457,17 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			saveDB()
  		}
  
@@ -565,15 +558,16 @@ index d9e0554..0537ce3 100644
 +		dkey = getconfDeviceKey(isGenPass, deviceID, password)
 +		dev, exists := db.Devices[dkey]
  		if !exists {
--			dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP(), RawIP: getNextRawIP(), RawOwnerID: ownerID}
-+			dev = &ClientDevice{DeviceID: dkey, IP: getNextIP(), RawIP: getNextRawIP(), RawOwnerID: ownerID}
+-			dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP(), RawIP: getNextRawIP()}
++			dev = &ClientDevice{DeviceID: dkey, IP: getNextIP(), RawIP: getNextRawIP()}
  			setDeviceOwner(dev, password)
+ 			dev.RawOwnerID = wrapKeyID(password)
 -			db.Devices[deviceID] = dev
 +			db.Devices[dkey] = dev
  			saveDB()
  		} else {
  			changed := false
-@@ -431,8 +508,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -420,8 +497,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  		isMainPass := password != "" && password == db.MainPassword
  		entry, isGenPass := db.Passwords[password]
  		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
@@ -590,7 +584,7 @@ index d9e0554..0537ce3 100644
  			bound = entry.DeviceID == deviceID
  			if !bound {
  				for _, id := range entry.DeviceIDs {
-@@ -448,7 +531,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -437,7 +520,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
@@ -600,10 +594,10 @@ index d9e0554..0537ce3 100644
 +		// can therefore never resolve to another password's raw device/address.
 +		dkey = getconfDeviceKey(isGenPass, deviceID, password)
 +		dev, exists := db.Devices[dkey]
- 		if exists && dev.OwnerID == "" {
+ 		if exists {
  			setDeviceOwner(dev, password)
- 		}
-@@ -469,19 +556,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			dev.RawOwnerID = wrapKeyID(password)
+@@ -459,19 +546,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	untrackCredential := trackCredentialConnection(password, deviceID, clientConn)
  	defer untrackCredential()
  
@@ -634,7 +628,7 @@ index d9e0554..0537ce3 100644
  		}
  		activeDevicesMu.Unlock()
  	}()
-@@ -536,7 +629,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -526,7 +619,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			continue
  		}
  		atomic.AddInt64(&totalBytesFromClient, int64(nn))

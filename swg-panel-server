@@ -1509,13 +1509,17 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # writes, so every client got 1.1.1.1. swg-noded passes -dns only to a build whose -h lists it, so rolling back to
     # 1.5.0-3 just drops the flag (docs/DNS-SETTINGS-PLAN.md §3.5).
     "ildarmaga": [("1.5.0-4",  "wdtt-ildarmaga-1.5.0-4"),  ("1.5.0-3",  "wdtt-ildarmaga-1.5.0-3"),  ("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
-    "wdttplus":  [("18-2",     "wdtt-wdttplus-18-2"),      ("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
+    # wdttplus "20-1" / qwdtt "1.4.4-1": upstream's newest server source (WDTT-Plus v20, qWDTT v1.4.4) with the same patch,
+    # re-anchored. The v20 app speaks to 18-2 too (it asks for its uplink transport only where the server advertises it),
+    # and qWDTT 1.4.4 dropped the device-owner check our AUTH save exception worked around. 18-2 and 1.4.3-4 stay as the
+    # rollback targets; the store format is unchanged both ways.
+    "wdttplus":  [("20-1",     "wdtt-wdttplus-20-1"),      ("18-2",     "wdtt-wdttplus-18-2"),      ("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
     # xxcipherx: NO builds since 2026-10-14 (the operator: hidden, its releases removed from GitHub, archived locally in
     # ~/swg-archive/wdtt-xxcipherx). Not listed → no `ver` reaches a node (desired_wdtt_for_node), so a server already
     # running keeps the binary it has and is never sent after a download that no longer exists.
     # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
     # on a fresh install has no panel mirror to pull from, so mirror-only meant the fork simply did not work there.
-    "qwdtt":     [("1.4.3-4",  "wdtt-qwdtt-1.4.3-4"),      ("1.4.3-3",  "wdtt-qwdtt-1.4.3-3"),      ("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
+    "qwdtt":     [("1.4.4-1",  "wdtt-qwdtt-1.4.4-1"),      ("1.4.3-4",  "wdtt-qwdtt-1.4.3-4"),      ("1.4.3-3",  "wdtt-qwdtt-1.4.3-3"),      ("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
 }
 _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
     "amurcanov/proxy-turn-vk-android": "amurcanov",
@@ -6669,13 +6673,15 @@ NET_SHARE_MAX = 500        # grantees (users + groups) on one provider — bound
 KEYLESS_SHARE_BUILDS = {
     "amurcanov": {"wg": ("1.2.4-3", "1.2.4-2")},  # rig 2026-09-14: its source as control — reach, spoof dropped, revocation cut, stable address;
                                                   # 1.2.4-3 on the published bytes (7c73acd9, 2026-09-17), owner device kept too
-    "qwdtt":     {"wg": ("1.4.3-4", "1.4.3-3", "1.4.3-2", "1.4.3"),  # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k; 1.4.3-2 WG rig on the
+    "qwdtt":     {"wg": ("1.4.4-1", "1.4.3-4", "1.4.3-3", "1.4.3-2", "1.4.3"),  # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k; 1.4.3-2 WG rig on the
                                                             # published bytes (fe01bc1b); 1.4.3-3 (6913a4e8) and 1.4.3-4 (d90c7501) WG + RAW rigs
-                                                            # on their published bytes, 2026-09-25
-                  "raw": ("1.4.3-4", "1.4.3-3", "1.4.3-2")},  # RAW rig + T6 hijack probe on the published bytes, 1.4.3 as the control that fails T6
-    "wdttplus":  {"wg": ("18-2", "18", "15")},    # rig: 15 as the 2026-09-14 control; 18 on the PUBLISHED asset (4b766a2d, 2026-09-16) — reach, spoof 0 at the
+                                                            # on their published bytes, 2026-09-25; 1.4.4-1 (c4641fa4, 2026-10-30) WG + RAW + T6 with
+                                                            # 1.4.3-4 as the control, the WG rig now also proving the owner device kept
+                  "raw": ("1.4.4-1", "1.4.3-4", "1.4.3-3", "1.4.3-2")},  # RAW rig + T6 hijack probe on the published bytes, 1.4.3 as the control that fails T6
+    "wdttplus":  {"wg": ("20-1", "18-2", "18", "15")},    # rig: 15 as the 2026-09-14 control; 18 on the PUBLISHED asset (4b766a2d, 2026-09-16) — reach, spoof 0 at the
                                                   # server, revocation cut + reconnect refused, stable address, owner device kept (kernel backend);
-                                                  # 18-2 the same on its published asset (dffd34f7, 2026-09-25)
+                                                  # 18-2 the same on its published asset (dffd34f7, 2026-09-25); 20-1 (29d9b791, 2026-10-30) the
+                                                  # same with 18-2 as the control, with the qWDTT client and with the v20 client (uplink2)
     "xxcipherx": {"wg": ("2.0.0.72",)},           # rig on the published asset (714dbd94 — the same bytes the 2026-09-14 rig proved); 2.0.0.70 fails T5
     "ildarmaga": {"wg": ("1.5.0-4", "1.5.0-3")},  # WG rig on the published bytes (75a51c6f); RAW is never listed (see above).
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
@@ -15823,7 +15829,7 @@ TURN_CLIENTS = {
                        "windows": {"github": "https://github.com/luminescq/PWDTT/releases"},
                        "linux":   {"github": "https://github.com/luminescq/PWDTT/releases"},
                        "macos":   {"github": "https://github.com/luminescq/PWDTT/releases"}}},
-    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "pwdttilg",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases. Imports a base64 JSON wdtt:// (or a sub-URL) and NO LONGER reads colon: pkg/sharelink/codec.go Decode() rejects a ':' payload as "устаревший colon-формат" (dropped in their 1.4.45/46, 2026-06-17). luminescq's upstream `pwdtt` above still takes colon — hence two client ids, two encoders.
+    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "pwdttilg",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases. Imports a base64 JSON wdtt:// (or a sub-URL). Its 1.4.45/46 build (2026-06-17) refused colon as "устаревший colon-формат"; the client now built from ildarmaga/pwdtt-client (0.3.352) reads colon again, JSON first — we keep sending JSON. luminescq's upstream `pwdtt` above takes colon — hence two client ids, two encoders.
                        "windows": {"github": "https://github.com/ildarmaga/wdtt/releases"},
                        "linux":   {"github": "https://github.com/ildarmaga/wdtt/releases"}}},
     "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": False, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
@@ -16181,15 +16187,14 @@ _CLIENT_SOURCES = {
     # that cannot fire reads as coverage and is worse than none. parseWdttUrl is the accept/reject decision.
     "pwdtt":       [{"owner": "luminescq", "repo": "PWDTT", "branch": "main", "path": "frontend/src/lib/utils/wdttLink.ts"}],
     # Watched because it was NOT: ildarmaga's build dropped the colon format in June and the panel kept sending it
-    # for two months, so the first report was a user's screenshot of "Ссылка wdtt:// повреждена". codec.go is where
-    # the accept/reject decision lives and payload.go is the shape it decodes into — a change to either is the
-    # signal we missed.
+    # for two months, so the first report was a user's screenshot of "Ссылка wdtt:// повреждена". The client moved to
+    # its own repository (ildarmaga/pwdtt-client; ildarmaga/wdtt main stopped at ef69799, its pkg/sharelink frozen):
+    # backend/subscription.go holds parseWdttLink — the accept/reject decision — and the shape it decodes into.
     # csqtt's app: parseCsqttV2 is the whole contract (v/host/peer/password/hashes; anything else is ignored),
     # and SettingsStore is where its own knobs live — the two files that decide whether our link still imports.
     "csqttapp":    [{"owner": "amurcanov", "repo": "csqtt", "branch": "main", "path": "app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt"},
                     {"owner": "amurcanov", "repo": "csqtt", "branch": "main", "path": "app/src/main/java/com/csqtt/client/SettingsStore.kt"}],
-    "pwdttilg":    [{"owner": "ildarmaga", "repo": "wdtt", "branch": "main", "path": "pkg/sharelink/codec.go"},
-                    {"owner": "ildarmaga", "repo": "wdtt", "branch": "main", "path": "pkg/sharelink/payload.go"}],
+    "pwdttilg":    [{"owner": "ildarmaga", "repo": "pwdtt-client", "branch": "main", "path": "backend/subscription.go"}],
     "qwdttleg":    [{"owner": "lebrit", "repo": "qwdtt-legacy-android", "branch": "main", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
 }
 def _client_sources(client_id):
@@ -17210,9 +17215,15 @@ def _turn_roster_check(seed=True):
                 elif prev_fields is not None:
                     seen[p]["fields"] = prev_fields           # unchanged → carry the stored fields forward
             files.append(frec)
-        if not prev and seed and seen:
-            roster[cid] = {"files": seen, "at": int(time.time())}
+        # A watched path with no baseline is seeded on its own, not only a client with none: a watch repointed to a new
+        # file kept the old paths' baseline, so the new one had nothing to differ from and read "up to date" forever. The
+        # paths that already had one keep it — re-seeding them would acknowledge their drift unseen.
+        fresh = {p: v for p, v in seen.items() if p not in prev}
+        if seed and fresh:
+            kept = {p: v for p, v in prev.items() if p in {s["path"] for s in srcs}}
+            roster[cid] = dict(roster.get(cid) or {}, files=dict(kept, **fresh), at=(roster.get(cid) or {}).get("at") or int(time.time()))
             seeded = True
+        if not prev and seed and seen:
             status = "up_to_date"
         elif any_changed:
             status = "changed"

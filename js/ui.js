@@ -1272,12 +1272,27 @@ export function connDot(r) {
 // the raw 127.0.0.1 tells the operator nothing at all. Keep the attribution, dim it, and say "Last connected
 // via". If the exact fork can no longer be resolved (the proxy was removed, or the node predates wg_sports) we
 // still know it was relayed — say so rather than fall back to a loopback address.
+//
+// A csqtt / WDTT deployment always comes in through its own turn server, but reconcile gives it no `via` (that field
+// carries wg meaning other widgets read), so it printed "—". It gets the same cell here, named after the server that
+// carries it: the fork of that interface as its node reports it, and the line for csqtt, as the interface card's badge.
+function keylessVia(t) {
+  if (t.type !== "csqtt" && t.type !== "wdtt") return null;
+  const st = Store.stats[t.node] || {};
+  if (t.type === "csqtt") {
+    const c = (st.csqtt || []).find(x => x && x.iface === t.iface);
+    return { fork: c ? (c.fork || "csqtt") : null, line: c ? (c.line || "2.1") : "" };   // 2.1: turn.js CSQTT_DEFAULT_LINE (ui.js sits below turn.js)
+  }
+  const w = (st.wdtt || []).find(x => x && (x.iface === t.iface || x.raw_iface === t.iface));
+  return { fork: w ? (w.fork || "amurcanov") : null, line: "" };
+}
 export function endpointCell(t) {
   const obs = t.observed;
-  if (t.via === "turn") {
-    const tf = t.viaTurn ? turnFork(t.viaTurn) : null, tn = tf ? forkLabel(tf) : null;
+  const kv = keylessVia(t);
+  if (t.via === "turn" || kv) {
+    const tf = kv ? kv.fork : t.viaTurn ? turnFork(t.viaTurn) : null, tn = tf ? forkLabel(tf) + (kv && kv.line ? " " + kv.line : "") : null;
     const tc = tf ? turnColor(tf) : "var(--dim)";
-    const ptitle = t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
+    const ptitle = !kv && t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
     return html`<span class="turnwrap" title="">
       <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>${T("turn-proxy")}</span>
       <span class="turnbub">${t.online ? T("Connected via") : T("Last connected via")} ${tn

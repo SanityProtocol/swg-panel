@@ -26,14 +26,18 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
        a swipe brings them on screen, labelled; the row shows a ⋮, and a tap on it opens the row's actions (not the row)
   [15] review F65–F85: a device's Rotate tries each credential on its own (a refused turn rotate still rotates the keypair, keeps
        the row Rotating, and the toast names what was replaced, once punctuated); a refused rekey is never called replaced; an
-       accepted one whose config never reached the subscription says so; a device with nothing to rotate says so and opens no
+       accepted one whose config never reached the subscription says so, for 9 s; with the vault key not cached the outcome shows
+       while the unlock prompt is open and after it is skipped; a device with nothing to rotate says so and opens no
        confirm; a group editor's Traffic → Edit group returns to that editor, not a second one; a phone's Turn IPs header opens
        its sheet, which fetches its own list, and follows the poll
+  [16] the Live grid's Endpoint, phone and desktop: a csqtt or WDTT device says "turn-proxy" in its server's fork colour with
+       the "Connected via <fork>" bubble (the csqtt line named), dimmed with "Last connected via" when offline; an AWG device
+       still prints its address
 
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotspin | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -62,6 +66,9 @@ PERTURBS = {
     "grpedit": ("js/sheets-crud.js", "closeModal(); if (!child) openGroup(gid);", "closeModal(); openGroup(gid);"),
     "rotrekey": ("js/peer-actions.js", 'await step(T("the keypair"), () => rotatePeerKeys(p)) : null;', 'await step(T("the keypair"), () => rotatePeerKeys(p).then(() => ({ ok: true }))) : null;'),
     "rotunpub": ("js/peer-actions.js", "        if (kr && kr.published) kr.published.then(", "        if (false) kr.published.then("),
+    "rotlong": ("js/peer-actions.js", 'show it to the user from here.", { why: e.replace(/[.\\s]+$/, "") }), "err", 9000);', 'show it to the user from here.", { why: e.replace(/[.\\s]+$/, "") }), "err");'),
+    "rotwait": ("js/peer-actions.js", "        await Store.poll();\n        if (why.length) return toast(", "        if (kr && kr.published) await kr.published;\n        await Store.poll();\n        if (why.length) return toast("),
+    "kwep": ("js/ui.js", "  if (t.via === \"turn\" || kv) {", "  if (t.via === \"turn\") {"),
     "rotspin": ("js/peer-actions.js", "        if (!(kr && kr.ok)) delete Store.rotating[p.id];", "        if (!hasKeyed || why.length) delete Store.rotating[p.id];"),
     "tiptap": ("js/turn.js", 'role="button" onClick=${() => pushModal(html`<${TurnIpsSheet}', 'role="button" onClick=${() => null && pushModal(html`<${TurnIpsSheet}'),
     "tipfetch": ("js/turn.js", "  useEffect(() => { load(); }, [node]);\n  const _snap", "  const _snap"),
@@ -498,11 +505,34 @@ try:
                " const sv = S.api.subVault; S.api.subVault = async () => ({ok: true, data: {exists: true}}); await C.subBootRestore(); S.api.subVault = sv; S.api.subEscrow = async () => ({ok: false, error: 'no'});"
                " S.api.wdttPeerRotate = async () => ({ok: true}); S.api.csqttPeerRotate = async () => ({ok: true}); S.api.peerRekey = async () => ({ok: true});"
                " PA.rotateOnePeerKeys(S.Store.peer(%s)); })()" % (MOD, MOD, MOD, json.dumps(PID["anna-phone"]))); settle(tab, 700)
+        tab.ev("new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.dataset) n.dataset.at = Date.now(); }))).observe(document.getElementById('toasts'), {childList: true})")
         tab.ev("(async () => { const S = await %s('store'); Object.defineProperty(S.Store, 'storeMode', {get: () => 'encrypted', set() {}, configurable: true});"
                " [...document.querySelectorAll('.overlay.show .sheet button')].find(b => /Rotate (credentials|keys)/.test(b.textContent) && !b.closest('.sheet-head')).click(); })()" % MOD); settle(tab, 3500)
         st = tab.ev("[...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')")
         check("[15] an accepted rekey whose config was not published says so in a toast of its own", "keypair was replaced, but its config wasn't published" in st and "only in this tab" in st, st)
         check("[15] …beside the rotate's own outcome, not as a partial rotate", "rotated" in st and "Not everything" not in st, st)
+        # it asks the operator to act, so it stays up 9 s like a routing save's warning — the default 5.5 s is gone by 7 s (F93)
+        st = tab.ev("(async () => { const el = [...document.querySelectorAll('#toasts .toast')].find(t => /only in this tab/.test(t.textContent)); if (!el || !el.dataset.at) return 'no toast';"
+                    " const w = +el.dataset.at + 7000 - Date.now(); if (w > 0) await new Promise(r => setTimeout(r, w)); return el.isConnected && !el.classList.contains('out'); })()")
+        check("[15] …and it is still up 7 s after it appeared (9 s, F93)", st is True, st)
+        close_all(tab); tab.close()
+        # the vault key is NOT cached: the rekey's publish opens the unlock prompt, and the rotate's outcome is shown while that
+        # prompt is open and stays after it is skipped — it never waits on the prompt (F86, F92)
+        tab = open_app("#/users")
+        tab.ev("(async () => { const S = await %s('store'); const PA = await %s('peer-actions');"
+               " S.api.wdttPeerRotate = async () => ({ok: true}); S.api.csqttPeerRotate = async () => ({ok: true}); S.api.peerRekey = async () => ({ok: true});"
+               " Object.defineProperty(S.Store, 'storeMode', {get: () => 'encrypted', set() {}, configurable: true});"
+               " PA.rotateOnePeerKeys(S.Store.peer(%s)); })()" % (MOD, MOD, json.dumps(PID["anna-phone"]))); settle(tab, 700)
+        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].find(b => /Rotate (credentials|keys)/.test(b.textContent) && !b.closest('.sheet-head')).click()"); settle(tab, 2500)
+        st = tab.ev("(async () => { const C = await %s('crypto'); return {cached: !!C.subSKCached(),"
+                    " prompt: [...document.querySelectorAll('.overlay.show .sheet')].some(s => /Unlock to publish this config/.test(s.textContent)),"
+                    " t: [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')}; })()" % MOD)
+        check("[15] with the vault key not cached, the rekey's publish asks to unlock it", not st["cached"] and st["prompt"], st)
+        check("[15] …and the rotate's outcome is already shown while that prompt is open (F92)", "rotated" in st["t"], st)
+        tab.ev("[...document.querySelectorAll('.overlay.show .sheet button')].find(b => b.textContent.trim() === 'Skip').click()"); settle(tab, 800)
+        st = tab.ev("({prompt: [...document.querySelectorAll('.overlay.show .sheet')].some(s => /Unlock to publish this config/.test(s.textContent)),"
+                    " t: [...document.querySelectorAll('#toasts .toast')].map(t => t.textContent).join(' | ')})")
+        check("[15] …and after it is skipped: still shown, no partial rotate, no publish error", not st["prompt"] and "rotated" in st["t"] and "Not everything" not in st["t"] and "keypair was replaced, but" not in st["t"], st)
         close_all(tab); tab.close()
         tab = open_app("#/users")
         # nothing to rotate: no confirm, no "rotated" (F67)
@@ -534,6 +564,29 @@ try:
         check("[15] the Turn IPs header's tap opens its sheet", st["n"] == 1, st)
         check("[15] …which fetches its own list (F74, F75)", st["f"] == 2, st)
         close_all(tab); tab.close()
+    # ── [16] the Live grid's Endpoint for a keyless deployment (operator, 2026-10-30) ──
+    with guard("[16]"):
+        print("\n[16] the Endpoint cell: a csqtt or WDTT device says turn-proxy in its server's fork colour, a WG one its address")
+        for w, mob, where in ((390, True, "phone"), (1280, False, "desktop")):
+            tab = open_app("#/users", w=w, h=844 if mob else 900, mobile=mob, touch=mob)
+            st = tab.ev("(async () => { const P = await %s; const S = await %s('store'); const U = await %s('ui'); const TC = await %s('turn-catalog');"
+                        " const nid = %s; S.Store.stats[nid] = Object.assign({}, S.Store.stats[nid], {csqtt: [{iface: 'csqk0', fork: 'csqtt', line: '2.5'}], wdtt: [{iface: 'wdtk0', fork: 'qwdtt'}]});"
+                        " const rows = [{type: 'csqtt', node: nid, iface: 'csqk0', online: true}, {type: 'wdtt', node: nid, iface: 'wdtk0', online: true},"
+                        "               {type: 'wdtt', node: nid, iface: 'wdtk0', online: false}, {type: 'awg', node: nid, iface: 'awg0', online: true, observed: {endpoint: '203.0.113.7:51820'}}];"
+                        " const col = c => { const d = document.createElement('i'); d.style.color = c; return d.style.color; };"
+                        " const out = rows.map(t => { const c = document.createElement('div'); document.body.append(c); P.render(U.endpointCell(t), c);"
+                        "   const ep = c.querySelector('.turnep'), r = {text: c.querySelector('.addr').textContent, color: ep ? ep.style.color : '', off: !!(ep && ep.classList.contains('off')),"
+                        "   bub: (c.querySelector('.turnbub') || {}).textContent || ''}; P.render(null, c); c.remove(); return r; });"
+                        " return {out, csq: col(TC.turnColor('csqtt')), qw: col(TC.turnColor('qwdtt')), csql: TC.forkLabel('csqtt'), qwl: TC.forkLabel('qwdtt')}; })()"
+                        % (PREACT, MOD, MOD, MOD, json.dumps(NID)))
+            csq, wd, wdoff, awg = st["out"]
+            check("[16] %s: a csqtt device says turn-proxy, in its fork's colour" % where, csq["text"] == "turn-proxy" and csq["color"] == st["csq"], st)
+            check("[16] %s: …and its bubble names the server it came through, with the line" % where, "Connected via" in csq["bub"] and (st["csql"] + " 2.5") in csq["bub"], csq)
+            check("[16] %s: a WDTT device says turn-proxy, in its fork's colour, named in the bubble" % where,
+                  wd["text"] == "turn-proxy" and wd["color"] == st["qw"] and "Connected via" in wd["bub"] and st["qwl"] in wd["bub"], [wd, st["qw"], st["qwl"]])
+            check("[16] %s: offline, it is dimmed and says Last connected via" % where, wdoff["text"] == "turn-proxy" and wdoff["off"] and "Last connected via" in wdoff["bub"], wdoff)
+            check("[16] %s: control — an AWG device still prints its address" % where, awg["text"] == "203.0.113.7" and not awg["bub"], awg)
+            tab.close()
     # ── [14] a routing field's search on a phone: a mode of its own, docked to the visible page ──
     with guard("[14]"):
         print("\n[14] a routing field's search: the input pinned on top, the catalog under it, a scroll moves neither, Back closes it")

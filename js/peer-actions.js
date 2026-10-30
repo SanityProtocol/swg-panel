@@ -133,7 +133,8 @@ export function rotateOnePeerKeys(peer) {
   // rotatePeerKeys' own answer to the rekey, F76, F77): a refused turn rotate no longer stops the keypair's (review F66), every
   // refusal is named (F79), and when only some went through the toast names what was already replaced — that user needs the new
   // one (F68). Only the keypair's own refusal ends "Rotating" early (F85). An accepted rekey whose config never reached the
-  // subscription says so in a toast of its own when the publish ends (F83) — the outcome never waits on its vault prompt (F86),
+  // subscription says so in a toast of its own when the publish ends (F83), held 9 s as it asks for an action (F93) — the outcome never
+  // waits on its vault prompt (F86, F92),
   // and a missed publish is not a partial rotate (F87).
   const { p, hasCsqtt, hasWdtt, hasKeyed, mixed, none, title } = rotateParts(peer);
   if (none) return toast(T("This peer has nothing to rotate."), "err");   // F67: never "rotated" with no call made
@@ -155,7 +156,7 @@ export function rotateOnePeerKeys(peer) {
         if (hasWdtt) await step(T("the WDTT link"), () => api.wdttPeerRotate({ peer_id: p.id }));
         const kr = hasKeyed ? await step(T("the keypair"), () => rotatePeerKeys(p)) : null;   // LAST: this changes the pubkey, and the two above address by id
         if (!(kr && kr.ok)) delete Store.rotating[p.id];
-        if (kr && kr.published) kr.published.then(e => { if (e) toast(T("The keypair was replaced, but {why}. Its new QR is only in this tab until you reload — show it to the user from here.", { why: e.replace(/[.\s]+$/, "") }), "err"); }, () => {});
+        if (kr && kr.published) kr.published.then(e => { if (e) toast(T("The keypair was replaced, but {why}. Its new QR is only in this tab until you reload — show it to the user from here.", { why: e.replace(/[.\s]+$/, "") }), "err", 9000); }, () => {});
         await Store.poll();
         if (why.length) return toast(done.length ? T("Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.", { why: why.join("; "), done: done.join(", ") }) : why.join("; ") + ".", "err");
         toast(mixed ? T("Credentials rotated — send the user their new QR and links; the old ones no longer work.")

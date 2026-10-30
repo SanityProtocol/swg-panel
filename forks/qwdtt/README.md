@@ -16,16 +16,24 @@ Upstream ships no server binary, so we build from a pinned commit and host the r
 GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate as turn)
 ```
 
-- Pinned upstream: **`fae121ef`** (`v1.4.3`, 2026-08-31).
+- Pinned upstream: **`a296c57e`** (`v1.4.4`, 2026-09-13).
   ⚠️ **Pin a commit, never a tag** — `v1.3.8`/`v1.3.9`/`v1.4.0`/`v1.4.0-beta` all still point at the
   July commit `2dd5d37f`.
-- swg-panel build label: **`1.4.3-4`**. That is pin `fae121ef` plus this patch, which carries the RAW keyless-gap
-  fixes (build 2), the two fixes under "One config on several devices" (build 3) and the downlink crash fix (build
-  4), all below.
-  - Published as `wdtt-qwdtt-1.4.3-4` (2026-09-25), amd64 + arm64: amd64 `d90c7501…`, arm64 `85de0e28…`.
-  - Rig-proven on the published amd64 bytes. The arm64 build comes from the same recipe but was not run.
-  - `wdtt-qwdtt-1.4.3-3` and `wdtt-qwdtt-1.4.3-2` stay as rollback targets, but both carry the downlink crash.
-- Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published build used Go 1.27.1.
+- swg-panel build label: **`1.4.4-1`**. That is pin `a296c57e` plus this patch, which carries the RAW keyless-gap
+  fixes (build `1.4.3-2`), the two fixes under "One config on several devices" (`1.4.3-3`) and the downlink crash fix
+  (`1.4.3-4`), all below.
+  - Built amd64 `c4641fa4…`, arm64 `ce691814…` (Go 1.27.1, `golang:1.27.1-bookworm`), to be published as
+    `wdtt-qwdtt-1.4.4-1`.
+  - `wdtt-qwdtt-1.4.3-4` (pin `fae121ef`, v1.4.3; amd64 `d90c7501…`, arm64 `85de0e28…`) is its rollback target. The
+    store format is the same both ways. `1.4.3-3` and `1.4.3-2` stay listed too, but both carry the downlink crash.
+- What v1.4.4 changed upstream (`d90930ea`, "Fix device rebinding for renewed subscriptions"): the device-owner check
+  (`authorizeDeviceOwnerLocked`) is gone from the WG and RAW connect paths and from startup, and a connecting password
+  re-stamps the device's owner. None of our fixes is covered by it: the RAW takeover, the downlink race, the AUTH
+  exemption and the fixed-config keys all re-anchored unchanged. The only thing dropped is the AUTH save exception for
+  an owner stamp (see below), which no longer has anything to save. The patch applies to `a296c57e` with no fuzz.
+- Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published builds use Go 1.27.1.
+- Tests: upstream ships no Go tests of its own. Ours (`swgpanel_raw_test.go`) pass on `1.4.3-4` and `1.4.4-1`, the
+  downlink race test 20 times in a row; `go_client` does not build its tests on either (`go.sum` lacks entries).
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
   ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus
@@ -128,12 +136,11 @@ config worker's `GETCONF` and both RAW paths already honoured that. Two places d
   - The client never reads that reply (`go_client` `SendAuth`) and keeps redialling. The tunnel ran on its config
     worker alone.
   - The branch now carries the exemption the RAW data path already had: `bound := isMainPass || (fixedConfig &&
-    isGenPass)`. `authorizeDeviceOwnerLocked` still runs.
+    isGenPass)`.
   - Those workers are no longer refused, so they all reach the branch's `saveDB()`, which writes the whole store
-    under `dbMutex`. For a fixed-config generated password the AUTH normally has nothing to save, so it skips the
-    write. The exception is when `authorizeDeviceOwnerLocked` may stamp an owner, which only happens on a row keyed
-    by the client's own ID that has no owner yet (from before `-fixed-config`). That is decided before the call and
-    saved at once.
+    under `dbMutex`. For a fixed-config generated password the AUTH has nothing to save, so it skips the write.
+    (Up to `1.4.3-4` it still saved when upstream's `authorizeDeviceOwnerLocked` might stamp an owner on a row keyed
+    by the client's own ID. v1.4.4 removed that check from every connect path, so the exception went with it.)
 - ⚠️ **In RAW mode, a second device inherited the first one's dead workers.**
   - One password is one RAW address, and `pickDownlinkConn` round-robins that address's downlink across every
     registered worker.
@@ -190,6 +197,28 @@ every earlier build; `1.4.3-3`'s takeover made it easy to hit.
   the lock is held for one pick and one non-blocking send.
 - **Result:** no panic in repeated runs.
 - **Test:** `TestRawDownlinkSurvivesTakeoversUnderTraffic`.
+
+### Rebased onto v1.4.4 (build `1.4.4-1`, 2026-10-30)
+
+Rigs on the amd64 bytes to be published (`c4641fa4…`), with the published `1.4.3-4` (`d90c7501…`) as the control and the
+unpatched v1.4.4 qWDTT client. Each check also ran against a build with one defect planted, which it must fail.
+
+| rig | check | `1.4.3-4` | `1.4.4-1` | planted defect → result |
+|---|---|---|---|---|
+| `keyless-qwdtt-wg.sh` | T1 reach, T2 spoof 0, T4 same address | pass | pass | — |
+| | T5 unrelated change (SIGHUP): session and address kept | pass | pass | — |
+| | T7 owner device kept through that reconcile (new) | pass | pass | owner reaped → **owner cut** |
+| | T3 revoke: live tunnel cut, fresh connect refused, same server process | pass | pass | no reload on SIGHUP/mtime → **still answers, config served** |
+| `keyless-qwdtt-raw.sh` | reach, spoof 0, T6 0, same address | pass | pass | — |
+| | T3-raw revoke: live session cut (uplink delta 0) | pass | pass | reap a no-op → **still answers, delta 5** |
+| `keyless-qwdtt-t6.sh` | T6 alias hijack | 0/0 | 0/0 | published `1.4.3` → **4 workers, 40 packets** |
+| `two-device-qwdtt.sh` | W1 one device: workers up | 4/4 | 4/4 | no AUTH exemption → **1/4** |
+| | W2/W3 WG two devices; R2/R3/S RAW takeover | pass (R2 50/50) | pass (R2 50/50) | no takeover → **R2 26/50, R3 A 18/50** |
+| Go test | `TestRawDownlinkSurvivesTakeoversUnderTraffic` | pass | pass ×20 | the old pick-then-send → **panic: send on closed channel** |
+
+On WG the "reap a no-op" plant still cut the live tunnel: dropping the password's WRAP key already ends a WG session,
+which is why the disconnect is load-bearing for RAW only. Host firewall and links unchanged by every run; server CPU after
+a revoke 0–2 ticks/10 s on both builds.
 
 ### `desired.json` schema (panel writes; the server reads)
 

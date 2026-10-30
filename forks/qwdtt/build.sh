@@ -14,13 +14,15 @@
 set -euo pipefail
 
 UPSTREAM_REPO="https://github.com/SpaceNeuroX/proxy-turn-vk-android"
-UPSTREAM_SHA="fae121efc3ef57b633516601d3c0d6b1be1fde7c"   # v1.4.3, 2026-08-31; bump deliberately + re-test the patch
+UPSTREAM_SHA="a296c57eaba69bb9479a24f9157856490890e47d"   # v1.4.4, 2026-09-13; our build label 1.4.4-1. Bump deliberately + re-test the patch
 # ⚠️ v1.4.3 MOVED the server out of the repo root into server/ and split it across a dozen files
 # (buffers/connections/core/nat/obfs/optimization/...). Our 9 hunks were untouched by that split and
 # apply unchanged from inside server/ — the only edit this bump needed was this path. The flag surface
 # only GAINED flags (admin-cert/-key/-listen/-token-file, bot-token-file, password-file), so a unit
 # written by an older node still parses.
 SRC_SUBDIR="server"       # was "." — server.go + admin_api.go moved here in v1.4.3
+# v1.4.4 dropped the device-owner check (authorizeDeviceOwnerLocked) from the WG and RAW connect paths. Our AUTH hunk
+# no longer needs its owner-stamp save exception; every other hunk re-anchored with no fuzz.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/qwdtt-server}"
