@@ -607,10 +607,10 @@ export async function subMaybePublish(userId, peerId, privkey, psk) {
     // every publish 500'd and the only trace was a console line. Pin it to the peer's row — the same surface
     // rotatePeerKeys already uses for the failures it can name, auto-expiring like the rest.
     if (peerId) {
-      Store.rowErrors["peer:" + peerId] = {
-        msg: T("its config wasn't published to the subscription — {v1}", { v1: String((e && e.message) || e) }),
-        at: Date.now() };
+      const msg = T("its config wasn't published to the subscription — {v1}", { v1: String((e && e.message) || e) });
+      Store.rowErrors["peer:" + peerId] = { msg, at: Date.now() };
       Store.apply();
+      return msg;   // and to a caller that waits for it (a phone's Rotate, review F83); the row's copy may be swept by now
     }
   }
 }
@@ -680,8 +680,9 @@ export async function subPublishOrPrompt(userId, peerId, privkey, psk) {
     });
     if (!ok) { _pendingPublish.set(peerId, { userId, privkey, psk }); return; }   // skipped → remember, so a later in-session unlock still saves it (incl. overwriting a stale rotate blob)
   }
-  await subMaybePublish(userId, peerId, privkey, psk);
+  const err = await subMaybePublish(userId, peerId, privkey, psk);
   _pendingPublish.delete(peerId);   // published → no longer pending
+  return err;
 }
 // A subscription-affecting action that DOESN'T hand us a fresh private key (e.g. assigning an EXISTING peer to a
 // user, which keeps its key) can still leave that user with an unpublished peer → an empty "Not ready yet" QR on

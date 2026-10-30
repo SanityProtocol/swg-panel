@@ -39,7 +39,8 @@ export const setLoadIfaceOpener = fn => { _openLoadIface = fn; };
 // (DNS/MTU/AllowedIPs/keepalive) where readable, and re-issues. The old config stops working,
 // so the client must re-import the fresh QR/config. Only meaningful for an assigned peer.
 // Resolves to the panel's answer to the rekey ({ok:false, error} when it never got that far), so a caller can tell a refused rekey
-// from an accepted one whose row error came from something after it (review F76, F77).
+// from an accepted one whose row error came from something after it (review F76, F77); an accepted one carries `published`, its
+// subscription publish, which resolves to that publish's failure (review F83).
 export async function rotatePeerKeys(peer) {
   const key = "peer:" + peer.id;
   Store.rotating[peer.id] = Date.now();   // grid shows "rotating" until the new key is live
@@ -60,12 +61,14 @@ export async function rotatePeerKeys(peer) {
         psk, endpoint: m.endpoint, allowed: s ? s.allowed : "0.0.0.0/0, ::/0", keepalive: s ? s.keepalive : 25 });
     }
   } catch (e) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return { ok: false, error: Store.rowErrors[key].msg }; }
-  return mutate({
+  let published = null;
+  const r = await mutate({
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk }),   // no plaintext to the server
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
-      subPublishOrPrompt(peer.user_id, peer.id, keys.priv, psk); },
+      published = subPublishOrPrompt(peer.user_id, peer.id, keys.priv, psk); },
   });
+  return published ? { ...r, published } : r;
 }
 
 // Rotate EVERY key a user holds — each WG/AWG peer gets a fresh keypair + PSK (rotatePeerKeys), each WDTT peer a
@@ -129,7 +132,8 @@ export function rotateOnePeerKeys(peer) {
   // Every credential is tried on its own and each answer READ (api.post resolves {ok:false} rather than throwing; the keypair's is
   // rotatePeerKeys' own answer to the rekey, F76, F77): a refused turn rotate no longer stops the keypair's (review F66), every
   // refusal is named (F79), and when only some went through the toast names what was already replaced — that user needs the new
-  // one (F68).
+  // one (F68). An accepted rekey whose config never reached the subscription is replaced AND says why (F83); only the keypair's
+  // own refusal ends "Rotating" early (F85).
   const { p, hasCsqtt, hasWdtt, hasKeyed, mixed, none, title } = rotateParts(peer);
   if (none) return toast(T("This peer has nothing to rotate."), "err");   // F67: never "rotated" with no call made
   const body = mixed ? T("This peer holds several credentials — a WireGuard keypair and an access password per turn server. All of them are replaced: every config, QR and link this peer already handed out stops working and must be re-imported.")
@@ -144,11 +148,14 @@ export function rotateOnePeerKeys(peer) {
         const step = async (name, call) => {
           let r; try { r = await call(); } catch (_) { r = null; }
           if (r && r.ok) done.push(name); else why.push((srvText(r) || T("Rotate failed.")).replace(/[.\s]+$/, ""));
+          return r;
         };
         if (hasCsqtt) await step(T("the csqtt link"), () => api.csqttPeerRotate({ peer_id: p.id }));
         if (hasWdtt) await step(T("the WDTT link"), () => api.wdttPeerRotate({ peer_id: p.id }));
-        if (hasKeyed) await step(T("the keypair"), () => rotatePeerKeys(p));   // LAST: this changes the pubkey, and the two above address by id
-        if (!hasKeyed || why.length) delete Store.rotating[p.id];
+        const kr = hasKeyed ? await step(T("the keypair"), () => rotatePeerKeys(p)) : null;   // LAST: this changes the pubkey, and the two above address by id
+        const unpub = kr && kr.ok && kr.published ? await kr.published.catch(() => null) : null;
+        if (unpub) why.push(unpub.replace(/[.\s]+$/, ""));
+        if (!(kr && kr.ok)) delete Store.rotating[p.id];
         await Store.poll();
         if (why.length) return toast(done.length ? T("Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.", { why: why.join("; "), done: done.join(", ") }) : why.join("; ") + ".", "err");
         toast(mixed ? T("Credentials rotated — send the user their new QR and links; the old ones no longer work.")
