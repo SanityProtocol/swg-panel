@@ -32,12 +32,13 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
        its sheet, which fetches its own list, and follows the poll
   [16] the Live grid's Endpoint, phone and desktop: a csqtt or WDTT device says "turn-proxy" in its server's fork colour with
        the "Connected via <fork>" bubble (the csqtt line named), dimmed with "Last connected via" when offline; an AWG device
-       still prints its address
+       still prints its address; online, its status badge is the same fork-coloured turn badge a WG peer through a turn-proxy
+       wears
 
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -68,6 +69,7 @@ PERTURBS = {
     "rotunpub": ("js/peer-actions.js", "        if (kr && kr.published) kr.published.then(", "        if (false) kr.published.then("),
     "rotlong": ("js/peer-actions.js", 'show it to the user from here.", { why: e.replace(/[.\\s]+$/, "") }), "err", 9000);', 'show it to the user from here.", { why: e.replace(/[.\\s]+$/, "") }), "err");'),
     "rotwait": ("js/peer-actions.js", "        await Store.poll();\n        if (why.length) return toast(", "        if (kr && kr.published) await kr.published;\n        await Store.poll();\n        if (why.length) return toast("),
+    "kwbadge": ("js/ui.js", "  const kv = t.online && !t.viaTurn ? keylessVia(t) : null;", "  const kv = null;"),
     "kwep": ("js/ui.js", "  if (t.via === \"turn\" || kv) {", "  if (t.via === \"turn\") {"),
     "rotspin": ("js/peer-actions.js", "        if (!(kr && kr.ok)) delete Store.rotating[p.id];", "        if (!hasKeyed || why.length) delete Store.rotating[p.id];"),
     "tiptap": ("js/turn.js", 'role="button" onClick=${() => pushModal(html`<${TurnIpsSheet}', 'role="button" onClick=${() => null && pushModal(html`<${TurnIpsSheet}'),
@@ -586,6 +588,23 @@ try:
                   wd["text"] == "turn-proxy" and wd["color"] == st["qw"] and "Connected via" in wd["bub"] and st["qwl"] in wd["bub"], [wd, st["qw"], st["qwl"]])
             check("[16] %s: offline, it is dimmed and says Last connected via" % where, wdoff["text"] == "turn-proxy" and wdoff["off"] and "Last connected via" in wdoff["bub"], wdoff)
             check("[16] %s: control — an AWG device still prints its address" % where, awg["text"] == "203.0.113.7" and not awg["bub"], awg)
+            # the peer grids' status badge: online through a csqtt / WDTT server is the fork-coloured turn badge, as through a turn-proxy
+            st = tab.ev("(async () => { const P = await %s; const U = await %s('ui'); const TC = await %s('turn-catalog'); const nid = %s;"
+                        " const rows = [{type: 'csqtt', node: nid, iface: 'csqk0', online: true, status: 'online'}, {type: 'wdtt', node: nid, iface: 'wdtk0', online: true, status: 'online'},"
+                        "               {type: 'wdtt', node: nid, iface: 'wdtk0', online: false, status: 'ready'}, {type: 'awg', node: nid, iface: 'awg0', online: true, status: 'online'},"
+                        "               {type: 'awg', node: nid, iface: 'awg0', online: true, status: 'online', via: 'turn', viaTurn: 'vk-turn-proxy-wingsv-56000'}];"
+                        " const col = c => { const d = document.createElement('i'); d.style.setProperty('--x', c); return d.style.getPropertyValue('--x'); };"
+                        " const out = rows.map(t => { const c = document.createElement('div'); document.body.append(c); P.render(U.gridStatusBadge(t, {status: t.status}, null), c);"
+                        "   const b = c.querySelector('.badge'), r = {turn: !!(b && b.classList.contains('b-turn')), tfc: b ? b.style.getPropertyValue('--tfc').trim() : '',"
+                        "   bub: (c.querySelector('.turnbub') || {}).textContent || ''}; P.render(null, c); c.remove(); return r; });"
+                        " return {out, csq: col(TC.turnColor('csqtt')).trim(), qw: col(TC.turnColor('qwdtt')).trim()}; })()"
+                        % (PREACT, MOD, MOD, json.dumps(NID)))
+            bcsq, bwd, bwdoff, bawg, bturn = st["out"]
+            check("[16] %s: an online csqtt device's status badge is the turn badge, its fork's colour, naming it" % where,
+                  bcsq["turn"] and bcsq["tfc"] == st["csq"] and "Connected via" in bcsq["bub"] and "2.5" in bcsq["bub"], [bcsq, st["csq"]])
+            check("[16] %s: …and a WDTT one's" % where, bwd["turn"] and bwd["tfc"] == st["qw"] and "Connected via" in bwd["bub"], [bwd, st["qw"]])
+            check("[16] %s: control — an offline WDTT device and a direct AWG device keep the plain badge" % where, not bwdoff["turn"] and not bawg["turn"], [bwdoff, bawg])
+            check("[16] %s: control — an AWG device through a turn-proxy keeps its turn badge" % where, bturn["turn"] and "Connected via" in bturn["bub"], bturn)
             tab.close()
     # ── [14] a routing field's search on a phone: a mode of its own, docked to the visible page ──
     with guard("[14]"):

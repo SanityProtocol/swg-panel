@@ -1219,8 +1219,12 @@ export function gridStatusBadge(t, p, re) {
   if (peerUncategorised(t) && !re && st !== "blocked" && st !== "faulty") {
     return uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(st)}</span>`);
   }
-  if (t.online && t.viaTurn) {
-    const tf = turnFork(t.viaTurn), tn = forkLabel(tf), tc = turnColor(tf), ptitle = turnProxyTitle(t.node, t.viaTurn);   // the id picks the colour, the name is shown
+  // A csqtt / WDTT deployment always comes in through its own turn server: the same badge, in that server's fork colour
+  // (keylessVia, beside endpointCell) — once its node reports the server, so there is a colour to give.
+  const kv = t.online && !t.viaTurn ? keylessVia(t) : null;
+  if (t.online && (t.viaTurn || (kv && kv.fork))) {
+    const tf = kv ? kv.fork : turnFork(t.viaTurn), tn = forkLabel(tf) + (kv && kv.line ? " " + kv.line : ""), tc = turnColor(tf);   // the id picks the colour, the name is shown
+    const ptitle = kv ? "" : turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap" title="">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${statusLabel(st)}</span>
       <span class="turnbub">${T("Connected via")} <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
