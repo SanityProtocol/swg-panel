@@ -20,7 +20,7 @@ import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
 import { targetType, peerUncategorised, awgGen, awgGenPending, nodeStale, tip3 } from "./model.js";
-import { turnColor, turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
+import { turnColor, turnFork, turnForkList, forkLabel, CSQTT_DEFAULT_LINE } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
 import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import htm from "htm";
@@ -1279,27 +1279,27 @@ export function connDot(r) {
 //
 // A csqtt / WDTT deployment always comes in through its own turn server, but reconcile gives it no `via` (that field
 // carries wg meaning other widgets read), so it printed "—". It gets the same cell here, named after the server that
-// carries it: the fork of that interface as its node reports it, and the line for csqtt, as the interface card's badge.
+// carries it: the fork of that interface as its node reports it (matched by iface, as reconcile matches it), and the line
+// for csqtt, as the interface card's badge. Only what the server's own report says: ONLINE is traffic now ("Connected
+// via"); READY is a password the server holds, idle or never used — dimmed, the server named with no claim of a past
+// connection (a keyless deployment has no last endpoint to remember). Creating, dangling or unknown name no path: "—".
 function keylessVia(t) {
-  if (t.type !== "csqtt" && t.type !== "wdtt") return null;
-  const st = Store.stats[t.node] || {};
-  if (t.type === "csqtt") {
-    const c = (st.csqtt || []).find(x => x && x.iface === t.iface);
-    return { fork: c ? (c.fork || "csqtt") : null, line: c ? (c.line || "2.1") : "" };   // 2.1: turn.js CSQTT_DEFAULT_LINE (ui.js sits below turn.js)
-  }
-  const w = (st.wdtt || []).find(x => x && (x.iface === t.iface || x.raw_iface === t.iface));
-  return { fork: w ? (w.fork || "amurcanov") : null, line: "" };
+  const k = targetType(t);
+  if (k !== "csqtt" && k !== "wdtt") return null;
+  const r = ((Store.stats[t.node] || {})[k] || []).find(x => x && x.iface === t.iface);
+  return { fork: r ? (r.fork || (k === "csqtt" ? "csqtt" : "amurcanov")) : null, line: r && k === "csqtt" ? (r.line || CSQTT_DEFAULT_LINE) : "" };
 }
 export function endpointCell(t) {
   const obs = t.observed;
-  const kv = keylessVia(t);
-  if (t.via === "turn" || kv) {
+  const kv = keylessVia(t), kvShown = kv && (t.status === "online" || t.status === "ready");
+  if (t.via === "turn" || kvShown) {
     const tf = kv ? kv.fork : t.viaTurn ? turnFork(t.viaTurn) : null, tn = tf ? forkLabel(tf) + (kv && kv.line ? " " + kv.line : "") : null;
     const tc = tf ? turnColor(tf) : "var(--dim)";
     const ptitle = !kv && t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
+    const verb = t.online ? T("Connected via") : kv ? "" : T("Last connected via");
     return html`<span class="turnwrap" title="">
       <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>${T("turn-proxy")}</span>
-      <span class="turnbub">${t.online ? T("Connected via") : T("Last connected via")} ${tn
+      <span class="turnbub">${verb ? verb + " " : null}${tn
           ? html`<span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>`
           : html`<span class="faint">${T("a turn-proxy")}</span>`}${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }

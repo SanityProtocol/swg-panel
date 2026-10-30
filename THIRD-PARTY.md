@@ -25,8 +25,8 @@ recipe and the patch are in this repository, so any release can be reproduced an
 |---|---|---|---|---|---|
 | WDTT (original) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`forks/wdtt/`](forks/wdtt/) | `wdtt-amurcanov-1.2.4-3` |
 | WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | **GPL-3.0** ‡ | `ef697994` (v1.5.0 ‡) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.0-3` |
-| WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `b3935b94` (v18) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-18-2` |
-| qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
+| WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `d450e132` (v20) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-20-1` |
+| qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `a296c57e` (v1.4.4) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.4-1` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
 | csqtt 2.5 | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) (amurcanov's csqtt 2.5) | **PolyForm Noncommercial 1.0.0** | `001caa4` | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.3` ¶ |
 | csqtt Android app 2.5 (our build of amurcanov's app) | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) `app/` | **PolyForm Noncommercial 1.0.0** | `001caa4` | in the release: `csqtt-app-2.5.3.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.3` ¶ |

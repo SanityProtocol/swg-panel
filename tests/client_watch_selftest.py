@@ -6,7 +6,8 @@ ildarmaga's PWDTT client moved to its own repository (ildarmaga/pwdtt-client); i
 so the watch on its pkg/sharelink could never fire again. A watch repointed to a new file kept the old paths' baseline,
 and the new path — with nothing stored to differ from — read "up to date" forever.
 
-  [1] pwdttilg watches ildarmaga/pwdtt-client main backend/subscription.go (parseWdttLink), not ildarmaga/wdtt
+  [1] pwdttilg watches ildarmaga/pwdtt-client main backend/subscription.go (parseWdttLink) and backend/subvalidate.go (the
+      sub-URL check), not ildarmaga/wdtt
   [2] a client whose stored baseline names only its OLD paths: the next check seeds the new path, and a later commit on it
       reads "changed"; a path that already had a baseline is never re-seeded — its drift stays "changed" until acknowledged
 
@@ -47,6 +48,8 @@ print("[1] what pwdttilg watches")
 srcs = P._client_sources("pwdttilg")
 check("[1] ildarmaga/pwdtt-client main backend/subscription.go",
       {"owner": "ildarmaga", "repo": "pwdtt-client", "branch": "main", "path": "backend/subscription.go"} in srcs, srcs)
+check("[1] …and backend/subvalidate.go, where a sub-URL is accepted or refused",
+      {"owner": "ildarmaga", "repo": "pwdtt-client", "branch": "main", "path": "backend/subvalidate.go"} in srcs, srcs)
 check("[1] …and nothing in ildarmaga/wdtt, whose main no longer moves", not any(s["repo"] == "wdtt" for s in srcs), srcs)
 
 print("\n[2] a repointed watch")

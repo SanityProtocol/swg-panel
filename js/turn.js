@@ -19,7 +19,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
   TURN_FORKS_FALLBACK, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
-  forkSupportsAwg, forkSupportsAwg3, turnColor, turnClientColor, turnClientAuthor,
+  forkSupportsAwg, forkSupportsAwg3, turnColor, turnClientColor, turnClientAuthor, CSQTT_DEFAULT_LINE,
 } from "./turn-catalog.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
          isWdttName, isSelfContainedName, turnIfaceNameError,
@@ -2440,7 +2440,7 @@ export const CSQTT_COLOR = "#F97316";
 //    The panel offers the versions (Store.csqttLines); with one on offer there is no control anywhere — unless a server
 //    already runs another one, which stays visible. A node says which it can run (snap.csqtt_lines) — an older one can
 //    run only 2.1, and the panel refuses the rest there.
-export const CSQTT_DEFAULT_LINE = "2.1";
+export { CSQTT_DEFAULT_LINE };   // defined in turn-catalog.js (ui.js reads it too)
 // A server's version as the PANEL reads its record (swg-panel-server _csqtt_line_of): a line no longer on offer is 2.1, which is
 // what the node is sent — so the card never says "switching" to a version nothing moves to (q189 SPA-11: a record left naming
 // a stand-in line read "switching" for ever).

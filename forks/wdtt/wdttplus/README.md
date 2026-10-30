@@ -34,7 +34,8 @@ the WARP interface manager (an installer-side script) and the app. So the tag is
   `WDTT_UPDATE_APK1`, `WDTT_HTTPS_POST1`, `WDTT_DEPLOY1`, `WDTT_DEPLOY_CHUNK1`). The refusal sits right before
   upstream's own handlers, after the uplink unwrap. Where exactly does not change what it catches: an unwrapped uplink
   payload that is not a WireGuard packet ends the session, so a request always arrives unframed (a build with the refusal
-  moved before the unwrap refused all four too). `WDTT_TRANSPORT_METRICS` is only an environment switch for the server's
+  moved before the unwrap refused them too). The rig sends the four requests the client has commands for —
+  `WDTT_DEPLOY_CHUNK1` only follows a `WDTT_DEPLOY1` start, which is refused first. `WDTT_TRANSPORT_METRICS` is only an environment switch for the server's
   own log.
 - Tests: upstream's 90 server tests plus ours pass on 18-2, its 92 on 20-1 (Go 1.25.14 and 1.27.1), and its `go_client`
   tests on both (Go 1.27.1: the client needs Go ≥ 1.26).

@@ -15829,7 +15829,7 @@ TURN_CLIENTS = {
                        "windows": {"github": "https://github.com/luminescq/PWDTT/releases"},
                        "linux":   {"github": "https://github.com/luminescq/PWDTT/releases"},
                        "macos":   {"github": "https://github.com/luminescq/PWDTT/releases"}}},
-    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "pwdttilg",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases. Imports a base64 JSON wdtt:// (or a sub-URL). Its 1.4.45/46 build (2026-06-17) refused colon as "устаревший colon-формат"; the client now built from ildarmaga/pwdtt-client (0.3.352) reads colon again, JSON first — we keep sending JSON. luminescq's upstream `pwdtt` above takes colon — hence two client ids, two encoders.
+    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "pwdttilg",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases. Imports a base64 JSON wdtt:// (or a sub-URL). Its 1.4.45/46 build (2026-06-17) refused colon as "устаревший colon-формат"; the client now built from ildarmaga/pwdtt-client (0.3.352) reads colon again: a payload SHAPED like colon (looksColonWdtt: 5+ ':' fields, a numeric 2nd, no '=') is parsed as colon, anything else as base64 JSON — we keep sending JSON, which never has that shape. luminescq's upstream `pwdtt` above takes colon — hence two client ids, two encoders.
                        "windows": {"github": "https://github.com/ildarmaga/wdtt/releases"},
                        "linux":   {"github": "https://github.com/ildarmaga/wdtt/releases"}}},
     "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": False, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
@@ -16189,12 +16189,14 @@ _CLIENT_SOURCES = {
     # Watched because it was NOT: ildarmaga's build dropped the colon format in June and the panel kept sending it
     # for two months, so the first report was a user's screenshot of "Ссылка wdtt:// повреждена". The client moved to
     # its own repository (ildarmaga/pwdtt-client; ildarmaga/wdtt main stopped at ef69799, its pkg/sharelink frozen):
-    # backend/subscription.go holds parseWdttLink — the accept/reject decision — and the shape it decodes into.
+    # backend/subscription.go holds parseWdttLink — the accept/reject decision — and the shape it decodes into;
+    # backend/subvalidate.go decides whether a sub-URL (ours, or the `sub` field of a link) is accepted (subIDToken, IsPanelSubURL).
     # csqtt's app: parseCsqttV2 is the whole contract (v/host/peer/password/hashes; anything else is ignored),
     # and SettingsStore is where its own knobs live — the two files that decide whether our link still imports.
     "csqttapp":    [{"owner": "amurcanov", "repo": "csqtt", "branch": "main", "path": "app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt"},
                     {"owner": "amurcanov", "repo": "csqtt", "branch": "main", "path": "app/src/main/java/com/csqtt/client/SettingsStore.kt"}],
-    "pwdttilg":    [{"owner": "ildarmaga", "repo": "pwdtt-client", "branch": "main", "path": "backend/subscription.go"}],
+    "pwdttilg":    [{"owner": "ildarmaga", "repo": "pwdtt-client", "branch": "main", "path": "backend/subscription.go"},
+                    {"owner": "ildarmaga", "repo": "pwdtt-client", "branch": "main", "path": "backend/subvalidate.go"}],
     "qwdttleg":    [{"owner": "lebrit", "repo": "qwdtt-legacy-android", "branch": "main", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
 }
 def _client_sources(client_id):
@@ -17167,8 +17169,9 @@ def _turn_roster_save(d):
 
 def _turn_roster_check(seed=True):
     """For every client with curated sources, fetch each source file's latest commit and compare to the last-
-    acknowledged fingerprint. A client with NO stored fingerprint is SEEDED to current (baseline) + reported
-    up_to_date — drift is unknowable without a baseline. status: up_to_date | changed | unknown (fetch failed)."""
+    acknowledged fingerprint. A watched PATH with no stored fingerprint is SEEDED to current (baseline) — drift is
+    unknowable without one; a client with none at all reads up_to_date. Paths that have one are never re-seeded here
+    (that would acknowledge their drift unseen). status: up_to_date | changed | unknown (fetch failed)."""
     roster = _turn_roster_load()
     out = {}
     seeded = False
@@ -17220,8 +17223,9 @@ def _turn_roster_check(seed=True):
         # paths that already had one keep it — re-seeding them would acknowledge their drift unseen.
         fresh = {p: v for p, v in seen.items() if p not in prev}
         if seed and fresh:
-            kept = {p: v for p, v in prev.items() if p in {s["path"] for s in srcs}}
-            roster[cid] = dict(roster.get(cid) or {}, files=dict(kept, **fresh), at=(roster.get(cid) or {}).get("at") or int(time.time()))
+            rec, watched = roster.get(cid) or {}, {s["path"] for s in srcs}
+            kept = {p: v for p, v in prev.items() if p in watched}   # a path no longer watched drops out
+            roster[cid] = dict(rec, files=dict(kept, **fresh), at=rec.get("at") or int(time.time()))
             seeded = True
         if not prev and seed and seen:
             status = "up_to_date"
