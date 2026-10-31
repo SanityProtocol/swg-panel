@@ -38,9 +38,8 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
 - Tests: upstream ships no Go tests of its own. Ours (`swgpanel_raw_test.go`) pass on `1.4.3-4`, `1.4.4-1` and `1.4.4-2`, the
   downlink race test 20 times in a row. Upstream's `go_client` does not build its tests at v1.4.3 or v1.4.4 (`go.sum` lacks
   entries); our patch does not touch the client. The RAW store-write fix (`1.4.4-2`) has no Go test — it needs a full
-  connection harness — so check it on a rig on every rebase: count the renames onto `passwords.json` (strace) per RAW session
-  start, on a build run with `-fixed-config` as the panel runs it. A new password's first session writes once; a known
-  password's new session, from the same device or another one, writes 0.
+  connection harness — so re-count it on every rebase as under **RAW store writes** below: the `1.4.4-2` column must hold,
+  on a build run with `-fixed-config` as the panel runs it.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
   ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus
@@ -232,13 +231,16 @@ a revoke 0–2 ticks/10 s on every build.
 marks it changed unconditionally, so the whole store — serialised, fsynced, renamed, under `dbMutex` — was written again
 for a device the server already knew, on top of the write upstream keeps for `canConnectAndBind`, which `-fixed-config`
 skips. 1.4.4-2 skips that write under `-fixed-config` and stamps and saves only what differs. Counted with strace on the
-server (`.campaign/rigs/qwdtt-raw-writes.sh`, one rename per write):
+server on a namespace rig (renames onto `passwords.json`, one per write):
 
 | store writes per RAW session start | `1.4.3-4` | `1.4.4-1` | `1.4.4-2` |
 |---|---|---|---|
 | a new password's first session (the record is created) | 2 | 2 | 1 |
 | the same device, a new session | 1 | **2** | 0 |
 | the same password from another device ID (the same record) | 1 | **2** | 0 |
+
+A password first used over WG has a record with no RAW address yet, so its first RAW session writes once too, as a new
+password's does (read from the code, not counted on the rig).
 
 A burst of RAW reconnects (a node restart, a network blip) no longer queues full-store writes behind the lock every
 connect waits on.

@@ -41,7 +41,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | kwready | kwverb | kwerr | kwtyped | kwip | kwxfer | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | kwready | kwverb | kwerr | kwtyped | kwtypedawg | kwip | kwxfer | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -75,6 +75,7 @@ PERTURBS = {
     "kwbadge": ("js/ui.js", "  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;", "  const kv = null;"),
     "kwerr": ("js/ui.js", "  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;", "  const kv = t.online && !t.viaTurn ? keylessVia(t) : null;"),
     "kwtyped": ("js/ui.js", "  const k = t.type;\n", "  const k = t.type || targetType(t);\n"),
+    "kwtypedawg": ("js/ui.js", "  const k = t.type;\n", "  const k = targetType(t);\n"),   # the explicit type ignored: the AWG-typed wdtk0 row turns keyless (F15, F32)
     "kwip": ("js/ui.js", " || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", " || t.status === \"ready\") ? kv : null;"),
     "kwxfer": ("js/ui.js", " || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", " || (t.status === \"ready\" && !!t.ip)) ? kv : null;"),
     "kwready": ("js/ui.js", "ks = kv && (t.status === \"online\" || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", "ks = kv;"),
