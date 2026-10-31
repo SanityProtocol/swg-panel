@@ -74,7 +74,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub | lineskey | linehold | lineswall | linefilter | enterbtn | enterroot
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub | lineskey | linehold | lineswall | linefilter | enterbtn | enterroot | enterlayer | enterrepeat
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -105,9 +105,13 @@ if not CHROME:
 # ── the web root: the repo's SPA, or a copy with one fix undone ─────────────────────────────────────────────────────────────
 PERTURBATIONS = {
     # [B17]: a focused button's Enter fires the sheet's primary again (s9b F10)
-    "enterbtn": ("js/ui.js", '      if (e.key === "Enter" && root.contains(e.target) && e.target.closest && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;\n', ""),
+    "enterbtn": ("js/ui.js", '          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;\n', '          && false) return;\n'),
     # [B17]: a button BEHIND the sheet takes Enter too (review F5)
-    "enterroot": ("js/ui.js", 'if (e.key === "Enter" && root.contains(e.target) && e.target.closest', 'if (e.key === "Enter" && e.target.closest'),
+    "enterroot": ("js/ui.js", '(root.contains(e.target) || e.target.closest(".uc-pop', '(true || e.target.closest(".uc-pop'),
+    # [B17]: a button in a picker's layer above the sheet loses its Enter to the primary (verify F11)
+    "enterlayer": ("js/ui.js", ' || e.target.closest(".uc-pop, .deppop, .osdd-menu, .osapp-menu, .catpick-pop"))', ')'),
+    # [B17]: a held Enter's repeats reach the primary (verify F12)
+    "enterrepeat": ("js/ui.js", '      if (e.key === "Enter" && e.repeat && e.target.tagName !== "TEXTAREA") { e.preventDefault(); return; }\n', ''),
     # [B20]: the line switch shown on a one-line panel too
     "lineswall": ("js/turn.js", "const linesOn = isCsq && (csqttLinesOn() ||", "const linesOn = isCsq && (true ||"),
     # [B20]: a line's list not filtered to its apps (FOCSQ listed under 2.5)
@@ -943,12 +947,21 @@ try:
                          " const r = {btn: cb ? cb.textContent : null, btnPrevented: cb ? key(cb) : null, afterBtn: n};"
                          " r.inpPrevented = inp ? key(inp) : null; r.afterInp = n;"
                          " const ob = document.createElement('button'); ob.textContent = 'behind'; document.body.appendChild(ob);"
-                         " r.outPrevented = key(ob); r.afterOut = n; ob.remove(); window.removeEventListener('click', tr, true); return r; })()" % TOP)
+                         " r.outPrevented = key(ob); r.afterOut = n;"
+                         " const k2 = new KeyboardEvent('keydown', {key: 'Enter', repeat: true, bubbles: true, cancelable: true}); ob.focus(); ob.dispatchEvent(k2);"
+                         " r.repPrevented = k2.defaultPrevented; r.afterRep = n; ob.remove();"
+                         " const ly = document.createElement('div'); ly.className = 'catpick-pop'; const lb = document.createElement('button'); lb.textContent = 'row';"
+                         " ly.appendChild(lb); document.body.appendChild(ly); r.layPrevented = key(lb); r.afterLay = n; ly.remove();"
+                         " window.removeEventListener('click', tr, true); return r; })()" % TOP)
             check("[B17] Enter on a focused footer button is that button's: the sheet's Save does not run", (ent or {}).get("btn") is not None
                   and ent.get("afterBtn") == 0 and ent.get("btnPrevented") is False, ent)
             check("[B17] …Enter from anything else in the sheet still saves (the sheet's primary)", (ent or {}).get("afterInp") == 1, ent)
             check("[B17] …and a button BEHIND the sheet (the phone keeps focus on the opener) is not the sheet's: still the primary, no click behind the modal",
                   (ent or {}).get("afterOut") == 2 and ent.get("outPrevented") is True, ent)
+            check("[B17] …a held Enter's repeat never reaches the primary (on a phone it would confirm what the press just opened)",
+                  (ent or {}).get("afterRep") == 2 and ent.get("repPrevented") is True, ent)
+            check("[B17] …and a button in a picker's layer above the sheet (portalled to <body>) keeps its own Enter",
+                  (ent or {}).get("afterLay") == 2 and ent.get("layPrevented") is False, ent)
             tab.ev("window.__arx = null; const of = window.fetch; window.fetch = (u, o) => { if (String(u).includes('/api/csqtt/set')) window.__arx = o && o.body; return of(u, o); };")
             click_text(tab, ".overlay.show .sheet-foot button", "/^Save$/"); settle(tab, 1500)
             sent = json.loads(tab.ev("window.__arx") or "{}")

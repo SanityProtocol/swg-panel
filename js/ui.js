@@ -809,9 +809,14 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       if ((e.key === "Enter" || e.key === "Escape") && document.querySelector(".ddpop")) return;
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryCloseRef.current(); return; }
       // A focused button, link or switch IN THIS SHEET owns its Enter — the browser clicks IT. Taken for the sheet's primary,
-      // Enter on Cancel or Remove saved or created instead (s9b F10). One behind the overlay (the phone keeps focus on the
-      // button that opened the sheet) is not the sheet's: its Enter stays the primary's, never a click behind the modal.
-      if (e.key === "Enter" && root.contains(e.target) && e.target.closest && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;
+      // Enter on Cancel or Remove saved or created instead (s9b F10). Its pickers' layers count as the sheet (portalled to
+      // <body>, as `.ddpop` above). One behind the overlay (the phone keeps focus on the button that opened the sheet) is
+      // not the sheet's: its Enter stays the primary's, never a click behind the modal.
+      if (e.key === "Enter" && e.target.closest && (root.contains(e.target) || e.target.closest(".uc-pop, .deppop, .osdd-menu, .osapp-menu, .catpick-pop"))
+          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;
+      // A held Enter is one press: its repeats never reach the primary — on a phone the Enter that opened a confirmation
+      // would otherwise, held a moment, confirm it unseen (verify F12). A textarea's repeated newlines stay its own.
+      if (e.key === "Enter" && e.repeat && e.target.tagName !== "TEXTAREA") { e.preventDefault(); return; }
       if (e.key === "Enter" && !noGuardRef.current && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         // view modals (QR / turn) have no single submit action — Enter must not fire a random primary button
         // (e.g. "Enable subscription"); their own fields (the VK box) handle Enter themselves

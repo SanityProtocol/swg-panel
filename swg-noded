@@ -11198,11 +11198,17 @@ def _s5x_take(dev, res, now=None, sig=None):
     return s
 
 
+def _s5x_watched():
+    """The devices whose rule DNS `udp_refuse` counts: the third part of the want `_s5x_rules` last wrote."""
+    sig = _S5X_NFT["sig"]
+    return sig[2] if sig else ()
+
+
 def _s5x_dns_counts():
     """{device: (queries, replies)} from the rule-DNS counters in `udp_refuse` — one `nft -j` read a pass, and only while a device is watched
     (a node with no SOCKS exit whose rule DNS rides its UDP runs nothing). {} when the chain cannot be read: no reading is no
     suspicion."""
-    if not (_S5X_NFT["sig"] or ((), (), ()))[2]:
+    if not _s5x_watched():
         return {}
     r = run(["nft", "-j", "list", "chain", "inet", S5X_NFT_TABLE, "udp_refuse"])
     out = {}
@@ -11232,7 +11238,9 @@ def _s5x_dns_suspect(dev, qa, now=None):
     now = time.time() if now is None else now
     last, s["qa"] = s.get("qa"), qa
     if not last or qa[0] < last[0] or qa[1] != last[1]:
-        s["unans"], s["unans_reads"], s["suspect"] = 0, 0, False   # a reply: UDP works, a check's "no" is a first one again
+        if last and qa[0] >= last[0] and qa[1] > last[1]:
+            s["suspect"] = False                  # a reply: UDP works, a check's "no" is a first one again
+        s["unans"], s["unans_reads"] = 0, 0       # …while a counter that went back (the table rewritten) proves nothing
         return False
     if qa[0] > last[0]:
         s["unans"], s["unans_reads"] = s.get("unans", 0) + qa[0] - last[0], s.get("unans_reads", 0) + 1

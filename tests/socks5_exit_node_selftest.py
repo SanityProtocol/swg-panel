@@ -49,7 +49,7 @@ PLANTS = {
                           '    if False:\n        return ""'),                                                           # [3]
     "--perturb-sysd": ('if _s5x_sysd() >= 254', 'if True'),                                                             # [3]
     "--perturb-child": ("    if pid and have == sig:\n", "    if False:\n"),                                             # [3]
-    "--perturb-hyst": ("        elif s[\"pending\"] == u:\n", "        elif True:\n"),                                   # [4]
+    "--perturb-hyst": ("        elif s[\"pending\"] == u or (u is False and s.get(\"suspect\")):", "        elif True:"),                                   # [4]
     "--perturb-udpcheck": ("            if len(d) > 12 and d[3] == 1 and d[10:12] == qid.to_bytes(2, \"big\"):",
                            "            if len(d) > 12 and d[3] == 1:"),                                                 # [4]
     "--perturb-t10": ("    oifname \"%s\" ip daddr != %s meta l4proto udp reject", "    oifname \"%s\" %.0smeta l4proto udp reject"),  # [5]
@@ -97,13 +97,14 @@ PLANTS = {
     "--perturb-watch": ('if socks.get(e.get("dev")) is True and', 'if False and'),                                    # [5] F16
     "--perturb-mapdnsq": ("""'    oifname "%s" ip daddr != %s udp dport 53 counter comment "q %s"' % (d, S5X_DNS, d)""",
                           """'    oifname "%s" udp dport 53 counter comment "q %s"' % (d, d)"""),                          # [5] F16
-    "--perturb-noread": ('    if not (_S5X_NFT["sig"] or ((), (), ()))[2]:\n        return {}\n    r = run(["nft", "-j"', '    r = run(["nft", "-j"'),  # [7] F16
+    "--perturb-noread": ('    if not _s5x_watched():\n        return {}\n    r = run(["nft", "-j"', '    r = run(["nft", "-j"'),  # [7] F16
     "--perturb-oneread": ('s.get("unans_reads", 0) >= 2', 's.get("unans_reads", 0) >= 1'),                              # [4] F16
     "--perturb-reply": ('if not last or qa[0] < last[0] or qa[1] != last[1]:', 'if not last or qa[0] < last[0] or qa[1] < last[1]:'),  # [4] F16
     "--perturb-rate": ('            and now - s.get("suspect_at", 0) >= S5X_RECHECK_S):', '            ):'),                # [4] F16
     "--perturb-suspect": ('        elif s["pending"] == u or (u is False and s.get("suspect")):', '        elif s["pending"] == u:'),  # [4] F16
     "--perturb-rearm": ('s["suspect_at"], s["suspect"], s["unans"], s["unans_reads"] = now, True, 0, 0', 's["suspect_at"], s["suspect"] = now, True'),  # [4] F16 review F1
-    "--perturb-replyclear": ('s["unans"], s["unans_reads"], s["suspect"] = 0, 0, False', 's["unans"], s["unans_reads"] = 0, 0'),  # [4] F16 review F2
+    "--perturb-replyclear": ('            s["suspect"] = False                  # a reply', '            pass  # a reply'),  # [4] F16 review F2
+    "--perturb-rewriteclear": ('        if last and qa[0] >= last[0] and qa[1] > last[1]:\n', '        if True:\n'),  # [4] F16 verify F14
     "--perturb-onehook": ('        L += ["  }", "}"]', '        L += ["  }", "  chain dns_watch { type filter hook forward priority filter - 2; policy accept;", "  }", "}"]'),  # [5] F16 review F8
     "--perturb-passread": ('                if _s5x_dns_suspect(dev, _dnsc.get(dev)):', '                if False:'),        # [7] F16
     "--perturb-setup": ('                            rec["setup"], err = err, ""', '                            pass'),          # [7] F13
@@ -458,7 +459,8 @@ check("a FIRST \"no\" sets the flag but is asked again in a minute, not ten — 
 N._S5X.clear(); s = take(True)
 sus = [N._s5x_dns_suspect("s5x-h", qa, now=100.0 + i) for i, qa in enumerate([(10, 10), (12, 10), (14, 10)])]
 check("[F16] rule DNS queries with no reply, on two reads, bring the check forward", sus == [False, False, True], sus)
-check("[F16] …once: not again within a minute", N._s5x_dns_suspect("s5x-h", (20, 10), now=110.0) is False)
+check("[F16] …once: not again within a minute, even for NEW unanswered queries on two more reads (a dead resolver behind a proxy that carries UDP)",
+      [N._s5x_dns_suspect("s5x-h", qa, now=t) for t, qa in [(110.0, (20, 10)), (111.0, (24, 10))]] == [False, False])
 s = take(False)
 check("[F16] …and the check's \"no\" flips UDP at once: the unanswered DNS was the first of the two", s["udp_ok"] is False and s["pending"] is None, s)
 N._S5X.clear(); s = take(True)
@@ -479,6 +481,12 @@ for t, qa in [(800.0, (10, 10)), (801.0, (12, 10)), (802.0, (14, 10)), (803.0, (
     N._s5x_dns_suspect("s5x-h", qa, now=t)
 s = take(False)
 check("[F16] a reply after the suspicion clears it: the check's \"no\" waits for a second again", s["udp_ok"] is True and s["pending"] is False, s)
+N._S5X.clear(); s = take(True)
+for t, qa in [(900.0, (10, 10)), (901.0, (12, 10)), (902.0, (14, 10)), (903.0, (0, 0))]:
+    N._s5x_dns_suspect("s5x-h", qa, now=t)
+s = take(False)
+check("[F16] …but counters that went back (the table rewritten) prove no reply: the suspicion stands, the \"no\" flips at once",
+      s["udp_ok"] is False and s["pending"] is None, s)
 
 # ── [5] the rule families ───────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] DNS to mapdns, UDP refused, rule DNS unmarked")
@@ -686,12 +694,12 @@ check("[F16] rule DNS through a proxy that carries UDP: its queries and replies 
       and 'iifname "s5x-bb" ip saddr != 198.18.0.2 udp sport 53 counter comment "a s5x-bb"' in txt
       and txt.count("hook forward") == 1
       and txt.index("chain udp_refuse {") < txt.index('comment "q s5x-bb"') < txt.index("chain dns_unmark {"), txt)
-check("[F16] …and the pass is told which devices to read", (N._S5X_NFT["sig"] or ((), (), ()))[2] == ("s5x-bb",), N._S5X_NFT)
+check("[F16] …and the pass is told which devices to read", N._s5x_watched() == ("s5x-bb",), N._S5X_NFT)
 N._EXITS["socks"] = {"s5x-bb": False}; NFT.clear()
 N._s5x_rules(DXW, [], {"changed": 0, "errors": []})
 txt = NFT[-1][1] if NFT else ""
 check("[F16] …not once its proxy is said to carry none: its rule DNS is unmarked instead", "counter comment" not in txt
-      and "meta mark 0x1b5e udp dport 53 meta mark set 0x0" in txt and N._S5X_NFT["sig"][2] == (), (txt, N._S5X_NFT))
+      and "meta mark 0x1b5e udp dport 53 meta mark set 0x0" in txt and N._s5x_watched() == (), (txt, N._S5X_NFT))
 N._EXITS["socks"] = {}; N._s5x_rules([], [], {"changed": 0, "errors": []})
 N.run = _r16a
 
