@@ -564,7 +564,9 @@ function MoreSheet() {
   const tm = themeMode();
   const item = (icon, label, onClick, value, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} onClick=${onClick}>
     <span class="ic" dangerouslySetInnerHTML=${{ __html: icon }}></span><span class="msheet-l">${label}</span>${value ? html`<span class="msheet-v">${value}</span>` : null}</button>`;
-  return html`<${Sheet} title=${T("More")} noGuard=${true}>
+  // its title is the app bar's own mark, as in the header (operator, 2026-10-31)
+  const brand = html`<span class="m-brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">swg<span>Panel</span></span></span>`;
+  return html`<${Sheet} title=${brand} noGuard=${true}>
     <div class="msheet">
       <div class="msheet-g">
         <button class="msheet-it" onClick=${go(() => checkForUpdate())}><${Ic} i="refresh"/><span class="msheet-l">${T("Check status")}</span></button>

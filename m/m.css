@@ -166,6 +166,10 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn-danger, .btn-ok):not(.btn-dismiss, .m-pdel) { order: 2 !important; grid-column: 1 / span 3 !important; font-size: inherit; }
   & :is(.sheet-foot, .editfoot):has(> .m-rotate) > .m-rotate { order: 2 !important; grid-column: 4 / span 3 !important; font-size: inherit;
     background: color-mix(in srgb, #C0821A 11%, transparent); color: #C0821A; border-color: color-mix(in srgb, #C0821A 34%, transparent); }
+  /* …and where Delete stands in for Networks, Rotate takes the first line's right half and Delete the second's, beside Block
+     (operator, 2026-10-31) */
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-rotate { grid-row: 1 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-pdel { grid-row: 2 !important; }
   /* an editor with a Save, a key rotation and destructive actions (the user editor): Rotate keys on the first line at the full
      width, Delete and Block on the second in halves, Cancel and Save on the last (operator, 2026-10-29) */
   & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-warn { order: 0 !important; grid-column: 1 / -1 !important; }
@@ -1175,6 +1179,7 @@ html[data-ui="m"] {
 
   /* ───── the More sheet (app.js MoreSheet) ───── */
   & .msheet { margin: -8px calc(-1 * var(--m-gutter)); }
+  & .sheet-head .m-brand { display: inline-flex; align-items: center; gap: 10px; vertical-align: middle; }   /* More's title: the app bar's mark */
   & .msheet-g + .msheet-g { border-top: 1px solid var(--line); }
   & .msheet-g { padding: 4px 0; }
   & .msheet-it {
