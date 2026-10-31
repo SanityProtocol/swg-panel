@@ -527,9 +527,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   the access they already have and catch up on the next check-in.
 - **Servers that reach the panel through Cloudflare see an occasional 502.** Cloudflare now and then answers a server's
   check-in with a 502 of its own: the server logs one line (`sync HTTP 502: … Bad gateway`), skips that check-in and
-  changes nothing. To be rid of it, let the servers reach the panel directly — a DNS-only (grey-cloud) record for the
-  name they use, or an `/etc/hosts` line on each server that points the name at the panel's own IP (on a Docker server,
-  an `extra_hosts:` entry for the `swg-node` service in `docker-compose.yml`).
+  its users stay connected as they are. To be rid of it, let the servers reach the panel directly — a DNS-only
+  (grey-cloud) record for the name they use, or an `/etc/hosts` line on each server that points the name at the panel's
+  own IP (on a Docker server, an `extra_hosts:` entry for the `swg-node` service in `docker-compose.yml`). This works only
+  for a panel with a public certificate (Let's Encrypt) that answers on the port in its address: a panel on a Cloudflare
+  Origin certificate, or one that lets only Cloudflare in, must stay behind Cloudflare — there the 502 is harmless.
 - **Force-DNS sees encrypted DNS; it doesn’t stop it.** In the Force-DNS routing mode a server answers its
   users’ ordinary DNS and routes by the site names it sees. A device that uses its own encrypted DNS (DoH, DoT
   or DoQ) is marked instead of cut off: its rules by site name don’t match, its rules by IP still do. To stop

@@ -101,8 +101,18 @@ PLANTS = [
      "[7] the convert's switch retires the host's copies (after the bare panel is torn down)"),
     ("IDOCKER", '''    mkdir -p "${P80HELD%/*}" 2>/dev/null && printf '%s\\n' "${_p80who:-another program}" > "$P80HELD" 2>/dev/null || true\n''', '',
      "[8] the installer leaves who holds :80 for the renewal loop"),
-    ("ENTRY", '  mkdir -p "$SUB_TLS_DIR"\n  sub_prune_stale\n', '  mkdir -p "$SUB_TLS_DIR"\n',
-     "[9] …issue_sub_cert clears it before it sets the page's certificate"),
+    ("ENTRY", 'cert_covers_host "$SC" "$SUB_DOMAIN" && sub_prune_stale\n', 'cert_covers_host "$SC" "$SUB_DOMAIN" && true\n',
+     "[9] …issue_sub_cert clears it once the page holds the new host's certificate"),
+    ("ENTRY", '[ -s "$SC" ] && ! cert_is_selfsigned "$SC" && cert_covers_host "$SC" "$SUB_DOMAIN" && sub_prune_stale', 'sub_prune_stale',
+     "[9] …never while the new host's issuance has failed (the old entry is the way back)"),
+    ("ENTRY", '[ -n "${SUB_HOST_SURE:-}" ] && [ -s "$SC" ]', '[ -s "$SC" ]',
+     "[9] …never for a host not known for certain (an unreadable panel-settings.json)"),
+    ("ENTRY", '    print("")\n    sys.exit(1)\n', '    print("")\n',
+     "[9] panel-settings.json there but unreadable: the page's host is unknown, not absent"),
+    ("ENTRY", '_sub_dom_cfg="$(sub_domain_cfg)" && SUB_HOST_SURE=1', '_sub_dom_cfg="$(sub_domain_cfg)"; SUB_HOST_SURE=1',
+     "[9] the boot trusts SUB_DOMAIN only when the settings were read (or there are none), the sub-cert call when the panel names it"),
+    ("ENTRY", '[ -n "${2:-}" ] && SUB_HOST_SURE=1', 'SUB_HOST_SURE=1',
+     "[9] the boot trusts SUB_DOMAIN only when the settings were read (or there are none), the sub-cert call when the panel names it"),
     ("ENTRY", '    acme --remove -d "$d" --ecc >/dev/null 2>&1 || true\n    rm -rf "$(dirname "$conf")"\n  done; }', '    :\n  done; }',
      "[9] the old host's entry is removed (acme's record and its directory)"),
     ("ENTRY", '[ -n "$d" ] && [ "$dl" != "$sl" ] && [ "$dl" != "$pl" ] || continue', '[ -n "$d" ] && [ "$dl" != "$pl" ] || continue',
@@ -622,8 +632,28 @@ check("[9] the page's own entry stays, in any letter case", os.path.isdir(new9))
 check("[9] the panel's entry stays, even one installing to the page's files", os.path.isdir(pan9))
 check("[9] an entry installing anywhere else stays", os.path.isdir(oth9))
 old9 = entry9("old.example.com", SC9)
+r = run(env, "SUB_HOST_SURE=1; SUB_DOMAIN=new.example.com; issue_sub_cert")
+check("[9] …never while the new host's issuance has failed (the old entry is the way back)", os.path.isdir(old9), (r.stdout, r.stderr))
+NEWC, NEWK = leaf("new9", "DNS:new.example.com", 90)
+shutil.copyfile(NEWC, new9 + "/fullchain.cer"); shutil.copyfile(NEWC, new9 + "/new.example.com.cer"); shutil.copyfile(NEWK, new9 + "/new.example.com.key")
 r = run(env, "SUB_DOMAIN=new.example.com; issue_sub_cert")
-check("[9] …issue_sub_cert clears it before it sets the page's certificate", not os.path.exists(old9), (r.stdout, r.stderr))
+check("[9] …never for a host not known for certain (an unreadable panel-settings.json)", os.path.isdir(old9) and same(SC9, NEWC), (r.stdout, r.stderr))
+r = run(env, "SUB_HOST_SURE=1; SUB_DOMAIN=new.example.com; issue_sub_cert")
+check("[9] …issue_sub_cert clears it once the page holds the new host's certificate", not os.path.exists(old9) and same(SC9, NEWC), (r.stdout, r.stderr))
+def cfg9(body):
+    if body is None:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(env["PANEL_SETTINGS"])
+    else:
+        with open(env["PANEL_SETTINGS"], "w") as f:
+            f.write(body)
+    r = run(env, "if d=\"$(sub_domain_cfg)\"; then echo \"ok:$d\"; else echo \"bad:$d\"; fi")
+    return r.stdout.strip()
+got9 = [cfg9(b) for b in ('{"access": {"sub": {"url": "https://Page.example.com/s"}}}', '{"access": {}}', None, '{"access": ')]
+check("[9] panel-settings.json there but unreadable: the page's host is unknown, not absent",
+      got9 == ["ok:page.example.com", "ok:", "ok:", "bad:"], got9)
+check("[9] the boot trusts SUB_DOMAIN only when the settings were read (or there are none), the sub-cert call when the panel names it",
+      '_sub_dom_cfg="$(sub_domain_cfg)" && SUB_HOST_SURE=1' in EP and '[ -n "${2:-}" ] && SUB_HOST_SURE=1' in EP)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\nALL PASS" if not FAILS else "\n%d FAILED: %s" % (len(FAILS), "; ".join(FAILS)))

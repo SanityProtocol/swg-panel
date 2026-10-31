@@ -97,11 +97,14 @@ PLANTS = {
     "--perturb-watch": ('if socks.get(e.get("dev")) is True and', 'if False and'),                                    # [5] F16
     "--perturb-mapdnsq": ("""'    oifname "%s" ip daddr != %s udp dport 53 counter comment "q %s"' % (d, S5X_DNS, d)""",
                           """'    oifname "%s" udp dport 53 counter comment "q %s"' % (d, d)"""),                          # [5] F16
-    "--perturb-noread": ('    if not _S5X_NFT.get("watch"):\n        return {}\n    r = run(["nft", "-j"', '    r = run(["nft", "-j"'),  # [7] F16
+    "--perturb-noread": ('    if not (_S5X_NFT["sig"] or ((), (), ()))[2]:\n        return {}\n    r = run(["nft", "-j"', '    r = run(["nft", "-j"'),  # [7] F16
     "--perturb-oneread": ('s.get("unans_reads", 0) >= 2', 's.get("unans_reads", 0) >= 1'),                              # [4] F16
     "--perturb-reply": ('if not last or qa[0] < last[0] or qa[1] != last[1]:', 'if not last or qa[0] < last[0] or qa[1] < last[1]:'),  # [4] F16
     "--perturb-rate": ('            and now - s.get("suspect_at", 0) >= S5X_RECHECK_S):', '            ):'),                # [4] F16
     "--perturb-suspect": ('        elif s["pending"] == u or (u is False and s.get("suspect")):', '        elif s["pending"] == u:'),  # [4] F16
+    "--perturb-rearm": ('s["suspect_at"], s["suspect"], s["unans"], s["unans_reads"] = now, True, 0, 0', 's["suspect_at"], s["suspect"] = now, True'),  # [4] F16 review F1
+    "--perturb-replyclear": ('s["unans"], s["unans_reads"], s["suspect"] = 0, 0, False', 's["unans"], s["unans_reads"] = 0, 0'),  # [4] F16 review F2
+    "--perturb-onehook": ('        L += ["  }", "}"]', '        L += ["  }", "  chain dns_watch { type filter hook forward priority filter - 2; policy accept;", "  }", "}"]'),  # [5] F16 review F8
     "--perturb-passread": ('                if _s5x_dns_suspect(dev, _dnsc.get(dev)):', '                if False:'),        # [7] F16
     "--perturb-setup": ('                            rec["setup"], err = err, ""', '                            pass'),          # [7] F13
 }
@@ -466,6 +469,16 @@ check("[F16] …and without one, a single \"no\" still waits for a second", s["u
 N._S5X.clear(); s = take(True)
 sus = [N._s5x_dns_suspect("s5x-h", qa, now=300.0 + i) for i, qa in enumerate([(10, 10), (15, 10)])]
 check("[F16] one read alone is no suspicion, however many queries it saw (a burst the replies have not caught up with)", sus == [False, False], sus)
+N._S5X.clear(); s = take(True)
+sus = [N._s5x_dns_suspect("s5x-h", qa, now=t) for t, qa in [(400.0, (10, 10)), (401.0, (12, 10)), (402.0, (14, 10)), (500.0, (14, 10)),
+                                                            (600.0, (14, 10)), (700.0, (16, 10)), (701.0, (18, 10))]]
+check("[F16] the same unanswered queries raise it once: a client gone quiet costs no check a minute, NEW ones raise it again",
+      sus == [False, False, True, False, False, False, True], sus)
+N._S5X.clear(); s = take(True)
+for t, qa in [(800.0, (10, 10)), (801.0, (12, 10)), (802.0, (14, 10)), (803.0, (16, 12))]:
+    N._s5x_dns_suspect("s5x-h", qa, now=t)
+s = take(False)
+check("[F16] a reply after the suspicion clears it: the check's \"no\" waits for a second again", s["udp_ok"] is True and s["pending"] is False, s)
 
 # ── [5] the rule families ───────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] DNS to mapdns, UDP refused, rule DNS unmarked")
@@ -671,13 +684,14 @@ txt = NFT[-1][1] if NFT else ""
 check("[F16] rule DNS through a proxy that carries UDP: its queries and replies are counted, mapdns's left out",
       'oifname "s5x-bb" ip daddr != 198.18.0.2 udp dport 53 counter comment "q s5x-bb"' in txt
       and 'iifname "s5x-bb" ip saddr != 198.18.0.2 udp sport 53 counter comment "a s5x-bb"' in txt
-      and "chain dns_watch { type filter hook forward priority filter - 2;" in txt, txt)
-check("[F16] …and the pass is told which devices to read", N._S5X_NFT.get("watch") == ("s5x-bb",), N._S5X_NFT)
+      and txt.count("hook forward") == 1
+      and txt.index("chain udp_refuse {") < txt.index('comment "q s5x-bb"') < txt.index("chain dns_unmark {"), txt)
+check("[F16] …and the pass is told which devices to read", (N._S5X_NFT["sig"] or ((), (), ()))[2] == ("s5x-bb",), N._S5X_NFT)
 N._EXITS["socks"] = {"s5x-bb": False}; NFT.clear()
 N._s5x_rules(DXW, [], {"changed": 0, "errors": []})
 txt = NFT[-1][1] if NFT else ""
-check("[F16] …not once its proxy is said to carry none: its rule DNS is unmarked instead", "dns_watch" not in txt
-      and "meta mark 0x1b5e udp dport 53 meta mark set 0x0" in txt and N._S5X_NFT.get("watch") == (), (txt, N._S5X_NFT))
+check("[F16] …not once its proxy is said to carry none: its rule DNS is unmarked instead", "counter comment" not in txt
+      and "meta mark 0x1b5e udp dport 53 meta mark set 0x0" in txt and N._S5X_NFT["sig"][2] == (), (txt, N._S5X_NFT))
 N._EXITS["socks"] = {}; N._s5x_rules([], [], {"changed": 0, "errors": []})
 N.run = _r16a
 
@@ -793,7 +807,7 @@ for _ in range(40):
         break
     time.sleep(0.1)
 N._S5X_CHECKS.clear(); N._EXIT_HEALTH.clear()
-N._S5X_NFT["watch"] = (DEV7,)
+_sig16 = N._S5X_NFT["sig"]; N._S5X_NFT["sig"] = ((), (), (DEV7,))
 N.reconcile_exits(WANT, res)
 N._S5X[DEV7].update(udp_ok=True, pending=None, next=time.time() + 600, check={"why": "", "at": int(time.time())}, suspect_at=0)
 _checks.clear()
@@ -805,9 +819,10 @@ for _ in range(20):
     time.sleep(0.1)
 check("[F16] rule DNS through it unanswered on two reads: the pass asks the proxy now, not in ten minutes",
       len(_checks) == 1 and len(_reads16) == 4, (_checks, len(_reads16)))
-N._S5X_NFT["watch"] = (); _reads16.clear()
+N._S5X_NFT["sig"] = ((), (), ()); _reads16.clear()
 N.reconcile_exits(WANT, res)
 check("[F16] …a node watching nothing reads no counters: no nft fork a pass", _reads16 == [], _reads16)
+N._S5X_NFT["sig"] = _sig16
 N.run = _run16
 
 # ── [8] T14 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────

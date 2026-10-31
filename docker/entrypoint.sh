@@ -113,8 +113,11 @@ sub_pair_kept(){ local p
 # A page host that changed leaves the old host's acme entry installing to the page's files: acme renews it on its own
 # schedule — DNS-01 always, HTTP-01 while the old name still points here — and writes the OLD host's certificate over the
 # page, which nothing puts back (sub_follow_panel leaves a page with an entry of its own alone) until the next start or the
-# new host's renewal, up to ~60 days. Bare metal drops the old name (swg-netctl drop-cert); here, before the page's
-# certificate is set, an entry installing to $SC for a host that is neither the page's nor the panel's is removed.
+# new host's renewal, up to ~60 days. Bare metal drops the old name (swg-netctl drop-cert); here, once the page holds a
+# real certificate for its host, an entry installing to $SC for a host that is neither the page's nor the panel's is
+# removed — never before (a failed or mistyped new host keeps the old entry to go back to) and only for a host known for
+# certain, SUB_HOST_SURE: an unreadable panel-settings.json leaves SUB_DOMAIN at the env default, and the page's real
+# entry would look stale (review F3/F4).
 sub_prune_stale(){ local conf d dl sl pl
   sl="$(printf '%s' "${SUB_DOMAIN:-}" | tr '[:upper:]' '[:lower:]')"; pl="$(printf '%s' "${PANEL_DOMAIN:-}" | tr '[:upper:]' '[:lower:]')"
   [ -n "$sl" ] || return 0
@@ -136,7 +139,6 @@ sub_prune_stale(){ local conf d dl sl pl
 issue_sub_cert(){ set +e
   local pc=
   mkdir -p "$SUB_TLS_DIR"
-  sub_prune_stale
   [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -s "$SWG_PANEL_TLS_CERT" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] \
     && cert_covers_host "$SWG_PANEL_TLS_CERT" "$SUB_DOMAIN" && pc=1
   if [ -n "$pc" ] && cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && sub_pair_kept; then
@@ -209,11 +211,12 @@ PY
       rm -f "$_scferr" 2>/dev/null || true ;;
     *) sub_selfsigned ;;
   esac; fi
+  [ -n "${SUB_HOST_SURE:-}" ] && [ -s "$SC" ] && ! cert_is_selfsigned "$SC" && cert_covers_host "$SC" "$SUB_DOMAIN" && sub_prune_stale
   [ -f "$SK" ] && chmod 600 "$SK" 2>/dev/null || true
   return 0; }
 # Runtime subcommand (panel-managed): re-issue swg-sub's cert for a specific domain, then exit — no panel bootstrap.
 if [ "${1:-}" = "sub-cert" ]; then
-  SUB_DOMAIN="${2:-${SUB_DOMAIN:-}}"
+  SUB_DOMAIN="${2:-${SUB_DOMAIN:-}}"; [ -n "${2:-}" ] && SUB_HOST_SURE=1   # the panel names the page's host
   [ -n "${SUB_DOMAIN:-}" ] || { log "sub-cert: no domain given"; exit 2; }
   issue_sub_cert; exit 0
 fi
@@ -473,17 +476,21 @@ fi
 # The sub's domain is PANEL-MANAGED (access.sub.url in panel-settings.json), so prefer that over the static install
 # env — otherwise a restart would re-issue for the env default and clobber a cert the UI issued for a different sub
 # host. Env stays the bootstrap for a first boot before any sub address is saved.
+# Exits 1 when the file is there but cannot be read (its host unknown, not absent); none yet is a first boot's "".
 sub_domain_cfg(){ python3 - "${PANEL_SETTINGS:-/var/lib/swg-panel/panel-settings.json}" 2>/dev/null <<'PY'
-import json,sys
+import json,os,sys
 from urllib.parse import urlparse
+if not os.path.exists(sys.argv[1]):
+    print(""); sys.exit(0)
 try:
     u = (((json.load(open(sys.argv[1])).get("access") or {}).get("sub") or {}).get("url") or "")
     print(urlparse(u).hostname or "")
 except Exception:
     print("")
+    sys.exit(1)
 PY
 }
-_sub_dom_cfg="$(sub_domain_cfg)"
+_sub_dom_cfg="$(sub_domain_cfg)" && SUB_HOST_SURE=1         # read, or none yet: SUB_DOMAIN below IS the page's host
 [ -n "$_sub_dom_cfg" ] && SUB_DOMAIN="$_sub_dom_cfg"
 if [ "${TLS:-selfsigned}" != none ] && [ -n "${SUB_DOMAIN:-}" ]; then ( issue_sub_cert ) & fi
 

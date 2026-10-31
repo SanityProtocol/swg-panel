@@ -808,9 +808,10 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       // is the signal, exactly as `_qrZoomOpen()` above is for an enlarged QR.
       if ((e.key === "Enter" || e.key === "Escape") && document.querySelector(".ddpop")) return;
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryCloseRef.current(); return; }
-      // A focused button, link or switch owns its Enter — the browser clicks IT. Taken for the sheet's primary, Enter on
-      // Cancel or Remove saved or created instead (s9b F10).
-      if (e.key === "Enter" && e.target.closest && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;
+      // A focused button, link or switch IN THIS SHEET owns its Enter — the browser clicks IT. Taken for the sheet's primary,
+      // Enter on Cancel or Remove saved or created instead (s9b F10). One behind the overlay (the phone keeps focus on the
+      // button that opened the sheet) is not the sheet's: its Enter stays the primary's, never a click behind the modal.
+      if (e.key === "Enter" && root.contains(e.target) && e.target.closest && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;
       if (e.key === "Enter" && !noGuardRef.current && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         // view modals (QR / turn) have no single submit action — Enter must not fire a random primary button
         // (e.g. "Enable subscription"); their own fields (the VK box) handle Enter themselves

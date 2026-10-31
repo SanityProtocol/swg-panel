@@ -7122,8 +7122,8 @@ def _smart_dns_redirect(subnets, res, nets=()):
 
 S5X_DNS_TAG, S5X_DNS_NET_TAG = "swg-s5x-dns", "swg-s5x-dns-net"
 S5X_NFT_TABLE = "swg_s5x"
-_S5X_NFT = {"sig": None, "dns": None, "arr": None, "arr_bad": None, "watch": ()}   # the nft want last written (+ the devices
-                                    # whose rule DNS `dns_watch` counts); whether any DNS DNAT
+_S5X_NFT = {"sig": None, "dns": None, "arr": None, "arr_bad": None}   # the nft want last written — (refused, unmarked,
+                                    # devices whose rule DNS is counted); whether any DNS DNAT
                                     # was (None: not yet asked); whether the partial arrivals' DNS bypass was (None: not yet
                                     # asked); (want, the subnets whose bypass the kernel refused) — not retried until it changes
 S5X_ARR_DNS_PRI = 6870      # a partial arrival's DNS bypass — below the band (its `from S lookup T` is at pref T) and
@@ -7163,8 +7163,8 @@ def _s5x_rules(devexit, nets, res):
     rej = sorted(d for d, ok in socks.items() if not ok and _WANIF_RE.match(str(d or "")))
     unm = sorted({int(e["table"]) for e in devexit if e.get("dev") in socks and not socks[e["dev"]]
                   and e.get("scope") == "rule" and str(e.get("table") or "").isdigit()})
-    # …and where rule DNS DOES ride the proxy's UDP, its queries and replies are counted (`dns_watch`, mapdns's left out): a
-    # proxy that stops relaying UDP answers none, and reconcile_exits asks it at once, not in up to ten minutes (s10-p3 F16)
+    # …and where rule DNS DOES ride the proxy's UDP, its queries and replies are counted (in `udp_refuse`, mapdns's left out):
+    # a proxy that stops relaying UDP answers none, and reconcile_exits asks it at once, not in up to ten minutes (s10-p3 F16)
     watch = sorted({e["dev"] for e in devexit if socks.get(e.get("dev")) is True and e.get("scope") == "rule" and str(e.get("table") or "").isdigit()})
     sig = (tuple(rej), tuple(unm), tuple(watch))
     if sig == _S5X_NFT["sig"]:
@@ -7181,20 +7181,17 @@ def _s5x_rules(devexit, nets, res):
              "  chain udp_refuse { type filter hook forward priority filter - 1; policy accept;"]   # (`fwd` is an nft keyword)
         L += ['    oifname "%s" ip daddr != %s meta l4proto udp reject with icmpx type port-unreachable' % (d, S5X_DNS)
               for d in rej]
+        # the counted devices carry UDP, the refused ones do not: never the same device, so one forward hook serves both
+        L += ['    oifname "%s" ip daddr != %s udp dport 53 counter comment "q %s"' % (d, S5X_DNS, d) for d in watch]
+        L += ['    iifname "%s" ip saddr != %s udp sport 53 counter comment "a %s"' % (d, S5X_DNS, d) for d in watch]
         # mangle + 6: after swg_smart's marks (mangle) and swg_p2p's re-mark (mangle + 5), before the relay divert (+10)
         L += ["  }", "  chain dns_unmark { type filter hook prerouting priority mangle + 6; policy accept;"]
         L += ["    meta mark %#x udp dport 53 meta mark set 0x0" % t for t in unm]
-        L += ["  }"]
-        if watch:                                   # before the refusal (filter - 1): count first, whatever comes after
-            L += ["  chain dns_watch { type filter hook forward priority filter - 2; policy accept;"]
-            L += ['    oifname "%s" ip daddr != %s udp dport 53 counter comment "q %s"' % (d, S5X_DNS, d) for d in watch]
-            L += ['    iifname "%s" ip saddr != %s udp sport 53 counter comment "a %s"' % (d, S5X_DNS, d) for d in watch]
-            L += ["  }"]
-        L += ["}"]
+        L += ["  }", "}"]
         r = run(["nft", "-f", "-"], input_text="\n".join(L) + "\n")
         ok = gone = r.returncode == 0
     if ok:
-        _S5X_NFT["sig"], _S5X_NFT["watch"] = sig, tuple(watch)
+        _S5X_NFT["sig"] = sig
         res["changed"] += 1 if gone else 0          # a table that was never there is no change
     else:
         res["errors"].append("socks5 exit rules: " + ((r.stderr or "").strip() or "nft failed")[:160])
@@ -11202,12 +11199,12 @@ def _s5x_take(dev, res, now=None, sig=None):
 
 
 def _s5x_dns_counts():
-    """{device: (queries, replies)} from `dns_watch`'s counters — one `nft -j` read a pass, and only while a device is watched
+    """{device: (queries, replies)} from the rule-DNS counters in `udp_refuse` — one `nft -j` read a pass, and only while a device is watched
     (a node with no SOCKS exit whose rule DNS rides its UDP runs nothing). {} when the chain cannot be read: no reading is no
     suspicion."""
-    if not _S5X_NFT.get("watch"):
+    if not (_S5X_NFT["sig"] or ((), (), ()))[2]:
         return {}
-    r = run(["nft", "-j", "list", "chain", "inet", S5X_NFT_TABLE, "dns_watch"])
+    r = run(["nft", "-j", "list", "chain", "inet", S5X_NFT_TABLE, "udp_refuse"])
     out = {}
     if r.returncode != 0:
         return out
@@ -11235,13 +11232,14 @@ def _s5x_dns_suspect(dev, qa, now=None):
     now = time.time() if now is None else now
     last, s["qa"] = s.get("qa"), qa
     if not last or qa[0] < last[0] or qa[1] != last[1]:
-        s["unans"], s["unans_reads"] = 0, 0
+        s["unans"], s["unans_reads"], s["suspect"] = 0, 0, False   # a reply: UDP works, a check's "no" is a first one again
         return False
     if qa[0] > last[0]:
         s["unans"], s["unans_reads"] = s.get("unans", 0) + qa[0] - last[0], s.get("unans_reads", 0) + 1
     if (s.get("udp_ok") is True and s.get("unans_reads", 0) >= 2 and s.get("unans", 0) >= S5X_DNS_SUSPECT_Q
             and now - s.get("suspect_at", 0) >= S5X_RECHECK_S):
-        s["suspect_at"], s["suspect"] = now, True
+        # …and the count starts again: only NEW unanswered queries raise it again, never the same ones each minute
+        s["suspect_at"], s["suspect"], s["unans"], s["unans_reads"] = now, True, 0, 0
         return True
     return False
 
