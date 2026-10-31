@@ -15,7 +15,8 @@ is an ordinary point-to-point device exit. What has to hold, each on the real sw
       relaunched after a back-off, never two
   [4] the proxy check — greeting, login, CONNECT by name + TLS through it, UDP ASSOCIATE + DNS through the relay, against
       an in-test SOCKS5 server: every failure code, UDP yes and no; and the UDP flag's hysteresis (the first result sets
-      it, a change needs two in a row, a disagreement brings the next check forward)
+      it, a change needs two in a row, a disagreement brings the next check forward); rule DNS through a proxy said to carry
+      UDP that goes unanswered on two reads brings the check forward, and its "no" flips the flag at once (s10-p3 F16)
   [5] the rule families (§6.6) — whole-interface DNS DNAT'd to mapdns while the device is up, with the carried-network
       RETURNs above (T15); UDP refused in nft except to mapdns (T10) while the proxy carries none; rule-scoped DNS
       unmarked (T13); nothing rewritten when nothing changed; Force DNS unchanged by the shared helper
@@ -81,7 +82,7 @@ PLANTS = {
     "--perturb-stalecheck": ("    if not got or (sig is not None and got[1] != sig):", "    if not got:"),                    # [4] F22
     "--perturb-bare": ("    subnets = [_one(str(S)) for S in subnets]\n", "    subnets = [str(S) for S in subnets]\n"),   # [5] F30
     "--perturb-retry": ('        _S5X_NFT["dns"] = bool(whole) or _had', '        _S5X_NFT["dns"] = bool(whole)'),           # [5] F11
-    "--perturb-heal": ('        if not (rej or unm) or run(["nft", "list", "table", "inet", S5X_NFT_TABLE]).returncode == 0:\n            return',
+    "--perturb-heal": ('        if not (rej or unm or watch) or run(["nft", "list", "table", "inet", S5X_NFT_TABLE]).returncode == 0:\n            return',
                        '        return'),                                                                                # [5] F3
     "--perturb-nonft": (" or _nft_absent(r) or r.returncode == 127,", " or _nft_absent(r),"),                         # [5] F25
     "--perturb-once": ('                if _downed and rec.get("started"):', '                if False:'),                       # [6] F36
@@ -92,6 +93,16 @@ PLANTS = {
                            '    return bool((tr or {}).get("ip") or reach is not None)'),                                   # [7] F24
     "--perturb-s5xblip": ('                        if _EXIT_HEALTH.get(dev):\n                            _EXIT_HEALTH[dev]["ok_since"] = None\n',
                           '                        _EXIT_HEALTH.pop(dev, None)\n'),                                     # [7] F8
+    # s10-p3 F16: rule DNS through a proxy said to carry UDP, unanswered, brings the check forward
+    "--perturb-watch": ('if socks.get(e.get("dev")) is True and', 'if False and'),                                    # [5] F16
+    "--perturb-mapdnsq": ("""'    oifname "%s" ip daddr != %s udp dport 53 counter comment "q %s"' % (d, S5X_DNS, d)""",
+                          """'    oifname "%s" udp dport 53 counter comment "q %s"' % (d, d)"""),                          # [5] F16
+    "--perturb-noread": ('    if not _S5X_NFT.get("watch"):\n        return {}\n    r = run(["nft", "-j"', '    r = run(["nft", "-j"'),  # [7] F16
+    "--perturb-oneread": ('s.get("unans_reads", 0) >= 2', 's.get("unans_reads", 0) >= 1'),                              # [4] F16
+    "--perturb-reply": ('if not last or qa[0] < last[0] or qa[1] != last[1]:', 'if not last or qa[0] < last[0] or qa[1] < last[1]:'),  # [4] F16
+    "--perturb-rate": ('            and now - s.get("suspect_at", 0) >= S5X_RECHECK_S):', '            ):'),                # [4] F16
+    "--perturb-suspect": ('        elif s["pending"] == u or (u is False and s.get("suspect")):', '        elif s["pending"] == u:'),  # [4] F16
+    "--perturb-passread": ('                if _s5x_dns_suspect(dev, _dnsc.get(dev)):', '                if False:'),        # [7] F16
     "--perturb-setup": ('                            rec["setup"], err = err, ""', '                            pass'),          # [7] F13
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
@@ -440,6 +451,21 @@ N._S5X.clear()
 s = take(False)
 check("a FIRST \"no\" sets the flag but is asked again in a minute, not ten — F17",
       s["udp_ok"] is False and s["next"] - time.time() <= N.S5X_RECHECK_S + 1, (s, s["next"] - time.time()))
+# s10-p3 F16: rule DNS through the proxy goes unanswered — the check is brought forward, and its "no" counts as the first
+N._S5X.clear(); s = take(True)
+sus = [N._s5x_dns_suspect("s5x-h", qa, now=100.0 + i) for i, qa in enumerate([(10, 10), (12, 10), (14, 10)])]
+check("[F16] rule DNS queries with no reply, on two reads, bring the check forward", sus == [False, False, True], sus)
+check("[F16] …once: not again within a minute", N._s5x_dns_suspect("s5x-h", (20, 10), now=110.0) is False)
+s = take(False)
+check("[F16] …and the check's \"no\" flips UDP at once: the unanswered DNS was the first of the two", s["udp_ok"] is False and s["pending"] is None, s)
+N._S5X.clear(); s = take(True)
+sus = [N._s5x_dns_suspect("s5x-h", qa, now=200.0 + i) for i, qa in enumerate([(10, 10), (12, 10), (14, 11), (16, 11)])]
+check("[F16] a reply in between is no suspicion (a slow answer, not a relay that stopped)", sus == [False] * 4, sus)
+s = take(False)
+check("[F16] …and without one, a single \"no\" still waits for a second", s["udp_ok"] is True and s["pending"] is False, s)
+N._S5X.clear(); s = take(True)
+sus = [N._s5x_dns_suspect("s5x-h", qa, now=300.0 + i) for i, qa in enumerate([(10, 10), (15, 10)])]
+check("[F16] one read alone is no suspicion, however many queries it saw (a burst the replies have not caught up with)", sus == [False, False], sus)
 
 # ── [5] the rule families ───────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] DNS to mapdns, UDP refused, rule DNS unmarked")
@@ -540,7 +566,7 @@ N.run = lambda argv, **k: (R(rc=127, err="No such file or directory: 'nft'") if 
 N._EXITS["socks"] = {}; N._S5X_NFT.update(sig=None, dns=None)
 _c25 = {"changed": 0, "errors": []}
 N._s5x_rules([], [], _c25)
-check("a node without nft and without a SOCKS exit reports no error — F25", _c25["errors"] == [] and N._S5X_NFT["sig"] == ((), ()), _c25)
+check("a node without nft and without a SOCKS exit reports no error — F25", _c25["errors"] == [] and N._S5X_NFT["sig"] == ((), (), ()), _c25)
 N.run = _r25
 _seen = []
 _r0 = N.run
@@ -636,6 +662,24 @@ N._EXITS["socks"] = {}; N._S5X_NFT.update(arr=None, arr_bad=None)
 N._s5x_arr_dns([], {"changed": 0, "errors": []}, False)
 check("⚠️ no SOCKS exit: the bypass costs no fork even on a process's first pass (p2p_iface's byte-identical golden)", _seen0 == [], _seen0)
 N.run = _r4
+# s10-p3 F16: where rule DNS rides the proxy's UDP, its queries and replies are counted (mapdns's are not)
+_r16a = N.run; N.run = _ipt; NFT.clear(); N._S5X_NFT["sig"] = None
+N._EXITS["socks"] = {"s5x-aa": False, "s5x-bb": True}
+DXW = [{"subnet": "10.21.0.0/24", "dev": "s5x-bb", "table": 7006, "scope": "rule"}]
+N._s5x_rules(DXW, [], {"changed": 0, "errors": []})
+txt = NFT[-1][1] if NFT else ""
+check("[F16] rule DNS through a proxy that carries UDP: its queries and replies are counted, mapdns's left out",
+      'oifname "s5x-bb" ip daddr != 198.18.0.2 udp dport 53 counter comment "q s5x-bb"' in txt
+      and 'iifname "s5x-bb" ip saddr != 198.18.0.2 udp sport 53 counter comment "a s5x-bb"' in txt
+      and "chain dns_watch { type filter hook forward priority filter - 2;" in txt, txt)
+check("[F16] …and the pass is told which devices to read", N._S5X_NFT.get("watch") == ("s5x-bb",), N._S5X_NFT)
+N._EXITS["socks"] = {"s5x-bb": False}; NFT.clear()
+N._s5x_rules(DXW, [], {"changed": 0, "errors": []})
+txt = NFT[-1][1] if NFT else ""
+check("[F16] …not once its proxy is said to carry none: its rule DNS is unmarked instead", "dns_watch" not in txt
+      and "meta mark 0x1b5e udp dport 53 meta mark set 0x0" in txt and N._S5X_NFT.get("watch") == (), (txt, N._S5X_NFT))
+N._EXITS["socks"] = {}; N._s5x_rules([], [], {"changed": 0, "errors": []})
+N.run = _r16a
 
 # ── [6] F18 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] an unknown kind takes the device it replaced down (s9a F18)")
@@ -733,6 +777,38 @@ row = next((x for x in N._EXITS["list"] if x["id"] == "5a5a5a5a"), {})
 check("the tunnel program being fetched reads as setup, never as an error (the row is busy, not red) — F13",
       row.get("setup") and not row.get("error") and not any("fetching" in e for e in res13["errors"]), (row, res13))
 _link7["v"] = "up"
+# s10-p3 F16: the pass reads the counters (one nft read) and asks the proxy at once when its rule DNS goes unanswered
+N.hev_binary = lambda: ("/bin/hev", "")
+_cnt16, _reads16, _run16 = {"q": 10, "a": 5}, [], N.run
+def _r16(argv, **k):
+    if argv[:4] == ["nft", "-j", "list", "chain"]:
+        _reads16.append(argv)
+        return R(json.dumps({"nftables": [{"metainfo": {}},
+                                          {"rule": {"comment": "q " + DEV7, "expr": [{"counter": {"packets": _cnt16["q"], "bytes": 1}}]}},
+                                          {"rule": {"comment": "a " + DEV7, "expr": [{"counter": {"packets": _cnt16["a"], "bytes": 1}}]}}]}))
+    return _run16(argv, **k)
+N.run = _r16
+for _ in range(40):
+    if DEV7 not in N._S5X_INFLIGHT:
+        break
+    time.sleep(0.1)
+N._S5X_CHECKS.clear(); N._EXIT_HEALTH.clear()
+N._S5X_NFT["watch"] = (DEV7,)
+N.reconcile_exits(WANT, res)
+N._S5X[DEV7].update(udp_ok=True, pending=None, next=time.time() + 600, check={"why": "", "at": int(time.time())}, suspect_at=0)
+_checks.clear()
+for _ in range(3):
+    _cnt16["q"] += 2; N.reconcile_exits(WANT, res)
+for _ in range(20):
+    if _checks:
+        break
+    time.sleep(0.1)
+check("[F16] rule DNS through it unanswered on two reads: the pass asks the proxy now, not in ten minutes",
+      len(_checks) == 1 and len(_reads16) == 4, (_checks, len(_reads16)))
+N._S5X_NFT["watch"] = (); _reads16.clear()
+N.reconcile_exits(WANT, res)
+check("[F16] …a node watching nothing reads no counters: no nft fork a pass", _reads16 == [], _reads16)
+N.run = _run16
 
 # ── [8] T14 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[8] the TUN is not an operator's device")

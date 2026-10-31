@@ -110,6 +110,23 @@ sub_pair_kept(){ local p
   p="$(openssl x509 -in "$SC" -noout -pubkey 2>/dev/null)"
   [ -n "$p" ] && [ "$p" = "$(openssl pkey -in "$SK" -pubout 2>/dev/null)" ] || return 1
   if [ "${TLS:-selfsigned}" = selfsigned ]; then cert_is_selfsigned "$SC"; else ! cert_is_selfsigned "$SC"; fi; }
+# A page host that changed leaves the old host's acme entry installing to the page's files: acme renews it on its own
+# schedule — DNS-01 always, HTTP-01 while the old name still points here — and writes the OLD host's certificate over the
+# page, which nothing puts back (sub_follow_panel leaves a page with an entry of its own alone) until the next start or the
+# new host's renewal, up to ~60 days. Bare metal drops the old name (swg-netctl drop-cert); here, before the page's
+# certificate is set, an entry installing to $SC for a host that is neither the page's nor the panel's is removed.
+sub_prune_stale(){ local conf d dl sl pl
+  sl="$(printf '%s' "${SUB_DOMAIN:-}" | tr '[:upper:]' '[:lower:]')"; pl="$(printf '%s' "${PANEL_DOMAIN:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$sl" ] || return 0
+  for conf in "$ACME_CFG"/*/*.conf; do
+    [ -f "$conf" ] || continue
+    [ "$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)" = "$SC" ] || continue
+    d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"; dl="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
+    [ -n "$d" ] && [ "$dl" != "$sl" ] && [ "$dl" != "$pl" ] || continue
+    log "swg-sub: removing stale acme entry $d (it installs to the subscription page's certificate; the page is $SUB_DOMAIN now)"
+    acme --remove -d "$d" --ecc >/dev/null 2>&1 || true
+    rm -rf "$(dirname "$conf")"
+  done; }
 # Ensure swg-sub's cert for $SUB_DOMAIN. Rule: if the panel's OWN cert already covers the sub host (same domain, or a
 # SAN/wildcard) reuse it — no second issuance — unless it is self-signed and the sub's present pair is kept (above); else
 # issue a SEPARATE cert (own key). Never blocks the caller fatally.
@@ -119,6 +136,7 @@ sub_pair_kept(){ local p
 issue_sub_cert(){ set +e
   local pc=
   mkdir -p "$SUB_TLS_DIR"
+  sub_prune_stale
   [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -s "$SWG_PANEL_TLS_CERT" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] \
     && cert_covers_host "$SWG_PANEL_TLS_CERT" "$SUB_DOMAIN" && pc=1
   if [ -n "$pc" ] && cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && sub_pair_kept; then

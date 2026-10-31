@@ -453,7 +453,8 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-p2p { color: var(--brand); }
 .note-bubble { position: fixed; z-index: 70; max-width: min(300px, calc(100vw - 24px)); background: var(--panel);
   border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 40px rgba(0, 0, 0, .42);
-  color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; overflow: auto; }
+  color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; overflow: auto;
+  overscroll-behavior: contain; }   /* a fling past the end of a long note stays in it: chained to the page, the scroll closed the bubble */
 /* the torrent port bubble: the number the user types is the one large thing; the speed hint sits under a rule */
 .note-port { display: flex; align-items: baseline; gap: 10px; }
 .note-port b { font-size: 22px; font-weight: 700; color: var(--brand); font-variant-numeric: tabular-nums; user-select: all; }

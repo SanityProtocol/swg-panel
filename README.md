@@ -84,14 +84,19 @@ subscription and no one else sitting in the middle of your traffic.
   which user is behind the torrents and port-scans it flags. One wrong entry in a public list? Put the site or address on
   the fleet-wide **Never block** list (Settings → Geo data providers → Blocking) instead of switching the list off: no block
   list blocks it anywhere, and your routing rules still route it. Addresses leave the address lists on every server; site
-  names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated. A device that is a router — several
+  names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated. Torrents are blocked, allowed or
+  routed per server — or, under **Each interface decides**, per interface, WDTT and csqtt server: Block, Allow, Allow only
+  out the server's own address, or Route through one of the server's exits or another server; a route that can't be used
+  blocks those torrents, and the server's card says which interface. A device that is a router — several
   devices behind one address — can be marked as one in its settings: one device's torrent then no longer cuts the
   others' VPNs, calls and games, while torrent connections are still blocked one by one. A device the torrent filter has
   flagged keeps its connections to the ports you list (Settings → Geo data providers → Blocking; OpenVPN, WireGuard, calls
   and Steam by default, and a node can keep its own list), while torrents to those ports are still caught. A switch to
   Block applies to new connections; one already open to a peer on a low or never-cut port runs until it closes.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
-  apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
+  apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel. A shared pool of
+  VK call links hands each user a link, and every 6 hours (a switch, on by default) asks VK whether each link still
+  exists, moving the users of one VK says is gone to another.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
   turn-proxy fronts a tunnel you already have, a **WDTT** server *is* the tunnel — create it like any
   other interface, pick one of four forks, and hand people a password instead of a key. Its config
@@ -121,7 +126,8 @@ subscription and no one else sitting in the middle of your traffic.
   Every exit is watched: one that stays up but carries nothing — WARP, a profile, a SOCKS5 proxy, or a TUN you run yourself
   (your own tun2socks or sing-box) — has its traffic moved to the server's own address, or held when its kill-switch is on,
   until it works again.
-- **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
+- **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home. (It does
+  ask VK whether the links in its VK call-link pool still exist, every 6 hours — a switch you can turn off.)
 
 <details>
 <summary>📸 <b>More screenshots</b> — click to expand</summary>
@@ -430,7 +436,7 @@ sudo nft delete table inet swg_p2p; while sudo ip rule del pref 6880 2>/dev/null
 sudo nft delete table ip swg_p2pfwd 2>/dev/null   # from 1.8.11: the devices' incoming torrent ports
 ```
 From 1.8.11, a server that ran a **SOCKS5 exit** keeps its tunnel and its DNS rules too — the older version can't see
-them, so they stay until a reboot (the tunnel and the table) or until you remove them:
+them, so they stay until a reboot or until you remove them:
 ```bash
 sudo systemctl stop 'swg-s5x-*'; sudo nft delete table inet swg_s5x 2>/dev/null
 while sudo ip rule del pref 6870 2>/dev/null; do :; done                                # traffic cascaded in: its DNS
@@ -519,6 +525,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   and everything goes back on its own if you don't.
 - **A hiccup won’t lock anyone out.** If the panel is briefly unreachable, your servers keep running with
   the access they already have and catch up on the next check-in.
+- **Servers that reach the panel through Cloudflare see an occasional 502.** Cloudflare now and then answers a server's
+  check-in with a 502 of its own: the server logs one line (`sync HTTP 502: … Bad gateway`), skips that check-in and
+  changes nothing. To be rid of it, let the servers reach the panel directly — a DNS-only (grey-cloud) record for the
+  name they use, or an `/etc/hosts` line on each server that points the name at the panel's own IP (on a Docker server,
+  an `extra_hosts:` entry for the `swg-node` service in `docker-compose.yml`).
 - **Force-DNS sees encrypted DNS; it doesn’t stop it.** In the Force-DNS routing mode a server answers its
   users’ ordinary DNS and routes by the site names it sees. A device that uses its own encrypted DNS (DoH, DoT
   or DoQ) is marked instead of cut off: its rules by site name don’t match, its rules by IP still do. To stop

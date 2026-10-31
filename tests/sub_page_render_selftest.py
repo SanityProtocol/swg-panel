@@ -80,6 +80,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
      --perturb-turtlespan serves a sub.js whose turtle is the old span with a title again → RED on [12]
      --perturb-scrollclose serves a sub.js whose bubble closes on its own scroll → RED on [12]
+     --perturb-overscroll serves a sub.css whose bubble passes a fling at its end on to the page → RED on [12]
      --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their marker buttons → RED on [12]
      --perturb-pickshort  serves a sub.js whose picker icons show the short label as their tooltip → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
@@ -124,6 +125,7 @@ P_SUBPORT = "--perturb-subport" in sys.argv
 P_PICKMARK = "--perturb-pickmark" in sys.argv
 P_PICKSHORT = "--perturb-pickshort" in sys.argv
 P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
+P_OVERSCROLL = "--perturb-overscroll" in sys.argv
 P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
 P_CSQRANK = "--perturb-csqrank" in sys.argv
 P_CSQSTEPS = "--perturb-csqsteps" in sys.argv
@@ -131,7 +133,7 @@ P_LINE25 = "--perturb-line25" in sys.argv
 P_LL25 = "--perturb-ll25" in sys.argv
 P_LLFIRE = "--perturb-llfire" in sys.argv
 P_LL21 = "--perturb-ll21" in sys.argv
-PERTURB = (P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+PERTURB = (P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25)
 
 FAILS = []
@@ -281,18 +283,18 @@ J("subs/users.json", users_sub)
 
 # ── what the browser loads: the repo's page, or a perturbed copy of it ────────────────────────────────────────────────
 WEB = ROOT
-def perturbed_web(old, new, what):
+def perturbed_web(old, new, what, fname="sub.js"):
     global WEB
-    src = open(os.path.join(ROOT, "sub.js")).read()
+    src = open(os.path.join(ROOT, fname)).read()
     if src.count(old) != 1:
-        print("PERTURB FAILED — %s: its anchor is not in sub.js exactly once (%d), so the perturbation cannot be applied" % (what, src.count(old)))
+        print("PERTURB FAILED — %s: its anchor is not in %s exactly once (%d), so the perturbation cannot be applied" % (what, fname, src.count(old)))
         sys.exit(1)
     WEB = os.path.join(D, "web")
     os.makedirs(os.path.join(WEB, "vendor"))
-    for f in ("sub.html", "sub.css", "turn-artifacts.js", "VERSION", "vendor/qrcode.js"):
+    for f in ("sub.html", "sub.css", "sub.js", "turn-artifacts.js", "VERSION", "vendor/qrcode.js"):
         if os.path.exists(os.path.join(ROOT, f)):
             shutil.copy(os.path.join(ROOT, f), os.path.join(WEB, f))
-    with open(os.path.join(WEB, "sub.js"), "w") as f:
+    with open(os.path.join(WEB, fname), "w") as f:
         f.write(src.replace(old, new))
 
 if P_MACOS:
@@ -310,6 +312,8 @@ if P_TURTLESPAN:
 if P_SCROLLCLOSE:
     perturbed_web("function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }",
                   "function _nbScroll(e) { closeNoteBubble(); }", "a scroll inside the bubble leaves it open")
+if P_OVERSCROLL:
+    perturbed_web("\n  overscroll-behavior: contain; }", " }", "the bubble's overscroll containment", "sub.css")
 if P_PICKSHORT:
     perturbed_web('icon.title = x.getAttribute("data-note") || ', 'icon.title = ', "the picker icon's tooltip being the whole note")
 if P_PICKMARK:
@@ -585,6 +589,8 @@ try:
     time.sleep(0.2); tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); true"); time.sleep(0.2)
     check("[12] the bubble of Anna's AmneziaWG cell (forwarded) shows the port as one number of its own", nport == ["20016"], nport)
     tab.ev(TAP); time.sleep(0.3)
+    nbos = tab.ev("(() => { const b=document.querySelector('.note-bubble'); return b ? getComputedStyle(b).overscrollBehaviorY : '' })()")
+    check("[12] a fling past the end of the bubble's text stays in it — chained to the page, the scroll closed the bubble", nbos == "contain", nbos)
     inner = tab.ev("(() => { const b=document.querySelector('.note-bubble'); b.style.maxHeight='30px'; b.scrollTop=20;"
                    " b.dispatchEvent(new Event('scroll')); return !!document.querySelector('.note-bubble') })()"); time.sleep(0.2)
     tab.ev("document.dispatchEvent(new Event('scroll')); true"); time.sleep(0.2)

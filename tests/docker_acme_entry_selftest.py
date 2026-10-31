@@ -101,6 +101,16 @@ PLANTS = [
      "[7] the convert's switch retires the host's copies (after the bare panel is torn down)"),
     ("IDOCKER", '''    mkdir -p "${P80HELD%/*}" 2>/dev/null && printf '%s\\n' "${_p80who:-another program}" > "$P80HELD" 2>/dev/null || true\n''', '',
      "[8] the installer leaves who holds :80 for the renewal loop"),
+    ("ENTRY", '  mkdir -p "$SUB_TLS_DIR"\n  sub_prune_stale\n', '  mkdir -p "$SUB_TLS_DIR"\n',
+     "[9] …issue_sub_cert clears it before it sets the page's certificate"),
+    ("ENTRY", '    acme --remove -d "$d" --ecc >/dev/null 2>&1 || true\n    rm -rf "$(dirname "$conf")"\n  done; }', '    :\n  done; }',
+     "[9] the old host's entry is removed (acme's record and its directory)"),
+    ("ENTRY", '[ -n "$d" ] && [ "$dl" != "$sl" ] && [ "$dl" != "$pl" ] || continue', '[ -n "$d" ] && [ "$dl" != "$pl" ] || continue',
+     "[9] the page's own entry stays, in any letter case"),
+    ("ENTRY", '[ -n "$d" ] && [ "$dl" != "$sl" ] && [ "$dl" != "$pl" ] || continue', '[ -n "$d" ] && [ "$dl" != "$sl" ] || continue',
+     "[9] the panel's entry stays, even one installing to the page's files"),
+    ("ENTRY", '" = "$SC" ] || continue\n    d="$(sed', '" = "$SC" ] || true\n    d="$(sed',
+     "[9] an entry installing anywhere else stays"),
 ]
 
 if "--perturb" in sys.argv:
@@ -592,6 +602,28 @@ check("[8] a re-install does not read the panel's own docker-proxy on :80 as tak
       and "':80->80/tcp'" in _hc and '[ "${_own80:-0}" = 0 ]' in _hc, _hc[:400])
 check("[8] the marker sits where the loop reads it (the container's acme dir)", 'P80HELD="$PREFIX$INSTALL_DIR/data/etc/acme/.port80-held"' in ID
       and '"$ACME_CFG/.port80-held"' in EP)
+
+print("[9] a page host that changed: the old host's entry no longer renews over the page (s9f F2)")
+w, env = world("w9", tls="letsencrypt", dom="panel.example.com")
+SC9 = env["SUB_TLS_DIR"] + "/fullchain.pem"
+def entry9(dom, path):
+    d = w + "/acme/%s_ecc" % dom.lower()
+    os.makedirs(d, exist_ok=True)
+    with open(d + "/%s.conf" % dom.lower(), "w") as f:
+        f.write("Le_Domain='%s'\n" % dom + ("Le_RealFullChainPath='%s'\n" % path if path else ""))
+    return d
+old9, new9 = entry9("old.example.com", SC9), entry9("New.Example.com", SC9)      # the page's entry, issued as typed
+oth9 = entry9("other.example.org", w + "/elsewhere/fullchain.pem")
+pan9 = entry9("panel.example.com", SC9)                    # the panel's own entry, re-pointed at the page by an older image
+r = run(env, "SUB_DOMAIN=new.example.com; sub_prune_stale")
+check("[9] the old host's entry is removed (acme's record and its directory)", not os.path.exists(old9)
+      and ["--config-home", w + "/acme", "--remove", "-d", "old.example.com", "--ecc"] in calls(), (r.stdout, r.stderr))
+check("[9] the page's own entry stays, in any letter case", os.path.isdir(new9))
+check("[9] the panel's entry stays, even one installing to the page's files", os.path.isdir(pan9))
+check("[9] an entry installing anywhere else stays", os.path.isdir(oth9))
+old9 = entry9("old.example.com", SC9)
+r = run(env, "SUB_DOMAIN=new.example.com; issue_sub_cert")
+check("[9] …issue_sub_cert clears it before it sets the page's certificate", not os.path.exists(old9), (r.stdout, r.stderr))
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\nALL PASS" if not FAILS else "\n%d FAILED: %s" % (len(FAILS), "; ".join(FAILS)))
