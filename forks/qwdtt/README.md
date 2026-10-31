@@ -39,7 +39,8 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
   downlink race test 20 times in a row. Upstream's `go_client` does not build its tests at v1.4.3 or v1.4.4 (`go.sum` lacks
   entries); our patch does not touch the client. The RAW store-write fix (`1.4.4-2`) has no Go test — it needs a full
   connection harness — so check it on a rig on every rebase: count the renames onto `passwords.json` (strace) per RAW session
-  start. A new device writes once; a known device's new session, and the same password from another device, write 0.
+  start, on a build run with `-fixed-config` as the panel runs it. A new password's first session writes once; a known
+  password's new session, from the same device or another one, writes 0.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
   ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus

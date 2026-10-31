@@ -74,7 +74,7 @@ PERTURBS = {
     "rotwait": ("js/peer-actions.js", "        await Store.poll();\n        if (why.length) return toast(", "        if (kr && kr.published) await kr.published;\n        await Store.poll();\n        if (why.length) return toast("),
     "kwbadge": ("js/ui.js", "  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;", "  const kv = null;"),
     "kwerr": ("js/ui.js", "  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;", "  const kv = t.online && !t.viaTurn ? keylessVia(t) : null;"),
-    "kwtyped": ("js/ui.js", "  const k = t.type;\n", "  const k = targetType(t);\n"),
+    "kwtyped": ("js/ui.js", "  const k = t.type;\n", "  const k = t.type || targetType(t);\n"),
     "kwip": ("js/ui.js", " || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", " || t.status === \"ready\") ? kv : null;"),
     "kwxfer": ("js/ui.js", " || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", " || (t.status === \"ready\" && !!t.ip)) ? kv : null;"),
     "kwready": ("js/ui.js", "ks = kv && (t.status === \"online\" || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", "ks = kv;"),
@@ -586,7 +586,7 @@ try:
                         " const rows = [{type: 'csqtt', node: nid, iface: 'csqk0', online: true, status: 'online'}, {type: 'wdtt', node: nid, iface: 'wdtk0', online: true, status: 'online'},"
                         "               {type: 'wdtt', node: nid, iface: 'wdtk0', online: false, status: 'ready', ip: '', kwXfer: {rx_speed: 0, tx_speed: 0, rx_bytes: 0, tx_bytes: 0}}, {type: 'awg', node: nid, iface: 'awg0', online: true, status: 'online', observed: {endpoint: '203.0.113.7:51820'}},"
                         "               {type: 'csqtt', node: nid, iface: 'csqk0', online: false, status: 'creating'}, {type: 'csqtt', node: nid, iface: 'csqk1', online: true, status: 'online'},"
-                        "               {type: 'wdtt', node: nid, iface: 'wdtk9', online: true, status: 'online'}, {node: nid, iface: 'wdtk0', online: true, status: 'online'},"
+                        "               {type: 'wdtt', node: nid, iface: 'wdtk9', online: true, status: 'online'}, {node: nid, iface: 'wdtk0', online: true, status: 'online', observed: {endpoint: '203.0.113.8:51820'}},"
                         "               {type: 'awg', node: nid, iface: 'awg0', online: false, status: 'ready', via: 'turn', viaTurn: 'vk-turn-proxy-wingsv-56000', observed: {endpoint: '127.0.0.1:40000'}},"
                         "               {type: 'wdtt', node: nid, iface: 'wdtk0', online: false, status: 'ready', ip: ''},"
                         "               {type: 'awg', node: nid, iface: 'wdtk0', online: true, status: 'online', observed: {endpoint: '203.0.113.9:51820'}}];"
@@ -606,7 +606,7 @@ try:
             check("[16] %s: still being created: no path to name, the dash (F1)" % where, creating["text"] == "—" and not creating["bub"], creating)
             check("[16] %s: a csqtt server that reports no line is on the default one (F11)" % where, (st["csql"] + " 2.1") in csqdef["bub"], csqdef)
             check("[16] %s: a server its node does not report: turn-proxy through 'a turn-proxy' (F11)" % where, unrep["text"] == "turn-proxy" and "a turn-proxy" in unrep["bub"], unrep)
-            check("[16] %s: a target with no type is read as reconcile reads it, a WG row: no keyless cell (F25)" % where, untyped["text"] == "—" and not untyped["bub"], untyped)
+            check("[16] %s: a target with no type is read as reconcile reads it, a WG row: its observed address (F25, F30)" % where, untyped["text"] == "203.0.113.8" and not untyped["bub"], untyped)
             check("[16] %s: ready, but the server reports no entry for the password (not shipped yet): the dash (F14)" % where, unreported["text"] == "—" and not unreported["bub"], unreported)
             check("[16] %s: an explicitly AWG-typed target is never keyless, whatever its interface's name (F15)" % where, typedwg["text"] == "203.0.113.9" and not typedwg["bub"], typedwg)
             check("[16] %s: control — an AWG device still prints its address" % where, awg["text"] == "203.0.113.7" and not awg["bub"], awg)
