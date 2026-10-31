@@ -44,15 +44,15 @@
    }
   },
   "pwdttilg": {
-   "ildarmaga/wdtt@main:pkg/sharelink/codec.go": {
-    "date": "2026-08-10T04:41:59Z",
-    "sha": "a8cc582a671ecedb074b93e41dcf8302b682cbef",
-    "url": "https://github.com/ildarmaga/wdtt/commit/a8cc582a671ecedb074b93e41dcf8302b682cbef"
+   "ildarmaga/pwdtt-client@main:backend/subscription.go": {
+    "date": "2026-10-05T07:18:55Z",
+    "sha": "8ba59a78fb3db6102f8e3fb03584aba212130820",
+    "url": "https://github.com/ildarmaga/pwdtt-client/commit/8ba59a78fb3db6102f8e3fb03584aba212130820"
    },
-   "ildarmaga/wdtt@main:pkg/sharelink/payload.go": {
-    "date": "2026-08-10T04:41:59Z",
-    "sha": "a8cc582a671ecedb074b93e41dcf8302b682cbef",
-    "url": "https://github.com/ildarmaga/wdtt/commit/a8cc582a671ecedb074b93e41dcf8302b682cbef"
+   "ildarmaga/pwdtt-client@main:backend/subvalidate.go": {
+    "date": "2026-06-17T12:17:32Z",
+    "sha": "7d77435d7fdf351b62a18d3088e00e1e277694f7",
+    "url": "https://github.com/ildarmaga/pwdtt-client/commit/7d77435d7fdf351b62a18d3088e00e1e277694f7"
    }
   },
   "qwdtt": {
@@ -103,6 +103,6 @@
    }
   }
  },
- "generated_at": 1793442033,
+ "generated_at": 1793484349,
  "schema": 1
 }
