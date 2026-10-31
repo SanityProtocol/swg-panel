@@ -427,6 +427,9 @@ function App() {
   <//>`;
 }
 
+// The app bar's mark (index.html's .brand holds the same markup, static): the login cards and the More sheet's title.
+const brandMark = () => html`<span class="brand-mark" aria-hidden="true"></span><span class="brand-name">swg<span>Panel</span></span>`;
+
 // ───────────────────────── auth: login page + logout ─────────────────────────
 let _loginShown = false;
 // Two-factor (TOTP / Google Authenticator) card for Settings → Authentication.
@@ -460,7 +463,7 @@ function VaultRelinkCard({ panelPw, onDone }) {
     } catch (e2) { setErr((e2 && e2.message) || T("That didn't unlock the Encryption Vault.")); setBusy(false); }
   };
   return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
-    <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
+    <div class="login-brand">${brandMark()}</div>
     <h2>${T("Reconnect your vault")}</h2>
     <p class="muted" style="margin:-4px 0 12px">${relinkWhy()}</p>
     <div class="field"><label>${T("Old panel password, or your encryption key")}</label>
@@ -531,7 +534,7 @@ function LoginScreen() {
   };
   if (relink) return html`<${VaultRelinkCard} panelPw=${relink} onDone=${() => location.reload()}/>`;
   return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
-    <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
+    <div class="login-brand">${brandMark()}</div>
     <h2>${twofa ? T("Two-factor") : T("Sign in")}</h2>
     ${twofa ? html`
       <p class="muted" style="margin:-4px 0 12px">${T("Enter the 6-digit code from your authenticator app, or a recovery code.")}</p>
@@ -564,9 +567,8 @@ function MoreSheet() {
   const tm = themeMode();
   const item = (icon, label, onClick, value, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} onClick=${onClick}>
     <span class="ic" dangerouslySetInnerHTML=${{ __html: icon }}></span><span class="msheet-l">${label}</span>${value ? html`<span class="msheet-v">${value}</span>` : null}</button>`;
-  // its title is the app bar's own mark, as in the header (operator, 2026-10-31)
-  const brand = html`<span class="m-brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">swg<span>Panel</span></span></span>`;
-  return html`<${Sheet} title=${brand} noGuard=${true}>
+  // its title is the app bar's own mark, as in the header (operator, 2026-10-31); a screen reader still hears "More"
+  return html`<${Sheet} title=${html`<span class="m-brand" role="img" aria-label=${T("More")}>${brandMark()}</span>`} noGuard=${true}>
     <div class="msheet">
       <div class="msheet-g">
         <button class="msheet-it" onClick=${go(() => checkForUpdate())}><${Ic} i="refresh"/><span class="msheet-l">${T("Check status")}</span></button>

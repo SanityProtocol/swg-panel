@@ -153,23 +153,20 @@ html[data-ui="m"] {
   & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss):not(:has(> .btn-primary, > .m-pvrot)) > :is(.btn-warn, .btn-danger) { order: 1 !important; grid-column: span 3 !important; }
   & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss):not(:has(> .btn-primary, > .m-pvrot)) > .btn-dismiss { order: 4 !important; grid-column: 1 / -1 !important; }
   /* the device editor (operator, 2026-10-29): its other actions (Targets, Networks, a QR) on the first line in equal parts;
-     Block and Rotate keys — amber, as the user editor's — on the second in halves; Cancel and Save on the last */
+     Block or Unblock (`.m-pblock`) and Rotate keys — amber, as the user editor's — on the second in halves; Cancel and Save
+     on the last. A device with no Networks (a WDTT / csqtt one) has Delete instead (`.m-pdel`): Rotate then takes the first
+     line's right half and Delete the second's, beside Block (operator, 2026-10-29, 2026-10-31) */
   & :is(.sheet-foot, .editfoot):has(> .m-rotate) { grid-auto-flow: row dense; }   /* Block (after Rotate in the source) fills the left half */
-  /* its lines pinned, whatever is missing: the other actions, then Block and Rotate, then Cancel and Save; a device with no
-     Networks (a WDTT / csqtt one) has Delete in its place (operator, 2026-10-29) */
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(:is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok), .m-pdel) { grid-row: 1; }
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.m-rotate, .btn-danger, .btn-ok):not(.btn-dismiss, .m-pdel) { grid-row: 2; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) { grid-row: 1; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.m-rotate, .btn-danger, .btn-ok, .m-pblock):not(.btn-dismiss) { grid-row: 2; }
   & :is(.sheet-foot, .editfoot):has(> .m-rotate) > .m-pdel { grid-column: 4 / span 3 !important; order: 1 !important; font-size: inherit; }
   & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn-dismiss, .btn-primary) { grid-row: 3; }
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok) { order: 1 !important; grid-column: span 3 !important; font-size: inherit; }
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok)) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok) { grid-column: span 2 !important; }
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn-danger, .btn-ok):not(.btn-dismiss, .m-pdel) { order: 2 !important; grid-column: 1 / span 3 !important; font-size: inherit; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) { order: 1 !important; grid-column: span 3 !important; font-size: inherit; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock)) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) { grid-column: span 2 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn-danger, .btn-ok, .m-pblock):not(.btn-dismiss, .m-pdel) { order: 2 !important; grid-column: 1 / span 3 !important; font-size: inherit; }
   & :is(.sheet-foot, .editfoot):has(> .m-rotate) > .m-rotate { order: 2 !important; grid-column: 4 / span 3 !important; font-size: inherit;
     background: color-mix(in srgb, #C0821A 11%, transparent); color: #C0821A; border-color: color-mix(in srgb, #C0821A 34%, transparent); }
-  /* …and where Delete stands in for Networks, Rotate takes the first line's right half and Delete the second's, beside Block
-     (operator, 2026-10-31) */
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-rotate { grid-row: 1 !important; }
-  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-pdel { grid-row: 2 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-rotate { grid-row: 1; }
   /* an editor with a Save, a key rotation and destructive actions (the user editor): Rotate keys on the first line at the full
      width, Delete and Block on the second in halves, Cancel and Save on the last (operator, 2026-10-29) */
   & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-warn { order: 0 !important; grid-column: 1 / -1 !important; }

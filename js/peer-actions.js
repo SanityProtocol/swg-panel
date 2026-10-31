@@ -454,7 +454,8 @@ export function confirmUnblockUser(user, back) {
       patch: s => { const u = s.roster.users[user.id]; if (u) { delete u.disabled; u.unblock_at = now_s(); } },
       call: () => api.userUnblock({ user_id: user.id }) }) });
 }
-// Ghost Block/Unblock button — label + action derive from state. A peer blocked only because its whole user is
+// Ghost Block/Unblock button — label + action derive from state. Unblock's `m-pblock` keeps it in Block's place on a phone
+// (m.css: the device editor's footer), though it is not a danger button. A peer blocked only because its whole user is
 // blocked can't be individually unblocked, so point the operator at the user instead of a dead per-peer toggle.
 // The record is re-read from the store rather than trusted as passed: a sheet opened BEFORE the block holds
 // the object as it was then, so the button kept saying "Block" on an already-blocked peer and re-ran the block
@@ -465,7 +466,7 @@ export function peerBlockBtn(_peer, back) {
   if (peer.userDisabled && !peer.selfDisabled)
     return html`<button class="btn btn-danger" disabled title=${T("Blocked because the user is blocked — unblock the user")}><${Ic} i="off"/> ${T("status|Blocked")}</button>`;
   return peer.selfDisabled
-    ? html`<button class="btn btn-ghost" onClick=${() => confirmUnblockPeer(peer, back)}><${Ic} i="refresh"/> ${T("Unblock")}</button>`
+    ? html`<button class="btn btn-ghost m-pblock" onClick=${() => confirmUnblockPeer(peer, back)}><${Ic} i="refresh"/> ${T("Unblock")}</button>`
     : html`<button class="btn btn-danger" onClick=${() => confirmBlockPeer(peer, back)}><${Ic} i="off"/> ${T("Block")}</button>`;
 }
 export function userBlockBtn(_user, back) {

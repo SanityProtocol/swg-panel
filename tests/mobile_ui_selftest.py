@@ -20,6 +20,8 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
        footer's Back leaves Settings for where it was opened from
   [7] a node's page: Check / Settings / Logs / More as labelled cells; More holds the four lifecycle doors
   [8] the device editor's role toggle shows its word on a phone (no hover for its title)
+  [4b] the device editor's footer lines: a csqtt / WDTT device has Rotate on the first line and Delete beside Block; a blocked
+       device's Unblock takes Block's place, keyless or not, and no button leaves the footer
   [9] a tap on a value that only lives in a title= shows it in the bottom bubble
   [11] a tap outside an open list (the peer card's Assign to…) only closes it: nothing under the finger opens
   [10] Users: scrolled to the end, nothing of the list sits under the tab bar; a row's actions sit past its right edge and
@@ -41,7 +43,7 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | kwready | kwverb | kwerr | kwtyped | kwtypedawg | kwip | kwxfer | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | kwready | kwverb | kwerr | kwtyped | kwtypedawg | kwip | kwxfer | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap | rotrow | pblock
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -59,6 +61,10 @@ PERTURBS = {
     "swipeguard": ("js/ui.js", "    if (wantsGuard()) { reset(true); close(); return; }", "    if (false) { reset(true); close(); return; }"),
     "swipefield": ("js/ui.js", 'if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .ddpop")) return;', ''),
     "swipesecret": ("js/ui.js", "if (e.touches.length !== 1 || !canSwipe()) return;", "if (e.touches.length !== 1) return;"),
+    # [4b]: Rotate stays on the second line of a keyless device's editor, under Delete (operator, 2026-10-31)
+    "rotrow": ("m/m.css", "  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-rotate { grid-row: 1; }\n", ""),
+    # [4b]: a blocked device's Unblock is an "other action" on the first line, not Block's place (gui-1031 review F1)
+    "pblock": ("js/peer-actions.js", '<button class="btn btn-ghost m-pblock" onClick', '<button class="btn btn-ghost" onClick'),
     "footorder": ("m/m.css", "  & :is(.sheet-foot, .editfoot) > .btn-dismiss { order: 3; grid-column: 1 / span 3; }\n", ""),
     "gate": ("js/screen-overview.js", "  const m = isMobile();\n", "  const m = false;\n"),
     "drill": ("js/screen-settings.js", '(isMobile() ? null : "display")', '"display"'),
@@ -390,6 +396,35 @@ try:
     with guard("[8]"):
         word = tab.ev("[...document.querySelectorAll('.overlay.show .primtog')].map(b => b.textContent.trim())")
         check("[8] the device editor's role toggle shows its word", bool(word) and all(len(w) > 1 for w in word), word)
+        close_all(tab)
+        tab.close()
+
+    # ── [4b] the device editor's footer lines (operator, 2026-10-31) ──
+    with guard("[4b]"):
+        print("\n[4b] the device editor's footer: a csqtt / WDTT device and a blocked one")
+        tab = open_app("#/")
+        FOOT = ("(() => { const f = [...document.querySelectorAll('.overlay.show .sheet-foot')].pop(); const fr = f.getBoundingClientRect();"
+                " const bs = [...f.querySelectorAll(':scope > button, :scope > .btn')].filter(b => b.getBoundingClientRect().width > 0);"
+                " const rows = {}; for (const b of bs) { const r = b.getBoundingClientRect(); (rows[Math.round(r.top)] = rows[Math.round(r.top)] || []).push([r.left, b.textContent.trim()]); }"
+                " return {rows: Object.keys(rows).sort((a, b) => a - b).map(k => rows[k].sort((a, b) => a[0] - b[0]).map(x => x[1])),"
+                " inside: bs.every(b => { const r = b.getBoundingClientRect(); return r.left >= fr.left - 1 && r.right <= fr.right + 1; }),"
+                " halves: bs.every(b => Math.abs(b.getBoundingClientRect().width - (fr.width - 32 - 12) / 2) < 12)}; })()")
+        def foot_of(keyless, blocked):
+            close_all(tab)
+            # the poll paused: the editor reads the live record, and the next poll would put the real (keyed, unblocked) one back
+            ev_mod(tab, "sheets-crud", "const S = (await %s('store')).Store; S.__poll = S.__poll || S.poll; S.poll = async () => {};"
+                   " const p = S.peer(%s); p.selfDisabled = %s; if (%s) { p.csqtt_password = 'pw'; p.targets = [{node: p.targets[0].node, iface: 'csqtt1', type: 'csqtt'}]; }"
+                   " M.openEditPeer(p); return true;" % (MOD, json.dumps(PID["boris-phone"]), json.dumps(blocked), json.dumps(keyless)))
+            settle(tab, 1200)
+            return tab.ev(FOOT)
+        for keyless, blocked, want in [(False, True, [["Targets", "Networks"], ["Unblock", "Rotate keys"], ["Cancel", "Save"]]),
+                                       (True, False, [["Targets", "Rotate link"], ["Block", "Delete"], ["Cancel", "Save"]]),
+                                       (True, True, [["Targets", "Rotate link"], ["Unblock", "Delete"], ["Cancel", "Save"]])]:
+            got = foot_of(keyless, blocked)
+            what = ("a csqtt device" if keyless else "a WireGuard device") + (", blocked" if blocked else "")
+            check("[4b] %s: %s" % (what, " / ".join(" | ".join(r) for r in want)), got and got["rows"] == want, got)
+            check("[4b] %s: every button in the footer, in halves" % what, got and got["inside"] and got["halves"], got)
+        ev_mod(tab, "ui", "const S = (await %s('store')).Store; if (S.__poll) { S.poll = S.__poll; delete S.__poll; } await S.poll(); return true;" % MOD)
         close_all(tab)
         tab.close()
 
