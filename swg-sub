@@ -63,6 +63,8 @@ WEB_DIR    = os.path.realpath(os.environ.get("SWG_SUB_WEB", os.path.dirname(os.p
 # swg-netctl issues+installs here; the file is group-swg readable so swgsub can load it. Absent → plain HTTP.
 SUB_TLS_DIR  = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
 DEFAULT_SUB_CERT = os.path.join(SUB_TLS_DIR, "fullchain.pem")
+_w = os.environ.get("SWG_SUB_CERT_WATCH_S", "")
+_CERT_WATCH_S = max(1, int(_w)) if _w.isdigit() else 60   # how often the certificate files are looked at (the gate sets 1)
 DEFAULT_SUB_KEY  = os.path.join(SUB_TLS_DIR, "key.pem")
 
 
@@ -448,7 +450,11 @@ class State:
                         # each csqtt server's running LINE (2.1 / 2.5), by interface → the page offers only apps of that line
                         "tline": _running_lines(snap),
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
-                        "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
+                        "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else [],
+                        # the torrent policy the node RUNS ({state, mode, route}) — a Route it could not lower runs as block
+                        "p2p": _snap_p2p(snap),
+                        # the devices' incoming torrent ports it forwards, by interface ({addr, taken}, Part C)
+                        "p2p_fwd": snap.get("p2p_fwd") if isinstance(snap.get("p2p_fwd"), dict) else {}}
         return out
 
 
@@ -467,6 +473,13 @@ def _own_pins(cat, peers_out):
             mine.update(tp.get("version") for tp in (tg.get("turn") or []) if isinstance(tp, dict) and tp.get("version"))
     return {**cat, "pins": {repo: {v: x for v, x in vs.items() if v in mine}
                             for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}
+
+
+def _snap_p2p(snap):
+    """The node's own report of its torrent policy (swg-noded smart_status `p2p`), or {} — read only as an object."""
+    sr = snap.get("smartroute")
+    v = sr.get("p2p") if isinstance(sr, dict) else None
+    return v if isinstance(v, dict) else {}
 
 
 def _running_versions(snap):
@@ -613,6 +626,115 @@ def sub_networks(roster, uid, describe, nodes, nowv):
         if k not in best or (best[k]["covered"] is not True and r["covered"] is True):
             best[k] = r
     return sorted(best.values(), key=lambda r: (r["node_name"], ipaddress.ip_network(r["prefix"])))
+
+
+# ── torrents allowed on a deployment (1.8.11 S4b) ──
+# Through the tunnel a torrent client's default µTP-TCP mixing downloads at ~⅕ of TCP only, and the node cannot help it
+# (it splits the peers' 1500-byte µTP datagrams); one client setting can. So the page tells a user whose deployment lets
+# torrents through — and only them: the same line where torrents drop would invite a try.
+
+P2P_ACTIONS = ("block", "direct", "iface", "exit", "dev")
+
+
+def p2p_policy(node):
+    """swg-panel-server's p2p_policy, copied — this process imports nothing of the panel (tests/sub_p2p_hint_selftest.py holds
+    the two together): what the operator saved, else block."""
+    v = node.get("p2p")
+    if isinstance(v, dict) and v.get("action") in P2P_ACTIONS:
+        return v["action"]
+    return "block"
+
+
+_P2P_RECS = {"wdtt": "wdtt", "csqtt": "csqtt"}   # a deployment's type → the node record set it lands on (else "ifaces")
+
+
+def _p2p_runs(nodes, describe, nid, arrivals=False):
+    """Whether node `nid` lets P2P out: its policy is not Block, and it does not REPORT running Block — a Route the panel could
+    not lower (no mesh link, the exit gone) runs as Block (fail closed), and a Route whose way out is down carries nothing.
+    `arrivals`: for P2P another node sends here, which this node judges by its own policy and drops under a Route of its own
+    (P2P-POLICY §2: P2P never goes back into the mesh), so only Direct and per-interface let it on."""
+    cfg = nodes.get(nid)
+    if not isinstance(cfg, dict):
+        return False
+    pol = p2p_policy(cfg)
+    rep = (describe.get(nid) or {}).get("p2p") or {}
+    # `route` down is the NODE-WIDE route's (exit/dev); under iface it is one interface's, judged per record below (S11 F4)
+    if pol == "block" or rep.get("mode") == "block" or (rep.get("route") == "down" and pol in ("exit", "dev")):
+        return False
+    return pol in ("direct", "iface") if arrivals else True
+
+
+def _p2p_route_dev(node, p2p):
+    """The device a record's own torrent route leaves by — the panel's `p2p_route_dev`, twinned (the node names these in
+    its report's `down`): an exit's device, or the mesh link to the node it routes through. "" when it has none (a disabled exit's too)."""
+    a = (p2p or {}).get("action") if isinstance(p2p, dict) else None
+    if a == "dev":                                            # resolve_exit's reading: a disabled exit routes nothing, a name stripped
+        x = next((x for x in ((node or {}).get("exits") or []) if isinstance(x, dict) and str(x.get("id")) == str(p2p.get("exit_id"))), None)
+        return str(x.get("device") or "").strip() if x and x.get("enabled") is not False else ""
+    if a == "exit":
+        lk = ((node or {}).get("links") or {}).get(p2p.get("node"))
+        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""
+    return ""
+
+
+def torrents_allowed(nodes, describe, t):
+    """Whether torrents may leave by deployment `t` — the nodes' own rule, strictest wins (P2P-POLICY §2.2): the record `t`
+    lands on (its interface, WDTT or csqtt server) does not block "torrents", its node lets P2P out, and where the policy hands
+    it to ANOTHER node — a Route to a node, or a per-interface policy on an interface forwarded whole to one — that node lets
+    arrivals' P2P out too; under per-interface, the record's own choice decides first (a route through a node needs a link
+    and that node's arrivals let out, a route through an exit needs it there and on, Direct is the node's own WAN). One hop, as the policy routes: a smart interface's catch-all is cascade_plan's to resolve, not this
+    page's (a known limit). A "torrents" category switched off in Settings still reads as blocked here (Settings is not this
+    process's to read), so the hint can be missing where torrents run."""
+    nid = t.get("node")
+    cfg = nodes.get(nid)
+    if not _p2p_runs(nodes, describe, nid):
+        return False
+    recs = cfg.get(_P2P_RECS.get(t.get("type") or "", "ifaces"))
+    rec = recs.get(t.get("iface")) if isinstance(recs, dict) else None
+    rec = rec if isinstance(rec, dict) else {}
+    blk = rec.get("block")
+    if any(str(b).strip() == "torrents" for b in (blk if isinstance(blk, list) else ())):
+        return False
+    pol = p2p_policy(cfg)
+    if pol == "exit":                                  # every client subnet's P2P goes to that node
+        return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)
+    _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}
+    _rep = (describe.get(nid) or {}).get("p2p") or {}
+    if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":
+        # the node names the devices down (`down`): only an interface whose own route leaves by one is not allowed (S11
+        # backlog F48); a node that names none — fail closed (pick F2)
+        _dv = _p2p_route_dev(cfg, _rp)                 # no device to leave by — a disabled exit, a blank device, no link —
+        if not isinstance(_rep.get("down"), list) or not _dv or _dv in _rep["down"]:   # is no way out either (review F11)
+            return False
+    if _rp.get("action") == "exit":                    # its own route through a node (IFACE-P2P-PICK): a link there, and that
+        _q = _rp.get("node")                           # node lets arrivals' P2P out
+        return isinstance(cfg.get("links"), dict) and _q in cfg["links"] and _p2p_runs(nodes, describe, _q, arrivals=True)
+    if _rp.get("action") == "dev":                     # …through one of this node's exits, there and switched on
+        return any(isinstance(x, dict) and str(x.get("id")) == str(_rp.get("exit_id")) and x.get("enabled") is not False
+                   for x in (cfg.get("exits") if isinstance(cfg.get("exits"), list) else ()))
+    if _rp.get("action") == "direct":                  # out this node's own address, whatever the interface's egress
+        return True
+    if pol == "iface" and rec.get("egress_mode") == "forward":   # follows the interface: forwarded whole to that node
+        return _p2p_runs(nodes, describe, rec.get("egress_node"), arrivals=True)
+    return True
+
+
+def _p2p_fwd_of(p, tg, describe):
+    """{p2p_port, p2p_addr} — the device's incoming torrent port on this deployment — only where its node reports
+    forwarding this interface (swg-noded `p2p_fwd`), the port is not taken there, and this is the one target on that node
+    the panel forwards: its primary, else the first by interface name (the panel's p2p_fwd_for_node, twinned). {} else."""
+    port, fw = p.get("p2p_port"), (describe.get(tg.get("node")) or {}).get("p2p_fwd") or {}
+    e = fw.get(tg.get("iface"))
+    if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):
+        return {}
+    mine = min(((_role_of(t) != "primary", str(t.get("iface") or "")) for t in (p.get("targets") or [])
+                if isinstance(t, dict) and t.get("node") == tg.get("node") and str(t.get("iface") or "") in fw), default=None)
+    if not mine or mine[1] != tg.get("iface"):
+        return {}
+    with contextlib.suppress(ValueError):                 # the address only where the swarm sees it: a node behind 1:1 NAT
+        if ipaddress.ip_address(str(e.get("addr") or "")).is_global:   # holds a private one (its forward works all the same)
+            return {"p2p_port": port, "p2p_addr": str(e["addr"])}
+    return {"p2p_port": port}
 
 
 def _role_of(t):
@@ -878,8 +1000,14 @@ def read_data(state, token):
         # A blocked/expired peer still appears on the page, but the cell shows a "BLOCKED"/"EXPIRED" placeholder
         # instead of its QR/config/buttons — so the holder sees WHY it stopped working. (A whole-user block/expiry
         # is handled above; these per-peer flags cover the case where only some of a user's peers are cut off.)
+        _exp = is_expired(p, nowv)
+        if not (p.get("disabled") or _exp):
+            for tg in tgts:   # torrents may leave by it → the page's client-setting line; absent otherwise (old pages ignore it)
+                if torrents_allowed(nodes, describe, tg):
+                    tg["p2p"] = True
+                    tg.update(_p2p_fwd_of(p, tg, describe))
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
-                          "disabled": bool(p.get("disabled")), "expired": is_expired(p, nowv)})
+                          "disabled": bool(p.get("disabled")), "expired": _exp})
     # active peers first (A-Z by title, untitled by IP), then blocked/expired at the bottom (also A-Z). The sub page
     # renders live-then-dead within this order, so a single title sort here gives both groups their A-Z ordering.
     def _peer_key(po):
@@ -1275,18 +1403,48 @@ def main():
         except Exception as e:
             log(LOG_ERR, f"swg-sub: config reload failed: {e}")
         if getattr(srv, "ssl_ctx", None) is not None:
-            # Swap in a FRESH context, not load_cert_chain() over the live one: an SSLContext keeps one cert PER KEY
-            # TYPE, so loading a cert of a different key type (an acme renewal that flips ECDSA↔RSA) leaves the OLD
-            # cert active — a silent no-op. A new context holds only the new cert, so the swap always takes.
+            _swap_cert("SIGHUP")
+
+    def _cert_sig():
+        if not (cert and key):
+            return ()                     # plain HTTP: no certificate to watch (the watch is not started either)
+        sig = []
+        for p in (cert, key):
             try:
-                nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                nctx.load_cert_chain(cert, key)
-                srv.ssl_ctx = nctx
-                log(LOG_INFO, "swg-sub: reloaded TLS certificate (SIGHUP)")
-            except Exception as e:
-                log(LOG_ERR, f"swg-sub: TLS reload failed (keeping old cert): {e}")
+                st = os.stat(p)
+                sig.append((st.st_ino, st.st_size, st.st_mtime_ns))
+            except OSError:
+                sig.append(None)
+        return tuple(sig)
+    _seen = [_cert_sig()]
+
+    def _swap_cert(why):
+        # Swap in a FRESH context, not load_cert_chain() over the live one: an SSLContext keeps one cert PER KEY
+        # TYPE, so loading a cert of a different key type (an acme renewal that flips ECDSA↔RSA) leaves the OLD
+        # cert active — a silent no-op. A new context holds only the new cert, so the swap always takes.
+        _seen[0] = _cert_sig()          # a pair that fails is tried again when its files change again, not every minute
+        try:
+            nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            nctx.load_cert_chain(cert, key)
+            srv.ssl_ctx = nctx
+            log(LOG_INFO, "swg-sub: reloaded TLS certificate (%s)", why)
+        except Exception as e:
+            log(LOG_ERR, f"swg-sub: TLS reload failed (keeping old cert): {e}")
+
+    def _watch_cert():
+        # A renewed certificate reaches swg-sub's files with no signal behind it in Docker: the panel container cannot
+        # signal this one, a sub entry installs with --reloadcmd 'true', and the panel's renewals are copied in by its
+        # loop (S9f). So the files are watched: a stat of two files a minute. A pair caught half-written fails to load
+        # and is tried again when the second file lands, the old certificate serving meanwhile.
+        while True:
+            time.sleep(_CERT_WATCH_S)
+            with contextlib.suppress(Exception):
+                if _cert_sig() != _seen[0]:
+                    _swap_cert("its files changed")
     with contextlib.suppress(ValueError, OSError, AttributeError):
         signal.signal(signal.SIGHUP, _reload)
+    if getattr(srv, "ssl_ctx", None) is not None:
+        threading.Thread(target=_watch_cert, name="cert-watch", daemon=True).start()
 
     on = "enabled" if state.enabled() else "disabled (all requests 404 until turned on in the panel)"
     log(LOG_INFO, f"swg-sub {VERSION} on {scheme}://{host}:{port}{SUB_BASE or ''} — subscriptions {on}")

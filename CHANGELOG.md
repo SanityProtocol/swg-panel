@@ -3,6 +3,150 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.11-beta] — 2026-11-01
+
+### Added
+
+- **A panel built for your phone.** On a phone the panel opens in its own layout: a tab bar at the bottom, lists as
+  cards, windows that slide up and close with a swipe down or the phone's Back, a row's actions behind a swipe left (or
+  its ⋮), filters and sorting in a Filters sheet, and a full-screen search for routing rules. More → Desktop view
+  switches back to the full layout, and the panel can be added to the home screen as an app.
+- **Dial-in exits: leave through an upstream that cannot be reached.** A home router behind NAT dials the server
+  instead. Under Settings → WARP & exits ("Add a dial-in exit") the panel makes both sides — WireGuard, AmneziaWG 2.0
+  or 3.1 — on a free port of 42821–42899 drawn at random (or a port and MTU you type), and shows the router's config
+  once, whole, with a QR, Download and Copy, and steps per router (Keenetic, OpenWrt, other Linux) with their commands
+  to copy. The AmneziaWG parameters sit in an accordion under the protocol and stay editable on the exit's sheet;
+  Regenerate gives both sides new keys and keeps the port and address. You can also paste the server side of a config
+  you made. The server's users reach the internet through it, never the home network behind it: the router's LAN, its
+  admin page and its tunnel address are cut on the node, and the Linux router steps let the node's traffic out to the
+  internet only. When the panel keeps encrypted configs, the router config is kept with them and the QR button on the
+  exit's row shows it again. The row says when the router has not connected, or connects but passes no traffic, and
+  that the tunnel is recovering once it carries again. Needs the 1.8.11 node.
+- **SOCKS5 exits.** A SOCKS5 proxy can be an exit: paste it as host:port:user:password (or the other forms providers
+  show), test it from the node before saving, and use it like any other exit. The node runs a pinned tunnel program for
+  it, resolves names through the proxy, and refuses UDP at once when the proxy does not carry it. Needs the 1.8.11 node.
+- **Exits you run yourself are health-checked.** A device exit (your own tun2socks, sing-box or WireGuard client) is
+  checked like a WARP exit: when it stays up but carries nothing, its traffic falls back to the node's own IP — or is
+  held when its kill-switch is on — and moves back once it carries again; the exit's row says so. Network cards are not
+  checked.
+- **The shared VK call-link pool checks its links with VK.** Every 6 hours (a switch, on by default) or on "Check all",
+  the panel asks VK about each live link, one a second; a link VK says no longer exists is marked dead and its users
+  move to another link, and a row's Check asks about any one link. The pool has no 64-link limit any more, and a VK link
+  can be entered as its bare hash — in the pool, a user's QR window and their Manage sheet. The "no live links left"
+  note now tells the truth: users lose their pool links and new users get none until a working link is added.
+- **Torrents / P2P: each interface picks its own way.** Under "Each interface decides", every interface, WDTT and
+  csqtt server picks Block, Allow (not checked), Allow only out the server's own address, or Route through one of the
+  node's exits or another node — instead of an on/off switch. A route that cannot be used blocks those torrents, and
+  the node card names the interfaces whose route is down; a SOCKS5 exit without UDP is marked as passing no DHT or
+  µTP. Needs the 1.8.11 node.
+- **Torrents / P2P: every WireGuard / AmneziaWG device gets its own incoming port.** Where torrents leave by a
+  server's own address — a node on Direct, or an interface whose own choice is Direct — every WireGuard / AmneziaWG
+  device has its own incoming port (20000–29999, the same on every server it is on), forwarded from the server's
+  address, so other peers can connect in (seeding, private trackers). The subscription page's magnet bubble opens with
+  that port to set in the torrent client; a port another program on the server uses is not forwarded and not shown.
+  WDTT / csqtt-only devices take none. The panel keeps 20000–29999 for this: a new interface, WDTT or csqtt server
+  port, turn-proxy move or dial-in exit port is refused there (one a server already holds stays savable). Needs the
+  1.8.11 node.
+- **Torrents / P2P: a device can be marked as a router.** "Router — several devices share this address", in the
+  device's settings: the torrent guard then never cuts it as a whole, so one device's torrent behind a NAT router no
+  longer stops the others' VPNs, calls and games, while torrent connections from it are still blocked one by one. The
+  Protection card's torrent list points to it. Needs the 1.8.11 node.
+- **Torrents / P2P: the ports a flagged device may still reach are yours to set** — fleet-wide in Settings ▸ Geo data
+  providers ▸ Blocking (under Never block) and per node in Filters & abuse — instead of a fixed list. OpenVPN 1194 and
+  WireGuard 51820 are on it by default, so a laptop that torrents keeps its own VPN; torrents to those ports are still
+  caught by their contents. Needs the 1.8.11 node.
+- **Torrent users are told the setting for full speed.** Where torrents get through — on the server and on every server
+  they cross — the subscription page shows a magnet beside the config's name; tap or hover it for the one client
+  setting that matters through the tunnel: TCP only, or µTP-TCP mixed mode "Prefer TCP" (measured: 117 Mbit/s with the
+  default mix, 369 with Prefer TCP, 540 with TCP only).
+- **Never block: one list of sites and addresses no block list may block.** One wrong entry in a public list no longer
+  means switching the whole list off: put the site or address on the fleet-wide Never-block list (Settings → Geo data
+  providers → Blocking) and it comes out of every block list on every interface of every node, while your routing rules
+  still route it as before. Addresses come out of the address lists on every server; site names out of the site lists
+  on Force-DNS and Hybrid SNI (a node that needs an update for it says so). Your own Block rules and the abuse
+  protections are untouched.
+- **Ports on routing rules.** An interface rule (WDTT and csqtt included) can name a protocol — TCP, UDP or both — and
+  ports or ranges, so "Google → server A" and "Google on UDP 19302-19309 → server B" work side by side; "every address"
+  is a 0.0.0.0/0 rule. Servers need the update to apply them (the server card says so); the rule chip says what the
+  routing mode does with the ports, and the list marks a port rule that can never fire.
+- **App routing per device, user or group (csqtt 2.5).** Under a server's App routing, Exceptions give chosen people,
+  groups or single devices their own rule, or No App routing at all. A device's exception beats its user's, a user's
+  beats a group's, and a person in two groups gets the upper one in the list. Servers need the update to apply them
+  (the sheet says so); until then everyone gets the server's rule.
+- **Default client apps per csqtt line.** Where a server runs both csqtt lines, Default client apps keeps a default app
+  per line (a 2.1 / 2.5 switch); left unset, 2.5 follows 2.1 as before.
+
+### Changed
+
+- **csqtt 2.5.3 on your servers.** csqtt 2.5 servers move to 2.5.3 with this update, restarting once; their users
+  reconnect by themselves. An expired password's open session is now cut within a minute (before, it only could not
+  reconnect); 2.5.1-2 stays in the Version picker for a rollback. A 2.5 server whose address was .2–.250 is moved to .1
+  of its subnet, which 2.5.3 needs. The subscription page offers La Lune and our csq-socks (Linux, Windows) for csqtt
+  2.5 too, follows our newest 2.5.x app release (later 2.5.x apps reach every panel without a panel update), and
+  Settings → Turn proxies shows both csqtt versions a server runs.
+- **WDTT-Plus v20 and qWDTT v1.4.4.** WDTT-Plus servers move to v20 (build 20-1) and qWDTT servers to v1.4.4 (build
+  1.4.4-2, which also stops rewriting the password store on every RAW reconnect), each restarting once; users reconnect
+  by themselves. The v20 WDTT-Plus app works with WDTT-Plus servers on v20 and on the previous 18-2.
+- **Live names the turn server a csqtt or WDTT device came through.** Its Endpoint says "turn-proxy" in the server's
+  colour with "Connected via `<server>`" (dimmed while idle), and its status badge, when online, is the turn badge — as
+  for a WireGuard device that comes in through a turn-proxy.
+- **The torrent flag lasts while the torrent client runs.** Every BitTorrent signature restarts the 10 minutes, under
+  Block too. Before, the flag lapsed every 10 minutes and the user's new connections took their normal route for a few
+  seconds until the next signature.
+- **A proxy's error is logged as one line.** A node that reaches the panel through a proxy such as Cloudflare logs
+  "sync HTTP 502: … 502: Bad gateway" once, instead of one red row per line of the proxy's HTML page.
+- **The exits table times an exit that answers no ping.** A custom exit whose server does not answer ping
+  shows "~N ms", timed through the tunnel and explained in the hover bubble.
+- **Light theme:** the amber "from `<ref>`" beside the version, the update dot, "awaiting enroll" and the queued tags
+  are a darker amber that reads on white (it was 2.2:1).
+
+### Fixed
+
+- **Taking over a csqtt server no longer cuts it off.** A foreign csqtt server is adopted on the version it runs (2.1
+  or 2.5, read from its binary), so a 2.5 server — in place of 2.1.9 or next to it — is no longer taken over as 2.1; a
+  stock 2.1.9 (no --iface) is found and stopped on csqtt1 instead of losing its live interface; with two servers on one
+  box the take-over of one never touches the other. While it runs the node page says "adopting" and the server page
+  shows the take-over notice (no "missing", no Recreate); a failed attempt shows the node's reason and names what keeps
+  restarting the old server, which is stopped at most once a minute; the node never installs over or removes under a
+  csqtt it does not manage; a take-over that cannot finish is dropped after 5 minutes and the server is offered again.
+  The adopt sheet disables
+  Adopt, and says why, for a csqtt version this panel doesn't offer. The node card and the adopt sheet show the version.
+- **Taking over a WDTT server that something keeps restarting no longer cuts it off**: the stop is checked, what
+  restarts it is named, its interface is left alone and nothing is installed over it, and the take-over completes once
+  it stays down. Found-server cards show the whole server name.
+- **Docker panel certificates.** A Let's Encrypt certificate for the bare IP keeps renewing when the subscription page
+  shares the IP: the page no longer takes over the panel's renewal, a start repairs one it already took, the page's copy
+  follows each renewal (also when an acme entry for a host it had before is still in the store, or its own entry was
+  issued in other letter case), a short-lived certificate is judged by the share of its life left, a converted panel
+  stops the host's old copy renewing beside the container, and a renewal that fails because port 80 is held says what
+  holds it. An IPv6 page's self-signed
+  certificate is reused instead of made again on every start.
+- **Port checks.** A server no longer reads as clashing with itself — a WDTT or csqtt server whose node has not applied
+  a port move yet, or a turn-proxy moved earlier, saves back onto the port it runs on, while another server on that port
+  is still refused. The panel's own port pick for mesh links avoids every port the node already uses,
+  WDTT, csqtt and the host's own listeners included (the mesh allocator used to miss some).
+- **Exits.** An AmneziaWG I-line or S/H value no app can read is refused when a pasted exit is saved, as it is for an
+  interface (an exit already holding one can still be edited). An exit kind this panel does not know is refused instead
+  of being saved as a WARP account.
+- **Updates.** A master's own node says "own update command" when its Update button runs it, and a Docker update names
+  a compose key that one service has and the other lacks.
+- **Subscription page:** the WDTT "Faster mode available" note no longer sits under the arrow on a phone or above the
+  badges on a desktop.
+- **Enter in a panel window** on a focused button (Cancel, Remove, a switch) is that button's again; it used to run the
+  window's Save or Create.
+- **Docker: a subscription page whose host changed** no longer gets the old host's certificate back when that host's
+  certificate renews (the old host's renewal is dropped once the page has its new certificate).
+- **Docker without its Compose plugin.** On a server whose Docker came without Compose (the distribution's own
+  docker.io, for one), the install — or a conversion from bare metal — stops before it installs anything and names
+  what to install for that Docker (apt install docker-compose-v2 for Ubuntu's docker.io, docker-compose-plugin for
+  Docker's docker-ce), instead of failing at its end with "unknown flag: --profile".
+
+### Upgrading
+
+- **Nodes that sync through Cloudflare** see an occasional 502 from Cloudflare (now one log line, above).
+  README.technical, Troubleshooting, says when such a node can reach the panel directly instead.
+- Several features need the 1.8.11 node; their screens say so until the node is updated.
+
 ## [1.8.10-beta] — 2026-10-21
 
 ### Added

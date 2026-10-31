@@ -374,6 +374,7 @@ In `/etc/nixos/configuration.nix`:
 services.swg-node.udpPortRanges = [
   { from = 51820; to = 51899; }   # interfaces — where the panel starts new ones
   { from = 56000; to = 56099; }   # turn proxies, WDTT and csqtt servers
+  { from = 42821; to = 42899; }   # dial-in exits — a router behind NAT that connects to this node
   { from = 9999;  to = 10098; }   # mesh links between your nodes (Settings → System mesh defaults)
 ];
 ```
@@ -585,6 +586,7 @@ whatever the older build's card says — until a reboot or:
 
 ```bash
 sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null
+sudo nft delete table ip swg_p2pfwd 2>/dev/null   # from 1.8.11: the devices' incoming torrent ports
 ```
 
 ---

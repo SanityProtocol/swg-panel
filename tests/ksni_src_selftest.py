@@ -122,9 +122,9 @@ PLANTS = {
           '''    sig = hashlib.sha1((json.dumps(rules) + json.dumps(sorted((k, sorted(v)) for k, v in want_srcs.items())) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]'''),
     # the hand-off's filter: since 498e465 one list of Exit, Direct and Block rows (smart_exit was the exits alone)
     "g": ('''
-                                         and (_ks or "src" not in e)], domains, SNI_RESET_MARK, res,''',
+                                         and (_ks or "src" not in e) and _ports_t443(e)], domains, SNI_RESET_MARK, res,''',
           '''
-                                         ], domains, SNI_RESET_MARK, res,'''),
+                                         and _ports_t443(e)], domains, SNI_RESET_MARK, res,'''),
     "g2": ('''            "src": 2 if _KSNI_SRC["ok"] else 1,''', '''            "src": 2,'''),
     "g3": ('''            ok = run(["ipset", "create", "swgs_probe", "hash:net,iface", "family", "inet"]).returncode == 0''',
            '''            ok = run(["ipset", "create", "swgs_probe", "hash:net,iface", "family", "inet"]) is not None'''),

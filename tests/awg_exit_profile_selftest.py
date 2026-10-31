@@ -29,6 +29,12 @@ Run: python3 tests/awg_exit_profile_selftest.py      (0 = pass)
      --perturb-refuse   the exits save no longer asks whether the node can run 3.1 — RED in [8].
      --perturb-node     the node brings a 3.1 exit up on a 2.0 datapath — RED in [9].
      --perturb-spa      the edit box renders the stored keys raw (DisableCookies, RandomTrailers = on) — RED in [7].
+     --perturb-icheck   the exits save no longer checks a pasted AmneziaWG value (an I-line no app reads) — RED in [10].
+
+[10] (1.8.11): a pasted exit's AmneziaWG value is held to the interfaces' rule (awg_value_refusal) — an I-line no app reads
+(<c>, a random part over 1000 bytes, two <t>) and a control character in another field are refused, naming the exit and the line; a
+good I-line is kept; a value the exit already holds is re-sent untouched and never blocks a save (a rename, or a paste
+that changes another line).
 """
 import importlib.machinery, importlib.util, json, os, random, re, shutil, subprocess, sys, tempfile
 
@@ -64,6 +70,9 @@ elif PLANT == "refuse":
     PSRC = _plant(PSRC, 'if gen_snap is not None and _pr["awg"].get("HeaderProtectionKey")', 'if False and _pr["awg"]')
 elif PLANT == "node":
     NSRC = _plant(NSRC, "_no3 = awg_gen_refusal(dev, _exit_awg(rec))", '_no3 = ""')
+elif PLANT == "icheck":
+    PSRC = _plant(PSRC, "                            _ib = awg_value_refusal(_k, _v)\n                            if _ib:      # the list is saved whole: say which exit\n",
+                  "                            _ib = None\n                            if _ib:\n")
 elif PLANT == "spa":
     SSRC = _plant(SSRC, "...awgConfLines(p.awg),",
                   '...AWG_ORDER.filter(k => (p.awg || {})[k] != null).map(k => k + " = " + p.awg[k]),')
@@ -162,7 +171,7 @@ check("a device whose kind no longer matches the profile is rebuilt",
       '_have_kind not in ("", _want_kind)' in nsrc)
 
 print("\n[4] health stops meaning 'the interface exists'")
-check("the node reports a handshake age", '"handshake": (_exit_handshake(rec, dev) if _live else None)' in nsrc)
+check("the node reports a handshake age", '"handshake": (_exit_handshake(rec, dev) if _live and prov != "socks5" else None)' in nsrc)
 # Asked by what the device IS, with the other tool as a fallback. Keyed off the RECORD it returned nothing
 # the moment record and device disagreed — exactly the case worth reporting — and `None` reads as "cannot
 # say", so the panel fell through to `ok` and the broken exit went GREEN again with no IP and no latency.
@@ -201,7 +210,7 @@ check("…with the through-tunnel figure moved to the hover, saying what it incl
       "which also includes however far that site is" in ss)
 css = open(os.path.join(ROOT, "app.css"), encoding="utf-8").read()
 g8 = re.search(r"\.exgrid\.g8\{grid-template-columns:([^}]*)\}", css)
-check("the grid grew to 9 columns to match the header", g8 and len(g8.group(1).split()) == 9,
+check("the grid has 8 columns to match the header (the icon buttons share one actions cell)", g8 and len(g8.group(1).split()) == 8,
       g8 and g8.group(1).split())
 
 print("\n[6] an AmneziaWG 3.1 profile keeps its 3.x keys; a 2.0 profile reads exactly as before")
@@ -361,6 +370,30 @@ check("a second sync: nothing rewritten, nothing bounced", res["changed"] == 0 a
       and open(os.path.join(d, "wgx-aabbccdd.conf")).read() == c1, (res, calls))
 calls, res, row, d = lower(pa, G20)
 check("a 2.0 profile on a 2.0 node: brought up (the floor asks nothing of 2.0)", any(re.search(r"(^|\s)awg-quick up ", c) for c in calls), calls)
+
+print("\n[10] a pasted exit's AmneziaWG values are ones every app reads — the interfaces' rule (1.8.11)")
+XL = dict(X20, label="Home router")
+XI = lambda i1: dict(XL, profile_text=AWG_CONF.replace("H4 = 3344556677\n", "H4 = 3344556677\nI1 = %s\n" % i1))
+for what, i1, want in (("<c>", "<b 0xc0><c>", "<c> is gone"), ("a random part over 1000 bytes", "<r 1215>", "at most 1000 bytes"),
+                       ("two <t>", "<t><t>", "twice")):
+    c, e = V([XI(i1)], S20MOD)
+    check("an I1 with %s → refused, naming the exit and I1" % what, c is None and isinstance(e, dict)
+          and str(e.get("error") or "").startswith("Home router: I1:") and want in str(e.get("error")), e)
+c, e = V([dict(XL, profile_text=AWG_CONF.replace("S1 = 76\n", "S1 = 7\t6\n"))], S20MOD)
+check("…a control character in S1 → refused, naming S1", c is None and str((e or {}).get("error") if isinstance(e, dict) else e).startswith("Home router: S1"), e)
+_eu = V([dict(XI("<c>"), label="")], S20MOD)[1]
+check("…an untitled exit is named by its device, as the grid shows it (verify F7)",
+      str((_eu or {}).get("error") or "").startswith("wgx-aabbccdd: I1:"), _eu)
+okI, e = V([XI("<b 0xc000000001><r 64><t>")], S20MOD)
+check("a good I1 is taken and kept", e is None and okI and okI[0]["profile"]["awg"].get("I1") == "<b 0xc000000001><r 64><t>", e)
+# a stored exit already holding a bad line (saved before this check) is never blocked by it
+_stI = [dict(okI[0], profile=dict(okI[0]["profile"], awg=dict(okI[0]["profile"]["awg"], I1="<c>")))]
+check("…a stored exit holding one is renamed with no paste: taken", V([{k: v for k, v in X20.items() if k != "profile_text"}], S20MOD, _stI)[1] is None)
+check("…and re-pasted with that line unchanged and another line changed: taken",
+      V([dict(XI("<c>"), profile_text=XI("<c>")["profile_text"].replace("MTU = 1280", "MTU = 1300"))], S20MOD, _stI)[1] is None)
+_e2 = V([XI("<c>")], S20MOD)[1] or {}
+for e2 in (_e2, (_e2.get("error_vars") or {}).get("v2") or {}):      # the frame and the I-line sentence inside it
+    check("RU has %r" % (e2 or {}).get("error_key", "")[:50], json.dumps((e2 or {}).get("error_key") or "-", ensure_ascii=False)[1:-1] in ru)
 
 print()
 if FAILS:

@@ -55,6 +55,8 @@ COPY swg-panel-server app.css app.js index.html reconcile.js turn-artifacts.js V
 COPY swg-sub sub.html sub.js sub.css ./
 COPY swg-passwd /usr/local/bin/swg-passwd
 COPY vendor/ ./vendor/
+# m/ = the phone UI (docs/MOBILE-PLAN.md): m.css, the app manifest and its icons
+COPY m/ ./m/
 # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
 COPY js/ ./js/
 # Verify the SPA the image will serve. There is no source tree to compare against in here — the build

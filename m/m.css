@@ -1,0 +1,1198 @@
+/* m/m.css — the panel on a phone (docs/MOBILE-PLAN.md).
+ *
+ * THE WHOLE FILE IS ONE RULE, html[data-ui="m"] { … }, and nothing may stand outside it but @keyframes m-*. index.html's
+ * bootstrap sets data-ui="m" on a touch phone (or by the "swg-ui" override), so on a desktop no selector here can match:
+ * the scope is structural, not a prefix someone has to remember. tests/mobile_css_shape_selftest.py enforces that shape.
+ * app.css is never edited for the phone; its own narrow-width rules (the @media(max-width:…) blocks) still apply and this
+ * builds on them. Specificity: a nested rule reads as html[data-ui="m"] .x and beats app.css's .x / .a .x; the inline
+ * style= some sheets and bubbles carry (a width, a position) needs !important here, and only here.
+ *
+ * The class names below are the desktop's. A desktop markup change can move the phone layout without a word, which is
+ * what the phone-layout gate (the screens cell's -390 arms) is for.
+ */
+html[data-ui="m"] {
+  --m-tabbar: 60px;                                   /* the bottom tab bar, without the home indicator's inset */
+  --m-safe-b: env(safe-area-inset-bottom, 0px);
+  --m-gutter: 16px;
+
+  /* ───── global ───── */
+  & body { min-height: 100dvh; background-attachment: scroll; }
+  /* 16px: below that, iOS Safari zooms the page when a field takes focus */
+  /* a field's text a size under the page's body, its monospace a little smaller still — 16 px of mono read as shouting next to
+     the labels (operator, 2026-10-29); 15 px keeps it legible */
+  & :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea) { font-size: 15px; }
+  & :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea):is(.mono, [class*="mono"]) { font-size: 14px; }
+  & .view { padding: 12px var(--m-gutter) calc(var(--m-tabbar) + var(--m-safe-b) + 28px); }
+  & .screen { animation: none; }
+  /* a tap must never need a hover to be found; and no lingering grey flash on a tapped row */
+  & * { -webkit-tap-highlight-color: transparent; }
+
+  /* ───── the app bar: brand · live pill · More ───── */
+  & .appbar {
+    position: sticky; top: 0; z-index: 30; flex-wrap: nowrap; height: auto; min-height: 56px; gap: 0 6px;
+    padding: env(safe-area-inset-top, 0px) max(4px, env(safe-area-inset-right, 0px)) 0 max(var(--m-gutter), env(safe-area-inset-left, 0px));
+    background: var(--surface); backdrop-filter: none;
+  }
+  & .brand { margin-right: auto; height: 56px; flex: 0 1 auto; min-width: 0; }
+  & .brand-name { font-size: 17px; }
+  & .appver, & #appref { display: none; }
+  & .appbar-right { display: contents; }
+  & .appbar-right > :not(#livepill, #more-btn, #updslot) { display: none; }
+  /* ONE line (operator, 2026-10-29): the brand, then #updslot's badges and the live pill as icons and counts — their words
+     go (font-size 0 on the pill, the icon and the count kept), then More. #updslot stays the header's ONE status renderer
+     (hook 1); its check button is left to the More sheet. A tap still runs each badge's own action. */
+  & #updslot { order: 1; display: flex; gap: 6px; flex: none; }
+  & #updslot #upd-check { display: none; }
+  & #livepill { order: 2; flex: none; }
+  & #more-btn { order: 3; display: inline-flex; width: 44px; height: 48px; flex: none; color: var(--ink-2); }
+  & :is(#livepill, #updslot :is(.livepill, .hostproc-tag)) {
+    height: 34px; min-width: 34px; padding: 0 10px; gap: 5px; font-size: 0; letter-spacing: 0; justify-content: center; box-sizing: border-box;
+    display: inline-flex; align-items: center;
+  }
+  & :is(#livepill, #updslot :is(.livepill, .hostproc-tag)) b { font-size: 14px; margin: 0; }
+  & :is(#livepill, #updslot :is(.livepill, .hostproc-tag)) svg { width: 15px; height: 15px; top: 0; }
+  & #updslot [data-n]::after { content: attr(data-n); font: 700 14px var(--mono); }
+  & #updslot #host-upd b { display: none; }   /* the version: the update sheet names it */
+  & #updslot :is(#host-upd, #turn-upd)::before {
+    content: ""; width: 15px; height: 15px; background: currentColor;
+    -webkit-mask: var(--m-ic-up) center / 15px no-repeat; mask: var(--m-ic-up) center / 15px no-repeat;
+  }
+  & #updslot #turn-upd::before { --m-ic-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v11M7 10l5 5 5-5M5 20h14'/%3E%3C/svg%3E"); }
+  & #updslot #host-upd::before { --m-ic-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5M6 11l6-6 6 6'/%3E%3C/svg%3E"); }
+  & #updslot .hostproc-tag .xbtn { font-size: 0; }
+  & body.loggedout #more-btn { display: none; }
+
+  /* ───── the bottom tab bar: #tabs, its five links as they are; the icons are masks, so no markup changes ───── */
+  & .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; order: 9; flex: none;
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0;
+    padding: 4px max(2px, env(safe-area-inset-right, 0px)) var(--m-safe-b) max(2px, env(safe-area-inset-left, 0px));
+    background: var(--surface); border-top: 1px solid var(--line);
+  }
+  & .tabs a {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 52px; padding: 0 2px;
+    font-family: var(--sans); font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  &[lang="ru"] .tabs a { font-size: 10.5px; letter-spacing: -.01em; }
+  & .tabs a::before {
+    content: ""; width: 24px; height: 24px; flex: none; background: currentColor;
+    -webkit-mask: var(--m-tab-ic) center / 24px 24px no-repeat; mask: var(--m-tab-ic) center / 24px 24px no-repeat;
+  }
+  & .tabs a.active { color: var(--brand); }
+  & .tabs a.active::after { display: none; }
+  & .tabs a[data-tab="overview"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='7' height='7' rx='1.5'/%3E%3Crect x='13' y='4' width='7' height='7' rx='1.5'/%3E%3Crect x='4' y='13' width='7' height='7' rx='1.5'/%3E%3Crect x='13' y='13' width='7' height='7' rx='1.5'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="connections"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l2.5-6 5 12 2.5-6h4'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="users"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'%3E%3Ccircle cx='9' cy='8.5' r='3.5'/%3E%3Cpath d='M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5'/%3E%3Cpath d='M16 5.2a3.5 3.5 0 0 1 0 6.6M18 14.8c1.8.7 3 2.6 3 5.2'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="nodes"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'%3E%3Crect x='4' y='4' width='16' height='7' rx='2'/%3E%3Crect x='4' y='13' width='16' height='7' rx='2'/%3E%3Cpath d='M8 7.5h.01M8 16.5h.01'/%3E%3C/svg%3E"); }
+  & .tabs a[data-tab="peers"] { --m-tab-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'%3E%3Crect x='7' y='3' width='10' height='18' rx='2.5'/%3E%3Cpath d='M11 17.5h2'/%3E%3C/svg%3E"); }
+  /* the on-screen keyboard is up: the bar would ride on top of it, over the form */
+  &:has(:is(input:not([type=checkbox]):not([type=radio]), textarea, select):focus) .tabs { display: none; }
+  & body.loggedout .tabs { display: none; }
+
+  /* toasts sit above the tab bar, across the screen */
+  & .toasts { left: 12px; right: 12px; bottom: calc(var(--m-tabbar) + var(--m-safe-b) + 12px); max-width: none; }
+  & .toasts > .toast { touch-action: none; }   /* a swipe moves the notification, not the page (ui.js attachToastSwipe) */
+  /* a sheet's buttons are at the bottom: while one is open the notifications come down from the top instead of covering them */
+  &:has(.overlay.show) .toasts { top: calc(env(safe-area-inset-top, 0px) + 10px); bottom: auto; }
+
+  /* ───── sheets: docked at the bottom, full width, a grab handle; the body scrolls, the head and foot stay ───── */
+  & .overlay { padding: 0; align-items: flex-end; overflow: hidden; overscroll-behavior: contain; }
+  & .sheet {
+    width: 100% !important; max-width: none !important; box-sizing: border-box;
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px); display: flex; flex-direction: column;
+    border-width: 1px 0 0; border-radius: 18px 18px 0 0; animation: m-sheet-up .26s var(--ease);
+    touch-action: pan-y;
+  }
+  & .sheet::before { content: ""; flex: none; align-self: center; width: 40px; height: 5px; margin: 8px 0 0; border-radius: 3px; background: var(--line-solid); }
+  /* the header's controls keep the footer's side margin (operator, 2026-10-29: Back sat against the edge) */
+  & .sheet-head { flex: none; padding: 4px var(--m-gutter) 10px; flex-wrap: wrap; gap: 4px 8px; }
+  & .sheet-head h3 { font-size: 17px; flex: 1 1 auto; min-width: 0; }
+  & .sheet-head .x { width: 44px; height: 44px; font-size: 26px; top: 0; margin-right: -12px; }   /* the glyph, not its tap box, on the margin */
+  & .sheet-head .sheet-back { min-height: 40px; }
+  & .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px var(--m-gutter); }
+  /* a form that is a card of its own (the user editor) sits in the sheet without a second frame */
+  & .sheet-body > .card:only-child { border: 0; padding: 0; background: none; box-shadow: none; }
+  & .fieldrow { flex-direction: column; gap: 15px; margin-bottom: 15px; }
+  & .fieldrow > .field { width: 100%; }
+  & .ugroup-combo .uc-input, & .ugroup-combo .uc-size::before, & .ugroup-combo .uc-size::after { font-size: 15px; }
+  & .sheet.m-dragging { transition: none; }
+  /* typed in: the full height, kept until it closes (ui.js attachTypingHold) — the field stays put while the rest changes */
+  & .sheet.m-typed { height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px); }
+  & .sheet.m-springback { transition: transform .22s var(--ease); }
+
+  /* ───── sheet footers (the operator's rule, 2026-10-21): the dismiss button (Close / Cancel / Back — .btn-dismiss) and the
+     main action share the BOTTOM line, dismiss left, in equal halves; every other action sits above in a grid of equal cells,
+     three to a row, on the same edges; a status line from the footer goes just above the bottom line, left aligned ───── */
+  & :is(.sheet-foot, .editfoot) {
+    flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; align-items: stretch;
+    padding: 10px var(--m-gutter) calc(10px + var(--m-safe-b));
+  }
+  & .editfoot { padding: 0; }
+  & :is(.sheet-foot, .editfoot) > * { order: 1; grid-column: span 2; min-width: 0; }
+  & :is(.sheet-foot, .editfoot) > :is(.btn, button) {
+    min-height: 44px; justify-content: center; text-align: center; white-space: normal; line-height: 1.2; padding-left: 8px; padding-right: 8px;
+  }
+  & :is(.sheet-foot, .editfoot) > .grow { display: none; }
+  & :is(.sheet-foot, .editfoot) > :not(.btn, button, .grow) { order: 2; grid-column: 1 / -1; justify-self: start; align-self: center; }
+  & :is(.sheet-foot, .editfoot) > .btn-dismiss { order: 3; grid-column: 1 / span 3; }
+  /* the other actions: three or more go three to a row (their words a size down, so they fit); one or two take a half each —
+     a third was too narrow for "Удалить группу" or "Изменить пользователя" (polish pass, 2026-10-29) */
+  & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { grid-column: span 3; }
+  & :is(.sheet-foot, .editfoot):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn)) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { font-size: 13px; gap: 5px; padding-left: 4px; padding-right: 4px; }
+  /* one other action, not a destructive one (New user's "Create only"): as wide as the main action, right above it (operator) */
+  & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn)))
+    > :is(.btn, button):not(.btn-dismiss, .btn-primary, .btn-danger, .btn-warn, .m-third) { grid-column: 4 / span 3 !important; }   /* over the halves rule's weightier selector */
+  /* …or one marked .m-third (New user's "Create only"): Cancel, it and the main action share one line in thirds (operator, 2026-10-29) */
+  & :is(.sheet-foot, .editfoot):has(> .m-third) > :is(.btn-dismiss, .m-third, .btn-primary) { grid-column: span 2 !important; order: 1 !important;
+    font-size: 13px; gap: 4px; padding-left: 4px; padding-right: 4px; white-space: normal; line-height: 1.15; text-align: center; }   /* a narrower phone wraps a label, never cuts it */
+  /* …except one that resets the form (.m-wide, the deployment settings' "Reset to interface defaults"): the whole width (operator) */
+  & :is(.sheet-foot, .editfoot) > .m-wide { grid-column: 1 / -1 !important; }
+  /* two actions of weight side by side (Reset routing's learned IPs / everything): both on the top line in halves, the dismiss
+     under them at the full width (operator) */
+  & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss):not(:has(> .btn-primary, > .m-pvrot)) > :is(.btn-warn, .btn-danger) { order: 1 !important; grid-column: span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-warn):has(> .btn-danger):has(> .btn-dismiss):not(:has(> .btn-primary, > .m-pvrot)) > .btn-dismiss { order: 4 !important; grid-column: 1 / -1 !important; }
+  /* the device editor (operator, 2026-10-29): its other actions (Targets, Networks, a QR) on the first line in equal parts;
+     Block or Unblock (`.m-pblock`) and Rotate keys — amber, as the user editor's — on the second in halves; Cancel and Save
+     on the last. A device with no Networks (a WDTT / csqtt one) has Delete instead (`.m-pdel`): Rotate then takes the first
+     line's right half and Delete the second's, beside Block (operator, 2026-10-29, 2026-10-31) */
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) { grid-auto-flow: row dense; }   /* Block (after Rotate in the source) fills the left half */
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) { grid-row: 1; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.m-rotate, .btn-danger, .btn-ok, .m-pblock):not(.btn-dismiss) { grid-row: 2; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > .m-pdel { grid-column: 4 / span 3 !important; order: 1 !important; font-size: inherit; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn-dismiss, .btn-primary) { grid-row: 3; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) { order: 1 !important; grid-column: span 3 !important; font-size: inherit; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock)) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-rotate, .btn-danger, .btn-ok, .m-pblock) { grid-column: span 2 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > :is(.btn-danger, .btn-ok, .m-pblock):not(.btn-dismiss, .m-pdel) { order: 2 !important; grid-column: 1 / span 3 !important; font-size: inherit; }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate) > .m-rotate { order: 2 !important; grid-column: 4 / span 3 !important; font-size: inherit;
+    background: color-mix(in srgb, #C0821A 11%, transparent); color: #C0821A; border-color: color-mix(in srgb, #C0821A 34%, transparent); }
+  & :is(.sheet-foot, .editfoot):has(> .m-rotate):has(> .m-pdel) > .m-rotate { grid-row: 1; }
+  /* an editor with a Save, a key rotation and destructive actions (the user editor): Rotate keys on the first line at the full
+     width, Delete and Block on the second in halves, Cancel and Save on the last (operator, 2026-10-29) */
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-warn { order: 0 !important; grid-column: 1 / -1 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-danger { order: 1 !important; grid-column: span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-dismiss { order: 3 !important; grid-column: 1 / span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-primary):has(> .btn-dismiss):has(> .btn-warn) > .btn-primary { order: 4 !important; grid-column: 4 / span 3 !important; }
+  & :is(.sheet-foot, .editfoot) > :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn) { order: 4; grid-column: 4 / span 3; }
+  & :is(.sheet-foot, .editfoot):not(:has(> :is(.btn-primary, .btn-dismiss + .btn-danger, .btn-dismiss + .btn-warn))) > .btn-dismiss { grid-column: 1 / -1; }
+  & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)) > .btn-primary { grid-column: 1 / -1; }
+  /* Close and one other action (a group's or a user's traffic: Edit group / Edit user): one line in halves, Close left (operator) */
+  & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> .btn-primary, > .btn-dismiss + .btn-danger, > .btn-dismiss + .btn-warn)):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide))) { grid-auto-flow: row dense; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> .btn-primary, > .btn-dismiss + .btn-danger, > .btn-dismiss + .btn-warn)):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide))) > .btn-dismiss { grid-column: 1 / span 3 !important; }
+  & :is(.sheet-foot, .editfoot):has(> .btn-dismiss):not(:has(> .btn-primary, > .btn-dismiss + .btn-danger, > .btn-dismiss + .btn-warn)):has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide))) > :is(.btn, button):not(.btn-dismiss, .btn-primary, .m-wide) { grid-column: 4 / span 3 !important; }
+  /* …unless it has exactly one other button (Arrived here's Clear beside Close): the two share the line in halves (operator) */
+  & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)):has(> .btn-primary):has(> :is(.btn, button):not(.btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-primary, .m-wide))) > :is(.btn, button):not(.btn-primary, .m-wide) { grid-column: 1 / span 3 !important; }
+  & :is(.sheet-foot, .editfoot):not(:has(> .btn-dismiss)):has(> .btn-primary):has(> :is(.btn, button):not(.btn-primary, .m-wide)):not(:has(> :is(.btn, button):not(.btn-primary, .m-wide) ~ :is(.btn, button):not(.btn-primary, .m-wide))) > .btn-primary { grid-column: 4 / span 3; }
+
+  /* ───── bubbles: a bottom sheet, like More (operator, 2026-10-29) — full width, rounded top, a grab handle, the page dimmed
+     behind it (its own shadow; a bubble has no overlay element) — over whatever place() computed. A tap outside closes it,
+     as it did ───── */
+  & .deppop {
+    position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important; transform: none !important;
+    width: auto !important; min-width: 0 !important; max-width: none !important; max-height: 70dvh !important; overflow: auto !important;
+    box-sizing: border-box; margin: 0 !important; z-index: 90 !important;
+    padding: 22px var(--m-gutter) calc(16px + var(--m-safe-b)) !important; border: 0 !important; border-top: 1px solid var(--line-solid) !important;
+    border-radius: 18px 18px 0 0 !important; background: var(--surface) !important; font-size: 14px;
+    box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5) !important;
+  }
+  & .deppop :is(.onrow, .netbub-row, .hub-row) { min-height: 40px; align-items: center; font-size: 14px; }
+  /* the "live" dots pulse in opacity alone, which the compositor runs on its own: the desktop's pulse also rings a box-shadow out,
+     and a shadow is repainted on the main thread every frame — measured on swgt at 6x CPU throttle (a weak phone): Overview's three
+     dots took 4.1 s of every 12 s idle, the whole rest of the page 0.4 s (operator, 2026-10-29: "too heavy for weak phones?") */
+  & :is(.livepill .dot, .dot.live, .lkdot.up, .lkdot.connecting), & .nstat.online::before { animation-name: m-pulse; will-change: opacity; }   /* a pseudo-element cannot sit in :is() */
+  & #livepill { cursor: pointer; }
+  /* none online: a grey dot before the 0, as a peer's offline dot (operator, 2026-10-29) — the desktop keeps its bare grey count */
+  & #livepill.off .dot { display: inline-block; background: var(--faint); box-shadow: none; animation: none; }
+  /* an online count that opens its sheet: the count as it is, no bubble frame and no "open" box around it */
+  & .m-onltap { cursor: pointer; background: none !important; box-shadow: none !important; outline: 0; }
+  /* the live pill's sheet (views.js OnlineSheet): users or devices, a row each */
+  & .onsheet-sw { margin-bottom: 12px; }
+  & .onsheet-list { margin: 0 calc(-1 * var(--m-gutter)); }
+  & .onsheet-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px var(--m-gutter); border-top: 1px solid var(--line); }
+  & .onsheet-row:first-child { border-top: 0; }
+  & .onsheet-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--online); flex: none; }
+  & .onsheet-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  & .onsheet-main b { font-size: 15.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .onsheet-sub { font-size: 12.5px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .onsheet-side { flex: none; font-family: var(--mono); font-size: 13px; color: var(--online); }
+  /* the mesh sheet (views.js MeshSheet): the bubble's rows, drawn as the Online sheet's */
+  & .m-meshsheet .mh-rows { display: flex; flex-direction: column; margin: 0 calc(-1 * var(--m-gutter)); }
+  & .m-meshsheet .mh-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 14px; min-height: 52px;
+    padding: 6px var(--m-gutter); border-top: 1px solid var(--line);
+  }
+  & .m-meshsheet .has-loss .mh-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  & .m-meshsheet .mh-row:first-child { border-top: 0; }
+  & .m-meshsheet .mh-rn { font: 600 15.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .m-meshsheet :is(.mh-rtt, .mh-loss) { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+  & .m-meshsheet .mh-rar { display: flex; gap: 4px; font-size: 16px; }
+  /* a bubble's heading reads as a sheet's title (operator, 2026-10-29: the bubbles must look like the Online sheet): the
+     words at the sheet's size, no tinted bar, a line under them — whichever bubble it is (their heads have their own classes) */
+  & .deppop > :first-child:is([class*="-h"], [class*="head"], .onpop-h) {
+    display: block; margin: 0 calc(-1 * var(--m-gutter)) 8px !important; padding: 4px var(--m-gutter) 12px !important;
+    background: none !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; border-radius: 0 !important;
+    font: 600 16px/1.35 var(--sans) !important; letter-spacing: 0 !important; text-transform: none !important; color: var(--ink) !important;
+  }
+  /* a bubble whose head carries an action (a leg's / an interface's Reset): a real button on the title's line, at its right
+     (operator, 2026-10-29: "a proper button", then "not full screen — same line as the header, align right") */
+  & .deppop > .dp-h:has(> .dp-reset) { display: flex !important; align-items: center; gap: 10px; }
+  & .deppop .dp-h > .dp-reset {
+    flex: none; margin: -4px 0 -4px auto; min-height: 40px; padding: 0 16px; border: 1px solid var(--line-solid); border-radius: var(--r-sm);
+    background: var(--surface-2); color: var(--ink); font: 600 14px/1 var(--sans); letter-spacing: 0; text-transform: none;
+  }
+  & .deppop .dp-h > .dp-reset.ok { color: var(--online); border-color: color-mix(in srgb, var(--online) 45%, transparent); }
+  & .deppop::before {
+    content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
+  }
+
+  /* the CSS-only bubbles a hover opens (Turn proxies' "2 versions", a turn badge's) come up from the bottom the same way; a
+     platform button's own bubble is not drawn — its tap opens the server's clients sheet, which says more */
+  & :is(.tf-verwrap:hover .tf-verpop, .turnwrap:hover .turnbub:not(.tf-plbub)) {
+    position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important; z-index: 90;
+    min-width: 0; max-height: 60dvh; overflow: auto; box-sizing: border-box; white-space: normal;
+    padding: 22px var(--m-gutter) calc(16px + var(--m-safe-b)); border: 0; border-top: 1px solid var(--line-solid);
+    border-radius: 18px 18px 0 0; background: var(--surface); box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .5); font-size: 14px;
+  }
+  & .tf-plbub { display: none !important; }
+  /* a list picker inside a bubble (Blocking's "Add list"): the bubble's width, not the desktop's 288 px, and its own height */
+  & .deppop .bk-pick { width: auto; max-height: none; }
+  & .deppop .bk-picklist { max-height: 55dvh; }
+  & .deppop .bk-pickitem { min-height: 52px; justify-content: center; gap: 3px; padding: 10px 8px; border-radius: 0; border-top: 1px solid var(--line); }
+  & .deppop :is(.bk-pickprov, .bk-pickgrp) + .bk-pickitem { border-top: 0; }
+  & .deppop .bk-pickprov { padding-top: 16px; }
+  /* a QR enlargement (crypto.js qrZoom): a sheet docked at the bottom, as every other on a phone — its grab handle, the QR the
+     sheet's width on white, the caption under it; a swipe down or a tap closes it (operator, 2026-10-29: it overflowed the
+     screen's right edge, and could not be swiped away) */
+  & .qr-overlay { padding: 0; align-items: flex-end; overflow: hidden; }
+  & .qr-overlay-inner {
+    position: relative; margin: auto 0 0; width: 100%; max-width: none; box-sizing: border-box; gap: 14px;
+    padding: 26px var(--m-gutter) calc(20px + var(--m-safe-b)); background: var(--surface);
+    border-top: 1px solid var(--line-solid); border-radius: 18px 18px 0 0; animation: m-sheet-up .26s var(--ease); touch-action: none;
+  }
+  & .qr-overlay-inner::before {
+    content: ""; position: absolute; top: 8px; left: 50%; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--line-solid);
+  }
+  & .qr-overlay-card { width: 100%; box-sizing: border-box; padding: 14px; }
+  & .qr-overlay-card .qrimg { width: 100%; max-width: none; height: auto; max-height: 64dvh; object-fit: contain; }
+  /* a Protection tile's drill-down as a sheet: the rows a thumb's height, the head line only its note and count (the sheet's
+     title already names it) */
+  & .m-protsheet .prot-who-h { display: flex; align-items: baseline; gap: 8px; font-size: 0; margin: 0 0 6px; }
+  & .m-protsheet .prot-who-h > * { font-size: 13px; }
+  & .m-protsheet .prot-who-sub { margin: 0; }
+  & .m-protsheet .prot-who-tot { margin-left: auto; font-size: 14px; }
+  & .m-protsheet .prot-who-list { max-height: none; overflow: visible; }
+  & .m-protsheet .prot-who-r { min-height: 48px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 15px; gap: 12px; }
+  & .m-protsheet .prot-who-ago { font-size: 14px; flex: none; }
+  & .deppop.m-titletap { padding: 12px 14px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); white-space: normal; }
+  /* the AmneziaWG 3.1 badge says so in words: its blue tint alone was a title= (hook 5) */
+  & :is(.iftype.awg, .tg-awg).awg3::after { content: "3.1"; margin-left: .45em; }
+
+  /* ───── sign-in ───── */
+  & .login-wrap { min-height: calc(100dvh - 56px - env(safe-area-inset-top, 0px)); padding: 16px var(--m-gutter) calc(24px + var(--m-safe-b)); align-items: flex-start; }
+  & .login-card { max-width: none; margin-top: 8vh; padding: 24px 20px; }
+  & .login-card .btn { min-height: 48px; font-size: 15px; }
+
+  /* ───── section headings: the screen's own captions, a little more air on a phone ───── */
+  & .section-title { margin: 20px 0 8px; }
+
+  /* ───── Overview (T1). What it does not draw on a phone is render-gated in screen-overview.js (hook 4): the rail, the charts,
+     the doughnuts, the flow map, the ranked lists. What is left, in the mockup's order: Needs attention first (D2), the five
+     tiles with Throughput across the row (D1), the fleet, Protection as one card of three counts (D3), recent activity ───── */
+  & .screen:has(> .statgrid) { display: flex; flex-direction: column; }
+  & .screen:has(> .statgrid) > [data-sec="attention"] { order: -2; margin-top: 4px; }
+  & .screen:has(> .statgrid) > [data-sec="attention"] + :is(.attn, .allclear) { order: -1; }
+  /* the mockup's order after the tiles: Protection, then the fleet, then recent activity */
+  & .screen:has(> .statgrid) > :is([data-sec="protection"], .protcard) { order: 1; }
+  & .screen:has(> .statgrid) > :is([data-sec="fleet"], .fleet2, .allclear:not([data-sec="attention"] + *)) { order: 2; }
+  & .screen:has(> .statgrid) > :is([data-sec="activity"], .actlist, .act-morewrap) { order: 3; }
+  /* the attention groups the operator dismissed: under everything, until what is behind one is gone */
+  & .screen:has(> .statgrid) > :is([data-sec="dismissed"], .attn-away) { order: 4; }
+  & .statgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  & .stat { padding: 13px 14px 12px; }
+  & .stat-ic { display: none; }
+  & .stat .v { font-size: 26px; }
+  & .stat .sub { font-size: 13px; font-family: var(--sans); color: var(--dim); }
+  & .statgrid > .stat:nth-child(5) { grid-column: 1 / -1; }
+  /* Throughput: its label on the left, the rate on the right, down over up (the mockup's tile) */
+  & .statgrid > .stat:nth-child(5) .stat-c { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; width: 100%; }
+  & .statgrid > .stat:nth-child(5) .k { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
+  & .statgrid > .stat:nth-child(5) .v { grid-column: 2; grid-row: 1; margin: 0; font-size: 19px !important; text-align: right; }
+  & .statgrid > .stat:nth-child(5) .sub { grid-column: 2; grid-row: 2; margin: 0; text-align: right; font-family: var(--mono); }
+  /* an attention row: its badge, then what it is on the whole width, then why; Dismiss (or Restore) behind a left swipe, as a
+     user row's actions are */
+  & .attn-row {
+    position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; min-height: 52px;
+    box-sizing: border-box; padding: 12px 22px 12px 14px;
+    overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
+    scroll-padding-left: 14px;
+  }
+  & .attn-row::-webkit-scrollbar { display: none; }
+  & .attn-row > :first-child { grid-column: 1; grid-row: 1; justify-self: start; align-self: center; scroll-snap-align: start; }
+  & .attn-row .name { grid-column: 1; grid-row: 2; font-size: 14.5px; line-height: 1.4; }
+  & .attn-row .why { grid-column: 1; grid-row: 3; font-size: 13px; font-family: var(--sans); }
+  & .attn-row .rowarrow { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+  & .attn-row .grow { display: none; }
+  & .attn-row .attn-acts { position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; scroll-snap-align: end; }
+  & .attn-row .attn-acts > .iconbtn {
+    width: 76px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--dim); font: 600 11px/1.1 var(--sans);
+  }
+  & .attn-row .attn-acts > .iconbtn::after { content: attr(data-lbl); }
+  & .attn-row .attn-acts > .iconbtn svg { width: 20px; height: 20px; }
+  & .attn-away .attn-row { opacity: .62; }
+  & .fleet2 { gap: 10px; }
+  & .fnode { display: block; }
+  & .fnode-main { padding: 12px 14px; gap: 6px; }
+  & .fnode-name { font-size: 15px; }
+  /* the name keeps its whole line when a node has many kinds of interface: the badges wrap under it */
+  & .fnode-top { flex-wrap: wrap; row-gap: 6px; }
+  & .fnode-top .fnode-name { flex: 1 1 auto; min-width: 50%; }
+  & .fnode-top .fnode-ifs { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+  & .fnode-stats { gap: 2px 8px; flex-wrap: wrap; justify-content: flex-end; font-size: 12.5px; }
+  & .fnode-stats .fl { display: none; }
+  & .fnode-stats > div:nth-child(1) { flex: 1 0 auto; }
+  & .fnode-stats > div:nth-child(n+2) { flex: none; color: var(--dim); }
+  & .fnode-stats > div:nth-child(2)::after { content: " ·"; color: var(--faint); }
+  /* Protection: its counts two to a row (an odd last one takes the row), each a figure over its word; then what is filtered,
+     the shield beside the sentence and the mechanisms as chips under both */
+  & .prot-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  & .prot-metrics > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  & .prot-tile { padding: 14px 14px 13px; min-height: 0; }
+  & .prot-top { flex-direction: column; align-items: flex-start; gap: 4px; }
+  & .prot-v { font-size: 26px; line-height: 1; }
+  & .prot-k { font-family: var(--sans); font-size: 13.5px; text-transform: none; letter-spacing: 0; color: var(--dim); border-bottom: 0; line-height: 1.3; }
+  & .prot-sub, & .prot-spark { display: none; }
+  & .prot-cov { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px 12px; padding: 14px; }
+  & .prot-cov-ic { width: 32px; height: 32px; }
+  & .prot-cov-txt { font-size: 14px; line-height: 1.45; align-self: center; }
+  & .prot-cov-txt b { font-family: var(--sans); font-weight: 650; letter-spacing: 0; }
+  & .prot-mech { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+  & .prot-chip { font-size: 12.5px; padding: 4px 10px; }
+  & .act-row { min-height: 48px; padding: 0 12px; gap: 8px; font-size: 14px; }
+  & .act-row .act-ic, & .act-row .act-detail { display: none; }
+  /* Activity history: an entry's Delete behind its left swipe, as every list's actions are; Clear history under the list */
+  & .acthist .act-row {
+    position: relative; padding-right: 22px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain; scrollbar-width: none; scroll-padding-left: 12px;
+  }
+  & .acthist .act-row::-webkit-scrollbar { display: none; }
+  & .acthist .act-row > :is(.act-link, .act-what) { scroll-snap-align: start; }   /* its icon, the first child, is not drawn here */
+  & .acthist .act-row > .iconbtn.danger {
+    position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); width: 76px; height: auto; scroll-snap-align: end;
+    flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--dangling); font: 600 11px/1.1 var(--sans);
+  }
+  & .acthist .act-row > .iconbtn.danger::after { content: attr(data-lbl); }
+  & .acthist .act-row > .iconbtn.danger svg { width: 20px; height: 20px; }
+  & .acthist .act-row .act-link, & .acthist .act-row .act-what { min-width: 0; }
+  & .acthist .act-row .act-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .m-actclear { display: flex; justify-content: center; margin: 18px 0 8px; }
+  & .m-actclear > .btn { min-height: 44px; padding: 0 22px; }
+  /* a pager: Prev and Next as two tap targets at the ends, which page and which rows between them; how many rows a page holds
+     stays as it was set (a desktop choice) */
+  & .pager {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "prev pg next" "prev info next";
+    align-items: center; gap: 2px 10px; margin: 14px 0 0; padding: 0;
+  }
+  & .pager-size { display: none; }
+  & .pager > .btn:first-of-type { grid-area: prev; }
+  & .pager > .btn:last-of-type { grid-area: next; }
+  & .pager > .btn { min-height: 44px; min-width: 96px; justify-content: center; }
+  & .pager-pg { grid-area: pg; text-align: center; font-size: 14px; color: var(--ink-2); }
+  & .pager-info { grid-area: info; text-align: center; font-size: 12px; color: var(--dim); }
+  /* a list with the New button floating over its foot keeps its pager clear of it */
+  & .screen:has(.mfab) .pager { margin-bottom: 76px; }
+  & .act-row .act-what { flex: none; }
+  & .act-row .act-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+  & .act-row .grow { flex: 1 1 0; min-width: 4px; }
+  & .act-row .when { flex: none; }
+  & .act-morewrap { text-align: right; }
+  & .act-more { display: inline-block; padding: 12px 0; }
+
+  /* ───── Users (T1): the search and a Filters button (the rest of the toolbar is in RosterFilterSheet), a floating New user
+     (D5), two-line rows whose actions sit behind a LEFT SWIPE — the head scrolls sideways and snaps; the actions stand just
+     past its right edge (absolute, so they add the scroll room), each with its word (data-lbl). No column header: the
+     columns are gone. TrafficRail and the traffic column are render-gated (hook 4) ───── */
+  & .toolbar.mtoolbar { display: flex; flex-wrap: nowrap; gap: 8px; align-items: stretch; margin-bottom: 4px; }
+  & .mtoolbar .search { flex: 1 1 auto; min-width: 0; min-height: 44px; display: flex; }
+  /* one height for every control of the row (operator, 2026-10-29): the field is the visible box, not its wrapper */
+  & .mtoolbar .search input { height: 44px; box-sizing: border-box; width: 100%; }
+  & .mtoolbar > :is(.pmode, .onlbtn, .mfilter-btn, .search) { height: 44px; min-height: 44px; box-sizing: border-box; }
+  & .mfilter-btn { flex: none; width: 46px; height: auto; min-height: 44px; border: 1px solid var(--line-solid); background: var(--surface); border-radius: var(--r-sm); position: relative; }
+  & .mfilter-btn.on::after { content: ""; position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+  & .mfab {
+    position: fixed; right: max(var(--m-gutter), env(safe-area-inset-right, 0px)); bottom: calc(var(--m-tabbar) + var(--m-safe-b) + 16px); z-index: 35;
+    min-height: 52px; padding: 0 20px 0 16px; border-radius: 16px; font-size: 15px; gap: 8px;
+    box-shadow: 0 10px 28px -8px color-mix(in srgb, var(--brand) 60%, transparent);
+  }
+  &:has(:is(input:not([type=checkbox]):not([type=radio]), textarea, select):focus) .mfab { display: none; }
+  & .mfilters { display: flex; flex-direction: column; gap: 12px; }
+  & .mfilters > * { width: 100%; }
+  & .mfilters .selwrap, & .mfilters .onlbtn, & .mfilters .ddbtn { min-height: 44px; box-sizing: border-box; }
+  & .mfilters .selwrap { display: flex; }
+  & .mfilters .ddbtn { width: 100%; }
+  & .mtoolbar > .pmode, & .mtoolbar > .onlbtn { flex: none; min-height: 44px; }
+  /* no column headers on a phone, at any width (a landscape phone is past app.css's 680 px rule): the order is the Filters
+     sheet's Sort row (operator, 2026-10-29) */
+  & .uhead, & table.peergrid > thead { display: none; }
+  & .msort { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; align-items: center; }
+  & .msort-l { grid-column: 1 / -1; font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin-top: 6px; }
+  & .msort .msort-dir { min-height: 44px; padding: 0; font-size: 18px; justify-content: center; }
+  & .urows { gap: 6px; }
+  & .urow > .urow-head {
+    position: relative; display: grid; grid-template-columns: 20px max-content minmax(0, 1fr) max-content max-content; grid-template-rows: auto auto;
+    gap: 4px 8px; align-items: center; min-height: 64px; box-sizing: border-box; padding: 11px 22px 11px 14px;   /* 22: the grab bar's lane */
+    overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
+    scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
+  }
+  & .urow > .urow-head::-webkit-scrollbar { display: none; }
+  /* a row with actions behind its swipe says so (operator, 2026-10-29, chosen over a tinted edge): a quiet ⋮ in its right lane;
+     a tap on it opens the row the way the swipe does (ui.js attachSwipePeek), and it slides away with the row. ui.js also
+     slides the top row open the first few times a list opens. */
+  & :is(.urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger))::after {
+    content: "\22EE"; position: absolute; top: 0; bottom: 0; right: 0; width: 22px; display: flex; align-items: center; justify-content: center;
+    font: 700 18px/1 var(--sans); color: var(--faint); pointer-events: none;
+  }
+  & .urow-head > .u-exp { grid-column: 1; grid-row: 1 / span 2; scroll-snap-align: start; }
+  & .urow-head > .u-name { grid-column: 2 / -1; grid-row: 1; font-size: 15.5px; }
+  /* a long name wraps rather than cutting it and its tag down to "O…" (a 360 px phone, the emulator) */
+  & .urow-head > .u-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+  & .urow-head > .u-name > * { white-space: normal; overflow: visible; text-overflow: clip; min-width: 0; }
+  & .urow-head > .u-name .tagchip { flex: none; }
+  & .urow-head > .ustat { grid-column: 2; grid-row: 2; }
+  & .urow-head > .u-right { display: contents; }
+  & .urow-head .u-right > * { padding: 0; }
+  & .urow-head .u-counts { display: block; grid-column: 3; grid-row: 2; font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  & .urow-head .u-thru { display: block; grid-column: 4; grid-row: 2; justify-self: end; font-size: 12px; }
+  & .urow-head .u-thru:not(:has(.ratecell.live)), & .urow-head .u-thru .up, & .urow-head :is(.u-servers, .u-last, .u-total, .u-note) { display: none; }
+  & .urow-head .u-acts {
+    /* 100% resolves to the head's CONTENT width here (measured), so past its right padding too */
+    position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; gap: 0; scroll-snap-align: end;
+  }
+  & .urow-head .u-acts > .iconbtn {
+    width: 62px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--brand); font: 600 11px/1.1 var(--sans);
+  }
+  & .urow-head .u-acts > .iconbtn::after { content: attr(data-lbl); max-width: 58px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .urow-head .u-acts > .iconbtn svg { width: 20px; height: 20px; }
+  & .urow-head .u-acts > .iconbtn.danger { color: var(--dangling); }
+  /* on line 2, right: two counts with their icons — nodes in the brand colour, interfaces in another — its tap the nodes sheet
+     (the desktop's Nodes column and its hover); its own column, so a live rate beside it keeps its place */
+  & .urow-head .u-srvtap { grid-column: 5; grid-row: 2; justify-self: end; display: inline-flex; align-items: center; gap: 10px;
+    min-height: 32px; margin: -6px 0; padding: 0 2px; font: 600 11.5px/1 var(--mono); }
+  & .urow-head .u-srvtap > span { display: inline-flex; align-items: center; gap: 3px; }
+  & .urow-head .u-srv-n { color: var(--brand); }
+  & .urow-head .u-srv-i { color: var(--awg3); }
+  & .urow-head .u-srvtap .ic svg { width: 12px; height: 12px; }
+  /* a peer's other deployments (the +N pill) as a sheet: one per line, a thumb's height — node, interface, address */
+  & .m-deplist .deprow { display: flex; align-items: center; gap: 10px; min-height: 48px; border-top: 1px solid var(--line); font-size: 15px; }
+  & .m-deplist .deprow:first-child { border-top: 0; }
+  & .m-deplist .dep-ip { margin-left: auto; font-size: 13.5px; color: var(--ink-2); }
+  /* a turn-proxy's collected VK IPs as a sheet (the desktop's hover): a row a thumb's height */
+  & .m-tiplist .tipbub-row { display: flex; align-items: center; gap: 10px; min-height: 44px; border-top: 1px solid var(--line); font-size: 14px; }
+  & .m-tiplist .tipbub-row:first-child { border-top: 0; }
+  & .m-tiplist .tipbub-ip { font: 500 14px var(--mono); }
+  & .m-tiplist .tipbub-when { font-size: 13px; color: var(--ink-3); }
+  /* a danger button, as Delete / Block (its desktop rule draws it as a bare link under a line) */
+  & .m-tiplist .tipbub-flush { margin-top: 14px; min-height: 48px; width: 100%; justify-content: center; padding: 0 14px; font-size: 15px;
+    background: color-mix(in srgb, var(--dangling) 10%, transparent); border: 1px solid color-mix(in srgb, var(--dangling) 32%, transparent); border-radius: var(--r-sm); }
+  & .m-tiplist .tipbub-flush .ic svg { width: 16px; height: 16px; }
+  & .m-nodesheet .m-ns-sum { font-size: 13px; color: var(--ink-3); margin: 0 0 8px; }
+  & .m-nodesheet .m-ns-node { border-top: 1px solid var(--line); padding: 4px 0 8px; }
+  & .m-nodesheet :is(.m-ns-nm, .m-ns-if) { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0; border: 0;
+    background: none; color: var(--ink); font: inherit; text-align: left; }
+  & .m-nodesheet .m-ns-nm .nsrv { font-size: 15px; }
+  & .m-nodesheet .m-ns-if { padding-left: 14px; min-height: 40px; }
+  & .m-nodesheet .m-ns-pc { margin-left: auto; font-size: 13px; color: var(--ink-3); }
+  & .m-nodesheet :is(.m-ns-nm, .m-ns-if) > .ic:last-child { color: var(--faint); }
+  & .m-nodesheet .m-ns-nm > .ic:last-child { margin-left: auto; }
+  /* a group's row: its members on line 2; the devices and networks counts are in its sheet */
+  & .gcard > .urow-head > .u-name { grid-column: 2 / -1; }
+  & .gcard > .urow-head .u-counts:first-child { grid-column: 2 / 4; }
+  & .gcard > .urow-head :is(.g-peers, .g-nets) { display: none; }
+
+  /* ───── deployment rows (the target picker, a device's Deployments): TWO LINES (D4, option A) — the box, the node, the interface
+     and the type tag; then the role with its word (hook 9), the address and the gear. The desktop's --topt-col is not touched:
+     the right part simply stops being a column here ───── */
+  & .targetpick > .targetopt { min-width: 0; }
+  & .targetopt { flex-wrap: wrap; row-gap: 8px; column-gap: 8px; padding: 8px 10px; }
+  & .targetopt::after { content: ""; order: 3; flex: 1 0 100%; height: 0; }
+  & .targetopt:not(:has(.topt-right > :not(.tg))) { flex-wrap: nowrap; }
+  & .targetopt:not(:has(.topt-right > :not(.tg)))::after { display: none; }
+  & .targetopt .topt-main { order: 1; flex: 1 1 0; min-width: 0; min-height: 32px; }
+  & .targetopt .nm { flex: 0 1 auto; width: auto; }
+  & .targetopt .topt-right, & .targetopt .topt-right.hasprim { display: contents; }
+  & .targetopt .topt-right > .tg { order: 2; }
+  & .targetopt .topt-right > :not(.tg) { order: 4; }
+  & .targetopt .topt-right > .tgt-front { flex: 0 1 auto; }
+  & .targetopt .topt-right > .topt-ip { order: 5; flex: 1 1 0; width: auto; min-width: 0; margin: 0; min-height: 36px; }
+  & .targetopt .topt-right > .topt-ip:last-child { margin-right: 0; }
+  & .targetopt .topt-right > .topt-gear { order: 6; width: 36px; height: 36px; }
+  & .targetopt .box { width: 20px; height: 20px; }
+  & .targetopt .topt-right > .topt-err { order: 7; flex: 1 0 100%; margin: -2px 0 0; font-size: 12.5px; }
+
+  /* ───── Add peers (AddPeersSheet): its six-column grid becomes two lines a deployment — the title and the actions, then the
+     status, the type, the interface and the address ───── */
+  & :is(.pg2, .pg2-peer) { display: block; }
+  & .pg2-dep { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 12px; }
+  & .pg2-dep::after { content: ""; order: 3; flex: 1 0 100%; height: 0; }
+  & .pg2-title { order: 1; flex: 1 1 0; }
+  & .pg2-ctl { order: 2; }
+  & .pg2-st { order: 4; }
+  & .pg2-tags { order: 5; }
+  & .pg2-ifn { order: 6; }
+  & .pg2-ip { order: 7; margin: 0 0 0 auto; }
+  & .pg2-act { width: 40px; height: 40px; }
+
+  /* ───── a device's sheet (sheets-crud.js PeerView): each deployment says it with values only, nothing cut (operator,
+     2026-10-29) — the node and interface, the address at the right; the live rate, when it was last online at the right;
+     what it carried in all, marked Σ, quiet under them ───── */
+  & .pv-dep-grid { grid-template-columns: max-content max-content minmax(0, 1fr); gap: 6px 12px; font-size: 13.5px; align-items: baseline; }
+  & .pv-dep-grid .k { display: none; }
+  & .pv-dep-grid > span { overflow: visible; }
+  & .pv-dep-grid > span:nth-child(1) { grid-column: 1; grid-row: 1; font-weight: 600; }
+  & .pv-dep-grid > span:nth-child(2) { grid-column: 2; grid-row: 1; color: var(--dim); }
+  & .pv-dep-grid > span:nth-child(3) { grid-column: 3; grid-row: 1; justify-self: end; text-align: right; white-space: normal; }
+  & .pv-dep-grid > span:nth-child(4) { grid-column: 1 / 3; grid-row: 2; }
+  & .pv-dep-grid > span:nth-child(6) { grid-column: 3; grid-row: 2; justify-self: end; color: var(--dim); }
+  & .pv-dep-grid > span:nth-child(5) { grid-column: 1 / -1; grid-row: 3; font-size: 12px; color: var(--dim); }
+  & .pv-dep-grid > span:nth-child(5)::before { content: "\03A3"; margin-right: 6px; color: var(--faint); }
+
+  /* ───── a mesh link's sheet (iface.js ConnectionEditSheet) and the sheets like it: the link's facts as rows, its label left
+     and its value right, as the link cards on a node's page read; two dropdowns side by side stack; a verdict reads as one
+     sentence; the long explanations are quieter than the controls they explain (operator, 2026-10-29) ───── */
+  & .conncard { padding: 4px 14px; }
+  & .conncard-top { margin: 10px 0 6px; }
+  & .conn-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  & .conn-cell:first-child { border-top: 0; }
+  & .conn-cell { display: flex; flex-direction: row; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+  & .conn-cell .cl { font: 400 14px var(--sans); text-transform: none; letter-spacing: 0; color: var(--dim); flex: none; margin: 0; }
+  & .conn-cell .cv { font-family: var(--mono); font-size: 13.5px; text-align: right; min-width: 0; overflow-wrap: anywhere; white-space: normal; overflow: visible; }
+  & .sheet-body .row2:has(.dropdown, select) { flex-direction: column; gap: 15px; }
+  & .dp-verdict { display: block; line-height: 1.5; }
+  & .dp-verdict .ic, & .dp-verdict > svg { display: inline-block; vertical-align: -3px; margin-right: 6px; }
+  & .sheet-body .hint:not(.field .hint, .err, .warnish, .warn, .vk-warn, .dp-verdict) { font-size: 13.5px; line-height: 1.55; color: var(--dim); }
+
+  /* ───── user detail: the user's configs sheet (peer-ui.js openUserConfigs) — its device pager (QRRow) already shows one device
+     with the next one peeking; its footer counts share one line ───── */
+  & .sheet-foot > .qrfoot-count { grid-column: 1 / 4; }
+  & .sheet-foot > .qrfoot-ucounts { grid-column: 4 / -1; justify-self: end; }
+  /* its counts are the status line: above the buttons, which have no Close beside them here */
+  & .sheet-foot:has(> .qrfoot-count) > :is(.qrfoot-count, .qrfoot-ucounts) { order: 0; }
+  & .sheet-foot:not(:has(> .qrfoot-ucounts)) > .qrfoot-count { grid-column: 1 / -1; }   /* alone (a user with no devices): its own line, the buttons one row under it */
+  /* the links (subscription, VK call): the address and its icon buttons on one line (operator, 2026-10-29) */
+  & :is(.sublink-row, .vkfield-row) { display: flex; align-items: center; gap: 8px; }
+  & :is(.sublink-row, .vkfield-row) > :first-child { flex: 1 1 auto; min-width: 0; }
+  & :is(.sublink-row, .vkfield-row) > .fieldbtns { flex: none; display: flex; gap: 6px; }
+  /* the link boxes and their icon buttons the subscription link's own height (operator, 2026-10-29), measured off it: --m-linkh */
+  & :is(.sublink-row, .vkfield-row) { --m-linkh: 30px; }
+  & .btn.m-icob { position: relative; width: var(--m-linkh); height: var(--m-linkh); min-height: 0 !important; padding: 0; justify-content: center; }
+  & .m-icob .ic svg { width: 16px; height: 16px; }
+  & :is(.sublink-row, .vkfield-row) > :is(.suburl, .vkbox) { height: var(--m-linkh); min-height: 0; box-sizing: border-box; padding-top: 0; padding-bottom: 0; display: flex; align-items: center; }
+  /* a 30 px button is under a thumb's size: its tap area reaches past it, the look stays the box's */
+  & .m-icob::after { content: ""; position: absolute; inset: -7px -3px; }
+
+  & .upc-xn { flex: none; margin-left: 6px; padding: 2px 7px; border-radius: 999px; font: 700 12px/1.4 var(--mono);
+    color: var(--ready); background: color-mix(in srgb, var(--ready) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ready) 40%, transparent); }
+  & .m-icob-n { position: absolute; top: -6px; right: -6px; z-index: 1; box-shadow: 0 0 0 2px var(--surface); min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box; border-radius: 8px;
+    background: var(--brand); color: var(--bg); font: 700 9.5px/15px var(--mono); text-align: center; }
+  & .vkbox { min-height: 0; }
+  & .vkbox .vkbox-input { font-family: var(--mono); font-size: 12px !important; padding-top: 0; padding-bottom: 0; height: 100%; }   /* as .suburl-txt */
+  /* a device with no config to show: its sentence in a short box, not a QR-sized empty square */
+  & .qrrow .deploy .qr-none, & .deploy .qr-none { width: auto; height: auto; aspect-ratio: auto; max-width: none; min-height: 0; padding: 22px 16px; font-size: 13.5px; line-height: 1.45; }
+
+  /* ───── the peer grid (Peers, Live's peers, a user's and the unassigned lists — promoted to T1, 2026-10-29): a card per
+     deployment instead of the table's label/value stack. The title and its status; the node, the address and the live rate;
+     the owner and when it was last online. Its actions sit behind a left swipe like a user row's, each with its word. The
+     traffic-window column is not drawn (no ledger fetch on a phone) ───── */
+  & .tablewrap:has(> table.peergrid) { background: none; border: 0; box-shadow: none; overflow: visible; }
+  & table.peergrid, & table.peergrid > tbody { display: block; width: 100%; background: none; border: 0; }
+  & table.peergrid > tbody { display: flex; flex-direction: column; gap: 6px; }
+  & table.peergrid > tbody > tr.clk {
+    position: relative; display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 5px 10px; align-items: center;
+    margin: 0; padding: 11px 22px 11px 14px; min-height: 64px; box-sizing: border-box;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+    overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
+    scroll-padding-left: 14px;   /* the first snap point (start) is the content edge, not the padding edge */
+  }
+  & table.peergrid > tbody > tr.clk::-webkit-scrollbar { display: none; }
+  & table.peergrid > tbody > tr > td { display: block; padding: 0; border: 0; text-align: left; min-width: 0; background: none; }
+  & table.peergrid > tbody > tr > td::before { display: none; }
+  /* the "here it is" glow (a just-created peer, an Overview click): the card glows, not each cell (operator, 2026-10-29) */
+  & table.peergrid > tbody > tr.pcreate > td { animation: none; }
+  & table.peergrid > tbody > tr.pcreate { animation: pcreate 1.5s var(--ease); }
+  & table.peergrid td.c-name { grid-column: 1 / 3; grid-row: 1; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; scroll-snap-align: start; }
+  & table.peergrid td.c-status { grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: 6px; }
+  & table.peergrid td.c-node { grid-column: 1; grid-row: 2; }
+  & table.peergrid td.c-node .srvcell { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+  /* the address takes the rest of its line: the status above it (its badge, the interface tags) sizes the last column, and an
+     address held to the middle one was cut beside empty room (operator, 2026-10-29). The rate goes down by the last-online time */
+  & table.peergrid td.c-addr { grid-column: 2 / 4; grid-row: 2; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & table.peergrid td.c-rate { grid-column: 3; grid-row: 3; justify-self: end; font-size: 12.5px; }
+  & table.peergrid td.c-rate .up { display: none; }
+  /* the owner's cell opens the user: only the name and a little room around it, the rest of the card opens the device
+     (operator, 2026-10-29) — the cell sizes to its content instead of spanning the card */
+  & table.peergrid td.usercell { grid-column: 1 / 3; grid-row: 3; justify-self: start; max-width: 100%; font-size: 14px; min-width: 0; }
+  /* …but never into the last-online time and the rate beside it: the owner's name is cut there on a narrow phone */
+  & table.peergrid td.usercell { max-width: calc(100vw - 2 * var(--m-gutter) - 160px); overflow: hidden; }
+  & table.peergrid td.usercell .namecell > span { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & table.peergrid td.usercell .namecell { display: inline-flex; align-items: center; width: auto; min-height: 36px; padding: 0 10px; margin: 0 -10px; }
+  & table.peergrid td.usercell .namecell > span { max-width: 230px; }
+  & table.peergrid td.usercell .namecell svg { display: none; }
+  & table.peergrid td.usercell .assigncell { max-width: 220px; }
+  & table.peergrid td.c-online { grid-column: 2; grid-row: 3; justify-self: end; font-size: 12.5px; color: var(--dim); }
+  & table.peergrid td.c-ep { grid-column: 1 / -1; grid-row: 4; font-size: 12.5px; color: var(--dim); }
+  & table.peergrid td.c-total { display: none; }
+  & table.peergrid td.rowacts { position: absolute; top: 0; bottom: 0; left: calc(100% + 22px); display: flex; gap: 0; scroll-snap-align: end; }
+  & table.peergrid td.rowacts > .iconbtn {
+    width: 62px; height: 100%; flex-direction: column; gap: 4px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--surface-2); color: var(--brand); font: 600 11px/1.1 var(--sans);
+  }
+  & table.peergrid td.rowacts > .iconbtn.danger { color: var(--dangling); }
+  & table.peergrid td.rowacts > .iconbtn::after { content: attr(data-lbl); }
+  & table.peergrid td.rowacts > .iconbtn svg { width: 20px; height: 20px; }
+  & table.peergrid td.empty { padding: 24px 16px; }
+
+  /* ───── Live (T1): the cards stay; the node / interface / Online filters go behind the Filters button ───── */
+  & .mtoolbar .pmode { flex: none; }
+  & .mtoolbar .pmode .pm-opt { min-height: 42px; }
+
+  /* ───── Nodes list (T1), rows the eye can follow (operator, 2026-10-29): the name; what it is, as quiet words (bare metal ·
+     Ubuntu · reporting) and its issue; a strip of three equal cells — peers, throughput, mesh; the interfaces counted by kind
+     (screen-nodes.js ifaceSummary). No drag grips, no CPU bar, no row buttons: Settings and Remove are on the node's page ───── */
+  & .section-title:has(+ .nodegrid) { flex-wrap: wrap; align-items: center; }
+  & .section-title:has(+ .nodegrid) .nodehint { display: none; }
+  & .section-title:has(+ .nodegrid) .btn-primary { min-height: 44px; }
+  & .nodegrid { gap: 10px; }
+  & .ncard { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; padding: 14px 0 12px; }
+  & .ncard :is(.nc-gutter, .nc-cpu, .nc-ctl, .nc-turn) { display: none; }
+  & .ncard .nc-name { grid-column: 1 / -1; grid-row: 1; flex-wrap: wrap; gap: 4px 10px; padding: 0 16px 12px; align-items: center; }
+  & .ncard .nname { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; line-height: 1.3; }
+  & .ncard .nc-name :is(.tport, .platwrap .tport) { background: none; border: 0; padding: 0; font: 500 13px var(--sans); text-transform: none; letter-spacing: 0; color: var(--dim); }
+  & .ncard .nc-name .tport::first-letter { text-transform: uppercase; }
+  & .ncard .nc-name .reporting { font-family: var(--sans); font-size: 13px; text-transform: none; letter-spacing: 0; }
+  & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) {
+    /* one column as wide as the widest line, centred in the cell, its lines left-aligned in it: the cell's content is centred as
+       a whole, not line by line; the three labels stay on one line, at the top (operator, 2026-10-29) */
+    grid-row: 2; display: grid; grid-template-columns: max-content; grid-template-rows: auto 1fr; justify-content: center; justify-items: start; align-content: stretch;
+    gap: 4px; min-width: 0; padding: 10px 8px; justify-self: stretch; align-self: stretch;
+    /* the three as one inset, tinted panel inside the card's margins — no lines run edge to edge (operator, 2026-10-29) */
+    position: relative; background: var(--surface-2);
+  }
+  & .ncard .nc-peers { margin-left: 14px; border-radius: 12px 0 0 12px; }
+  & .ncard .nc-mesh { margin-right: 14px; border-radius: 0 12px 12px 0; }
+  /* short separators between the three, a third of the panel's height off each end */
+  & .ncard :is(.nc-thru, .nc-mesh)::before { content: ""; position: absolute; left: 0; top: 22%; bottom: 22%; width: 1px; background: var(--line-solid); opacity: .7; }
+  & .ncard .nc-peers :is(.nm-peerpop, .onlinetag) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  /* under the labels, each value is centred in the room the tallest cell leaves (operator, 2026-10-29): Throughput's two lines
+     in their row; Peers' and Mesh's wrappers fill the cell, their value(s) pushed to the middle by auto margins */
+  & .ncard :is(.nc-thru, .nc-peers) > .nm-v { align-self: center; }
+  & .ncard :is(.nc-peers, .nc-mesh) > :not(.nm-l, .nm-v) { grid-row: 1 / -1; align-self: stretch; display: flex; flex-direction: column; align-items: flex-start; }
+  & .ncard .nc-mesh .mh-tag { flex: 1 1 auto; }
+  & .ncard .nc-peers .nm-peerpop > .nm-v { margin: auto 0; }
+  & .ncard .nc-mesh .mh-tag > .mh-grp:nth-child(2) { margin-top: auto; }
+  & .ncard .nc-mesh .mh-tag > .mh-grp:last-child { margin-bottom: auto; }
+  & .ncard .nc-name .platwrap::before { content: "·"; margin-right: 8px; color: var(--faint); }
+  & .ncard .nc-peers { grid-column: 1; }
+  & .ncard .nc-thru { grid-column: 2; }
+  & .ncard .nc-mesh { grid-column: 3; }
+  & .ncard :is(.nc-peers, .nc-thru, .nc-mesh) .nm-l { font-size: 10px; line-height: 14px; margin: 0; padding: 0; }
+  & .ncard .nc-thru .nm-v { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; font-size: 13px; text-align: left; }
+  & .ncard .nc-thru .nm-v > * { margin: 0; min-width: 0; text-align: left; }
+  & .ncard .nc-peers .nm-v { font-size: 16px; }
+  & .ncard .nc-mesh .mh-tag { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  & .ncard .nc-ifaces { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; gap: 8px; padding: 12px 14px 0; }
+  & .ncard .nc-ifaces .nm-l { display: none; }
+  & .ncard .nc-ifaces .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  & .tg.m-sum.awg3::after { content: none; }
+  & .tg.m-sum { font-size: 11.5px; padding: 3px 8px; }
+  & .ncard .nc-ifaces:not(:has(.m-sum)) { display: none; }
+
+  /* ───── node detail (T1, D6): the name on one line, its chips under it; the version and the updater's branch; then Check,
+     Settings, Logs and More as labelled cells (the lifecycle doors are in the More sheet, hook 8). Health is the three meters
+     and Throughput a live figure (screen-nodes.js, hook 4); no node rail ───── */
+  & .detail-head { flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+  & .detail-head > .title { flex: 1 0 100%; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+  & .detail-head > .title h1 { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; margin: 0; }
+  & .detail-head > .grow { display: none; }
+  & .dh-ver { flex: 1 1 100%; max-width: 100%; min-width: 0; box-sizing: border-box; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: stretch; }
+  /* the version and the updater's branch share one line; any status pill takes a line of its own; then the four cells */
+  & .dh-ver > :not(.iconbtn) { grid-column: 1 / -1; justify-self: start; align-self: center; }
+  & .dh-ver > .nm-ver:first-child { grid-column: 1 / 3; }
+  /* the node's version: on the name's line, at its right, centred on it (operator, 2026-10-29); the name keeps clear of it */
+  & .detail-head:has(> .dh-ver > .nm-ver:first-child) { position: relative; }
+  & .detail-head:has(> .dh-ver > .nm-ver:first-child) > .title h1 { line-height: 30px; padding-right: 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  & .detail-head > .dh-ver > .nm-ver:first-child { position: absolute; top: 0; right: 0; height: 30px; display: flex; align-items: center; }
+  /* with the updater's branch ("from dev"): the two stacked on the name's line, the branch under the version */
+  & .detail-head > .dh-ver > .nm-ver:first-child:has(+ .nm-ver) { height: 15px; line-height: 15px; }
+  & .detail-head:has(> .dh-ver > .nm-ver:first-child) > .dh-ver > .nm-ver + .nm-ver { position: absolute; top: 15px; right: 0; line-height: 15px; font-size: 11px; grid-column: auto; }
+  & .dh-ver > .nm-ver + .nm-ver { grid-column: 3 / -1; justify-self: end; }
+  & .dh-ver > :not(.iconbtn, .dh-sep) + .iconbtn { grid-column-start: 1; }
+  /* Check: while it looks, only its icon turns (and takes the brand colour), the cell stays put; found nothing newer, the
+     cell says so — a green check over "Up to date" — for the 5 s the desktop shows its pill */
+  & .dh-ver > .iconbtn.checking { animation: none; color: var(--ink-2); }
+  & .dh-ver > .iconbtn.checking svg { animation: spin .8s linear infinite; transform-origin: center; color: var(--brand); }
+  & .dh-ver > .iconbtn.m-uptodate { color: var(--online); }
+  & .dh-ver > .iconbtn.m-uptodate svg { color: var(--online); }   /* the four cells always begin a row of their own */
+  & .dh-ver > .dh-sep { display: none; }
+  & .dh-ver > :is(.livepill, .hostproc-tag, .nstat) { grid-column: 1 / -1; }
+  /* "arrived here" (a node transferred in) is a button: drawn as the status words beside it, not a grey system button with
+     faint text (operator, 2026-10-29); its tap opens where it came from */
+  & button.nstat.xferdone { background: none; padding: 4px 0; min-height: 28px; color: var(--ink-2); text-decoration: underline dotted; text-underline-offset: 3px; }
+  & button.nstat.xferdone svg { width: 14px; height: 14px; }
+  & .dh-ver > .iconbtn {
+    width: auto; height: auto; min-height: 60px; flex-direction: column; gap: 5px; border: 1px solid var(--line); border-radius: 11px;
+    background: var(--surface-2); color: var(--ink-2); font: 600 12.5px/1.1 var(--sans);
+  }
+  & .dh-ver > .iconbtn::after { content: attr(data-lbl); }
+  & .dh-ver > .iconbtn svg { width: 20px; height: 20px; }
+  & .drag-grip { display: none; }   /* reordering by drag is a mouse gesture; the order set on a desktop stays */
+  /* ───── a routing rule (routing.js RulesEditor, in an interface's sheet and in Settings → Network's default exit): with no
+     grip there is no rail — the rule is one column: its targets' box (the </> switch in its corner), then the × and the count,
+     then where it goes, the dropdown the line's width. "Add rule" and "Everything else → …" each take a line of their own.
+     (Its target field sat in the 16 px rail the hidden grip left: "impossible to configure at all", operator 2026-10-29) ───── */
+  & .rrrow { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 10px 12px; }
+  & .rrrow > .tfield { grid-column: 1; }
+  /* the list / text switch: a 40 px tap box in the field's corner, the field's text kept clear of it (operator, 2026-10-29: "very
+     difficult to tap") */
+  & .tfield .tf-vtog {
+    left: auto; right: 4px; top: 4px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+    opacity: 1; z-index: 2; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line);
+  }
+  & .tfield .tf-vtog .ic svg { width: 20px; height: 20px; }
+  & .tfield:has(> .tf-vtog) .tf-box, & .tfield:has(> .tf-vtog) .tf-text { padding-right: 52px; }
+  & .tf-text { font-size: 14px; }
+  /* the target list under a rule's field: the screen's width, and a row's name over its id and what it is — "А…" and
+     "Госсай…" were cut to make room for the chips beside them */
+  /* a routing field's search (routing.js .m-tfsearch): its input pinned to the top of the visible page, the catalog under it to
+     the keyboard, the page dimmed behind — a list floating from a field in a scrolling sheet broke on scroll (operator, 2026-10-29) */
+  & .tfield.m-tfsearch > .tf-box {
+    position: fixed; z-index: 121; left: 0; right: 0; top: var(--m-vvt, 0px); height: 64px; box-sizing: border-box; margin: 0;
+    padding: 10px var(--m-gutter); border: 0; border-bottom: 1px solid var(--line-solid); border-radius: 0; background: var(--surface);
+    box-shadow: 0 0 0 100vmax rgba(4, 8, 6, .55); display: flex; align-items: center;
+  }
+  & .tfield.m-tfsearch > .tf-box > :not(.tf-in) { display: none; }
+  & .tfield.m-tfsearch > .tf-box > .tf-in { flex: 1 1 auto; width: 100%; min-height: 44px; font-size: 16px; }
+  & .catpick-pop.tfpop {
+    position: fixed !important; z-index: 121; left: 0 !important; right: 0 !important; width: auto !important; max-width: none;
+    top: calc(var(--m-vvt, 0px) + 64px) !important; height: calc(var(--m-vvh, 100dvh) - 64px); max-height: none !important;
+    margin: 0; border: 0; border-radius: 0; transform: none !important; display: flex; flex-direction: column; box-sizing: border-box;
+    overflow: visible !important;   /* its Done sits on the search's line above it; the list scrolls itself */
+  }
+  & .catpick-pop.tfpop .catpick-list { flex: 1 1 auto; min-height: 0; max-height: none !important; overflow: auto; overscroll-behavior: contain; }
+  /* its Done floating at the bottom right (operator, 2026-10-29; no pager: the list grows as it scrolls). With the keyboard up a phone's
+     browser can lay its own bar over the bottom of the visible page (Brave): both stand --m-kbpad higher then (ui.js) */
+  & .catpick-pop.tfpop > .m-tfdone { position: absolute; right: var(--m-gutter); bottom: calc(14px + var(--m-kbpad, 0px)); z-index: 2;
+    min-height: 48px; padding: 0 22px; border-radius: 999px; font-size: 15px; box-shadow: 0 8px 24px -6px rgba(0, 0, 0, .55); }
+  & .catpick-pop.tfpop .catpick-list { padding-bottom: calc(76px + var(--m-kbpad, 0px)); }   /* the last row clear of it */
+  & .catpick-pop .catrow { flex-wrap: wrap; row-gap: 4px; }
+  & .catpick-pop .catrow-main { flex: 1 1 100%; min-width: 0; }
+  & .catpick-pop .catrow-l1 { flex-wrap: wrap; row-gap: 2px; }
+  & .catpick-pop :is(.catrow-title, .catrow-l2) { white-space: normal; overflow: visible; text-overflow: clip; font-size: 14px; }
+  & .catpick-pop .catrow-right { flex: 1 1 100%; justify-content: flex-start; flex-wrap: wrap; gap: 6px; align-self: auto; }
+  & .catpick-pop .catrow { min-height: 52px; }
+  & .tf-box { min-height: 56px; }
+  & .tf-in { min-width: 0; flex: 1 1 160px; font-size: 15px; padding: 6px 2px; }
+  & .tf-foot { align-items: center; gap: 8px 10px; font-size: 12px; }
+  & .tf-lead { position: static; transform: none; width: auto; left: auto; top: auto; }
+  & .tf-lead .xbtn { width: 32px; height: 32px; }
+  & .tf-foot .tf-trail { flex: 1 0 100%; margin: 0; flex-wrap: wrap; row-gap: 6px; }
+  & :is(.tf-trail .rrdest, .tf-trail .selwrap, .tf-trail:has(.whochip) .rrdest) { flex: 1 1 0; width: auto; min-width: 0; }
+  & .tf-trail .rrgear { width: 40px; height: 40px; }
+  & .rrfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; margin-top: 10px; }
+  & .rrfoot > .rrfoot-lead { flex: 1 0 100%; flex-wrap: wrap; gap: 8px; }
+  & .rrfoot-lead .btn-mini { margin-left: 0; min-height: 44px; flex: 1 0 100%; justify-content: center; }
+  & .rrfoot-label { margin: 4px 0 0; flex: 1 0 100%; }
+  & .rrfoot > .tf-trail { flex: 1 0 100%; margin: 0; }
+  & .msheet-it:disabled { opacity: .45; }
+  & .msheet-note { margin: 4px var(--m-gutter) 8px; }
+  & .noderibbon { flex-wrap: wrap; gap: 8px; }
+  & .health-cols { grid-auto-flow: row; grid-auto-columns: auto; gap: 12px; }
+  & .hcol-l { font-size: 10.5px; }
+  & .hcol-v { font-size: 13px; }
+  & .lanfold > summary { min-height: 44px; display: flex; align-items: center; color: var(--brand); font-weight: 600; font-size: 14px; cursor: pointer; }
+  & .lanfold > .lanmsg { margin-top: 2px; }
+  /* a panel's header actions wrap under its title instead of running off the card */
+  & .panel-head { flex-wrap: wrap; row-gap: 8px; }
+
+  /* ───── Settings (T2 for Display and Authentication, T3 for the rest): a list of sections, then one section (hook 3). The
+     list keeps the dirty dots; a section has "‹ Panel settings" over it and its Back goes up to the list. A section's wide
+     block scrolls inside its card, never the page ───── */
+  & .setbody { flex-direction: column; gap: 12px; }
+  & .setbody:not(.m-list) .setrail { display: none; }
+  & .setbody.m-list .setpane > :not(.setfoot) { display: none; }
+  & .setbody.m-list .setrail {
+    position: static; width: 100%; flex-direction: column; flex-wrap: nowrap; gap: 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+  }
+  & .setrail-i { min-height: 52px; padding: 0 var(--m-gutter); border-radius: 0; font-size: 15.5px; color: var(--ink); }
+  & .setrail-i + .setrail-i { border-top: 1px solid var(--line); }
+  & .setrail-i::after { content: "›"; margin-left: auto; padding-left: 10px; color: var(--faint); font-size: 20px; }
+  & .setrail-i .dirtydot { margin-left: 10px; }
+  & .setpane { width: 100%; }
+  & .setpane > .card { overflow-x: auto; padding: 16px 14px; }
+  & .m-setback {
+    display: flex; align-items: center; gap: 6px; min-height: 44px; margin: -6px 0 6px; padding: 0; border: 0; background: none;
+    color: var(--brand); font: 600 14px var(--sans); cursor: pointer;
+  }
+  & .m-setcur { color: var(--ink); margin-left: 4px; }
+  & .m-setcur::before { content: "/"; color: var(--faint); margin-right: 8px; }
+  & .setfoot {
+    position: sticky; bottom: calc(var(--m-tabbar) + var(--m-safe-b)); z-index: 5; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    margin: 12px calc(-1 * var(--m-gutter)) 0; padding: 10px var(--m-gutter); background: var(--surface); border-top: 1px solid var(--line);
+  }
+  & .setfoot > :not(.btn) { grid-column: 1 / -1; }
+  & .setfoot > .grow { display: none; }
+  & .setfoot .btn { min-width: 0; min-height: 44px; padding: 0 8px; }
+  & .setfoot:has(> .m-setmenu) { grid-template-columns: 1fr 1fr 1fr; }   /* Back · Open menu · Save */
+  & .setfoot > .m-setmenu { color: var(--brand); }
+  /* the way back to the list of sections: it opens the list in place, not the screen before — its arrow points down (operator) */
+  & .m-setback .ic { transform: rotate(-90deg); }
+  /* …and it stays under the app bar while the section scrolls, so another section is one tap away from anywhere (operator) */
+  & .m-setback {
+    position: sticky; top: calc(56px + env(safe-area-inset-top, 0px)); z-index: 20; box-sizing: border-box; width: calc(100% + 2 * var(--m-gutter));
+    margin-left: calc(-1 * var(--m-gutter)); margin-right: calc(-1 * var(--m-gutter)); padding: 0 var(--m-gutter);
+    background: var(--bg); box-shadow: 0 1px 0 var(--line);
+  }
+  /* polish pass (2026-10-29): a choice of three (who can reach these networks, who can open connections) stacks, one per line,
+     instead of two and an orphan */
+  & .dpsw.netsw-share:has(> :nth-child(3)) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  & .dpsw.netsw-share:has(> :nth-child(3)) > button { min-height: 40px; }
+  /* a pending node's Restore / move: a whole row under the four cells, in plain words */
+  & .dh-ver > .iconbtn.recover { grid-column: 1 / -1; flex-direction: row; gap: 8px; min-height: 44px; height: auto; text-transform: none; letter-spacing: 0; font: 600 14px var(--sans); }
+  /* …folded under their heading (iface.js awgFold): a row with a chevron that turns when open */
+  & .m-awgfold > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; list-style: none; cursor: pointer; }
+  & .m-awgfold > summary::-webkit-details-marker { display: none; }
+  & .m-awgfold > summary::after {
+    content: ""; margin-left: auto; width: 7px; height: 7px; border-right: 1.8px solid var(--dim); border-bottom: 1.8px solid var(--dim);
+    transform: rotate(45deg); transition: transform .15s ease;
+  }
+  & .m-awgfold[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
+  & .m-awgfold > summary .ig-l { margin: 0; }
+  /* an interface's AmneziaWG values: their list takes the card's width and flows, the short ones beside each other */
+  & .ig-item:has(> .ig-v > span + span) { grid-column: 1 / -1; }
+  & .ig-item > .ig-v:has(> span + span) { display: flex; flex-wrap: wrap; column-gap: 20px; row-gap: 2px; }
+  /* a card's own Save (the account's) is the width of the card and thumb-sized */
+  & :is(.screen .card > .btn-primary:last-child, .screen .card > div:last-child > .btn-primary:only-child) { width: 100%; min-height: 44px; justify-content: center; margin-top: 6px; }
+  /* a section's caption wraps under its title instead of being cut (Protection's "live · what blocking caught …") */
+  & .section-title { flex-wrap: wrap; row-gap: 2px; }
+  & .section-title .count { white-space: normal; overflow: visible; text-overflow: clip; }
+
+  /* ───── Settings, a section at a time (operator, 2026-10-29: "go over the settings screens properly"): one column; a section's
+     description quieter than its controls; no row of controls squeezed into columns a word wide; nothing past the edge ───── */
+  & .setpane .card > p.hint, & .setpane .card > .hint:not(.err, .warnish, .warn, .vk-warn) { font-size: 14px; line-height: 1.55; color: var(--dim); }
+  & .field .hint { font-size: 12.5px; line-height: 1.5; }
+  /* a dropdown in a form shows its whole choice, on two lines if it must */
+  & .field .dropdown .ddbtn { min-height: 44px; height: auto; padding-top: 8px; padding-bottom: 8px; }
+  & .field .dropdown .ddlbl { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; text-align: left; }
+  & .setpane .row2:has(input[type=password]) { flex-direction: column; gap: 15px; }
+  /* a choice of two to four (AmneziaWG version, a link type): the row's whole width, equal cells; four go two to a row */
+  & .dpsw.awgsw { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; width: 100%; }
+  & .dpsw.awgsw:has(> :nth-child(4)) { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  & .dpsw.awgsw > button { min-height: 40px; white-space: nowrap; }
+  /* a sentence and its button (Update all lists now, Check for updates): the sentence, the button under it at full width */
+  & .georefresh { flex-direction: column; align-items: stretch; gap: 8px; }
+  & .georefresh > .btn { min-height: 44px; justify-content: center; }
+  /* Routing & Blocking: what the node runs, its health above the caption; the four modes across the top of the card, the
+     chosen one's name and its lines under them at full width */
+  & .rmode-runbar { flex-direction: column; align-items: stretch; gap: 8px; }
+  & .rmr-left, & .rmr-right { align-items: flex-start; flex: none; min-width: 0; }
+  & .rmr-rtop { flex-wrap: wrap; }
+  & .rmode-banner { display: flex; flex-direction: column; align-items: stretch; padding: 12px 14px 14px; }
+  & .rd-headside { order: -1; align-items: stretch; margin-bottom: 12px; }
+  & .rd-headside .rmode-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; width: 100%; align-self: stretch; }
+  & .rd-headside .rmtab { width: auto; min-height: 48px; }
+  & .rd-adds { font-weight: 600; }
+  & .rd-spec { grid-template-columns: max-content minmax(0, 1fr); }
+  /* a section's tabs under its caption, not beside it */
+  & .rltabs { flex-wrap: wrap; row-gap: 8px; }
+  & .rltab-cap { flex: 1 0 100%; }
+  & .rltab-group { flex: 1 0 100%; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  & .lgrid-head { flex-wrap: wrap; row-gap: 8px; }
+  /* a list row (Routing's provider lists, Blocking's categories): its name on the first line, what it is under it — an
+     eight-column grid ran off the screen and collapsed the name to nothing (operator, 2026-10-29) */
+  & .lgrow { grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 6px 10px; padding: 10px 4px; }
+  & .lgrow > .lg-cat { grid-column: 1 / -1; min-width: 0; }
+  & .lgrow .lg-catmain { flex-wrap: wrap; row-gap: 4px; }
+  & .lgrow > .lg-fleet { min-width: 0; }
+  & .lgrow .lg-used { flex-wrap: wrap; gap: 4px; }
+  /* ───── Blocking's categories (operator, 2026-10-29: "looks like it's not from this project"): a card each, drawn as a user's
+     row is — the chevron in the left lane, the name with its lists under it, the switch at the right; then one row of
+     facts under the name (default, size, where it is on, what it matches). Add list belongs to an open category, at its foot;
+     its lists sit inside the card under a line ───── */
+  & .lgrid:has(> .bkitem) { gap: 8px; }
+  & .bkitem, & .bkitem.open, & .bkitem.open + .bkitem {
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden;
+  }
+  & .bkitem.open { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
+  & .bkrow {
+    position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+    padding: 12px 14px 12px 40px; min-height: 64px; box-sizing: border-box;
+  }
+  & .bkrow:hover { background: none; }
+  & .bkrow > .bk-cat { order: 0; flex: 1 1 calc(100% - 60px); min-width: 0; }
+  & .bkrow > .lg-pull { order: 1; flex: none; margin-left: auto; align-self: flex-start; }
+  & .bkrow > :not(.bk-cat, .lg-pull, .bk-addwrap) { order: 2; }
+  & .bkrow > :is(.bk-kind, .bk-size):empty { display: none; }
+  & .bkrow > .bk-defchip { font-size: 12px; padding: 4px 10px; min-height: 28px; }
+  & .bkrow > .bk-fleet .fleet-trig { min-height: 28px; }
+  & .bkrow > .bk-addwrap { order: 3; display: none; }
+  & .bkrow.open > .bk-addwrap { display: flex; flex: 1 1 100%; }
+  & .bkrow.open > .bk-addwrap > .btn { flex: 1 1 auto; justify-content: center; min-height: 40px; }
+  & .bk-catline { display: block; }
+  & .bk-catline .lg-title { white-space: normal; overflow: visible; font-size: 15.5px; font-weight: 600; }
+  & .bk-lists { white-space: normal; margin-top: 2px; font-size: 12px; }
+  & .bk-chev {
+    position: absolute; left: 6px; top: 18px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0; color: var(--dim); transform: none !important; border: 0; background: none;
+  }
+  & .bk-chev::before {
+    content: ""; width: 7px; height: 7px; border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor;
+    transform: rotate(-45deg); transition: transform .15s ease;
+  }
+  & .bkrow.open .bk-chev { color: var(--brand); }
+  & .bkrow.open .bk-chev::before { transform: translateY(-2px) rotate(45deg); }
+  /* an open category's lists: under a line, aligned with the name; a list's name and source, what it is, then its facts */
+  & .bk-expand { padding: 0; border-top: 1px solid var(--line); }
+  & .bk-lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 12px 14px 12px 40px; border-top: 1px solid var(--line); }
+  & .bk-lrow:first-child { border-top: 0; }
+  & .bk-lrow > .bk-linfo { flex: 1 1 100%; min-width: 0; }
+  & .bk-lrow > .grow { display: none; }
+  & .bk-lrow .bk-ldesc { white-space: normal; overflow: visible; text-overflow: clip; }
+  & .bk-lrow .bk-nabadge { white-space: normal; flex: 1 1 100%; }
+  & .bk-lrow > .bk-lremove { margin-left: auto; width: 36px; height: 36px; }
+  & .bk-lrow > .catrow-info { width: 36px; height: 36px; margin: 0; }
+  /* New category: the section's add, at the width of the cards */
+  & .lgrid-head > .btn-add { flex: 1 0 100%; min-height: 44px; justify-content: center; }
+  & .lg-htitle { flex-wrap: wrap; flex: 1 1 auto; min-width: 0; row-gap: 4px; }
+  & .lg-sub { flex: 1 0 100%; margin: 0; }
+  /* Geo data providers: the switch and the colours on the first line, the provider's name, what it is and its source under them */
+  & .provrow.bprow { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 8px 12px; }
+  & .provrow.bprow > .grow { display: none; }
+  & .provrow.bprow > :not(.swt, .prov-nosw, .tswrow) { grid-column: 1 / -1; min-width: 0; }
+  & .provrow.bprow .bprov-top { flex-wrap: wrap; row-gap: 4px; width: auto; }
+  & .provrow.bprow .bprov-note { width: auto; }
+  /* Turn proxies: a fork's switch, colours, name and version on its first line; its apps and its gear on the next */
+  & .cl-row { flex-wrap: wrap; row-gap: 8px; }
+  & .cl-row > .grow { flex: 1 0 100%; height: 0; }
+  & .cl-row .tf-plats { margin-right: 0; flex-wrap: wrap; }
+  & .cl-row .tf-gear { margin-left: auto; }
+  /* Interfaces → peer health: the switch and its badge on a line, what it means under them */
+  & .condrow { grid-template-columns: 44px auto minmax(0, 1fr); gap: 8px 12px; }
+  & .condrow .cond-t { grid-column: 1 / -1; font-size: 13px; }
+  /* Subscriptions → address & certificate: each name over its value */
+  & .subaddr-row { flex-direction: column; gap: 2px; align-items: stretch; }
+  & .subaddr-k, & .subaddr.wide .subaddr-k { flex: none; }
+  /* WARP & exits: a card per exit instead of an eight-column table — its title and type, the device and the latency, the exit's
+     address, then its two switches (with their names) and its actions */
+  & .exgrid.g8 { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+  & .exgrid.g8 > .exg-r:first-child { display: none; }
+  & .exgrid.g8 > .exg-r {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  }
+  & .exgrid.g8 > .exg-r > .exg-c { padding: 0; border: 0; background: none !important; min-width: 0; }
+  & .exgrid.g8 > .exg-r > :nth-child(1) { grid-column: 1; grid-row: 1; font-size: 15px; font-weight: 600; }
+  & .exgrid.g8 > .exg-r > :nth-child(3) { grid-column: 2; grid-row: 1; justify-self: end; }
+  & .exgrid.g8 > .exg-r > :nth-child(2) { grid-column: 1; grid-row: 2; font-size: 13px; }
+  & .exgrid.g8 > .exg-r > :nth-child(5) { grid-column: 2; grid-row: 2; justify-self: end; font-size: 13px; }
+  & .exgrid.g8 > .exg-r > :nth-child(4) { grid-column: 1 / -1; grid-row: 3; font-size: 13px; }
+  & .exgrid.g8 > .exg-r > :nth-child(6) { grid-column: 1; grid-row: 4; justify-content: flex-start; }
+  & .exgrid.g8 > .exg-r > :nth-child(7) { grid-column: 1; grid-row: 5; justify-content: flex-start; }
+  & .exgrid.g8 > .exg-r > :nth-child(6), & .exgrid.g8 > .exg-r > :nth-child(7) { text-align: left; gap: 10px; }
+  & .exgrid.g8 > .exg-r > :nth-child(6)::before, & .exgrid.g8 > .exg-r > :nth-child(7)::before { content: attr(data-lbl); min-width: 96px; font-size: 13px; color: var(--dim); text-align: left; }
+  & .exgrid.g8 > .exg-r > :nth-child(8) { grid-column: 2; grid-row: 4 / span 2; justify-self: end; align-self: center; }
+  & .exgrid.g8 .exg-ed, & .exgrid.g8 .exg-qr, & .exgrid.g8 .exg-rm { width: 40px; height: 40px; }
+  /* the node's "Ways out" sheet (g8x): the same card — its title a field, the type beside it; the device; then what it leaves
+     as, what uses it and its two switches, each with its name; the actions at the foot */
+  & .exgrid.g8x { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+  & .exgrid.g8x > .exg-r:first-child { display: none; }
+  & .exgrid.g8x > .exg-r {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; padding: 12px;
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  }
+  & .exgrid.g8x > .exg-r > .exg-c { padding: 0; border: 0; background: none !important; min-width: 0; justify-content: flex-start; text-align: left; }
+  /* the title field the card's width; the device and its type on the line under it (operator) */
+  & .exgrid.g8x > .exg-r > :nth-child(1) { grid-column: 1 / -1; grid-row: 1; }
+  & .exgrid.g8x > .exg-r > :nth-child(2) { grid-column: 1; grid-row: 2; }
+  & .exgrid.g8x > .exg-r > :nth-child(3) { grid-column: 2; grid-row: 2; justify-self: end; }
+  & .exgrid.g8x > .exg-r > :is(:nth-child(4), :nth-child(5), :nth-child(6), :nth-child(7)) { grid-column: 1 / -1; gap: 10px; }
+  & .exgrid.g8x > .exg-r > [data-lbl]::before { content: attr(data-lbl); flex: 0 0 96px; font-size: 13px; color: var(--dim); }
+  & .exgrid.g8x > .exg-r > :nth-child(8) { grid-column: 1 / -1; justify-content: flex-end; }
+  & .exgrid.g8x .exg-c input { min-height: 40px; }
+  & .exgrid.g8x .exg-c .dropdown { flex: 1 1 auto; min-width: 0; }
+  /* a section's add button at its top (WARP & exits), and the sheet that asks which kind: a row each, its word and a line */
+  /* ───── the second full check (2026-10-29, a crawler tapping every control): touch sizes and type that a phone needs ─────
+     a switch: a thumb-sized track (44×26) and the knob to match; its hidden input still covers it */
+  & .swt { width: 44px; height: 26px; }
+  & .swt .track { width: 44px; height: 26px; }
+  & .swt .knob { left: 4px; top: 4px; width: 18px; height: 18px; }
+  & .swt input:checked ~ .knob { transform: translateX(18px); }
+  /* small buttons a thumb could miss: 36 px tall at the least, an icon-only one 36 square */
+  & :is(.btn-mini, .snbadge, .seg, .lv-lvb, .btn-add, .chiprow > .btn) { min-height: 36px; }
+  & :is(.rmode-reset-ic, .tf-gear, .iconbtn.tf-gear) { width: 36px; height: 36px; }
+  & .linkbtn { padding: 6px 0; margin: -6px 0; }
+  & .advtoggle { min-height: 40px; }
+  & .prov-repo { display: inline-flex; align-items: center; min-height: 32px; }
+  /* type a phone can read: a field's label, a dropdown's group, the small names under an app */
+  & :is(.field > label, .field > label > span, .toggle-row > span) { font-size: 11.5px; }
+  & .ddgrp { font-size: 11px; }
+  & :is(.osapp-auth, .rmc-tag, .lg-id, .lg-unused, .apiep-m) { font-size: 11px; }
+  /* a dropdown's choices whole, on two lines if they must */
+  & .ddopt { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; min-height: 40px; }
+  /* a switch's hit area reaches past its track (the label is the control) */
+  & .swt::after { content: ""; position: absolute; inset: -9px -6px; }
+  /* more small controls the crawler found: a chart's range tabs, a device's Primary switch, a missing link's Restore, a
+     facet's head in the Logs filters, an online count inside a card row */
+  & :is(.rangetabs .rtab, .primtog, .mi-restore, .lv-mphead) { min-height: 34px; }
+  /* a chart's head (Traffic, Throughput): its name and the range tabs on ONE line (operator, 2026-10-29) — the section icon
+     not drawn, the tabs share the rest of the line in equal cells, their words a size down */
+  & .panel-head:has(> .rangetabs) { flex-wrap: wrap; gap: 8px 10px; }   /* one line where 170 px of tabs fit beside the name; on a smaller phone the tabs take a line of their own, whole */
+  & .panel-head:has(> .rangetabs) > .panel-ic { display: none; }
+  & .panel-head:has(> .rangetabs) > h3 { flex: none; }
+  & .panel-head:has(> .rangetabs) > .grow { display: none; }
+  & .panel-head > .rangetabs { flex: 1 1 170px; min-width: 0; display: flex; margin-left: auto; }
+  & .panel-head > .rangetabs > .rtab { flex: 1 1 0; min-width: 0; padding: 0 2px; font-size: 9.5px; letter-spacing: 0; justify-content: center; text-align: center; }
+  /* range tabs anywhere else (a mesh link's sheet, a group's or a user's traffic): the width of what holds them, five equal
+     cells (operator, 2026-10-29) */
+  & :not(.panel-head) > .rangetabs { display: flex; width: 100%; box-sizing: border-box; }
+  /* a traffic sheet's head (a user's, a group's): "Traffic", then its ranges on a line of their own at the full width in equal
+     tabs (operator, 2026-10-29); a custom period's two dates under them, at the right */
+  /* a server's client apps sheet (peer-ui.js): Device and App each a line, the label at the left, the picker the rest of the
+     width — side by side the App label was squeezed to its last letter (operator, 2026-10-29) */
+  & .turncfg-devrow { flex-direction: column; align-items: stretch; gap: 10px; }
+  & .turncfg-devrow > :is(.turncfg-os, .turncfg-app) { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 10px; margin: 0; }
+  & .turncfg-devrow > :is(.turncfg-os, .turncfg-app) > :not(label) { min-width: 0; width: 100%; }
+  & .turncfg-devrow :is(.osdd-btn, .turncfg-app .appdd .osdd-btn) { width: 100%; min-height: 44px; }
+  & .tblock-head { flex-wrap: wrap; row-gap: 8px; }
+  & .tblock-head > .grow { display: none; }
+  & .tblock-head > .trange { flex: 1 0 100%; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+  & .trange > .rangetabs > .rtab { white-space: normal; line-height: 1.15; }   /* "Свой период" takes two lines on a 320 px phone rather than being cut */
+  & .trange-dates { align-self: flex-end; }
+  & .rangetabs > .rtab { flex: 1 1 0; min-width: 0; justify-content: center; text-align: center; }
+  /* a node's Traffic (it has Peers / Mesh too): always two lines (operator, 2026-10-29) — the name, Peers / Mesh at the right;
+     then the five range tabs across the width in equal cells */
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) { flex-wrap: wrap; }
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) > .hdr-lead { margin-left: auto; }
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) > .rangetabs { flex: 1 0 100%; margin-left: 0; }
+  & .panel-head:has(> .rangetabs):has(> .hdr-lead) > .rangetabs > .rtab { flex: 1 1 0; }
+  & .ifrow .m-onltap { padding: 8px 6px; margin: -8px -6px; }
+  /* a label over a value (a tile's, an interface's facts, a node's health, a sort's) at 11 px at the least */
+  & :is(.stat .k, .ig-l, .hcol-l, .msort-l, .netshare-l, .act-cat) { font-size: 11px; }
+  & .m-addtop { width: 100%; min-height: 44px; justify-content: center; margin: 0 0 14px; }
+  /* a fork's client apps sheet (turn.js ServerClientsSheet): an app's name and author whole on a line, its badges under them;
+     the save line's sentence over a full-width Save; a sheet with a Back keeps it at the top left, the title under it */
+  & .cpick-opt { flex-wrap: wrap; row-gap: 6px; height: auto; min-height: 48px; padding-top: 8px; padding-bottom: 8px; }
+  & .cpick-opt .ce-name { flex: 1 1 100%; min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; font-size: 15px; }
+  & .cpick-opt .ce-badges { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+  & .cpick-opt.cpick-none .cpick-none-hint { flex: 1 1 100%; text-align: left; margin: 0; }
+  & .sheet-body:has(> .osapp) > div:last-child > div:last-child { flex-wrap: wrap; gap: 10px; }
+  & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .faint { flex: 1 1 100%; }
+  & .sheet-body:has(> .osapp) > div:last-child > div:last-child > .btn-primary { flex: 1 1 100%; min-height: 44px; justify-content: center; }
+  /* a sheet with a Back keeps it on the title's line, at its right edge as on every other sheet; a long title wraps beside it */
+  /* a head with its own controls (a turn-family sheet: the fork line, the version gear, Drops, Turn IPs): the title and the X on
+     the first line, centred together; the rest on the next — the fork at the left, the buttons at the right (operator, 2026-10-29) */
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) { align-items: center; row-gap: 8px; }
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) > h3 { order: 0; flex: 1 1 calc(100% - 60px); }
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) > .x { order: 1; }
+  & .sheet-head:has(> .m-th-fork)::after { content: ""; order: 1; flex: 0 0 100%; height: 0; }   /* the line break after the X */
+  & .sheet-head:has(> :is(.turnips-wrap, .m-th-fork)) > :not(h3, .x) { order: 2; margin-left: 0; }
+  & .sheet-head:has(> .turnips-wrap):not(:has(> .m-th-fork)) > h3 + :not(.x) { margin-left: auto; }
+  & .sheet-head .m-th-kind { display: inline-block; margin-right: 8px; padding: 2px 6px; border-radius: 5px; vertical-align: 2px;
+    background: var(--surface-2); color: var(--dim); font: 600 11px/1.3 var(--mono); letter-spacing: .04em; }
+  & .sheet-head > .m-th-fork { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 500 12px/1.3 var(--mono); color: var(--ink-2); }   /* gives way to the buttons: they stay on one line */
+  & .sheet-head > .m-th-fork .sheet-ver { margin-left: 4px; }
+  & .sheet-head > .sheet-verset { flex: none; width: 36px; height: 32px; border: 1px solid var(--line-solid); border-radius: 8px; justify-content: center; }
+  /* the head's buttons one height (operator, 2026-10-29) */
+  & .sheet-head:has(> .m-th-fork) > :is(.drops-pop, .turnips-wrap) { display: inline-flex; padding: 0; margin: 0; }
+  & .sheet-head:has(> .m-th-fork) .turnips-hd { display: inline-flex; align-items: center; height: 32px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; margin: 0; }   /* the line's gap alone between them */
+  & .sheet-head:has(> .sheet-back) { flex-wrap: nowrap; align-items: flex-start; }
+  & .sheet-head:has(> .sheet-back) > h3 { flex: 1 1 0; min-width: 0; }
+  & .sheet-head:has(> .sheet-back) > .sheet-back { flex: none; margin: 0; }
+  /* Interfaces → colours: two even columns, each protocol's swatches then its name */
+  & .palrow { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+  & .palrow > .palcell { width: auto !important; min-width: 0; margin: 0 !important; }
+  /* adding a device to a node's ways out (its own sheet on a phone): each field the sheet's width */
+  & .overlay.show .sheet .exname { flex-direction: column; align-items: stretch; gap: 14px; margin: 0; }
+  & .overlay.show .sheet .exname > .exname-f { flex: none; min-width: 0; width: 100%; }
+  /* a node page section's head (Interfaces, Turn proxies): ONE line (operator, 2026-10-29) — its name and count, then every
+     action at the right: logs, settings, "+ New" (the section says what is new). The section's own icon is not drawn here, to
+     give the line its room; a rare second add (a turn proxy on a node with none) wraps, at the right */
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) { flex-wrap: wrap; justify-content: flex-end; row-gap: 10px; column-gap: 8px; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .panel-ic { display: none; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .grow { order: 1; flex: 1 1 0; min-width: 0; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini.ico { order: 3; width: 40px; min-height: 40px; }
+  & .panel-head:has(> .btn-mini.ico):has(> .btn-mini:not(.ico)) > .btn-mini:not(.ico) { order: 4; min-height: 40px; padding: 0 12px; }
+  /* an interface card says its name is the way to edit it: the pencil a desktop shows on hover is always there, in a tap box */
+  & .ifc-edit { padding: 6px 8px; margin: -6px -6px -6px -6px; }
+  & .ifc-pic { opacity: 1; width: 28px; height: 28px; justify-content: center; border: 1px solid var(--line); border-radius: 8px; margin-left: 4px; }
+  & .ifc-pic .ic { color: var(--brand); }
+  /* an interface's details panel: its actions (Start or Stop, Restart, Edit, Delete) in one row of equal cells, each an icon
+     over its word, as a node's page has them — not three buttons on two lines with no edge in common */
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head { flex-wrap: wrap; row-gap: 10px; }
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .grow { flex: 1 0 100%; height: 0; order: 1; }   /* the break before the row */
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .btn-mini {
+    flex: 1 1 0; min-width: 0; min-height: 56px; flex-direction: column; gap: 4px; justify-content: center; padding: 6px 4px;
+    font-size: 12px; white-space: normal; line-height: 1.2; text-align: center; order: 2;
+  }
+  & .panel:has(> .panel-body > .iface-grid) > .panel-head > .btn-mini .ic svg { width: 18px; height: 18px; }
+  & .m-pick { display: flex; flex-direction: column; margin: 0 calc(-1 * var(--m-gutter)); }
+  & .m-pick-row {
+    display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 10px var(--m-gutter); border: 0; border-top: 1px solid var(--line);
+    background: none; color: var(--ink); text-align: left; font: inherit; cursor: pointer;
+  }
+  & .m-pick-row:first-child { border-top: 0; }
+  & .m-pick-ic { flex: none; width: 36px; height: 36px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand); }
+  & .m-pick-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  & .m-pick-main b { font-size: 15px; font-weight: 600; }
+  & .m-pick-main span { font-size: 13px; color: var(--dim); line-height: 1.4; }
+  /* Turn proxies → collected TURN IPs (turn.js): a row per address — the IP and how long ago on its line with the ×, the
+     forks that collected it under them, wrapping across the row; no column headers (they overlapped the addresses) */
+  & .tipgrid-h { display: none; }
+  & .tiprow { grid-template-columns: minmax(0, 1fr) auto 36px; grid-template-areas: "ip last x" "by by by"; gap: 6px 10px; padding: 10px 12px; }
+  & .tiprow > .tip-ip { grid-area: ip; font-size: 13.5px; }
+  & .tiprow > .tip-last { grid-area: last; white-space: nowrap; }
+  & .tiprow > .tip-by { grid-area: by; }
+  & .tiprow > :last-child { grid-area: x; justify-self: end; }
+  /* the VK call link pool (Settings → Turn proxies, and its sheet): a link on its own line, its date, holders and buttons
+     under it; the column sorts have no columns to sit over here */
+  & .vkpool-row { flex-wrap: wrap; row-gap: 6px; }
+  & .vkpool-row > .vkbox { flex: 1 0 100% !important; min-height: 44px; }
+  & .vkpool-row > :nth-child(2) { margin-left: auto; }
+  & .vkpool-head .vkh, & .vkpool-head .vkh-pad { display: none; }
+  & .vkpool-tot { flex-wrap: wrap; row-gap: 2px; }
+  & .vkpool-pager { flex-wrap: wrap; gap: 8px; }
+  /* its foot: Add links on a line of its own, then the pages and View all */
+  & .vkpool-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  & .vkpool-bar > .btn:first-child { flex: 1 0 100%; min-height: 44px; justify-content: center; }
+  & .vkpool-bar .vkpool-pager-in { flex: 1 1 auto; display: flex; align-items: center; gap: 8px; }
+  & .vkpool-bar .btn { min-height: 40px; }
+
+  /* ───── the Logs view (T2): already full screen; clear of the notch and the home indicator, a thumb-sized close ───── */
+  & .lv-full { padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: calc(12px + var(--m-safe-b)); }
+  & .lv-full .lv-x { min-width: 44px; min-height: 44px; }
+
+  /* ───── the More sheet (app.js MoreSheet) ───── */
+  & .msheet { margin: -8px calc(-1 * var(--m-gutter)); }
+  & .sheet-head .m-brand { display: inline-flex; align-items: center; gap: 10px; vertical-align: middle; }   /* More's title: the app bar's mark */
+  & .msheet-g + .msheet-g { border-top: 1px solid var(--line); }
+  & .msheet-g { padding: 4px 0; }
+  & .msheet-it {
+    display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 0 var(--m-gutter);
+    border: 0; background: none; color: var(--ink); font: 500 15.5px var(--sans); text-align: left; cursor: pointer;
+  }
+  & .msheet-it .ic, & .msheet-it > span:first-child { display: inline-flex; color: var(--ink-2); flex: none; }
+  & .msheet-it svg { width: 21px; height: 21px; }
+  & .msheet-it.danger, & .msheet-it.danger .ic { color: var(--dangling); }
+  & .msheet-l { flex: 1 1 auto; min-width: 0; }
+  & .msheet-v { margin-left: auto; font-size: 13.5px; color: var(--dim); }
+  & .msheet-ver { border-top: 1px solid var(--line); padding: 12px var(--m-gutter) 6px; font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  & .msheet-verl { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+  & .msheet-verl b { color: var(--ink-2); font-weight: 600; }
+  & .msheet-ver p { margin: 6px 0 0; font-family: var(--sans); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+}
+
+@keyframes m-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+@keyframes m-sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }

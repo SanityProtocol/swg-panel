@@ -29,7 +29,7 @@ PERTURB = {
                'run(["iptables", "-t", "nat", "-A", "PREROUTING"] + xrule(S, P, proto))'),
     "noorder": ("    if order_bad:                                              # a RETURN below a DNAT exempts nothing",
                 "    if False:                                                  # a RETURN below a DNAT exempts nothing"),
-    "substring": ('        if tag == SMARTDNS_TAG and "-j DNAT" in ln:', '        if SMARTDNS_TAG in ln:'),
+    "substring": ('        if tag == tag_dnat and "-j DNAT" in ln:', '        if tag_dnat in ln:'),
 }
 if MODE:
     a, b = PERTURB[MODE]

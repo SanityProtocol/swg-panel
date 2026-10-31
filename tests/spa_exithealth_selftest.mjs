@@ -40,17 +40,33 @@ const PWARP = process.argv.includes("--perturb-warp");
 // `--perturb-stalled`: the row ignores the node's dead-tunnel verdict (how it read before `no_traffic` existed)
 // and section [5] has to be what goes red.
 const PSTALLED = process.argv.includes("--perturb-stalled");
-const PERTURB = PSTALE || PWARP || PSTALLED || process.argv.includes("--perturb");
+// `--perturb-recover`: the row ignores `back_in` (a tunnel carrying again still reads "passes no traffic") — [5b] goes red.
+const PRECOVER = process.argv.includes("--perturb-recover");
+// `--perturb-recstale`: a stale node's last `back_in` is still believed — [5b] goes red.
+const PRECSTALE = process.argv.includes("--perturb-recstale");
+// `--perturb-adopted`: an adopted device's own verdict is ignored (how the adopted arm read before SOCKS5 P2) — [9] goes red.
+const PADOPTED = process.argv.includes("--perturb-adopted");
+// `--perturb-adstale`: a stale node's last `back_in` is believed for an adopted device — [9] goes red.
+const PADSTALE = process.argv.includes("--perturb-adstale");
+const PERTURB = PSTALE || PWARP || PSTALLED || PRECOVER || PRECSTALE || PADOPTED || PADSTALE || process.argv.includes("--perturb");
 const SRC = path.join(ROOT, "js", "routing.js");
 let mod = SRC;
 
 if (PERTURB) {
   let s = fs.readFileSync(SRC, "utf8");
-  const guards = PWARP ? [
+  const guards = PADSTALE ? [
+    ["    const fresh = !nodeStale((node || {}).id);", "    const fresh = true;"],
+  ] : PADOPTED ? [
+    ["    const nt = l.no_traffic;\n", "    const nt = null;\n"],
+  ] : PWARP ? [
     // the shipped shape: no provider arm at all, so a WARP exit gets the pasted-profile instruction
     ['said((ex.provider || "warp") === "warp"', "said((false)"],
   ] : PSTALE ? [
     ["&& !nodeStale((node || {}).id))", ")"],
+  ] : PRECSTALE ? [
+    ["&& !nodeStale((node || {}).id)) return { state: \"recovering\"", ") return { state: \"recovering\""],
+  ] : PRECOVER ? [
+    ["if (l.no_traffic && Number.isFinite(l.no_traffic.back_in) && !nodeStale((node || {}).id)) return", "if (false) return"],
   ] : PSTALLED ? [
     // ⚠️ ITS OWN ARM. Without one the flag fell through to the default guards below: something went red, and
     // none of it was section [5] — a perturbation of a flag nothing reads.
@@ -185,6 +201,44 @@ check("[5] …and both say it recovers by itself", /by itself/.test(offWhy) && /
 check("[5] a node too old to judge (no `no_traffic`) reads exactly as before", st({}, {}) === "ok", st({}, {}));
 check("[5] it draws a clickable fault marker", exitHealthMark(exitHealth(ex({}, gone), NODE)) !== null);
 
-done(PERTURB, PWARP ? "the WARP arm of the never-answered advice removed"
+// ── [5b] (S9d) carrying again, the node waits a minute before it routes back — the row says so, not "no traffic" ──
+const back = { no_traffic: { since: 1789482000, why: "TimeoutError: timed out", back_in: 37 }, trace: { ip: "198.51.100.9" }, handshake: 12 };
+const dinEx = { profile: { listen_port: 51820, address: "10.254.0.0" } };
+check("[5b] a judged-dead tunnel carrying again reads `recovering`", st({}, back) === "recovering", st({}, back));
+check("[5b] …a dial-in one too, not \"passes no traffic — check NAT\"", (() => { const h = exitHealth(ex(dinEx, back), NODE);
+  return h.state === "recovering" && !/check NAT/.test(h.why); })(), exitHealth(ex(dinEx, back), NODE));
+check("[5b] …says traffic moves back within a minute — no countdown a 5 s poll cannot age", /within a minute/.test(why({}, back))
+      && !/\d+ s\b/.test(why({}, back)), why({}, back));
+Store.recon.nodeStatus = { n1: "stale" };
+check("[5b] …but a node gone dark is not taken at its last word: the row falls back to the stalled reading",
+      st({}, back) === "stalled", st({}, back));
+Store.recon.nodeStatus = { n1: "live" };
+check("[5b] …progress, not a fault: no clickable \"This exit isn't working\"", exitHealth(ex({}, back), NODE).tone === "busy", exitHealth(ex({}, back), NODE));
+check("[5b] …still saying where the traffic is meanwhile", /node's own IP/.test(why({ killswitch: false }, back)), why({ killswitch: false }, back));
+
+// ── [9] (S10 / SOCKS5 P2) an ADOPTED device the node judged dead — a TUN the operator runs, whose proxy died ──────────
+// `live` is the device's own report (the panel joins `snap.devexit` by device): state + verdict, never a created exit's row.
+const ADN = { id: "n1", name: "n1", exit_candidates: [{ name: "tun9", up: true }] };
+const ad = (o = {}, live = {}) => exitHealth({ id: "11223344", producer: "adopted", device: "tun9", enabled: true, ...o, live }, ADN);
+const adGone = { state: "dead", no_traffic: { since: 1789482000, why: "TimeoutError: timed out" } };
+check("[9] an adopted device the node judged dead reads `stalled`", ad({}, adGone).state === "stalled", ad({}, adGone));
+check("[9] …kill-switch OFF: the traffic goes out through the node's own IP", /node's own IP/.test(ad({ killswitch: false }, adGone).why)
+      && !/kill-switch is holding/.test(ad({ killswitch: false }, adGone).why), ad({ killswitch: false }, adGone).why);
+check("[9] …kill-switch ON: the kill-switch holds it", /kill-switch is holding/.test(ad({ killswitch: true }, adGone).why)
+      && !/own IP/.test(ad({ killswitch: true }, adGone).why), ad({ killswitch: true }, adGone).why);
+check("[9] …with the node's own words for why", /timed out/.test(ad({}, adGone).why), ad({}, adGone).why);
+check("[9] …and a clickable fault marker", exitHealthMark(ad({}, adGone)) !== null);
+const adBack = { state: "dead", no_traffic: { ...adGone.no_traffic, back_in: 20 } };
+check("[9] carrying again: `recovering`, progress not a fault", ad({}, adBack).state === "recovering" && ad({}, adBack).tone === "busy",
+      ad({}, adBack));
+Store.recon.nodeStatus = { n1: "stale" };
+check("[9] …but a stale node's last back_in is not believed", ad({}, adBack).state === "stalled", ad({}, adBack));
+Store.recon.nodeStatus = { n1: "live" };
+check("[9] a healthy adopted device (or a node too old to judge it) reads ok as before",
+      ad({}, { state: "up" }).state === "ok" && ad({}, {}).state === "ok", [ad({}, { state: "up" }), ad({}, {})]);
+check("[9] a device that is not up still reads `down` first",
+      exitHealth({ producer: "adopted", device: "tun9", live: adGone }, { id: "n1", exit_candidates: [{ name: "tun9", up: false }] }).state === "down");
+
+done(PERTURB, PADSTALE ? "a stale node's back_in believed for an adopted device" : PADOPTED ? "an adopted device's verdict ignored" : PRECSTALE ? "a stale node's back_in believed" : PRECOVER ? "the recovering state ignored" : PWARP ? "the WARP arm of the never-answered advice removed"
                     : PSTALE ? "the staleness half of `configuring` removed"
                     : PSTALLED ? "the node's dead-tunnel verdict ignored" : "both freshness guards removed");

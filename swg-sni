@@ -589,6 +589,7 @@ class Classifier:
     # The block verdicts' empty state, at class level too: a reader that builds a Classifier its own way (the gates) and never
     # loads a blocks file gets "nothing is refused by name", never an AttributeError on the packet path.
     bsrc, barr, bsel, nolearn, bmark, blocks_path, blocks_mtime = (), (), {}, frozenset(), 0, None, None
+    quiet = frozenset()                                # categories learned WITHOUT the first-hit reset (see _reload)
     sets_path, sets_mtime, set_gen = None, None, {}
 
     def __init__(self, map_path, table, reset_mark=0, learn_ttl=3600):
@@ -636,6 +637,7 @@ class Classifier:
             self.dom2cat = {}; self.pats = _empty_pats()
             self.map_mtime = self.pat_mtime = self.blocks_mtime = None
             self.bsrc, self.barr, self.bsel, self.nolearn, self.bmark = [], [], {}, frozenset(), 0
+            self.quiet = frozenset()
             return
         if mt != self.map_mtime:
             self.map_mtime = mt
@@ -672,6 +674,11 @@ class Classifier:
                 except Exception as e:
                     say(LOG_ERR, "swg-sni: blocks reload failed: %s", e)
             self.bsrc, self.barr, self.bsel, self.nolearn, self.bmark = _blocks_parse(data)
+            # `quiet` (swg-noded, PORTS B.4): categories whose every rule here is off TCP 443 — a UDP rule by name. They
+            # learn, for those ports meet the learned set, but a reset buys nothing: no rule re-routes this connection's
+            # retry. Absent or malformed → empty: every learn resets, as before.
+            q = data.get("quiet") if isinstance(data, dict) else None
+            self.quiet = frozenset(str(c) for c in q) if isinstance(q, list) else frozenset()
             if bmt is not None:
                 say(LOG_INFO, "swg-sni: loaded blocks for %d sources%s, %d categories not learned",
                     len(self.bsrc), " + arrivals" if self.barr else "", len(self.nolearn))
@@ -855,7 +862,7 @@ class Classifier:
                 key = (dst, cat)
                 ts = self.seen.get(key)
                 if ts is None or now - ts >= self.learn_ttl:   # not in the set (never learned, or timed out) → learn + RST
-                    first = True
+                    first = first or cat not in self.quiet     # …unless no rule of the category reaches TCP 443 (`quiet`)
                 elif now - ts < self.refresh_age:              # fresh → already routing in this category, nothing to do
                     continue
                 #  else: still in the set, aging → write it again to refresh its timeout (no RST on account of this one)

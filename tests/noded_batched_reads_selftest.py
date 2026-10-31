@@ -52,7 +52,7 @@ PLANTS = {
         return subprocess.CompletedProcess(cmd + ["show", iface, "dump"], 0, d.get(iface, ""), "")'''),
     "batchretry": ('''lambda: run(cmd + ["show", "all", "dump"], timeout=5), keep_failures=True)''',
                    '''lambda: run(cmd + ["show", "all", "dump"], timeout=5))'''),
-    "staleexit": ('''            _pass_forget("all-dump:", keep_failed=True)   # these probes would miss a first handshake they made (_exit_handshake)''',
+    "staleexit": ('''            _pass_forget("all-dump:", keep_failed=True)   # one taken before these probes would miss a first handshake they made''',
                   '''            pass'''),
     "forgetfailed": ('''        if not (keep_failed and getattr(_PASS[k][1], "returncode", 0) != 0):''', '''        if True:'''),
     "vethname": ('''        m = re.match(r"^\\d+:\\s+([^:@\\s]+)(?:@\\S*)?:\\s", ln)''', '''        m = re.match(r"^\\d+:\\s+([^:\\s]+):\\s", ln)'''),

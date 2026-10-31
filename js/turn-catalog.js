@@ -40,6 +40,9 @@ export function turnLabel(service, port) {   // just the fork name — the port 
 }
 // the fork id baked into a service name (vk-turn-proxy-<fork>-<port>) → its owner repo (for version/update checks)
 export function turnFork(svc) { return turnLabel(svc, ""); }
+// The csqtt version a server runs when its record or report names none (docs/CSQTT-LINES-PLAN.md). Here, not in turn.js, so
+// ui.js (below turn.js) reads the same constant; turn.js re-exports it.
+export const CSQTT_DEFAULT_LINE = "2.1";
 export function turnOwner(svc) {
   const f = turnFork(svc); const fk = turnForkList().find(x => x.id === f);
   return fk ? fk.owner : (f && f !== "turn" ? f + "/vk-turn-proxy" : "");

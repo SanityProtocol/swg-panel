@@ -1218,9 +1218,11 @@ for f in swg-panel-server index.html app.css app.js reconcile.js; do
   [ -f "$SRC/$f" ] || die "missing $f beside this script (unzip the bundle here)"
 done
 [ -d "$SRC/js" ] || die "missing js/ beside this script (unzip the bundle here)"   # the SPA's ES modules
+[ -d "$SRC/m" ] || die "missing m/ beside this script (unzip the bundle here)"     # the phone UI: m.css, the app manifest, icons
 mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/swg-panel-server" "$PREFIX$PANEL_DIR/"; chmod 755 "$PREFIX$PANEL_DIR/swg-panel-server"
 for f in index.html app.css app.js reconcile.js turn-artifacts.js; do mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/$f" "$PREFIX$PANEL_DIR/"; done
 mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/vendor/"   # qrcode + vendored Preact/htm ESM (buildless SPA)
+mkdir -p "$PREFIX$PANEL_DIR/m"; cp -a "$SRC/m/." "$PREFIX$PANEL_DIR/m/"     # m/ = the phone UI (docs/MOBILE-PLAN.md), a DIRECTORY like js/
 mkdir -p "$PREFIX$PANEL_DIR/js"; cp -a "$SRC/js/." "$PREFIX$PANEL_DIR/js/"   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
 # A dropped or truncated module is a blank panel with no message (see verify_js_tree). Check the copy
 # we just made, while the operator is here to see it.

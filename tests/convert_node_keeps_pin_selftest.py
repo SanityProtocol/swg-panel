@@ -66,7 +66,7 @@ assert wr and b2d and d2b, "convert.sh blocks missing — this run would FALSE-P
 B2D = b2d.group(1)
 assert B2D.count("/etc/swg-agent/config.json") == 1
 STUBS = ('die(){ echo "DIE $*"; exit 3; }; info(){ :; }; sub(){ :; }; warn(){ :; }; b(){ printf %s "$*"; }\n'
-         'docker_node_present(){ return 1; }; lc_init(){ :; }; lc_handoff(){ :; }\n'
+         'docker_node_present(){ return 1; }; lc_init(){ :; }; lc_handoff(){ :; }; need_compose(){ :; }\n'   # Compose: compose_missing_selftest
          'carry_dropins_to_env(){ : > "$1"; DROPIN_GIVE=""; }\n')   # the drop-in carry (convert_carries_env_knobs_selftest [5])
 
 # the stub hand-off: records what install-docker.sh would have been given

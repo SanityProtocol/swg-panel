@@ -38,9 +38,23 @@ Fixture — node q-node, three deployments per device:
   [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
       hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
   [11] csqtt 2.1 and 2.5 do not speak to each other: a 2.5 server (Dana's csqtt2, line 2.5) is offered only an app of its
-      line — on Android the CSQTT app, though the operator's default is La Lune (2.1 only), and on iOS nothing (VK TURN Proxy
-      speaks 2.1); her 2.1 server keeps both. Once the CSQTT app's release is of the other line (no 2.5 release yet), the
-      2.5 server offers no app at all rather than one that cannot connect; the line reaches the page through swg-sub
+      line. The operator's Android default La Lune speaks both since S13a: it serves the 2.5 server one tap, as on 2.1 (Start
+      fires the sealed link and copies it, no steps); ranked, the CSQTT app; on iOS nothing (VK TURN
+      Proxy speaks 2.1); her 2.1 server keeps its app. Once the CSQTT app's release is of the other line (no 2.5 release yet),
+      the 2.5 server is never offered it — La Lune serves it; the line reaches the page through swg-sub
+  [12] torrents (1.8.11 S4b): q-node lets them through (Direct) and Boris's awg1 blocks them. Every one of Anna's cells, on every
+      OS and in both languages, carries the torrent marker in its badge row, labelled with the client setting for full speed
+      (in the page's language); a tap opens that text in a bubble and a second tap closes it; Boris's awg1 cell carries none
+      while his csqtt1 cell does; Anna's blocked device's page carries none. The plain-mode turtle (a cacggghp proxy) opens its
+      own text in the same bubble on a tap; the connection picker shows both icons, as icons, not buttons. The device's own
+      incoming port (S12, Part C): where q-node reports forwarding awg0, Anna's AmneziaWG cells' bubble opens with port 20016
+      and the address peers reach (in both languages); her WireGuard cell (wg0, not forwarded) and Boris's cells carry none
+  [13] the 2.5 clients on the desktop (S13a): Dana's 2.5 server on Linux/Windows gets La Lune (FOCSQ speaks 2.1 only) and its
+      Start shows the CSQTTR step; with the operator's choice csq-socks serves both lines, with its download and its own
+      terminal steps (EN, RU); Anna's 2.1 server still offers FOCSQ — csq-socks, a command-line client, ranks after the apps
+  [14] a default per csqtt line (operator, 2026-10-29): with turn_client_default["csqtt@2.5"], Dana's 2.5 server gets 2.5's
+      own choice (csq-socks on Linux; "none" on Windows hides only it) while her 2.1 server keeps 2.1's FOCSQ; a 2.1-only
+      app stored under it is passed over (La Lune, as with no choice)
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -64,6 +78,20 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
+     --perturb-turtlespan serves a sub.js whose turtle is the old span with a title again → RED on [12]
+     --perturb-scrollclose serves a sub.js whose bubble closes on its own scroll → RED on [12]
+     --perturb-overscroll serves a sub.css whose bubble passes a fling at its end on to the page → RED on [12]
+     --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their marker buttons → RED on [12]
+     --perturb-pickshort  serves a sub.js whose picker icons show the short label as their tooltip → RED on [12]
+     --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
+     --perturb-p2pport    serves a sub.js whose torrent bubble leaves out the device's incoming port → RED on [12]
+     --perturb-subport    runs a swg-sub that never puts the device's incoming port on a deployment → RED on [12]
+     --perturb-csqrank    serves a sub.js that ranks csq-socks as an app (it sorts first on a 2.1 desktop) → RED on [13]
+     --perturb-csqsteps   serves a sub.js whose csq-socks cell shows the generic app steps → RED on [13]
+     --perturb-line25     serves a sub.js that ignores the 2.5 line's own default ("csqtt@2.5") → RED on [14]
+     --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
+     --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
+     --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -91,8 +119,22 @@ P_GUARD = "--perturb-guard" in sys.argv
 P_LINE = "--perturb-line" in sys.argv
 P_OWNLINE = "--perturb-ownline" in sys.argv
 P_CHIPLINE = "--perturb-chipline" in sys.argv
-PERTURB = (P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE or P_CHIPLINE)
+P_P2PALL = "--perturb-p2pall" in sys.argv
+P_P2PPORT = "--perturb-p2pport" in sys.argv
+P_SUBPORT = "--perturb-subport" in sys.argv
+P_PICKMARK = "--perturb-pickmark" in sys.argv
+P_PICKSHORT = "--perturb-pickshort" in sys.argv
+P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
+P_OVERSCROLL = "--perturb-overscroll" in sys.argv
+P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
+P_CSQRANK = "--perturb-csqrank" in sys.argv
+P_CSQSTEPS = "--perturb-csqsteps" in sys.argv
+P_LINE25 = "--perturb-line25" in sys.argv
+P_LL25 = "--perturb-ll25" in sys.argv
+P_LLFIRE = "--perturb-llfire" in sys.argv
+P_LL21 = "--perturb-ll21" in sys.argv
+PERTURB = (P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -152,6 +194,10 @@ P._RELEASE_PIN[("hackdiaz-dev", "free-turn-proxy", "v4.0.3")] = _pin("v4.0.3", "
 P._PIN_WANTED = {("amurcanov", "csqtt"): {"2.1.9-4", "2.5.1"}, ("amurcanov", "proxy-turn-vk-android"): {"1.2.4-3"},
                  ("hackdiaz-dev", "free-turn-proxy"): {"v4.0.3"}}
 catalog = P.turn_catalog_view(pins=True)   # serve.json's catalog, as write_sub_serve builds it
+if P_LL21:   # La Lune back on 2.1 alone (the catalog before S13a)
+    if ((catalog.get("clients") or {}).get("lalune") or {}).get("csqtt_lines") != ["2.1", "2.5"]:
+        print("PERTURB FAILED — La Lune does not list 2.5 in the catalog, so there is nothing to remove"); sys.exit(1)
+    catalog["clients"]["lalune"]["csqtt_lines"] = ["2.1"]
 if P_AUTO:
     _ll = ((catalog.get("clients") or {}).get("lalune") or {}).get("platforms", {}).get("android")
     if not isinstance(_ll, dict) or not _ll.get("autostart"):
@@ -174,7 +220,7 @@ VK = ["https://vk.ru/call/join/AAAAbbbbCCCCddddEEEEffffGGGGhhhh1234567890", "htt
 J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"},
                            "u4": {"name": "Dana", "vk_links": VK[:1]}},
                  "peers": {
-                     "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt",
+                     "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt", "p2p_port": 20016,
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "wdtt1", "type": "wdtt"},
                                         {"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.2/32"},
@@ -193,7 +239,8 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
                      "p4": {"id": "p4", "user_id": "u1", "title": "old tablet", "disabled": True,
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
-J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7",
+# [12] torrents leave q-node directly, except from awg1, whose own Torrents / P2P block is on
+J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7", "p2p": {"action": "direct"}, "ifaces": {"awg1": {"block": ["torrents"]}},
                         "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}},
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}}})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
@@ -207,9 +254,12 @@ J("stats/stats-n1.json", {"interfaces": {
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64, "version": "v4.0.3"},
                      {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64, "version": "v4.0.3"},
+                     # [12] a plain fork's proxy (cacggghp: no obfuscation) — its cell carries the turtle
+                     {"service": "vk-turn-proxy-cacggghp-4", "listen": "0.0.0.0:56104", "connect": "127.0.0.1:51830", "wrap_key": "", "version": "v1.0.0"},
                      # [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ, hidden 2026-10-14)
                      {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64, "version": "v4.0.3"}],
-    "net_carried": ["192.168.50.0/24"]})
+    "net_carried": ["192.168.50.0/24"],
+    "p2p_fwd": {"awg0": {"addr": "45.67.89.10", "taken": []}}})   # [12] S12: q-node forwards awg0's devices' own ports
 
 SEAL = r"""
 const [k, pt] = process.argv.slice(1);
@@ -233,18 +283,18 @@ J("subs/users.json", users_sub)
 
 # ── what the browser loads: the repo's page, or a perturbed copy of it ────────────────────────────────────────────────
 WEB = ROOT
-def perturbed_web(old, new, what):
+def perturbed_web(old, new, what, fname="sub.js"):
     global WEB
-    src = open(os.path.join(ROOT, "sub.js")).read()
+    src = open(os.path.join(ROOT, fname)).read()
     if src.count(old) != 1:
-        print("PERTURB FAILED — %s: its anchor is not in sub.js exactly once (%d), so the perturbation cannot be applied" % (what, src.count(old)))
+        print("PERTURB FAILED — %s: its anchor is not in %s exactly once (%d), so the perturbation cannot be applied" % (what, fname, src.count(old)))
         sys.exit(1)
     WEB = os.path.join(D, "web")
     os.makedirs(os.path.join(WEB, "vendor"))
-    for f in ("sub.html", "sub.css", "turn-artifacts.js", "VERSION", "vendor/qrcode.js"):
+    for f in ("sub.html", "sub.css", "sub.js", "turn-artifacts.js", "VERSION", "vendor/qrcode.js"):
         if os.path.exists(os.path.join(ROOT, f)):
             shutil.copy(os.path.join(ROOT, f), os.path.join(WEB, f))
-    with open(os.path.join(WEB, "sub.js"), "w") as f:
+    with open(os.path.join(WEB, fname), "w") as f:
         f.write(src.replace(old, new))
 
 if P_MACOS:
@@ -255,6 +305,33 @@ if P_LINE:
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
+if P_TURTLESPAN:
+    perturbed_web('srvRow.appendChild(noteMarker("scell-slow", TURTLE_SVG, t("slowMark"), t("slowPlain")));',
+                  '{ var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }',
+                  "the turtle as a marker")
+if P_SCROLLCLOSE:
+    perturbed_web("function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }",
+                  "function _nbScroll(e) { closeNoteBubble(); }", "a scroll inside the bubble leaves it open")
+if P_OVERSCROLL:
+    perturbed_web("\n  overscroll-behavior: contain; }", " }", "the bubble's overscroll containment", "sub.css")
+if P_PICKSHORT:
+    perturbed_web('icon.title = x.getAttribute("data-note") || ', 'icon.title = ', "the picker icon's tooltip being the whole note")
+if P_PICKMARK:
+    perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
+if P_CSQRANK:
+    perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
+if P_LINE25:
+    perturbed_web('    if (forkId === "csqtt" && line === "2.5") {', '    if (false) {', "the 2.5 line's own default")
+if P_CSQSTEPS:
+    perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
+if P_LL25:
+    perturbed_web('(cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null', 'null', "La Lune's 2.5 steps")
+if P_LLFIRE:
+    perturbed_web("ctrl.noAutoFire = !(cga && cga.autostart);", "ctrl.noAutoFire = !(cga && cga.autostart) || !!ctrl.stepList;", "a one-tap app handed the link")
+if P_P2PPORT:
+    perturbed_web("      var fp = it.tgt.p2p_port, fd", "      var fp = 0, fd", "the device's incoming port in the torrent bubble")
+if P_P2PALL:
+    perturbed_web("      var srv = it.tgt.p2p && cc.el", "      var srv = true && cc.el", "the torrent marker only where torrents are allowed")
 if P_CHIPLINE:
     perturbed_web('"CSQTT " + (cd.line || "2.1")', '"CSQTT"', "the csqtt chip's server version")
 if P_TABS:
@@ -290,6 +367,12 @@ if P_XXSUB:
     }
 """, "a WDTT fork's own app as its default")
 
+if P_SUBPORT:   # the page's own copy of swg-sub, the port's wiring removed
+    _ss = open(SUB).read()
+    if _ss.count("                    tg.update(_p2p_fwd_of(p, tg, describe))\n") != 1:
+        print("PERTURB FAILED — the incoming port's wiring: its anchor is not in swg-sub exactly once"); sys.exit(1)
+    SUB = os.path.join(D, "swg-sub")
+    open(SUB, "w").write(_ss.replace("                    tg.update(_p2p_fwd_of(p, tg, describe))\n", ""))
 sock = socket.socket(); sock.bind(("127.0.0.1", 0)); PORT = sock.getsockname()[1]; sock.close()
 env = dict(os.environ, SWG_SUB_FLEET=D + "/fleet.json", SWG_SUB_WEB=WEB, SWG_SUB_HOST="127.0.0.1", SWG_SUB_PORT=str(PORT),
            SWG_SUB_TLS_DIR=D + "/no-tls")
@@ -316,10 +399,11 @@ READ = r"""(() => {
     state: (document.getElementById("state") || {}).textContent || "",
     tabs: [...document.querySelectorAll(".modetab")].map(b => b.className.replace(/.*mtab-(\w+).*/, "$1")),
     pages: [...document.querySelectorAll("section.ppage")].map(pg => ({
-      mode: pg.getAttribute("data-mode"),
+      mode: pg.getAttribute("data-mode"), p2pn: pg.querySelectorAll(".scell-p2p").length,
       cells: [...pg.querySelectorAll(".scell")].map(c => ({
         tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
-        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent,
+        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent, p2p: (x => x ? x.getAttribute("aria-label") : null)(c.querySelector(".scell-p2p")),
+        note: (x => x ? x.getAttribute("data-note") : null)(c.querySelector(".scell-p2p")),
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
@@ -380,8 +464,18 @@ def seek_js(mode, badge_has):
       if (i < 0) return 'no cell';
       pg._seek(i, null);""" % (json.dumps(mode), json.dumps(badge_has))
 
-def start_on(tab, mode, badge_has):
-    """Click Start on the cell of `mode` whose badge contains `badge_has`; return (clipboard writes, overlay steps, navigations)."""
+def seek_role_js(role):
+    """seek_js's twin for a Turn cell found by its version chip (`CSQTT 2.5`) — the only thing apart when one app serves both."""
+    return r"""const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === 'turn');
+      if (!pg) return 'no page';
+      const cells = [...pg.querySelectorAll('.scell')];
+      const i = cells.findIndex(c => ((c.querySelector('.scell-role-if') || {}).textContent || '') === %s);
+      if (i < 0) return 'no cell';
+      pg._seek(i, null);""" % json.dumps(role)
+
+def start_on(tab, mode, badge_has, seek=None):
+    """Click Start on the cell of `mode` whose badge contains `badge_has` (or the one `seek` finds); return (clipboard writes,
+    overlay steps, navigations)."""
     n0 = len(tab.mine("Page.frameRequestedNavigation"))
     c0 = len(tab.mine("Runtime.bindingCalled"))
     res = tab.ev(r"""(() => {
@@ -389,13 +483,22 @@ def start_on(tab, mode, badge_has):
       pg.querySelector('.pbtn-start').click();
       // read the steps NOW: the handler shows them synchronously, and a one-tap fallback may replace this document soon after
       return {res: 'clicked', steps: [...document.querySelectorAll('.ph-overlay .ph-step')].map(s => s.textContent)};
-    })()""" % seek_js(mode, badge_has))
+    })()""" % (seek or seek_js(mode, badge_has)))
     steps = res.get("steps") if isinstance(res, dict) else []
     res = res.get("res") if isinstance(res, dict) else res
     tab.br.pump(1.6)                                     # past fireDeepLink's 1 s "did the app take over" beat
     clip = [e["params"].get("payload", "") for e in tab.mine("Runtime.bindingCalled")[c0:] if e["params"].get("name") == "__swgClip"]
     navs = [e["params"].get("url", "") for e in tab.mine("Page.frameRequestedNavigation")[n0:]]
     return res, clip, steps, navs
+
+def start_on_role(tab, role):
+    return start_on(tab, "turn", None, seek_role_js(role))
+
+SHOTS = os.environ.get("SUB_SHOTS") or ""   # SUB_SHOTS=<dir> keeps screenshots of [13]'s import steps
+def shot(tab, name):
+    if SHOTS:
+        with open(os.path.join(SHOTS, name + ".png"), "wb") as fh:
+            fh.write(base64.b64decode(tab.br.send("Page.captureScreenshot", {"format": "png"}, session=tab.s)["data"]))
 
 ALL_OS = ("android", "ios", "linux", "windows", "macos")
 try:
@@ -445,6 +548,77 @@ try:
           len(turn_cells(rb)) == 1 and "turn" in rb["tabs"], (rb or {}).get("tabs"))
     tab.close()
 
+    # [12] the torrent marker: where swg-sub says torrents may leave, and nowhere else
+    P2P_WORDS = {"en": "Torrents work here", "ru": "Торренты здесь работают"}   # the marker's label; the bubble holds the setting
+    for (os_, lang), r in sorted(renders.items()):
+        live = [c for p in r["pages"] if p["mode"] not in ("nets", "dead") for c in p["cells"]]
+        check("[12] %s/%s: every one of Anna's cells carries the torrent marker, labelled in the page's language" % (os_, lang),
+              live and all(P2P_WORDS[lang] in (c["p2p"] or "") for c in live), [(c["tag"], (c["p2p"] or "")[:40]) for c in live])
+    PORT_WORDS = {"en": "Incoming port 20016", "ru": "Входящий порт 20016"}
+    for (os_, lang), r in sorted(renders.items()):
+        got = [(p["mode"], PORT_WORDS[lang] in (c["note"] or "") and "45.67.89.10:20016" in (c["note"] or ""))
+               for p in r["pages"] if p["mode"] in ("awg", "wg") for c in p["cells"]]
+        check("[12] %s/%s: Anna's AmneziaWG cell's torrent note opens with her incoming port and the address peers reach; her "
+              "WireGuard cell's (not forwarded) carries none" % (os_, lang),
+              ("awg", True) in got and all(v == (m == "awg") for m, v in got), got)
+    dead = [p for p in renders[("android", "en")]["pages"] if p["mode"] == "dead"]
+    check("[12] …and her blocked device's page none", len(dead) == 1 and dead[0]["p2pn"] == 0, [(p["mode"], p["p2pn"]) for p in dead])
+    awg1 = [c for p in rb["pages"] if p["mode"] == "awg" for c in p["cells"]]
+    check("[12] Boris's awg1, which blocks torrents: no marker", len(awg1) == 1 and awg1[0]["p2p"] is None, [(c["tag"], c["p2p"]) for c in awg1])
+    check("[12] …while his csqtt1 cell on the same node carries it", len(turn_cells(rb)) == 1 and turn_cells(rb)[0]["p2p"],
+          [(c["tag"], c["p2p"]) for c in turn_cells(rb)])
+    tab, _r = render("u1", "android", "en", phone=True)
+    # A TAP AS A FINGER MAKES IT: pointerdown on the marker first (the outside-press handler must not take it for one), then click.
+    TAP = r"""(() => { const m=[...document.querySelectorAll('.scell-p2p')].find(x => { const r=x.getBoundingClientRect();
+      return r.width && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; });
+      if (!m) return 'no marker in view'; m.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); m.click();
+      const b=document.querySelector('.note-bubble'); return b ? b.textContent + '|' + m.getAttribute('aria-expanded') : ''; })()"""
+    NB = "(() => (document.querySelector('.note-bubble') || {}).textContent || '')()"
+    first = tab.ev(TAP); time.sleep(0.3); second = tab.ev(TAP); time.sleep(0.3)
+    check("[12] a tap on the marker opens the setting in a bubble (expanded); a second tap closes it",
+          "Prefer TCP" in (first or "") and (first or "").endswith("|true") and second == "", (first, second))
+    tab.ev(TAP); time.sleep(0.3)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); true"); time.sleep(0.2)
+    esc = tab.ev(NB)
+    tab.ev(TAP); time.sleep(0.3)
+    tab.ev("document.body.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); true"); time.sleep(0.2)
+    out = tab.ev(NB)
+    check("[12] Escape closes it, and so does a press anywhere else", esc == "" and out == "", (esc, out))
+    nport = tab.ev("(() => { const m = document.querySelector('section.ppage[data-mode=awg] .scell-p2p'); if (!m) return 'no marker';"
+                   " m.click(); return [...document.querySelectorAll('.note-bubble .note-port b')].map(b => b.textContent); })()")
+    time.sleep(0.2); tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); true"); time.sleep(0.2)
+    check("[12] the bubble of Anna's AmneziaWG cell (forwarded) shows the port as one number of its own", nport == ["20016"], nport)
+    tab.ev(TAP); time.sleep(0.3)
+    nbos = tab.ev("(() => { const b=document.querySelector('.note-bubble'); return b ? getComputedStyle(b).overscrollBehaviorY : '' })()")
+    check("[12] a fling past the end of the bubble's text stays in it — chained to the page, the scroll closed the bubble", nbos == "contain", nbos)
+    inner = tab.ev("(() => { const b=document.querySelector('.note-bubble'); b.style.maxHeight='30px'; b.scrollTop=20;"
+                   " b.dispatchEvent(new Event('scroll')); return !!document.querySelector('.note-bubble') })()"); time.sleep(0.2)
+    tab.ev("document.dispatchEvent(new Event('scroll')); true"); time.sleep(0.2)
+    page = tab.ev(NB)
+    stale = tab.ev("[...document.querySelectorAll('.scell-p2p')].filter(m => m.hasAttribute('aria-describedby')).length")
+    check("[12] scrolling the bubble's own capped text keeps it open; a page scroll closes it; no closed marker still points at a bubble",
+          inner is True and page == "" and stale == 0, (inner, page, stale))
+    tab.ev(TAP); time.sleep(0.3)
+    tab.ev("document.querySelector('[data-pick]').click(); true"); time.sleep(0.6)
+    # Anna has two devices: the picker opens on them, and a device's connections — the badge copies — are one level down
+    tab.ev("(() => { const r=[...document.querySelectorAll('.cp-row')].find(x => x.textContent.includes('laptop')); if (r) r.click(); return 1 })()")
+    time.sleep(0.6)
+    pick = tab.ev("(() => ({marks: document.querySelectorAll('.cp-row .scell-mark').length, rows: document.querySelectorAll('.cp-row .scell-srv').length,"
+                  " turtles: [...document.querySelectorAll('.cp-row span.scell-slow[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')"
+                  " && x.title.length > x.getAttribute('aria-label').length).length,"
+                  " magnets: [...document.querySelectorAll('.cp-row span.scell-p2p[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')).length}))()")
+    check("[12] the connection picker's copies of the badge rows carry no marker button (a dead button inside a row button), "
+          "and keep the turtle and the magnet as labelled icons — the turtle's tooltip its whole note (no bubble there)",
+          pick and pick["rows"] and pick["marks"] == 0 and pick["turtles"] >= 1 and pick["magnets"] >= 1, pick)
+    tab.close()
+    tab, _r = render("u1", "android", "en", phone=True)
+    tab.ev("(() => { const b=document.querySelector('.mtab-turn'); if (b) b.click(); return 1 })()"); time.sleep(0.8)
+    seek = tab.ev("(() => { " + seek_js("turn", "cacggghp") + " return 'ok'; })()"); time.sleep(0.8)
+    tt = tab.ev(TAP.replace(".scell-p2p", ".scell-slow"))   # the cacggghp cell is the one in view after the seek
+    check("[12] a tap on the plain-mode turtle (the cacggghp cell) opens its own text in the same bubble",
+          seek == "ok" and (tt or "").startswith("Plain — no obfuscation") and (tt or "").endswith("|true"), (seek, tt))
+    tab.close()
+
     # [2] the author word, per language, in all three turn cells
     def by_words(os_, lang):
         return {(c["role"] or "?"): c["by"] for c in turn_cells(renders[(os_, lang)]) if c["by"]}
@@ -477,7 +651,7 @@ try:
     # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hack-diaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
     fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
-          if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith("MYSOREZ")]   # [10]'s proxy is another fork
+          if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith(("MYSOREZ", "cacggghp"))]   # [10]'s and [12]'s proxies are other forks
     check("[6] the samosvalishe-fronted cell's badge names hack-diaz on every OS and language",
           fp and all("hack-diaz" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
     leak = [(os_, lang, c["text"][:120]) for os_ in ALL_OS for lang in ("en", "ru") for p in renders[(os_, lang)]["pages"]
@@ -498,7 +672,7 @@ try:
     serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}
     J("subs/serve.json", serve)
     # [8] an app from the server's own repository follows the server's running version
-    def bubble(tab, badge_has):
+    def bubble(tab, badge_has, seek=None):
         return tab.ev(r"""(() => {
           %s
           const btn = cells[i].querySelector('.scell-getapp-btn') || pg.querySelector('.scell-getapp-btn');
@@ -506,7 +680,8 @@ try:
           btn.click();
           const b = document.querySelector('.dl-bubble');
           return b ? {ver: (b.querySelector('.dl-bubble-ver') || {}).textContent || '', links: [...b.querySelectorAll('a')].map(a => a.href)} : 'no bubble';
-        })()""" % seek_js("turn", badge_has))
+        })()""" % (seek or seek_js("turn", badge_has)))
+    bubble_role = lambda tab, role: bubble(tab, None, seek_role_js(role))
     pinned = lambda b, tag, url: isinstance(b, dict) and tag in b["ver"] and "matches this server" in b["ver"] and url in b["links"]
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
     keep_default = serve["turn_client_default"]
@@ -620,28 +795,46 @@ try:
     # Dana's device has two csqtt servers: csqtt1 (no line reported → 2.1) and csqtt2 (2.5). A 2.5 cell is a QR, so its link is not
     # in the DOM as text: cells are told apart by their app, and "no cell for the 2.5 server" is a COUNT (one cell, the 2.1 one) —
     # never the absence of a port in text a QR cell does not carry.
+    # La Lune speaks 2.5 too (S13a, 2026-10-28), so the operator's Android default La Lune serves Dana's 2.5 server as well —
+    # one tap, as on 2.1: Start hands it the sealed link and copies it, no steps (operator, 2026-10-29: "just open the app
+    # with the link like before on android"); the CSQTTR step is the desktop's ([13])
     tab, rd = render("u4", "android", "en")
     cells = turn_cells(rd)
-    c25 = [c for c in cells if "CSQTT" in (c["tag"] or "")]
+    c25 = [c for c in cells if c["role"] == "CSQTT 2.5"]
     c21 = on(rd, "56002")
-    check("[11] Android, the 2.5 server: the CSQTT app, not the operator's default La Lune (it speaks 2.1)",
-          len(cells) == 2 and len(c25) == 1 and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], (c["text"] or "")[:60]) for c in cells])
-    check("[11] …the 2.1 server beside it keeps La Lune", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
+    check("[11] Android, the operator's default La Lune: it serves the 2.5 server too (it speaks 2.5)",
+          len(cells) == 2 and len(c25) == 1 and "La Lune" in (c25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in cells])
+    check("[11] …and the 2.1 server beside it", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
+    res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+    sealed = next((x for x in clip if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
+    check("[11] …its Start fires the SEALED link, one tap as before, and copies it — no steps",
+          res == "clicked" and sealed and any(u == sealed for u in navs) and not steps, (res, [x[:40] for x in clip], steps, [u[:40] for u in navs]))
+    tab.close()
+    # the ranked default (no operator choice): amurcanov's CSQTT app, native, first on Android for both lines
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+    tab, rd = render("u4", "android", "en")
+    cells = turn_cells(rd)
+    c25 = [c for c in cells if c["role"] == "CSQTT 2.5"]
+    c21 = on(rd, "56002")
+    check("[11] Android, ranked: the 2.5 server gets the CSQTT app", len(cells) == 2 and len(c25) == 1 and "CSQTT" in (c25[0]["tag"] or "")
+          and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in cells])
     check("[11] …the 2.5 server shown as a QR (the 2.5 app scans one), while the 2.1 server's plain link has none",
           len(c25) == 1 and c25[0]["qr"] and len(c21) == 1 and not c21[0]["qr"], [(c["tag"], c["qr"]) for c in cells])
     # 2.1 and 2.5 cards were alike until the app was downloaded (operator, 2026-10-20): the chip names the server's version,
     # the download its app's — and a node that reports no line is a 2.1 one
     check("[11] the 2.5 server's card says CSQTT 2.5, and its download CSQTT 2.5.1",
-          len(c25) == 1 and c25[0]["role"] == "CSQTT 2.5" and "CSQTT 2.5.1" in (c25[0]["getapp"] or ""),
-          [(c["role"], c["getapp"]) for c in c25])
+          len(c25) == 1 and "CSQTT 2.5.1" in (c25[0]["getapp"] or ""), [(c["role"], c["getapp"]) for c in c25])
     check("[11] …the 2.1 server's card (no line reported) says CSQTT 2.1",
           len(c21) == 1 and c21[0]["role"] == "CSQTT 2.1", [c["role"] for c in c21])
-    res, clip, steps, navs = start_on(tab, "turn", "amurcanov · CSQTT")
+    res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
     sealed = next((x for x in list(clip) + list(navs) if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
     p25 = _unseal(sealed) if sealed else ""
     check("[11] its Start hands out the SEALED link (the 2.5 app takes no other), which opens to its connect payload",
           p25.startswith("connect?v=2&host=203.0.113.7&peer=56003&password=pw5csqtt"), (res, [x[:40] for x in clip], [x[:40] for x in navs], p25))
-    b25 = bubble(tab, "CSQTT")
+    tab.close()
+    tab, rd = render("u4", "android", "en")
+    b25 = bubble_role(tab, "CSQTT 2.5")
     check("[11] …and its download is our 2.5.1 build (csqtt-app-2.5.1), shown as v2.5.1 and matching the server",
           pinned(b25, "v2.5.1", PIN25_APK) and not any("amurcanov" in u for u in b25["links"]), b25)
     tab.close()
@@ -650,24 +843,89 @@ try:
     check("[11] iOS: no cell for the 2.5 server (VK TURN Proxy speaks 2.1), while the 2.1 server keeps its iPhone cell",
           len(cells) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in cells])
     tab.close()
-    # the CSQTT app's release is of the other line (no 2.5 release out): the 2.5 server is offered nothing, not a 2.1 app.
-    # No 2.5 release also means no pin for the 2.5 build — the pin is what normally hands it our csqtt-app-2.5.1.
+
+    # [13] the 2.5 clients on the desktop (S13a): La Lune, and csq-socks — ours, a command-line client ranked after the apps
+    # (operator, 2026-10-28: "2.1 and 2.5, ranked last") — and nothing changes for a 2.1 subscriber
+    for os_ in ("linux", "windows"):
+        for lang in ("en", "ru"):
+            a = [c["tag"] for c in turn_cells(renders[(os_, lang)]) if c["role"] == "CSQTT 2.1"]
+            check("[13] %s/%s: Anna's 2.1 server still offers FOCSQ, not csq-socks (ranked last)" % (os_, lang),
+                  len(a) == 1 and "FOCSQ" in (a[0] or ""), a)
+    STEP25 = {"en": "choose the *CSQTTR* protocol".replace("*", ""), "ru": "выберите протокол *CSQTTR*".replace("*", "")}
+    SOCKS = {("linux", "en"): "Run csq-socks set", ("linux", "ru"): "Выполните csq-socks set",
+             ("windows", "en"): "Run .\\csq-socks set", ("windows", "ru"): "Выполните .\\csq-socks set"}
+    for os_ in ("linux", "windows"):
+        for lang in ("en", "ru"):
+            tab, rd = render("u4", os_, lang)
+            r25 = [c for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+            r21 = [c for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
+            check("[13] %s/%s: the 2.5 server gets a cell — La Lune (FOCSQ speaks 2.1 only)" % (os_, lang),
+                  len(r25) == 1 and "La Lune" in (r25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
+            check("[13] %s/%s: …and its 2.1 server keeps FOCSQ" % (os_, lang), len(r21) == 1 and "FOCSQ" in (r21[0]["tag"] or ""), [c["tag"] for c in r21])
+            res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+            shot(tab, "lalune25-%s-%s" % (os_, lang))
+            check("[13] %s/%s: La Lune's Start on the 2.5 server copies the sealed link and names CSQTTR in the page's language" % (os_, lang),
+                  any(x.startswith("csqtt://") and not x.startswith("csqtt://connect") for x in clip)
+                  and any(STEP25[lang] in x for x in steps) and not any(u.startswith("csqtt:") for u in navs), (res, [x[:30] for x in clip], steps))
+            tab.close()
+    serve["turn_client_default"] = {"csqtt": {"linux": "csqsocks", "windows": "csqsocks"}}
+    J("subs/serve.json", serve)
+    for os_ in ("linux", "windows"):
+        for lang in ("en", "ru"):
+            tab, rd = render("u4", os_, lang)
+            tags = [(c["role"], c["tag"], c["getapp"]) for c in turn_cells(rd)]
+            check("[13] %s/%s: the operator's choice csq-socks serves both lines, with its download" % (os_, lang),
+                  len(tags) == 2 and all("csq-socks" in (t or "") and "csq-socks" in (g or "") for _r, t, g in tags), tags)
+            res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+            shot(tab, "csqsocks-%s-%s" % (os_, lang))
+            check("[13] %s/%s: csq-socks's Start copies the sealed link and shows its own steps (%s), firing nothing" % (os_, lang, SOCKS[(os_, lang)]),
+                  any(x.startswith("csqtt://") and not x.startswith("csqtt://connect") for x in clip)
+                  and any(SOCKS[(os_, lang)] in x for x in steps) and not any(u.startswith("csqtt:") for u in navs), (res, [x[:30] for x in clip], steps))
+            tab.close()
+    # [14] a default per csqtt LINE (operator, 2026-10-29): "csqtt@2.5" is 2.5's own — csq-socks for Linux, "none" for
+    # Windows — while 2.1 keeps FOCSQ; a 2.1-only app stored there anyway (macOS has none; on Linux FOCSQ) changes nothing
+    serve["turn_client_default"] = {"csqtt": {"linux": "focsq", "windows": "focsq"}, "csqtt@2.5": {"linux": "csqsocks", "windows": "none"}}
+    J("subs/serve.json", serve)
+    for lang in ("en", "ru"):
+        tab, rd = render("u4", "linux", lang)
+        r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]; r21 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
+        check("[14] linux/%s: 2.5's own default csq-socks serves the 2.5 server, 2.1's FOCSQ the 2.1 one" % lang,
+              len(r25) == 1 and "csq-socks" in (r25[0] or "") and len(r21) == 1 and "FOCSQ" in (r21[0] or ""), [r21, r25])
+        tab.close()
+        tab, rd = render("u4", "windows", lang)
+        r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]; r21 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
+        check("[14] windows/%s: 2.5's \"none\" hides only the 2.5 server; the 2.1 one keeps FOCSQ" % lang,
+              r25 == [] and len(r21) == 1 and "FOCSQ" in (r21[0] or ""), [r21, r25])
+        tab.close()
+    serve["turn_client_default"] = {"csqtt": {"linux": "focsq"}, "csqtt@2.5": {"linux": "focsq"}}
+    J("subs/serve.json", serve)
+    tab, rd = render("u4", "linux", "en")
+    r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[14] a 2.1-only app under csqtt@2.5 is passed over: the 2.5 server gets La Lune, as with no choice", len(r25) == 1 and "La Lune" in (r25[0] or ""), r25)
+    tab.close()
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+
+    # the CSQTT app's release is of the other line (no 2.5 release out): the 2.5 server is never offered the 2.1 app — La Lune,
+    # which speaks 2.5, serves it instead. No 2.5 release also means no pin for the 2.5 build (the pin hands it csqtt-app-2.5.1).
     ((serve["turn_catalog"].get("pins") or {}).get("amurcanov/csqtt") or {}).pop("2.5.1", None)
     ca = serve["turn_catalog"]["clients"]["csqttapp"]["platforms"]["android"]
     ca.update({"tag": "v2.1.9", "url": PIN_APK, "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.1.9",
                "assets": [{"name": "csqtt-v2.1.9.apk", "url": PIN_APK}]})
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
-    check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server has no cell (no app of its line), the 2.1 one keeps La Lune",
-          len(turn_cells(rd)) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    c25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server is not offered it — La Lune serves it",
+          len(c25) == 1 and "La Lune" in (c25[0] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
     tab.close()
     # the release is not resolved yet (a cold cache, GitHub rate-limited): no tag — the latest is 2.1's until proven otherwise
     for k in ("tag", "url", "page", "assets"):
         ca.pop(k, None)
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
-    check("[11] with the CSQTT release not resolved yet, the 2.5 server still has no cell — its releases page leads to the 2.1 app",
-          len(turn_cells(rd)) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    c25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[11] with the CSQTT release not resolved yet, the 2.5 server is still not offered it — La Lune serves it",
+          len(c25) == 1 and "La Lune" in (c25[0] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
     tab.close()
 finally:
     br.close()

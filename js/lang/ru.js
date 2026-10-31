@@ -621,8 +621,6 @@ export const STR = {
   "Added {v1}.": "Добавлено {v1}.",
   "Removed {v1}.": "Удалено {v1}.",
   "Add links": "Добавить",
-  "Paste one link per line — or separated by commas or spaces": "Вставьте по одной ссылке в строку — или через запятую либо пробел",
-  "{v1} of these isn't a VK call link.": "{v1} из них не ссылка на VK-звонок.",
   "{v1} ready to add": "{v1} к добавлению",
   "Paste one or many.": "Одну или больше.",
   "When it was added": "Когда добавлена",
@@ -648,8 +646,6 @@ export const STR = {
   "The primary link — single-link apps use this one": "Основная ссылка — её берут приложения с одной ссылкой",
   "From the shared pool — change it in Settings → Turn proxies, or remove it here": "Из общего пула — измените её в «Настройки → Turn-прокси» или уберите здесь",
   "VK call links": "VK-ссылки",
-  "The pool holds at most {v1} links.": "В пуле может быть не больше {v1} ссылок.",
-  "{v1} doesn't look like a VK call link.": "{v1} не похоже на ссылку на VK-звонок.",
   "{v1} is already in the pool.": "{v1} уже есть в пуле.",
   "No unused link left in the pool.": "В пуле не осталось свободных ссылок.",
   "Couldn't add a link from the pool": "Не удалось добавить ссылку из пула",
@@ -670,7 +666,8 @@ export const STR = {
   "New users will get {v1}.": "Новые пользователи получат {v1}.",
   "Between 0 and {v1}.": "От 0 до {v1}.",
   "The same link is in the pool twice.": "Эта ссылка добавлена в пул дважды.",
-  "No live links left — users on a dead link will keep it until you add a working one.": "Живых ссылок не осталось — пока не добавите рабочую, пользователи останутся на мёртвой.",
+  "No live links left — anyone who held a pool link has lost it. A working link you add goes to new users; give it to the others with Add from pool in their Manage view.": "Живых ссылок не осталось — все, у кого была ссылка из пула, её лишились. Добавленную рабочую ссылку получат новые пользователи; остальным выдайте её кнопкой «Добавить из пула» в их окне «Править».",
+  "No live links left — anyone who held a pool link has lost it. Once you add a working link, give it to them with Add from pool in their Manage view.": "Живых ссылок не осталось — все, у кого была ссылка из пула, её лишились. Когда добавите рабочую ссылку, выдайте её кнопкой «Добавить из пула» в их окне «Править».",
   // ── time ──────────────────────────────────────────────────────────────────────────────────────
   // "just now" is a moment, not a duration: "только что" is the natural form.
   "just now": "только что",
@@ -708,6 +705,10 @@ export const STR = {
   "a pending interface": "создаваемый интерфейс",
   " (WDTT)": " (WDTT)",
   " (WDTT internal WG)": " (внутр. WG WDTT)",
+  "{v1} (WDTT internal WG)": "{v1} (внутр. WG WDTT)",
+  "RAW-IP (reserved)": "RAW-IP (зарезервирован)",
+  "These users' encryption keys stay sealed to this panel's vault — their links keep working, but the other panel can't show their stored configs or store new ones":
+    "Ключи шифрования этих пользователей остаются запечатанными хранилищем этой панели — их ссылки продолжат работать, но другая панель не сможет показать их сохранённые конфиги или сохранить новые",
   " (WDTT, starting)": " (WDTT, запускается)",
   " (WDTT internal WG, starting)": " (внутр. WG WDTT, запуск)",
 
@@ -881,6 +882,8 @@ export const STR = {
   "tag|alien": "чужой",
   "its config wasn't published to the subscription — {v1}":
     "его конфиг не попал в подписку — {v1}",
+  "The keypair was replaced, but {why}. Its new QR is only in this tab until you reload — show it to the user from here.":
+    "Ключи заменены, но {why}. Новый QR есть только в этой вкладке до перезагрузки — покажите его пользователю отсюда.",
   "Another program is running this server — taking it over stops it first":
     "Этот сервер запущен другой программой — при перенятии он будет сначала остановлен",
   "tag|failed": "не удалось",
@@ -2070,6 +2073,13 @@ export const STR = {
   "The networks behind it stay with this user's own devices.":
     "Сети за ним останутся доступны только устройствам этого пользователя.",
   "tag|private": "личное",
+  "tag|router": "роутер",
+  "Router — several devices share this address": "Роутер — за этим адресом несколько устройств",
+  "Torrents are still blocked connection by connection, but one device's torrent no longer cuts the other devices' VPNs, calls and games. The cost: an encrypted torrent behind it with DHT off gets through.": "Торренты по-прежнему блокируются соединение за соединением, но торрент одного устройства больше не обрывает VPN, звонки и игры остальных. Цена: зашифрованный торрент за ним с выключенным DHT проходит.",
+  "Several devices share this address — the torrent guard never cuts it as a whole": "За этим адресом несколько устройств — защита от торрентов не отрезает его целиком",
+  "Several devices behind one router? Mark that device as a router — one device's torrent then no longer cuts the others.": "Несколько устройств за одним роутером? Отметьте это устройство как роутер — тогда торрент одного устройства больше не обрывает остальные.",
+  "Marked as a router": "Отмечен как роутер",
+  "Router mark removed": "Отметка роутера снята",
   "Only this user's own devices reach it and the networks behind it — not the people they share a group with, and not everyone on the node, whatever the interface allows.":
     "Доступ только с других устройств этого же пользователя — ни участникам его групп, ни всем на ноде, что бы ни разрешал интерфейс.",
   "Shared with": "Кому открыты",
@@ -2099,6 +2109,34 @@ export const STR = {
   "Not a valid IPv4 address or range: {v1}": "Неверный IPv4-адрес или диапазон: {v1}",
   "Too broad for a never-flag list (use /16 or narrower): {v1}": "Слишком широкий диапазон для списка исключений (используйте /16 или уже): {v1}",
   "Too many trusted sources — {v1} over the limit of 256.": "Слишком много доверенных источников — на {v1} больше лимита в 256.",
+  // ── the Never-block list (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md A.5) ──
+  "Never block": "Не блокировать",
+  "Never blocked by any block list, on every interface and node — and still routed by your routing rules. Your own Block rules and the abuse protections are not affected. Addresses come out of every address list; site names out of the site lists, on Force-DNS and Hybrid SNI. A name and an address are separate: a site name does not unblock an address an address list holds, and an address stays blocked by a site list while a blocked site resolves to it — list both when you need both. One site name, IP or range a line.":
+    "Никакой список блокировок не блокирует их — ни на одном интерфейсе и ни на одной ноде, — а маршрутизируются они по вашим правилам, как прежде. Ваши собственные правила «Заблокировать» и защита от злоупотреблений не затрагиваются. Адреса убираются из всех списков адресов, имена сайтов — из списков сайтов, в Force-DNS и Hybrid SNI. Имя и адрес — разные записи: имя сайта не разблокирует адрес, который держит список адресов, а адрес остаётся заблокированным списком сайтов, пока в него разрешается заблокированный сайт, — если нужно и то и другое, добавьте оба. Одно имя, IP или диапазон на строку.",
+  "Not taken — site names and IPv4 addresses or ranges (/8 or narrower) only: {v1}": "Не принято — только имена сайтов и IPv4-адреса или диапазоны (/8 или уже): {v1}",
+  "To stop the port-scan guard flagging one of your own machines, use Trusted sources (Settings → Network).": "Чтобы защита от сканов портов не отмечала вашу собственную машину, используйте «Доверенные источники» (Настройки → Сеть).",
+  "Never-block list updated": "Список «Не блокировать» обновлён",
+  "Ports the torrent filter never cuts": "Порты, которые фильтр торрентов не отрезает",
+  "Ports the torrent filter never cuts — updated": "Порты, которые фильтр торрентов не отрезает, — обновлены",
+  "A device the torrent filter has flagged keeps its connections to these ports — its VPN, calls, games. Torrents are still blocked by what they send, on every port. A node can keep its own list (Settings → Network → the node → Filters & abuse). Ports and ranges, comma-separated.": "Устройство, отмеченное фильтром торрентов, сохраняет соединения на эти порты — свой VPN, звонки, игры. Торренты по-прежнему блокируются по содержимому на любом порту. У ноды может быть свой список (Настройки → Сеть → нода → Фильтры и ограничения). Порты и диапазоны через запятую.",
+  "Reset to defaults": "Вернуть по умолчанию",
+  "The fleet's list": "Общий список",
+  "This node's own list": "Свой список ноды",
+  "never-cut ports → the fleet's list": "неотрезаемые порты → общий список",
+  "never-cut ports → {v1}": "неотрезаемые порты → {v1}",
+  "set in Settings → Geo data providers → Blocking.": "задаётся в Настройки → Провайдеры гео-данных → Блокировки.",
+  "Not a port or a port range (1-65535): {v1}": "Не порт и не диапазон портов (1-65535): {v1}",
+  "Keep at least one port, or reset the list to its defaults.": "Оставьте хотя бы один порт или верните список по умолчанию.",
+  "Ports on the list: {v1} — encrypted torrents get through on them.": "Портов в списке: {v1} — на них зашифрованные торренты проходят.",
+  "Too many entries — at most {v1}.": "Слишком много записей — не больше {v1}.",
+  "Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты и адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
+  "Sites on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
+  "Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
+  "Never block takes site names and IPv4 addresses or ranges — not {v1}": "«Не блокировать» принимает имена сайтов и IPv4-адреса или диапазоны — не {v1}",
+  "Too broad for the Never-block list (use /8 or narrower): {v1}": "Слишком широкий диапазон для списка «Не блокировать» (используйте /8 или уже): {v1}",
+  "Too many entries on the Never-block list — {v1} over the limit of {v2}.": "Слишком много записей в списке «Не блокировать» — на {v1} больше лимита {v2}.",
+  "the Never-block list's site names need a node update — until then block lists still block them here (its addresses already work)":
+    "для имён сайтов из списка «Не блокировать» нужно обновить ноду — пока списки блокировок здесь их по-прежнему блокируют (адреса уже работают)",
   "Mesh links — {v1}": "Связи в меше — {v1}",
   "Node local networks — hidden, and closed on every node": "Локальные сети нод — скрыты и закрыты на всех нодах",
   "Status timing": "Тайминги статусов",
@@ -2154,7 +2192,6 @@ export const STR = {
     "Выпустить новую ссылку и аннулировать текущую. Уже отсканированный конфиг продолжит работать, пока вы не смените ключи или не удалите пира.",
   "This only turns off this user's subscription LINK — the page stops resolving. It does NOT disconnect their peers: existing connections keep working, and a config already scanned keeps working until you rekey or remove the peer. To actually cut this user's access, use Block instead. Re-enabling later issues a fresh link over the same configs.":
     "Это отключает только ССЫЛКУ подписки этого пользователя — страница перестаёт открываться. Пиры при этом НЕ отключаются: существующие соединения продолжают работать, и уже отсканированный конфиг тоже, пока вы не смените ключи или не удалите пира. Чтобы действительно закрыть доступ, используйте «Закрыть доступ». Повторное включение выпустит новую ссылку поверх тех же конфигов.",
-  "vk.ru/call/join/…": "vk.ru/call/join/…",
   "Rebuilding this node's mesh link — it reconnects in a few seconds": "Пересобираем меш-линк этой ноды — она переподключится через несколько секунд",
   // budget-ok: button tooltip, no box
   "Interface defaults in Settings → Interfaces": "Значения по умолчанию для интерфейсов — в «Настройки → Интерфейсы»",
@@ -2769,6 +2806,7 @@ export const STR = {
   "Stop + remove this WDTT server and disconnect its users": "Остановить и удалить этот сервер WDTT, отключив его пользователей",
   "Stop + remove this csqtt server and disconnect its users": "Остановить и удалить этот сервер csqtt, отключив его пользователей",
   "Reachable via turn-proxy": "Доступен через turn-прокси",
+  "Reachable via": "Доступен через",
   // budget-ok: Panel heading, own line
   "Unmanaged on this interface": "Не под управлением на этом интерфейсе",
   "Adopt all": "Принять все",
@@ -2777,6 +2815,8 @@ export const STR = {
     "Этот сервер *принимается* — нода останавливает существующий и поднимает его снова под панелью с исходной идентичностью и пользователями. До конца этого его управление остаётся выключенным.",
   "This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).":
     "Нода не сообщает об этом сервере — он пропал с сервера (пересборка или нода со сборкой без поддержки WDTT).",
+  "The node couldn't take this server over yet: *{err}*. It keeps trying — once that server is stopped, the take-over completes; otherwise the panel stops trying 5 minutes after the take-over started.":
+    "Нода пока не смогла принять этот сервер: *{err}*. Она продолжает попытки — как только тот сервер будет остановлен, приём завершится; иначе через 5 минут после начала приёма панель прекратит попытки.",
   "This server was wiped.": "Этот сервер был стёрт.",
   "Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. *Restore* to bring it back with its original identity, or *Recreate fresh* (every user re-imports).":
     "Его идентичность депонирована в вашем хранилище шифрования, поэтому он держится офлайн, а не возвращается со свежим ключом, который сломал бы всех пользователей. *Восстановить* — вернуть его с исходной идентичностью, или *Пересоздать заново* (все пользователи импортируют заново).",
@@ -3077,8 +3117,8 @@ export const STR = {
   "Uncategorised": "Без категории",
   "Custom interface…": "Свой интерфейс…",
   "Ways out of {v1}": "Выходы ноды {v1}",
-  "Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.":
-    "Всё, через что *{v1}* может выходить, кроме собственного адреса. Аккаунты WARP и вставленные профили создаются в разделе «Настройки → WARP»; устройства ниже — собственные устройства этой ноды или имена, добавленные здесь.",
+  "Every way *{v1}* can leave that isn't its own address. WARP accounts, pasted profiles and dial-in exits are created under Settings → WARP & exits; the devices below the line are this node's own, or names you add here.":
+    "Всё, через что *{v1}* может выходить, кроме собственного адреса. Аккаунты WARP, вставленные профили и обратные выходы создаются в разделе «Настройки → ВАРП и выходы»; устройства ниже — собственные устройства этой ноды или имена, добавленные здесь.",
   "val|WARP+": "WARP+",
   "WARP exit": "Выход WARP",
   "WARP+ exit": "Выход WARP+",
@@ -3099,8 +3139,8 @@ export const STR = {
     "{v1} будет удалён с этой ноды, туннель опустится. Профиль и его ключ удаляются из панели — вставлять придётся заново.",
   "{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.":
     "{v1} будет удалён с этой ноды, туннель опустится. Вместе с ним удаляется и аккаунт Cloudflare: при повторном добавлении регистрируется НОВЫЙ аккаунт с другим IP выхода.",
-  "No WARP exits on this node yet. Register a free Cloudflare account, or paste a WireGuard profile from somewhere else.":
-    "На этой ноде пока нет выходов WARP. Зарегистрируйте бесплатный аккаунт Cloudflare или вставьте профиль WireGuard откуда-то ещё.",
+  "No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, or add a dial-in exit for an upstream that connects to this node.":
+    "На этой ноде пока нет выходов. Зарегистрируйте бесплатный аккаунт Cloudflare, вставьте профиль WireGuard откуда-то ещё или добавьте обратный выход — для апстрима, который сам подключается к этой ноде.",
   "val|Unsaved": "Не сохранён",
   "Refused: {v1}": "Отклонён: {v1}",
   "This node hasn't reported a device by this name.": "Нода не сообщала об устройстве с таким именем.",
@@ -3203,9 +3243,241 @@ export const STR = {
     "Эта нода уже поднимает это устройство для одного из своих exit'ов — выберите тот exit.",
   "WARP+ licence key": "Ключ WARP+",
   "Paste a custom config": "Вставить свой конфиг",
+  // dial-in exits (docs/LISTEN-EXIT-PLAN.md) and exit kinds by name (SOCKS5-EXIT-PLAN T6)
+  "WARP & exits": "ВАРП и выходы",
+  // SOCKS5 exits (1.8.11 S10 / SOCKS5-EXIT-PLAN §6)
+  "Add a SOCKS5 proxy": "Добавить прокси SOCKS5",
+  "A DNS server set for an interface that leaves by this exit is not used — the proxy resolves.": "DNS-сервер, заданный для интерфейса, который выходит через этот выход, не используется — имена разрешает прокси.",
+  "A residential proxy may change its exit IP between checks — that is the provider, not a fault.": "Резидентный прокси может менять IP выхода между проверками — это особенность провайдера, а не сбой.",
+  "A test is already running on this node — try again in a moment.": "На этой ноде уже идёт проверка — повторите через минуту.",
+  "Cloudflare WARP accounts, WireGuard profiles from anywhere else, SOCKS5 proxies, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.": "Аккаунты Cloudflare WARP, профили WireGuard откуда угодно ещё, прокси SOCKS5 и обратные выходы — апстрим вроде роутера за NAT, который сам подключается к этой ноде. Сайты видят этот выход, а не эту ноду.",
+  "Exit via a SOCKS5 proxy": "Выход через прокси SOCKS5",
+  "host:port:user:password": "хост:порт:пользователь:пароль",
+  "Last check by the node:": "Последняя проверка нодой:",
+  "Logged in.": "Вход выполнен.",
+  "Logged in. Sites see {v1}.": "Вход выполнен. Сайты видят {v1}.",
+  "Logged in. Sites see {v1} ({v2}).": "Вход выполнен. Сайты видят {v1} ({v2}).",
+  "Names are looked up by the proxy, not here: clients on this exit get stand-in addresses (198.19.x.x) that the proxy turns back into the name — so sites see a location that matches the exit. An app that keeps a stand-in address longer than a second can fail to connect once, after the exit restarts.": "Имена разрешает прокси, а не эта нода: клиенты этого выхода получают подставные адреса (198.19.x.x), которые прокси превращает обратно в имя, — поэтому сайты видят местоположение, совпадающее с выходом. Приложение, которое держит подставной адрес дольше секунды, может один раз не подключиться после перезапуска выхода.",
+  "No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, add a SOCKS5 proxy, or add a dial-in exit for an upstream that connects to this node.": "На этой ноде пока нет выходов. Зарегистрируйте бесплатный аккаунт Cloudflare, вставьте профиль WireGuard откуда-то ещё, добавьте прокси SOCKS5 или обратный выход — для апстрима, который сам подключается к этой ноде.",
+  "Paste the proxy's address before saving.": "Перед сохранением вставьте адрес прокси.",
+  "Proxy address": "Адрес прокси",
+  "SOCKS5 exit": "Выход SOCKS5",
+  "That address doesn't speak SOCKS5.": "По этому адресу не отвечает SOCKS5.",
+  "The node didn't answer the test in time — is it online?": "Нода не ответила на проверку вовремя — она в сети?",
+  "none, or in the address above": "нет, или в адресе выше",
+  "As your provider shows it: host:port:user:password, user:password@host:port or socks5://user:password@host:port. SOCKS5 only.": "Как показывает провайдер: хост:порт:пользователь:пароль, пользователь:пароль@хост:порт или socks5://пользователь:пароль@хост:порт. Только SOCKS5.",
+  "How names and UDP work through this exit": "Как через этот выход работают имена и UDP",
+  "Waiting for {node} to ask the proxy and report back — a few seconds.": "Ждём, пока {node} обратится к прокси и сообщит ответ, — несколько секунд.",
+  "The proxy can't be reached from this node.": "С этой ноды прокси недоступен.",
+  "The proxy didn't answer in time.": "Прокси не ответил вовремя.",
+  "The proxy logged us in but couldn't reach the internet.": "Прокси впустил, но не смог выйти в интернет.",
+  "The proxy refused the connection — is the port right?": "Прокси отклонил подключение — порт верный?",
+  "The proxy refused the login — check the user and password.": "Прокси не принял вход — проверьте пользователя и пароль.",
+  "The proxy refused this node's address. Some providers make you allow-list the server's IP: {v1}.": "Прокси отклонил адрес этой ноды. Некоторые провайдеры требуют внести IP сервера в белый список: {v1}.",
+  "The proxy wants a login, and none is set.": "Прокси требует вход, а логин не задан.",
+  "This is a Docker node: the SOCKS5 tunnel has no CPU cap of its own — the container's limit is its cap.": "Это нода Docker: у туннеля SOCKS5 нет своего ограничения CPU — его ограничивает лимит контейнера.",
+  "This node isn't reporting, so it can't run the test.": "Эта нода не отвечает, поэтому проверку запустить нельзя.",
+  "This node needs the 1.8.11 update for SOCKS5 exits.": "Для выходов SOCKS5 этой ноде нужно обновление 1.8.11.",
+  "this node's public address": "публичный адрес этой ноды",
+  "UDP is carried — calls and games work through this exit.": "UDP проходит — звонки и игры через этот выход работают.",
+  "UDP is not carried — calls and games won't work through this exit. Other traffic is fine: QUIC falls back to TCP at once.": "UDP не проходит — звонки и игры через этот выход работать не будут. Остальной трафик в порядке: QUIC сразу переходит на TCP.",
+  "UDP: not checked yet": "UDP: ещё не проверен",
+  "unchanged": "без изменений",
+  "{v1} is removed from this node and its tunnel to the proxy comes down. The proxy's address and password are deleted from the panel.": "{v1} удаляется с этой ноды, и его туннель к прокси отключается. Адрес и пароль прокси удаляются из панели.",
+  "val|SOCKS5": "SOCKS5",
+  "this is not a SOCKS5 proxy address — the panel speaks SOCKS5 only. Most providers list a SOCKS5 port beside the HTTP one (often 1080): paste that one, as host:port, host:port:user:password or socks5://user:password@host:port": "это не адрес прокси SOCKS5 — панель работает только с SOCKS5. У большинства провайдеров рядом с портом HTTP указан порт SOCKS5 (часто 1080): вставьте его, как хост:порт, хост:порт:пользователь:пароль или socks5://пользователь:пароль@хост:порт",
+  "paste the proxy's address": "вставьте адрес прокси",
+  "the proxy address has a space in it": "в адресе прокси есть пробел",
+  "an IPv6 proxy address cannot be used — exits are IPv4": "адрес прокси IPv6 использовать нельзя — выходы работают по IPv4",
+  "the proxy address must be host:port, host:port:user:password or user:password@host:port": "адрес прокси должен быть вида хост:порт, хост:порт:пользователь:пароль или пользователь:пароль@хост:порт",
+  "this proxy address can be read more than one way — paste it as socks5://user:password@host:port": "этот адрес прокси читается не единственным образом — вставьте его как socks5://пользователь:пароль@хост:порт",
+  "the proxy's address or user changed — type its password again": "адрес или пользователь прокси изменились — введите его пароль ещё раз",
+  "the proxy login has a %-escape that is not text — write it without one": "в логине прокси есть %-экранирование, которое не является текстом, — напишите его без экранирования",
+  "the proxy's port must be a number from 1 to 65535": "порт прокси должен быть числом от 1 до 65535",
+  "the proxy's host is not an address or a name": "хост прокси — не адрес и не имя",
+  "the proxy login is longer than SOCKS5 allows (255 characters)": "логин прокси длиннее, чем допускает SOCKS5 (255 символов)",
+  "the proxy login has a control character in it": "в логине прокси есть управляющий символ",
+  "the proxy has a password but no user name": "у прокси указан пароль, но нет имени пользователя",
+  "paste the SOCKS5 proxy's address": "вставьте адрес прокси SOCKS5",
+  "{v1}: this node cannot run a SOCKS5 exit yet — update the node to 1.8.11": "{v1}: эта нода пока не умеет выход SOCKS5 — обновите ноду до 1.8.11",
+  "an exit cannot change between a SOCKS5 proxy and a tunnel — add a new exit instead": "выход нельзя превратить из прокси SOCKS5 в туннель и обратно — добавьте новый выход",
+  "the node is not reporting — a test would never be collected": "нода не отвечает — проверку никто не заберёт",
+  "the proxy address is incomplete": "адрес прокси неполный",
+  "fetching the SOCKS5 tunnel program…": "загружается программа туннеля SOCKS5…",
+  "Add a dial-in exit": "Добавить обратный выход",
+  "Dial-in exit": "Обратный выход",
+  "Dial-in exit :{v1}": "Обратный выход :{v1}",
+  "The router config changed — {v1}. Import it on the router again.": "Конфиг роутера изменился — {v1}. Импортируйте его на роутере заново.",
+  "The router config changed — {v1}. Import this one on the router again.": "Конфиг роутера изменился — {v1}. Импортируйте на роутере этот.",
+  "val|Dial-in": "Обратный",
+  "For an upstream that can't be reached — a router behind NAT: it connects to this node.":
+    "Для апстрима без белого адреса (роутер за NAT): он сам подключается к ноде.",
+  "This node's end": "Сторона ноды",
+  "Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint":
+    "Вставьте сторону этой ноды: [Interface] с ListenPort и один [Peer] — роутер — без Endpoint",
+  "This node's end of the tunnel: it listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line stands for this node's own key, which the panel keeps and never shows: leave it and the key is kept, replace it and the new one is used. The router has its own key — its config opens from the QR button on the exit's row.":
+    "Сторона ноды в туннеле: она слушает ListenPort, роутер подключается к ней сам. AllowedIPs пира не учитывается — весь трафик уходит на роутер. Строка PrivateKey обозначает собственный ключ ноды — панель хранит его и никогда не показывает: оставьте её, и ключ сохранится; замените — будет использован новый. У роутера свой ключ — его конфиг открывается кнопкой QR в строке выхода.",
+  "This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.":
+    "Эта docker-нода работает в сети `bridge` — опубликуйте UDP-порт выхода в `docker-compose.yml` ноды ({ports}) и выполните `up -d`, иначе роутер до неё не достучится.",
+  "This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.":
+    "Эта панель не знает такой вид выхода. Он сохранён как есть: его можно выключить или удалить.",
+  "{v1} is removed from this node and its tunnel comes down.": "{v1} будет удалён с этой ноды, туннель опустится.",
+  "Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.":
+    "Для обратного выхода задержка не измеряется: роутер сам подключается к ноде, пинговать некого.",
+  "This node needs the 1.8.11 update for dial-in exits.": "Для обратных выходов ноду нужно обновить до 1.8.11.",
+  "Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.":
+    "Ждём подключения роутера. Проверьте, что роутер включён, конфиг на нём импортирован, а UDP {v1} на этой ноде открыт.",
+  "The router is connected but passes no traffic — check NAT on the router.":
+    "Роутер подключён, но трафик через него не идёт — проверьте NAT на роутере.",
+  "Up on the node. The router connects from {v1}.": "Поднят на ноде. Роутер подключается с {v1}.",
+  "this panel does not know exits of kind {v1}": "эта панель не знает выходы вида {v1}",
+  "this node does not know this kind of exit — update the node": "эта нода не знает такой вид выхода — обновите ноду",
+  "a dial-in exit has exactly one peer — the upstream": "у обратного выхода ровно один пир — апстрим",
+  "the profile's ListenPort is not a usable port": "ListenPort в профиле — не пригодный порт",
+  "a dial-in exit dials nothing, so it has no source address to pin — set Connect from to Auto":
+    "обратный выход никуда не подключается сам, закреплять адрес-источник нечего — выберите «Подключаться с»: Авто",
+  "UDP port {v1} is already used on this node by {v2}": "UDP-порт {v1} на этой ноде уже занят: {v2}",
+  "the address {v1} is inside {v2} ({v3}) on this node — use another one":
+    "адрес {v1} попадает в {v2} ({v3}) на этой ноде — возьмите другой",
+  "two dial-in exits cannot listen on one port ({v1})": "два обратных выхода не могут слушать один порт ({v1})",
+  "two dial-in exits cannot have one address ({v1})": "у двух обратных выходов не может быть одного адреса ({v1})",
+  "Meanwhile the kill-switch is holding everything that uses this exit.": "Пока что kill-switch держит всё, что идёт через этот выход.",
+  "Meanwhile everything that uses this exit goes out through this node's own IP.": "Пока что всё, что идёт через этот выход, уходит с собственного IP этой ноды.",
+  "Other exits": "Другие выходы",
+  "the dial-in exit {v1}": "обратный выход {v1}",
+  "{v1}: this dial-in exit listens on UDP {v2}, outside this node's declared firewall range ({v3}) — the router cannot connect until the range covers that port":
+    "{v1}: этот обратный выход слушает UDP {v2} вне заявленного диапазона файрвола ноды ({v3}) — роутер не подключится, пока диапазон не покроет этот порт",
+  // dial-in exits: Generate and the router's config (S9b)
+  "Router config — {v1}": "Конфиг роутера — {v1}",
+  "Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.":
+    "Показывается один раз — приватный ключ роутера нигде не хранится. Потеряли? Пересоздайте конфиг роутера.",
+  // S9c: the router's key kept with the client configs
+  "Kept encrypted with your client configs — the QR button on the exit's row shows it again.":
+    "Хранится зашифрованным вместе с конфигами клиентов — кнопка QR в строке выхода покажет его снова.",
+  "Not kept with your client configs: {v1}.": "Не сохранён вместе с конфигами клиентов: {v1}.",
+  "Unlock to keep the router config": "Откройте хранилище, чтобы сохранить конфиг роутера",
+  "The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again.":
+    "Конфиг роутера хранится зашифрованным вместе с конфигами клиентов — прочитать его можете только вы своим ключом. Откройте ключ, чтобы строка выхода могла показать конфиг снова.",
+  "the exit is created and works, but its router config is shown once only — unless you unlock the key in this tab before you reload.":
+    "выход создаётся и работает, но конфиг роутера будет показан только один раз — если только вы не откроете ключ в этой вкладке до перезагрузки страницы.",
+  "both sides still get new keys, but the router's new config is shown once only — unless you unlock the key in this tab before you reload.":
+    "обе стороны всё равно получат новые ключи, но новый конфиг роутера будет показан только один раз — если только вы не откроете ключ в этой вкладке до перезагрузки страницы.",
+  "Saved, but the panel did not return the exit — reload, and the QR button on its row shows the router config.":
+    "Сохранено, но панель не вернула выход — обновите страницу, и кнопка QR в его строке покажет конфиг роутера.",
+  "This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then open it again from the exit's row.":
+    "У этой ноды пока нет входного адреса, поэтому строка Endpoint неполная. Задайте его в Настройки → Сеть и откройте конфиг снова из строки выхода.",
+  "Dial-in exits' router configs are sealed to this panel's vault, so they stay here — open them here first, or regenerate one there":
+    "Конфиги роутеров обратных выходов запечатаны хранилищем этой панели, поэтому остаются здесь — откройте их здесь заранее или пересоздайте там",
+  "no dial-in exit with this id on this node": "на этой ноде нет обратного выхода с таким id",
+  "the exit's router key has changed since this config was made": "ключ роутера этого выхода сменился после того, как был создан этот конфиг",
+  "no encryption key for this node — set up config encryption first": "для этой ноды нет ключа шифрования — сначала настройте шифрование конфигов",
+  "Unlock to show the router config": "Откройте хранилище, чтобы показать конфиг роутера",
+  "The router's config is kept encrypted with your client configs — only you can read it, with your encryption key.":
+    "Конфиг роутера хранится зашифрованным вместе с конфигами клиентов — прочитать его можете только вы своим ключом.",
+  "the router config is not shown.": "конфиг роутера не будет показан.",
+  "Couldn't reach the panel just now, so the router config could not be read. It has not been lost — try again in a moment.":
+    "Сейчас не удалось связаться с панелью, поэтому конфиг роутера прочитать не вышло. Он не потерян — попробуйте ещё раз через минуту.",
+  "No router config is kept for this exit": "Для этого выхода конфиг роутера не сохранён",
+  "Keeping encrypted client configs is off, so the router's private key was shown once and not kept.":
+    "Хранение зашифрованных конфигов клиентов выключено, поэтому приватный ключ роутера был показан один раз и не сохранён.",
+  "It was kept under a previous encryption key, which this vault cannot open.":
+    "Он сохранён под предыдущим ключом шифрования, который это хранилище открыть не может.",
+  "It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.":
+    "Он создан до того, как ключ роутера стал сохраняться, вставлен извне, или его ключи с тех пор сменились.",
+  "Router config": "Конфиг роутера",
+  "the encryption key is locked": "ключ шифрования заперт",
+  "couldn't store the router config": "не удалось сохранить конфиг роутера",
+  "This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.":
+    "У этой ноды пока нет входного адреса, поэтому строка Endpoint неполная. Задайте его в Настройки → Сеть и пересоздайте конфиг.",
+  "Download .conf": "Скачать .conf",
+  "Router config copied": "Конфиг роутера скопирован",
+  "On the router": "На роутере",
+  "Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.":
+    "Импортируйте конфиг: Интернет → Другие подключения → WireGuard → Загрузить из файла. Оставьте «Использовать для выхода в интернет» выключенным — у роутера остаётся свой интернет, этот туннель только выводит трафик ноды наружу.",
+  "Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:":
+    "Найдите его имя: `show interface` на странице командной строки (my.keenetic.net/a) покажет его как WireguardN с описанием {v1}. Затем, со своим N:",
+  "If this router's own internet goes through a VPN — swg or another — keep this tunnel on your provider, with a connection policy that uses only the provider's connection:":
+    "Если собственный интернет роутера идёт через VPN — swg или другой — оставьте этот туннель на провайдере: политикой доступа, в которой есть только подключение провайдера:",
+  "Network → Interfaces → Add new interface, protocol AmneziaWG (the amneziawg packages), then load this config into it. Leave “Route Allowed IPs” off.":
+    "Network → Interfaces → Add new interface, протокол AmneziaWG (пакеты amneziawg), затем загрузите в него этот конфиг. «Route Allowed IPs» оставьте выключенным.",
+  "Network → Interfaces → Add new interface, protocol WireGuard VPN, then “Load configuration…” with this config. Leave “Route Allowed IPs” off.":
+    "Network → Interfaces → Add new interface, протокол WireGuard VPN, затем «Load configuration…» с этим конфигом. «Route Allowed IPs» оставьте выключенным.",
+  "Firewall: put the interface in a zone that may forward to wan — wan masquerades by default, so the node's traffic leaves as the router.":
+    "Firewall: поместите интерфейс в зону, которой разрешена пересылка в wan — wan по умолчанию делает маскарадинг, и трафик ноды уходит от имени роутера.",
+  "If wan is not this router's default route (its own internet goes through a VPN), send traffic from `{v1}` out by wan with policy-based routing (pbr).":
+    "Если wan — не основной маршрут роутера (его собственный интернет идёт через VPN), отправьте трафик от `{v1}` через wan маршрутизацией по политикам (pbr).",
+  "Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.":
+    "Поднимите конфиг: сохраните его как `/etc/{v1}/{v2}.conf` и выполните `{v3} up {v2}`.",
+  "Let the node's traffic out to the internet only, masqueraded — not into your local networks, nor to this machine itself. Set UPLINK to your internet interface:":
+    "Выпустите трафик ноды только в интернет, с маскарадингом — не в ваши локальные сети и не к самой этой машине. В UPLINK укажите интерфейс интернета:",
+  "If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.":
+    "Если собственный интернет этой машины идёт через VPN, отправьте адрес ноды через интерфейс интернета правилом маршрутизации по источнику.",
+  "The exit's row turns green about a minute after traffic starts to flow — the node waits that long before it routes back through a tunnel that failed.":
+    "Строка выхода становится зелёной примерно через минуту после того, как пойдёт трафик, — столько нода ждёт, прежде чем вернуть трафик в туннель, который не работал.",
+  "Traffic crosses it again — the node routes back through it within a minute.":
+    "Трафик снова проходит — нода вернёт его в этот выход в течение минуты.",
+  "Not kept — keeping encrypted client configs is off (Settings → Client configs). Download or copy it now; once closed, only Regenerate makes a new one.":
+    "Не хранится — хранение зашифрованных конфигов клиентов выключено (Настройки → Конфиги клиентов). Скачайте или скопируйте его сейчас; после закрытия новый даст только пересоздание.",
+  "Not kept yet — the encryption key is locked. Unlock it in this tab before you reload and it is kept; otherwise download or copy it now.":
+    "Пока не сохранён — ключ шифрования заперт. Отоприте его в этой вкладке до перезагрузки, и конфиг сохранится; иначе скачайте или скопируйте его сейчас.",
+  "Other router":
+    "Другой роутер",
+  "If this node itself is behind NAT, forward UDP {v1} to it.": "Если сама нода за NAT, пробросьте на неё UDP {v1}.",
+  "The panel makes both sides; you import the router's config on the router.": "Панель создаст обе стороны, а конфиг роутера вы импортируете на роутере.",
+  "val|WireGuard": "WireGuard",
+  "AmneziaWG 2.0": "AmneziaWG 2.0",
+  "The router must be able to import it — check what its firmware supports.": "Роутер должен уметь его импортировать — проверьте, что поддерживает его прошивка.",
+  "Already have the router's config?": "Конфиг роутера уже есть?",
+  "Paste the server config instead": "Вставьте серверный конфиг",
+  "Creating…": "Создаём…",
+  "Regenerate router config": "Пересоздать конфиг роутера",
+  "Saved, but the panel did not return the exit — reload and regenerate.": "Сохранено, но панель не вернула выход — обновите страницу и пересоздайте конфиг.",
+  "Regenerate the router config?": "Пересоздать конфиг роутера?",
+  "Regenerate": "Пересоздать",
+  "Both sides get new keys. The router stops connecting until it imports the new config.":
+    "Обе стороны получат новые ключи. Роутер не подключится, пока не импортирует новый конфиг.",
+  "port {v1} → {v2}": "порт {v1} → {v2}",
+  "address {v1} → {v2}": "адрес {v1} → {v2}",
+  "the AmneziaWG parameters": "параметры AmneziaWG",
+  "this node's key": "ключ этой ноды",
+  "the preshared key": "общий ключ (PSK)",
+  "AmneziaWG 3.1: {v1}": "AmneziaWG 3.1: {v1}",
+  "a dial-in exit can only be generated from the exits screen": "обратный выход можно сгенерировать только на экране выходов",
+  "the generated keys are not usable keys": "сгенерированные ключи непригодны",
+  "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1": "выберите WireGuard, AmneziaWG 2.0 или AmneziaWG 3.1",
+  "no free port in 42821–42899 on this node, nor in its declared firewall range — type a port":
+    "на этой ноде нет свободного порта ни в 42821–42899, ни в объявленном диапазоне брандмауэра — укажите порт",
+  "the port must be a number from 1 to 65535": "порт — число от 1 до 65535",
+  "the MTU must be a number from 576 to 1500": "MTU — число от 576 до 1500",
+  "UDP port {v1} is in the reserved system mesh range ({v2})": "UDP-порт {v1} входит в зарезервированный диапазон системных mesh-связей ({v2})",
+  "Ports 20000–29999 are kept for devices' incoming torrent ports — pick another port.": "Порты 20000–29999 отведены под входящие торрент-порты устройств — выберите другой порт.",
+  "S1–S4 must be at least 12 for AmneziaWG 3.1 — header protection refuses less":
+    "для AmneziaWG 3.1 S1–S4 должны быть не меньше 12 — защита заголовков не принимает меньше",
+  "UDP port {v1} is outside this node's declared firewall ranges ({v2}) — the router could never reach it; pick a port inside them, or add it to udpPortRanges":
+    "UDP-порт {v1} вне объявленных диапазонов брандмауэра этой ноды ({v2}) — роутер до него не достучится; выберите порт внутри них или добавьте его в udpPortRanges",
+  "this exit": "этот выход",
+  "Port": "Порт",
+  "Parameters": "Параметры",
+  "val|generated": "генерируется",
+  "Blank: a free port of {v1} — on a node whose firewall is declared (NixOS), inside what it declares. Not 51820, the port every scanner tries first.":
+    "Пусто — свободный порт из {v1}, а на ноде с объявленным брандмауэром (NixOS) — из того, что он открывает. Не 51820: его сканеры пробуют первым.",
+  "Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.":
+    "Впишите - в ячейку, чтобы такой строки не было и у роутера; пустая ячейка заполняется — показанным в ней значением или случайным.",
+  "Drawn for this exit; the router's config carries the same key.":
+    "Генерируется для этого выхода; в конфиге роутера тот же ключ.",
+  "On for every AmneziaWG 3.1 exit.": "Включено у каждого выхода AmneziaWG 3.1.",
+  "~{v1} ms": "~{v1} мс",
+  "Measured through the tunnel: one round trip from this node through the router to Cloudflare's nearest server. The router dials this node, so there is no server of its own to ping.":
+    "Измерено через туннель: один круг от этой ноды через роутер до ближайшего сервера Cloudflare. Роутер сам подключается к ноде, поэтому своего сервера для пинга нет.",
+  "The exit's server answers no ping, so this is measured through the tunnel: one round trip from this node through the exit to Cloudflare's nearest server — a little more than the exit alone.":
+    "Сервер выхода не отвечает на пинг, поэтому задержка измерена через туннель: один круг от этой ноды через выход до ближайшего сервера Cloudflare — чуть больше, чем до самого выхода.",
+  "S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.":
+    "S1–S4 и H1–H4 генерируются заново, как и все пустые ячейки — роутеру придётся импортировать конфиг снова.",
+  "no free address pair in 10.254.0.0/16 on this node — paste a config with your own address":
+    "на этой ноде нет свободной пары адресов в 10.254.0.0/16 — вставьте конфиг со своим адресом",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",
-  "Cloudflare WARP accounts and WireGuard profiles from anywhere else. Websites see the exit rather than this node.":
-    "Аккаунты Cloudflare WARP и профили WireGuard откуда угодно ещё. Сайты видят этот выход, а не эту ноду.",
+  "Cloudflare WARP accounts, WireGuard profiles from anywhere else, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.":
+    "Аккаунты Cloudflare WARP, профили WireGuard откуда угодно ещё и обратные выходы — апстрим вроде роутера за NAT, который сам подключается к этой ноде. Сайты видят этот выход, а не эту ноду.",
   "WARP+ licence key — optional": "Ключ WARP+ — необязательно",
   "Paste the [Interface] / [Peer] profile here": "Вставьте сюда профиль с [Interface] / [Peer]",
   "Paste a WireGuard profile for the new exit, or remove it.":
@@ -3874,11 +4146,7 @@ export const STR = {
   // budget-ok: button tooltip, no box
   "Manage all of this user's VK call links (add more, set primary)":
     "Управление всеми ссылками VK этого пользователя (добавить, назначить основную)",
-  "Expected a VK call link like": "Ожидается ссылка на звонок VK вида",
-  "Expected a VK call link like {v1}": "Ожидается ссылка на звонок VK вида {v1}",
   // budget-ok: hint line above a mono example, wraps
-  "Every link must look like": "Каждая ссылка должна выглядеть как",
-  "One of the links isn't a valid VK call link.": "Одна из ссылок не похожа на ссылку звонка VK.",
   // budget-ok: sheet-foot button, foot has a grow spacer
   "Add link": "Добавить ссылку",
   "Set as the primary link": "Сделать основной",
@@ -4789,8 +5057,6 @@ export const STR = {
   "healthy": "работает",
   "down — host routing degraded": "не работает — домены страдают",
   "OFF — routing stays fresh, no remembered IPs": "ВЫКЛ — маршруты свежие, адреса не запоминаются",
-  "Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out.":
-    "Резать BitTorrent и P2P с этого интерфейса на любом порту — их узнают по протоколу и по характеру соединений. Действует, только если в настройке сервера «Торренты / P2P» выбрано «Решает каждый интерфейс»: по умолчанию сервер закрывает их на всех выходах.",
   // the node-wide torrent policy (Settings ▸ node ▸ Network ▸ Filters & abuse)
   "Torrents / P2P": "Торренты / P2P",
   "Torrents / P2P: {v1}": "Торренты / P2P: {v1}",
@@ -4806,8 +5072,8 @@ export const STR = {
     "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов и от других нод, выходящих через него. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит. Сайты и видеозвонки не затрагиваются.",
   "Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
     "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
-  "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":
-    "Блокируют только интерфейсы, где включено «Торренты / P2P». Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
+  "Each interface's own Torrents / P2P choice applies — block, allow, or route. Traffic other nodes send out through this server, and programs running on it, are not checked.":
+    "Действует выбор «Торренты / P2P» на каждом интерфейсе — блокировать, разрешить или направить. Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
   "This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.":
     "Этот сервер не умеет читать содержимое пакетов (слишком старое ядро или nft), поэтому торренты узнаются только по характеру соединений.",
   // P3 — routing torrent traffic through an exit or another node
@@ -4821,10 +5087,12 @@ export const STR = {
   "Through another node": "Через другую ноду",
   "There is no mesh link to {v1}.": "До {v1} нет меш-связи.",
   "{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.": "{v1} сейчас не выходит на связь — торрент-трафик, отправленный туда, не выйдет, пока связь не вернётся.",
-  "Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.":
-    "Выбрано автоматически: это значение по умолчанию. Переключатель «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
+  "Chosen automatically: this is the default. An interface's own Torrents / P2P choice counts only when you pick “Each interface decides”.":
+    "Выбрано автоматически: это значение по умолчанию. Выбор «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
   "the torrent route's way out is down — torrent traffic is blocked until it is back":
     "путь для торрентов сейчас не работает — пока он не восстановится, торрент-трафик блокируется",
+  "torrents on {v1}: their route's way out is down — blocked until it is back":
+    "торренты на {v1}: их путь сейчас не работает — пока он не восстановится, они блокируются",
   "Torrent route removed": "Маршрут для торрентов снят",
   "its exit or node is gone — torrent traffic is now blocked": "его выход или нода удалены — торрент-трафик теперь блокируется",
   "the torrent route is unavailable — torrent traffic is blocked until it is":
@@ -4832,6 +5100,26 @@ export const STR = {
   "torrents can only be routed to another node of this fleet": "торренты можно направить только на другую ноду этого флота",
   "torrents can only be routed through one of this node's exits": "торренты можно направить только через один из выходов этой ноды",
   "torrent policy must be one of: {v1}": "политика торрентов — одно из: {v1}",
+  // each interface's own Torrents / P2P (IFACE-P2P-PICK, 1.8.11 S11)
+  "Allow — not checked": "Разрешить — не проверять",
+  "As the server — {v1}": "Как на сервере — {v1}",
+  "Counts only when {v1}'s Torrents / P2P setting is “Each interface decides” — Settings ▸ Network ▸ Filters & abuse.":
+    "Действует, только если в настройке «Торренты / P2P» у {v1} выбрано «Решает каждый интерфейс» — Настройки ▸ Сеть ▸ Фильтры и ограничения.",
+  "Torrent traffic from this interface is dropped, whichever way it leaves.": "Торрент-трафик с этого интерфейса отбрасывается, каким бы путём он ни уходил.",
+  "Torrent traffic from this interface is not checked — it follows the interface's own routing.":
+    "Торрент-трафик с этого интерфейса не проверяется — он идёт по маршрутизации самого интерфейса.",
+  "This interface follows the server's Torrents / P2P setting.": "Этот интерфейс следует настройке сервера «Торренты / P2P».",
+  "Torrent traffic from this interface may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
+    "Торрент-трафик с этого интерфейса может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
+  "Torrent traffic from this interface may leave only through {v1}. If that way is down, it is blocked — never sent out another way.":
+    "Торрент-трафик с этого интерфейса может выходить только через {v1}. Если этот путь не работает, он блокируется — другим путём он не уходит.",
+  "This exit carries TCP only — DHT and µTP can't pass it, so torrents find fewer peers and download slower.":
+    "Этот выход пропускает только TCP — DHT и µTP через него не проходят, поэтому торренты находят меньше пиров и качают медленнее.",
+  "the torrent choice must be direct, exit or dev": "выбор для торрентов — direct, exit или dev",
+  "per-interface torrent choices need a node update — until then those interfaces' torrents are not checked":
+    "для выбора торрентов на интерфейсах нужно обновить ноду — пока торренты на этих интерфейсах не проверяются",
+  "torrents on {v1} have no way out (the route is unavailable) — blocked until it is":
+    "у торрентов на {v1} нет пути наружу (маршрут недоступен) — пока он не появится, они блокируются",
   "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
     "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
   // the node could not load its torrent rules ({v1}: nft's own first error line, left in English)
@@ -4870,8 +5158,8 @@ export const STR = {
   "Update installs {ref}, not the latest release — this node was installed or last updated from it. Run its update once with SWG_REF=main to follow releases again.":
     "Обновление ставит {ref}, а не последний выпуск: из {ref} эту ноду установили или обновили в последний раз. Чтобы снова получать выпуски, один раз запустите её обновление с SWG_REF=main.",
   "from {ref}": "из {ref}",
-  "Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.":
-    "Обновление ставит {ref}, а не последний выпуск: из {ref} установили или в последний раз обновили программу обновления этого хоста (/usr/local/bin/swg-update). Чтобы снова получать выпуски, один раз выполните `sudo SWG_REF=main swg-update`.",
+  "Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.":
+    "Обновление ставит {ref}, а не последний выпуск: из {ref} установили или в последний раз обновили программу обновления этого хоста (/usr/local/bin/swg-update). Чтобы снова получать выпуски, один раз выполните `sudo bash -c \"SWG_REF=main swg-update\"`.",
   "Update runs this node's own update command (update_cmd in its agent config, /etc/swg-agent/config.json by default), not the release updater. Remove it there and restart swg-noded to follow releases again.":
     "Обновление запускает собственную команду этой ноды (update_cmd в её конфиге агента, по умолчанию /etc/swg-agent/config.json), а не обновление выпусками. Чтобы снова получать выпуски, удалите её оттуда и перезапустите swg-noded.",
   "own update command": "своя команда обновления",
@@ -5087,6 +5375,12 @@ export const STR = {
   "Link rotated — the old one no longer works.": "Ссылка сменена — прежняя больше не работает.",
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
   "Rotate failed.": "Сменить не удалось.",
+  // a phone's Rotate on one device: what it says when there is nothing to rotate, or only some credentials went through (review F67, F68)
+  "This peer has nothing to rotate.": "У этого пира нечего менять.",
+  "the csqtt link": "ссылка csqtt",
+  "the WDTT link": "ссылка WDTT",
+  "the keypair": "ключи",
+  "Not everything was rotated: {why}. Already replaced: {done} — send the user the new one.": "Сменено не всё: {why}. Уже заменено: {done} — отправьте пользователю новое.",
   "Keys rotated — send the user the new QR / config; the old one no longer works.":
     "Ключи сменены — отправьте пользователю новый QR или конфиг, прежний не работает.",
   "Pick a user to assign this peer to — the existing key and config are kept, applied when you Save.":
@@ -5352,6 +5646,7 @@ export const STR = {
   // the grouped row's IF badge: the row stands for several deployments, so it counts them
   "{n} interfaces": "{n} интерф.",
   "This peer's interfaces": "Интерфейсы этого пира",
+  "Other interfaces of this peer": "Другие интерфейсы этого пира",
   "Collapse each peer's deployments into one row": "Свернуть развёртывания каждого пира в одну строку",
   "One row per peer — its other deployments are behind the +N": "По строке на пира — остальные его развёртывания за +N",
   // the address column on a self-contained turn row: its server mints the client IP on connect
@@ -5537,6 +5832,14 @@ export const STR = {
   "this node already manages a csqtt instance on {v1}": "эта нода уже управляет экземпляром csqtt на {v1}",
   "this node doesn't report a csqtt server on {v1} — refresh and try again":
     "эта нода не сообщает о сервере csqtt на {v1} — обновите и попробуйте снова",
+  "the node couldn't tell which csqtt version runs on {v1}, and taking it over on a guess could cut off its clients — refresh and try again; if it stays unknown, stop that server and create one from the panel":
+    "нода не смогла определить, какая версия csqtt работает на {v1}, а захват наугад может отключить его клиентов — обновите и попробуйте снова; если версия так и не определится, остановите этот сервер и создайте новый из панели",
+  "This server runs csqtt {v1}, which this panel doesn't run: taking it over would cut off its clients.":
+    "Этот сервер работает на csqtt {v1} — эту версию панель не запускает, и при захвате его клиенты потеряли бы связь.",
+  "The node couldn't tell which csqtt version this server runs, and taking it over on a guess could cut off its clients. Refresh in a minute; if it stays unknown, stop that server and create one from the panel.":
+    "Нода не смогла определить, какая версия csqtt работает на этом сервере, а захват наугад может отключить его клиентов. Обновите страницу через минуту; если версия так и не определится, остановите этот сервер и создайте новый из панели.",
+  "this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients":
+    "этот сервер работает на csqtt {v1} — эту версию панель не запускает, и при захвате его клиенты потеряли бы связь",
   "a csqtt server this panel doesn't manage already holds {v1} on this node — adopt it from the node's page to take it over with its users, or pick another name":
     "сервер csqtt, которым эта панель не управляет, уже занимает {v1} на этой ноде — примите его со страницы ноды, чтобы забрать вместе с пользователями, или выберите другое имя",
   "this server's tunnel subnet isn't an IPv4 /24: {v1}": "подсеть туннеля этого сервера не IPv4 /24: {v1}",
@@ -5975,6 +6278,8 @@ export const STR = {
   "Add a second step at sign-in using an authenticator app (Google Authenticator, Authy, 1Password…).":
     "Добавьте второй шаг при входе — код из приложения-аутентификатора (Google Authenticator, Authy, 1Password…).",
   "Turn IPs": "Адреса turn",
+  "Open Settings": "Открыть настройки",
+  "Open menu": "Открыть меню",
   "This node is busy or offline": "Нода занята или не на связи",
   " — turn-proxy actions are disabled until it's reporting again.": " — действия с turn-прокси недоступны, пока она не отзовётся.",
   "Internal port": "Внутренний порт",
@@ -6235,8 +6540,6 @@ export const STR = {
     "Для TLS с сертификатом Cloudflare Origin (cf15) нужен токен Origin CA — добавьте его в «Адрес панели» до переключения.",
   "Cloudflare TLS needs a Cloudflare DNS token — add it in Panel URL before switching, otherwise the panel would serve a self-signed certificate Cloudflare rejects (526).":
     "Для TLS через Cloudflare нужен токен DNS — добавьте его в «Адрес панели» до переключения, иначе панель отдаст самоподписанный сертификат, а Cloudflare его отвергнет (526).",
-  "Not a valid VK call link — expected https://vk.ru/call/join/…":
-    "Это не ссылка на звонок VK — нужна вида https://vk.ru/call/join/…",
   "Peer expiry can't be later than the subscription's expiry ({v1})":
     "Срок действия пира не может быть позже срока действия подписки ({v1})",
   "Subscription expiry can't be earlier than a peer's expiry ({v1})":
@@ -6631,8 +6934,6 @@ export const STR = {
   "Users, and every peer deployed here": "Пользователи и все их пиры на этой ноде",
   "Stored configs — the links your users already hold keep opening them":
     "Сохранённые конфиги — ссылки, которые уже есть у пользователей, продолжат их открывать",
-  "Users' encryption keys — re-wrapped there the next time you unlock the vault":
-    "Ключи шифрования пользователей — перешифруются там при следующей разблокировке хранилища",
   "Mesh links — the other panel builds its own": "Связи меша — та панель поднимет свои",
 
   // The wait. It is not a progress bar: the node decides when it moves, and until it does this panel is
@@ -7082,6 +7383,24 @@ export const STR = {
   "App routing: list at least one app to send through the tunnel": "Маршрутизация приложений: укажите хотя бы одно приложение для туннеля",
   "App routing: list at least one domain to send through the tunnel": "Маршрутизация приложений: укажите хотя бы один домен для туннеля",
   "App routing: list at least one address to send through the tunnel": "Маршрутизация приложений: укажите хотя бы один адрес для туннеля",
+  // App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md)
+  "Exceptions": "Исключения",
+  "Own rule": "Своё правило",
+  "No App routing": "Без маршрутизации приложений",
+  "Add exception": "Добавить исключение",
+  "Edit exception": "Изменить исключение",
+  "Remove exception": "Убрать исключение",
+  "At most {v1} exceptions.": "Не больше {v1} исключений.",
+  "nobody — they no longer exist": "никто — их больше нет",
+  "Chosen people get their own rule, or none. A device's exception beats its user's, and a user's beats a group's; a person in two groups gets the upper one. Applies at each user's next connect.": "Выбранные люди получают своё правило или никакого. Исключение устройства сильнее исключения его пользователя, а пользователя — группы; человек из двух групп получает верхнее. Действует со следующего подключения каждого пользователя.",
+  "Exceptions need a node update — until then everyone gets the server rule.": "Для исключений нужно обновить ноду — до тех пор все получают правило сервера.",
+  "{devices} on this server": "{devices} на этом сервере",
+  "Choose at least one person, group or device.": "Выберите хотя бы одного человека, группу или устройство.",
+  "Used instead of the server's rule.": "Действует вместо правила сервера.",
+  "Everything they send uses the tunnel, whatever the server's rule says.": "Весь их трафик идёт через туннель, что бы ни говорило правило сервера.",
+  "App routing: at most {v1} exceptions": "Маршрутизация приложений: не больше {v1} исключений",
+  "Exception {v1}: choose at least one person, group or device": "Исключение {v1}: выберите хотя бы одного человека, группу или устройство",
+  "Exception {v1}: {v2}": "Исключение {v1}: {v2}",
   "Switching a csqtt server's version": "Смена версии сервера csqtt",
   "tag|update node": "обновите ноду",
   "This node can't run csqtt {v1} — update the node": "Эта нода не умеет запускать csqtt {v1} — обновите ноду",
@@ -7122,6 +7441,36 @@ export const STR = {
   "A chosen user, group or device no longer exists — reload and choose again": "Выбранного пользователя, группы или устройства больше нет — перезагрузите страницу и выберите снова",
   "This browser tab is older than the panel — reload it before saving routing.": "Эта вкладка старее панели — перезагрузите её перед сохранением маршрутизации.",
   "{v1} needs an update to route per person — these rules apply to nobody there until it is.": "{v1} нужно обновить для маршрутизации по людям — до обновления эти правила там ни на кого не действуют.",
+  // Ports on a routing rule (1.8.11 S6, NEVER-BLOCK-AND-PORT-RULES B)
+  "{v1} needs an update to route by port — rules with ports don't apply there until it is.": "{v1} нужно обновить для маршрутизации по портам — до обновления правила с портами там не действуют.",
+  "A node's default rules can't name ports — set them on an interface's rule": "В правилах узла по умолчанию нельзя указать порты — задайте их в правиле интерфейса",
+  "“Everything else” applies to every port — use a rule to 0.0.0.0/0 with ports": "«Всё остальное» действует на все порты — используйте правило на 0.0.0.0/0 с портами",
+  "Ports: “Any” protocol needs at least one port": "Порты: для протокола «Любой» нужен хотя бы один порт",
+  "proto|Any": "Любой",
+  "Ports: at most 32 ports or ranges": "Порты: не больше 32 портов или диапазонов",
+  "Ports: write ports and ranges from 1 to 65535, like 443, 8000-8100": "Порты: укажите порты и диапазоны от 1 до 65535, например 443, 8000-8100",
+  "This node drops QUIC (UDP 443) before any rule, so web browsers fall back to TCP — this rule never sees UDP 443.": "Этот узел отбрасывает QUIC (UDP 443) до всех правил, и браузеры переходят на TCP — UDP 443 до этого правила не доходит.",
+  "With Force DNS this node answers port 53 itself, whatever this rule says.": "С Force DNS этот узел сам отвечает на порт 53, что бы ни говорило это правило.",
+  "This rule drops your clients' DNS to these addresses before Force DNS can answer it.": "Это правило отбрасывает DNS ваших клиентов к этим адресам раньше, чем Force DNS успевает ответить.",
+  "This interface's QUIC filter drops UDP 443 before any rule — this rule never sees it.": "Фильтр QUIC этого интерфейса отбрасывает UDP 443 до всех правил — это правило его не видит.",
+  "This interface's SMTP filter drops TCP 25 before any rule — this rule never sees it.": "Фильтр SMTP этого интерфейса отбрасывает TCP 25 до всех правил — это правило его не видит.",
+  "Kernel SNI reads site names on TCP 443 only — on the other ports only this rule's addresses and networks apply.": "Kernel SNI читает имена сайтов только на TCP 443 — на остальных портах действуют только адреса и сети этого правила.",
+  "On Hybrid SNI a Block by site name acts on TCP 443 only — on other ports it blocks only this rule's addresses and networks.": "В Hybrid SNI блокировка по имени сайта действует только на TCP 443 — на других портах она блокирует только адреса и сети этого правила.",
+  "These ports can't be read, so this rule applies nowhere — open it and set them again.": "Эти порты не читаются, поэтому правило нигде не действует — откройте его и задайте порты заново.",
+  "ports unreadable": "порты не читаются",
+  "Choose a protocol.": "Выберите протокол.",
+  "Kernel SNI reads site names on TCP 443 only — on these ports only this rule's addresses and networks apply.": "Kernel SNI читает имена сайтов только на TCP 443 — на этих портах действуют только адреса и сети этого правила.",
+  "Hybrid SNI learns a site's addresses from its web connections — on other ports this rule matches the addresses already learned.": "Hybrid SNI узнаёт адреса сайта по его веб-соединениям — на других портах это правило срабатывает на уже известные адреса.",
+  "TCP and UDP": "TCP и UDP",
+  "every {proto} port": "все порты {proto}",
+  "Only this traffic takes the rule — the rest goes on to the rules below.": "Правило берёт только этот трафик — остальной идёт к правилам ниже.",
+  "A Block to every address (0.0.0.0/0) stops each new connection before its site name is read, so the rules above it that match by site name never take effect: those sites are blocked too. Route them by address instead, or give the Block ports that leave out TCP 443.": "Блокировка всех адресов (0.0.0.0/0) обрывает каждое новое соединение до того, как прочитано имя сайта, поэтому правила выше, которые выбирают по имени сайта, не срабатывают: эти сайты тоже блокируются. Направляйте их по адресу или задайте блокировке порты без TCP 443.",
+  "all ports — or 443, 8000-8100": "все порты — или 443, 8000-8100",
+  "“Any” with no port is every connection — choose TCP or UDP, or name a port.": "«Любой» без порта — это любое соединение: выберите TCP или UDP или укажите порт.",
+  "At most 32 ports or ranges.": "Не больше 32 портов или диапазонов.",
+  "Write ports and ranges from 1 to 65535, like 443, 8000-8100.": "Укажите порты и диапазоны от 1 до 65535, например 443, 8000-8100.",
+  "Only {ports} to this destination takes the rule — the rest goes on to the rules below.": "Правило берёт только {ports} к этому назначению — остальное идёт к правилам ниже.",
+  "Every port. Choose TCP or UDP, or name ports, to narrow the rule.": "Все порты. Выберите TCP или UDP или укажите порты, чтобы сузить правило.",
   "rows must be a list of selections": "rows должен быть списком выборок",
   // The exit IP (ROUTING-PEERS-MESH-PLAN §7.1–7.2, §7.4, D6): which of the far node's addresses this interface's traffic leaves it by
   "As address": "С адреса",
@@ -7314,6 +7663,99 @@ export const STR = {
   "blist|Tor network exit-node IPs": "IP выходных узлов сети Tor",
   "blist|URL shorteners & redirectors": "Сокращатели ссылок и редиректоры",
   "blist|YouTube domains": "Домены YouTube",
+  "A hash, or vk.ru/call/join/…": "Хеш или vk.ru/call/join/…",
+  "A hash, or https://vk.ru/call/join/…": "Хеш или https://vk.ru/call/join/…",
+  "Expected a VK call link or its hash, like": "Ожидается ссылка на звонок VK или её хеш, например",
+  "Expected a VK call link or its hash, like {v1}": "Ожидается ссылка на звонок VK или её хеш, например {v1}",
+  "Every link must be a VK call link or its hash, like": "Каждая ссылка — ссылка на звонок VK или её хеш, например",
+  "One of the links isn't a VK call link or its hash.": "Одна из ссылок — не ссылка на звонок VK и не её хеш.",
+  "Paste links or their hashes — one per line, or separated by commas or spaces": "Вставьте ссылки или их хеши — по одной в строку, или через запятую либо пробел",
+  "{v1} of these isn't a VK call link or its hash.": "{v1} из них — не ссылка на VK-звонок и не её хеш.",
+  "VK's check found this link no longer exists — it is no longer handed out. Check it again to bring it back if VK answers that it is alive.": "Проверка VK показала, что этой ссылки больше нет — она больше не выдаётся. Проверьте её снова: если VK ответит, что она жива, она вернётся в выдачу.",
+  "VK: no longer exists": "VK: ссылки больше нет",
+  "Ask VK whether this link still exists": "Спросить VK, жива ли эта ссылка",
+  "VK: the link is alive — it is handed out again.": "VK: ссылка жива — она снова выдаётся.",
+  "VK: the link is alive. You marked it dead — mark it alive to hand it out again.": "VK: ссылка жива. Вы отметили её мёртвой — отметьте живой, чтобы снова выдавать.",
+  "VK: the link is alive.": "VK: ссылка жива.",
+  "VK: this link no longer exists.": "VK: этой ссылки больше нет.",
+  "VK: this link no longer exists — marked dead, moved {v1} to another link.": "VK: этой ссылки больше нет — отмечена мёртвой, на другую ссылку переведено: {v1}.",
+  "VK: this link no longer exists — marked dead.": "VK: этой ссылки больше нет — отмечена мёртвой.",
+  "VK limited the check — nothing changed. Try again later.": "VK ограничил проверку — ничего не изменилось. Попробуйте позже.",
+  "VK didn't answer — nothing changed.": "VK не ответил — ничего не изменилось.",
+  "VK gave no clear answer — nothing changed.": "VK не дал ясного ответа — ничего не изменилось.",
+  "Couldn't ask VK": "Не удалось спросить VK",
+  "Checking with VK…": "Проверка в VK…",
+  "Not checked yet": "Ещё не проверялись",
+  "VK limited the check, next try in {v1}": "VK ограничил проверку, следующая попытка через {v1}",
+  "VK limited the check": "VK ограничил проверку",
+  "VK didn't answer, next try in {v1}": "VK не ответил, следующая попытка через {v1}",
+  "VK didn't answer": "VK не ответил",
+  "Checked {v1}": "Проверено {v1}",
+  "Ask VK about every live link every 6 hours, one link a second, from this panel's address": "Спрашивать VK о каждой живой ссылке раз в 6 часов, по ссылке в секунду, с адреса этой панели",
+  "Every 6 h": "Каждые 6 ч",
+  "Checking {v1} with VK.": "Проверяю в VK: {v1}.",
+  "A check is already running.": "Проверка уже идёт.",
+  "No live links to check.": "Нет живых ссылок для проверки.",
+  "Ask VK about every live link now — dead ones are skipped; check a dead one on its own row": "Спросить VK о каждой живой ссылке сейчас — мёртвые пропускаются; мёртвую проверьте в её строке",
+  "vk|Check all": "Проверить все",
+  "Asking VK…": "Спрашиваю VK…",
+  "VK answered: alive, {v1}": "VK ответил: ссылка жива, {v1}",
+  "VK answered: this link no longer exists, {v1}": "VK ответил: этой ссылки больше нет, {v1}",
+  "VK gave no clear answer, {v1}": "VK не дал ясного ответа, {v1}",
+  "VK's check found this link no longer exists": "Проверка VK показала, что этой ссылки больше нет",
+  "{v1} isn't a VK call link or its hash.": "{v1} — не ссылка на VK-звонок и не её хеш.",
+  "Not a VK call link or its hash — expected https://vk.ru/call/join/…": "Это не ссылка на звонок VK и не её хеш — нужна вида https://vk.ru/call/join/…",
+  "That link is no longer in the pool.": "Этой ссылки уже нет в пуле.",
+  "VK check marked links dead": "Проверка VK отметила ссылки мёртвыми",
+  "{links}, reassigned {count}": "{links}, переназначено: {count}",
+  "Turned the VK link check on": "Включена проверка VK-ссылок",
+  "Turned the VK link check off": "Выключена проверка VK-ссылок",
+  "Sort by VK's last answer": "Сортировать по последнему ответу VK",
+  "This page is out of date — reload it, then redo your change.": "Страница устарела — перезагрузите её и повторите изменение.",
+  "This user's links changed while the sheet was open — check them and save again.": "Ссылки пользователя изменились, пока окно было открыто — проверьте их и сохраните снова.",
+  "VK called most links dead — none was marked. Check one on its row to be sure.": "VK назвал мёртвыми большинство ссылок — ни одна не отмечена. Проверьте одну в её строке, чтобы убедиться.",
+
+  // ── the phone UI (docs/MOBILE-PLAN.md) ──
+  "More": "Ещё",
+  "Settings": "Настройки",
+  "Desktop view": "Версия для компьютера",
+  "Mobile view": "Версия для телефона",
+  "theme|Auto": "Авто",
+  "theme|Light": "Светлая",
+  "theme|Dark": "Тёмная",
+  "This app opens the old address for good: open the new one in the browser and install the app from there again.": "Это приложение всегда открывает старый адрес: откройте новый в браузере и установите приложение оттуда заново.",
+  "Filters": "Фильтры",
+  "rowact|Device": "Девайс",   // the swipe action's word must fit a 62 px cell ("Устройство" was cut — operator, 2026-10-29)
+  "Check": "Проверить",
+  "What this switch does": "Что делает этот переключатель",
+  "Fix": "Исправить",
+  "App routing: {v1} has www. twice — drop one": "Маршрутизация приложений: в {v1} дважды www. — уберите один",
+  "Online now · {n}": "Сейчас онлайн · {n}",
+  "Open Live": "Открыть «Онлайн»",
+  "Dismissed": "Скрытое",
+  "Up to date": "Актуален",
+  "Open node": "Открыть ноду",
+  "Add an exit": "Добавить выход",
+  "rowact|Restart": "Рестарт",
+  "rowact|New": "Новый",
+  "Stop + remove this interface and its peers' deployments on it": "Остановить и удалить этот интерфейс вместе с размещениями пиров на нём",
+  "rowact|Stop": "Стоп",
+  "rowact|Start": "Старт",
+  "csqtt version": "Версия csqtt",
+  "The apps 2.5 servers hand out. Where you haven't chosen, 2.5 gets 2.1's app if it speaks 2.5, else the first that does — shown below.": "Приложения, которые выдают серверы 2.5. Где выбора нет, 2.5 получает приложение 2.1, если оно умеет 2.5, иначе первое, которое умеет, — оно показано ниже.",
+  "The apps 2.1 servers hand out — and 2.5 servers too, where you haven't chosen for 2.5 and the app speaks it.": "Приложения, которые выдают серверы 2.1, — и серверы 2.5 тоже, где для 2.5 ничего не выбрано, а приложение умеет 2.5.",
+  "A free Cloudflare account, registered for this node": "Бесплатный аккаунт Cloudflare, зарегистрированный для этой ноды",
+  "A WireGuard or AmneziaWG profile from anywhere else": "Профиль WireGuard или AmneziaWG откуда угодно",
+  "An upstream that connects to this node, such as a router behind NAT": "Внешний выход, который сам подключается к этой ноде, — например роутер за NAT",
+  "A SOCKS5 proxy's address and login": "Адрес и логин SOCKS5-прокси",
+  "New interface": "Новый интерфейс",
+  "New proxy": "Новый прокси",
+  "These interfaces' live logs": "Логи этих интерфейсов онлайн",
+  "Nothing else needs attention — what you set aside is at the bottom.": "Больше ничего не требует внимания — скрытое внизу страницы.",
+  "Users or peers": "Пользователи или пиры",
+  "Sort by": "Сортировка",
+  "Ascending": "По возрастанию",
+  "Descending": "По убыванию",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
@@ -7369,6 +7811,7 @@ export const PLURALS = {
   deployment: ["развёртывание", "развёртывания", "развёртываний"],
   change: ["изменение", "изменения", "изменений"],
   device: ["устройство", "устройства", "устройств"],
+  exception: ["исключение", "исключения", "исключений"],
   packet: ["пакет", "пакета", "пакетов"],
   // the disguise's size, counted as its packets are: «226 байт», «1 232 байта», «1 байт»
   byte: ["байт", "байта", "байт"],

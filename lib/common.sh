@@ -107,6 +107,30 @@ nat_hook_up(){ printf 'sysctl -q -w net.ipv4.ip_forward=1 || true; %s; %s; %s' \
 nat_hook_down(){ printf '%s; %s; %s; true' \
   "$(_ipt_reap_sh '-t nat' "POSTROUTING -s $1 -o $2 -m comment --comment swg-nat:%i -j MASQUERADE")" "$(_ipt_reap_sh '' "FORWARD -i %i -o $2 -j ACCEPT")" \
   "$(_ipt_reap_sh '' "FORWARD -i $2 -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")"; }
+# Docker Compose, for a Docker that came without it. A Docker from the distribution's own package often lacks the Compose v2
+# plugin, and `docker compose --profile node up` then failed as docker's own "unknown flag: --profile" at the very end of
+# an install (a user's node install, 2026-10-31), after the installer had only warned. The installers now stop before
+# they change anything and say what to install for THIS Docker — they never run apt for it themselves (operator,
+# 2026-10-31: an automatic install into someone's existing Docker is not worth its risks).
+compose_probe(){                 # the Compose command that answers, on stdout, or exit 1 — read-only
+  docker compose version >/dev/null 2>&1 && { echo "docker compose"; return 0; }
+  command -v docker-compose >/dev/null 2>&1 && docker-compose version >/dev/null 2>&1 && { echo "docker-compose"; return 0; }
+  return 1; }
+# The apt package that brings Compose to THIS Docker, or nothing when no single one is sure to fit: docker-ce (Docker's
+# repository) → docker-compose-plugin; docker.io on Ubuntu or a derivative → docker-compose-v2. A held package counts
+# as installed ("hold ok installed").
+compose_pkg(){ local osr="${SWG_OS_RELEASE:-/etc/os-release}"
+  command -v dpkg-query >/dev/null 2>&1 || return 1
+  case "$(dpkg-query -W -f='${Status}' docker-ce 2>/dev/null)" in *"ok installed") echo docker-compose-plugin; return 0;; esac
+  case "$(dpkg-query -W -f='${Status}' docker.io 2>/dev/null)" in *"ok installed") ;; *) return 1;; esac
+  ( . "$osr" 2>/dev/null; case " ${ID:-} ${ID_LIKE:-} " in *" ubuntu "*) exit 0;; esac; exit 1 ) || return 1
+  echo docker-compose-v2; }
+compose_missing(){ local pkg
+  if pkg="$(compose_pkg)"; then
+    echo "Docker Compose is missing — this Docker came without it. Install it with: apt install $pkg — check that 'docker compose version' answers, and re-run"
+  else
+    echo "Docker Compose is missing — this Docker came without it. Install Docker's Compose plugin (https://docs.docker.com/compose/install/linux/; Docker's docker-ce: apt install docker-compose-plugin; Ubuntu's docker.io: apt install docker-compose-v2), check that 'docker compose version' answers, and re-run"
+  fi; }
 # installed_sum <path…> — ONE sha256 over every regular file under the given paths (name + content, sorted), or
 # nothing when there are none. A re-install compares it before/after to tell "re-installed" from "re-installed AND
 # updated": the version stamp cannot, a dev build keeps one VERSION across many commits. (install-docker.sh compares
@@ -799,6 +823,10 @@ on_tty(){ if { true >/dev/tty; } 2>/dev/null; then "$@" >/dev/tty 2>/dev/tty; el
 # to keep stay running). Generic for the wg/awg side (scan disk) → no per-iface args needed.
 lc_teardown_baremetal(){
   systemctl disable --now swg-noded 2>/dev/null || true
+  # the SOCKS5 exits' hev — transient units that outlive swg-noded by design, so the container's own would find the TUN taken
+  local u; for u in $(systemctl list-units --all --plain --no-legend "swg-s5x-*.service" 2>/dev/null | awk '{print $1}'); do
+    systemctl stop "$u" 2>/dev/null || true; systemctl reset-failed "$u" 2>/dev/null || true; done   # (callers run set -e: verify F47)
+  systemctl stop swg-exit.slice 2>/dev/null || true
   local f n s
   for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$f" ] || continue; n="$(basename "$f" .conf)"
     awg-quick down "$n" 2>/dev/null || wg-quick down "$n" 2>/dev/null || true
@@ -912,6 +940,37 @@ remove_docker_netctl(){
   rm -rf /etc/systemd/system/swg-netctl-docker.service.d   # its log level drop-in (docker_host_log_dropins) goes with it
   netctl_gate_reap                                          # …and the idle gate, unless the bare helper still runs it
   systemctl daemon-reload >/dev/null 2>&1 || true; }
+
+# retire_carried_acme <the container's acme dir> [<host acme home>…] — after a bare→Docker convert's switch. convert.sh copied the host's
+# acme.sh store into the container's volume, so the panel's and the sub's names now renew there; the host's copies of
+# those entries were a second renewer for the same names — installing into the bare /etc/swg-panel/tls and
+# /etc/swg-sub/tls (moved aside by teardown_bare_panel), reloading a unit that is gone, and failing on :80 (the
+# container holds it) at every daily --cron, each pass still asking Let's Encrypt (a user's box, 10-23). Only an entry
+# that installs into OUR bare paths AND has its copy in the container is removed; every other name in the store, acme.sh
+# itself and its cron line stay (S9f, operator 2026-10-24: "Remove our entries").
+retire_carried_acme(){
+  local vol="$1" h conf dir d rp
+  [ -n "$vol" ] && [ -d "$vol" ] || return 0
+  shift
+  [ $# -gt 0 ] || set -- /root/.acme.sh "${HOME:-/root}/.acme.sh"   # convert.sh's own search order
+  for h in "$@"; do
+    [ -d "$h" ] || continue                                 # the first that exists, as convert.sh copies (review F9)
+    for conf in "$h"/*/*.conf; do
+      [ -f "$conf" ] || continue
+      dir="$(dirname "$conf")"
+      rp="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | sed -n 1p)"
+      case "$rp" in /etc/swg-panel/tls/*|/etc/swg-sub/tls/*) ;; *) continue ;; esac
+      d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | sed -n 1p)"
+      [ -n "$d" ] && [ -d "$vol/$(basename "$dir")" ] || continue
+      if [ -x "$h/acme.sh" ]; then
+        case "$dir" in *_ecc) "$h/acme.sh" --home "$h" --remove -d "$d" --ecc >/dev/null 2>&1 || true ;;
+                       *)     "$h/acme.sh" --home "$h" --remove -d "$d" >/dev/null 2>&1 || true ;; esac
+      fi
+      rm -rf "$dir"
+      echo "  the host's acme.sh no longer renews $d — the container does (its copy came over with the convert)"
+    done
+    break
+  done; }
 
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
 teardown_bare_panel(){

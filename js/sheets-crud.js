@@ -9,11 +9,11 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, V, BASE, seen, panelNowS, configErrors, orderedTargets, isPrimaryTarget, useStableOrder,
-         isSelfContainedKind, ipOf, portOf, ipPickerVal } from "./util.js";
+         isSelfContainedKind, ipOf, portOf, ipPickerVal, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
-import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
+import { targetType, routerCapable, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
@@ -26,7 +26,7 @@ import {
 import {
   confirmDeletePeer, confirmUnassign, peerBlockBtn, userBlockBtn, PeerStatusLine, SubStatusLine,
   fmtDate, expiryInputVal, expiryFromInput, UserCombo, UserPicker, RoleToggle, assignPeer,
-  confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, PubTag,
+  confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, rotateOnePeerKeys, rotateOneLabel, rotateParts, PubTag,
   pubState, pubCls,
 } from "./peer-actions.js";
 import { searchMatch, usersView, revealUser, privateUnenforced, namedFew, privateOffOpens, clearUserFilters } from "./views.js";
@@ -57,7 +57,7 @@ export function CreateUserSheet() {
   const createOnly = async () => { const u = await createUser(); if (u) stayExpanded(u.id); };
   const createAndAdd = async () => { const u = await createUser(); if (u) openModal(html`<${AddPeersSheet} userId=${u.id} userName=${u.name}/>`); };
   return html`<${Sheet} title=${T("New user")}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-ghost" disabled=${busy} onClick=${createOnly}>${T("Create only")}</button><button class="btn btn-primary" disabled=${busy} onClick=${createAndAdd}>${T("Add peers ▸")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-ghost m-third" disabled=${busy} onClick=${createOnly}>${T("Create only")}</button><button class="btn btn-primary" disabled=${busy} onClick=${createAndAdd}>${T("Add peers ▸")}</button></>`}>
     <div class="field"><label>${T("Name")}</label><input autofocus value=${name} onInput=${e => setName(e.target.value)} placeholder=${T("Alex")}/></div>
     <div class="field"><label>${T("Tag")}</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend")}/></div>
     <div class="field"><label>${T("Note")}</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")}/></div>
@@ -299,6 +299,8 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
           // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
           ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto IP")}</span>`
           : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || T("address")} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
+        ${/* a phone shows no title: the reason goes under the field (MOBILE-PLAN hook 5) */""}
+        ${s && isMobile() && s.ip && !V.ipv4(s.ip) ? html`<span class="hint err topt-err">${T("not a valid IPv4 address")}</span>` : null}
         ${(s && !t.missing) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${s.opts} onSave=${v => setOpts(k, v)} readOnly=${!!s.existing}/>` : null}
       </div>
     </div>`;
@@ -344,7 +346,7 @@ export function TargetSettingsSheet({ node, iface, opts, meta, onSave, readOnly 
   const save = () => { if (Object.keys(errs).length) return; onSave(cur); closeModal(); };
   return html`<${Sheet} title=${T("Settings — {v1}", { v1: iface })} width=${560} onBack=${closeModal}
     foot=${readOnly ? footRow({ onCancel: closeModal, cancelLabel: T("Close"), action: null })
-      : footRow({ left: html`<button class="btn btn-ghost" onClick=${() => { setDns(d.dns); setMtu(d.mtu); setKa(d.keepalive); setAllowed(d.allowed); }}>${T("Reset to interface defaults")}</button>`,
+      : footRow({ left: html`<button class="btn btn-ghost m-wide" onClick=${() => { setDns(d.dns); setMtu(d.mtu); setKa(d.keepalive); setAllowed(d.allowed); }}>${T("Reset to interface defaults")}</button>`,
                   onCancel: closeModal, onAction: save, action: T("Apply"), disabled: !!Object.keys(errs).length })}>
     <div class="hint" style="margin-bottom:10px">${T("These apply to this deployment only — {v1} on {v2}. The peer's other deployments keep their own.", { v1: iface, v2: Store.nodeName(node) })}</div>
     <div class="field"><label>${T("Client allowed IPs (routing)")}</label>
@@ -624,7 +626,7 @@ export function PeerViewSheet({ pid, node, iface }) {
   useStore();
   const p = Store.peer(pid);
   const depsOrdered = useStableOrder(p ? p.targets : []);   // frozen at open — toggling ★ won't re-shuffle the cards
-  if (!p) return html`<${Sheet} title=${T("sheet|Peer")} foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
+  if (!p) return html`<${Sheet} title=${T("sheet|Peer")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
   const u = p.user_id ? Store.user(p.user_id) : null;
   // Editing is peer-WIDE (keys, AmneziaWG params, DNS, address apply to every deployment), so it's locked while any
   // deployment is on a missing (dangling) or misconfigured (broken) interface — a change there can't reach that
@@ -639,7 +641,7 @@ export function PeerViewSheet({ pid, node, iface }) {
   // still wraps (the sheet caps itself at calc(100vw - 32px)).
   return html`<${Sheet} title=${p.title || (u ? u.name : T("Unassigned peer"))} width=${760} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
-      <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+      <button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/>QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p)}><${Ic} i="copy"/> ${T("Targets")}</button>
       ${editLocked
@@ -647,7 +649,9 @@ export function PeerViewSheet({ pid, node, iface }) {
         : html`<button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> ${T("Edit")}</button>`}
       ${peerBlockBtn(p)}
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, null, true)}>${T("Delete")}</button>`
-        : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>${T("Unassign")}</button>`}<//>`}>
+        : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>${T("Unassign")}</button>`}
+      ${/* a phone: the device's keys from its view, amber as everywhere (operator, 2026-10-29) */""}
+      ${isMobile() && !rotateParts(p).none ? html`<button class="btn btn-warn m-pvrot" onClick=${() => rotateOnePeerKeys(p)}><${Ic} i="key"/> ${rotateOneLabel(p)}</button>` : null}<//>`}>
     ${u ? html`<${PeerStatusLine} peer=${p} pos="bar"/>` : null}
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
@@ -721,7 +725,7 @@ export function UserViewSheet({ uid }) {
   };
   const title = u ? u.name : (rows[0] && rows[0].owner_name) || T("Deleted user");
   return html`<${Sheet} title=${title} width=${760}
-    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+    foot=${html`<${Fragment}><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       ${u ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openUserEdit(u); }}><${Ic} i="pencil"/> ${T("Edit user")}</button>` : null}<//>`}>
     <${TrafficBlock} by="user" id=${uid}/>
     <div class="lbl" style="margin:18px 2px 6px">${T("Devices · {n}", { n: all.length })}${gone ? html` <span class="faint">${T("({n} no longer theirs)", { n: gone })}</span>` : null}</div>
@@ -739,8 +743,11 @@ export function UserViewSheet({ uid }) {
 
 // Read-only group view: the group's graph (its members' slots added together) over the windows' own window, and each member
 // with what they carried in it — the list adds up to the figure above. A member opens their own view. Paged like the devices.
-export function openGroupView(gid) { openModal(html`<${GroupViewSheet} gid=${gid}/>`); }
-export function GroupViewSheet({ gid }) {
+// child: over the sheet it was opened from (the group editor's Traffic on a phone), which stays under it with its edits and comes
+// back when this closes — openModal replaced the editor and its unsaved changes with no question (review F53). Its Edit group is
+// then that editor itself: a second one pushed over it brought the stale one back after a save (F65).
+export function openGroupView(gid, child) { (child ? pushModal : openModal)(html`<${GroupViewSheet} gid=${gid} child=${!!child}/>`); }
+export function GroupViewSheet({ gid, child }) {
   useStore();
   const [page, setPage] = useState(1);
   const g = Store.group(gid);
@@ -750,9 +757,9 @@ export function GroupViewSheet({ gid }) {
     .sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx) || a.name.localeCompare(b.name));
   const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE));
   const pg = Math.min(page, pages);
-  return html`<${Sheet} title=${g ? g.name : T("Deleted group")} width=${760}
-    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
-      ${g ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openGroup(gid); }}><${Ic} i="pencil"/> ${T("Edit group")}</button>` : null}<//>`}>
+  return html`<${Sheet} title=${g ? g.name : T("Deleted group")} width=${760} 
+    foot=${html`<${Fragment}><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+      ${g ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); if (!child) openGroup(gid); }}><${Ic} i="pencil"/> ${T("Edit group")}</button>` : null}<//>`}>
     ${g ? html`<${Fragment}>
       <${TrafficBlock} by="group" id=${gid}/>
       <div class="lbl" style="margin:18px 2px 6px">${T("Members · {n}", { n: rows.length })}</div>
@@ -795,6 +802,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const setOptsFor = (k, v) => setTopts(m => ({ ...m, [k]: v }));
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [priv, setPriv] = useState(peer.private === true);
+  const [router, setRouter] = useState(peer.router === true);   // several devices behind this address (S11b)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
   const [orig, setOrig] = useState(null);          // the loaded config values — Save stays off until one differs
@@ -836,6 +844,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // values (and, for a user change, walks the operator into a confirm for a no-op).
   const _dirty = (title.trim() !== (peer.title || "").trim())
     || (priv !== (peer.private === true))          // ⚠️ or Save stays disabled: this sheet computes dirty from its OWN
+    || (router !== (peer.router === true))
     || ((userId || "") !== (peer.user_id || ""))   //    fields, it does not watch input events
     || (expDate !== expiryInputVal(peer.ownExpiry || 0))
     || (live.targets || []).some(ipChangedFor)
@@ -858,6 +867,9 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       }
       if (priv !== (peer.private === true)) {
         const r = await api.peerUpdate({ peer_id: peer.id, private: priv }); if (!r.ok) fails++;
+      }
+      if (router !== (peer.router === true)) {
+        const r = await api.peerUpdate({ peer_id: peer.id, router }); if (!r.ok) fails++;
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written
@@ -910,9 +922,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // What each control actually needs is narrower: does this peer HAVE a wdtt deployment (→ offer Rotate link),
   // a csqtt one, and does it have any KEYED deployment at all (→ offer Rotate keys / QR). The old `isKeyless`
   // read "has any keyless deployment", which on a mixed peer hid its WireGuard addresses and its QR.
-  const hasWdtt = !!peer.wdtt_password || (live.targets || []).some(t => targetType(t) === "wdtt");
-  const hasCsqtt = !!peer.csqtt_password || (live.targets || []).some(t => targetType(t) === "csqtt");
-  const hasKeyed = (live.targets || []).some(t => !isSelfContainedKind(targetType(t)));
+  const { hasWdtt, hasCsqtt, hasKeyed } = rotateParts(peer);   // the live peer's, one copy with the phone's Rotate (review F72)
   const isKeyless = !hasKeyed;   // EVERY deployment is self-contained: panel-owned password, no browser keypair
   const isWdttPeer = hasWdtt, isCsqttPeer = hasCsqtt;   // (rotate-link wording below)
   const rotate = () => {
@@ -1002,7 +1012,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`
       : (_fixT && _fixT.correctable)
         ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> ${T("Fix address")}</button>`
-        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${
+        : html`<button class="btn btn-ghost m-rotate" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${
             (hasKeyed && (hasWdtt || hasCsqtt)) ? (rotating ? T("Rotating credentials…") : T("Rotate credentials"))
             : isKeyless ? (rotating ? T("Rotating link…") : T("Rotate link"))
             : (rotating ? T("Rotating keys…") : T("Rotate keys"))}</button>`;
@@ -1012,7 +1022,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // Sheet still caps itself at calc(100vw - 32px), so this is a ceiling and not a floor.
   return html`<${Sheet} title=${T("Edit peer")} width=${880} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
     foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${hasKeyed
-        ? html`<button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${(live.routes || []).length ? T("Networks · {n}", { n: live.routes.length }) : T("Networks")}</button>` : null}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
+        ? html`<button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${(live.routes || []).length ? T("Networks · {n}", { n: live.routes.length }) : T("Networks")}</button>` : isMobile() ? html`<button class="btn btn-danger m-pdel" onClick=${() => confirmDeletePeer(peer, null, true)}>${T("Delete")}</button>` : null}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. iPhone, Work laptop")}/></div>
     <div class="field"><label>${T("col|User")}</label>
@@ -1054,6 +1064,12 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             : o.nets.mode === "shared" ? T("The networks behind it open to {who}.",
                 { who: namedFew([...o.nets.users.map(u => u.name), ...o.nets.groups.map(g => g.name)]) })
             : T("The networks behind it stay with this user's own devices.")].filter(Boolean).join(" ")}</span></div>`)(privateOffOpens(live || peer)) : null}</div>
+    ${/* S11b: a router is several devices behind one address — a torrent flag on it cut every other device's high ports
+          (a user's report: a NAT router's OpenVPN). Only where it can mean something: a wg/awg deployment; a keyless one
+          is not a router. The hint says the cost in the same breath as the gain. */""}
+    ${router || routerCapable(live) ? html`<div class="field">
+      <label class="toggle-row"><${Switch} on=${router} onChange=${v => setRouter(v)}/><span>${T("Router — several devices share this address")}</span></label>
+      <div class="hint">${T("Torrents are still blocked connection by connection, but one device's torrent no longer cuts the other devices' VPNs, calls and games. The cost: an encrypted torrent behind it with DHT off gets through.")}</div></div>` : null}
     <div class="field"><label>${T("label|Deployments")}</label>
       <div class="targetpick">${targetsOrdered.map(t => {
         const k = tkey(t.node, t.iface);
@@ -1066,7 +1082,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")} onMouseEnter=${nmTip}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <div class="topt-right hasprim">
-            <${RoleToggle} peer=${peer} t=${t} compact=${true}/>
+            ${/* a phone has no hover for the star's title, so its word stays (MOBILE-PLAN hook 9) */""}
+            <${RoleToggle} peer=${peer} t=${t} compact=${!isMobile()}/>
             <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online} gen3=${tgt3(t)}/>
             <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
             ${sc
@@ -1370,7 +1387,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
     subject=${{ kind: "peer", id: peer.id }}
     foot=${html`<${Fragment}><span class="faint">${allG.length && all.length ? T("{groups} and {users} chosen", { groups: plural(allG.length, "group"), users: plural(all.length, "user") })
         : allG.length ? T("{groups} chosen", { groups: plural(allG.length, "group") }) : T("{users} chosen", { users: plural(all.length, "user") })}</span><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${!!err} onClick=${apply}>${T("Apply")}</button><//>`}>
     ${owner ? html`<div class="hint sharelead">${T("{name} always has access, as the owner.", { name: owner.name })}</div>` : null}
     <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
@@ -1540,13 +1557,13 @@ function NetworksSheet({ pid }) {
       if (r && r.ok) { dirtyRef.current = false; toast(T("Networks removed."), "ok"); closeModals(2); Store.poll(); }
       else toast(srvText(r) || T("Networks weren't saved."), "err");
     }}/>`);
-  if (!found) return html`<${Sheet} title=${T("Networks")} foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
+  if (!found) return html`<${Sheet} title=${T("Networks")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
   return html`<${Sheet} title=${T("Networks · {name}", { name })} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       ${stored.length ? html`<button class="btn btn-danger" disabled=${busy} onClick=${remove}>${T("Remove networks")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       ${/* An emptied field saves as a removal, through the same confirm — Save used to just grey out, which read as broken. */""}
       <button class="btn btn-primary" disabled=${busy || !dirty || stale || nobody || (!want.length && !stored.length) || refusals.length > 0}
         onClick=${want.length ? save : remove}>${busy ? T("saving…") : T("Save")}</button><//>`}>
@@ -2167,11 +2184,12 @@ export function nixNodeSteps(host, endpoint, token, recovery, mode, reserved) {
      picked by the panel at RUN time — interfaces, turn servers, mesh links. Without `udpPortRanges` an interface created
      from the panel syncs, reports healthy and is unreachable, and nothing says so. Measured on a fresh NixOS 26.05 native
      node (1.8.7 qualification PART 4, A1): a laptop client never handshook until the range was declared. The three bands are
-     the ones the panel hands out: user interfaces from 51820 (suggestPort), turn-family servers from 56000, and the system
-     mesh band from these settings — leave that one out and the node's own mesh link raises a firewall issue. */
+     the ones the panel hands out: user interfaces from 51820 (suggestPort), turn-family servers from 56000, dial-in exits from
+     42821 (S9e — a node that leaves it out gets theirs from what it declares), and the system mesh band from these settings —
+     leave that one out and the node's own mesh link raises a firewall issue. */
   const rsv = reserved || {};
   const mBase = Number(rsv.mesh_port_base) || 9999, mSpan = Number(rsv.port_span) || 100;
-  const ports = `            udpPortRanges = [ { from = 51820; to = 51899; } { from = 56000; to = 56099; } { from = ${mBase}; to = ${mBase + mSpan - 1}; } ];   # interfaces · turn servers · mesh links`;
+  const ports = `            udpPortRanges = [ { from = 51820; to = 51899; } { from = 56000; to = 56099; } { from = 42821; to = 42899; } { from = ${mBase}; to = ${mBase + mSpan - 1}; } ];   # interfaces · turn servers · dial-in exits · mesh links`;
   // Native takes the raw token via LoadCredential; the container arm reads NODE_TOKEN= from an env
   // file, because a host credential cannot cross into a container (node.nix's tokenFile assertion).
   const tokenCmd = podman ? [
@@ -2354,7 +2372,7 @@ export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, r
   return html`<${Sheet} title=${(isNew ? T("Node created")
       : rebuild ? (rebuild.was_reporting ? T("Migrate") : T("Restore or migrate"))
       : T("New token")) + " · " + name}
-    foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
+    noSwipe=${true} foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
     ${/* THE SUBJECT OF THIS STEP IS THE COMMAND. Everything below used to arrive at once: the whole
           pre-flight again, the enrolment token, the transfer token, both commands and the credential-only
           repair — on a screen whose one job is "run this on the new box". The operator read the outcome on
@@ -2602,7 +2620,7 @@ export function TransferOutcome({ d, preview }) {
   if (!d) return null;
   const strip = d.strip || [], split = d.split || [], un = d.unrestorable || d.unrecorded || [];
   const vkfb = d.vk_fallback || [], fam = d.turn_family || [], ifaces = d.ifaces || [];
-  const users = d.users || [], subs = d.sub_links || [], esc = d.escrow || [];
+  const users = d.users || [], subs = d.sub_links || [], esc = d.escrow || [], rk = d.router_keys || [];
   const names = xs => xs.map(x => (typeof x === "string" ? x : (x.iface || x.title || x.peer))).join(", ");
   /* A row is label-left / value-right, which is right for "5 configs" and wrong for a sentence: the
      sentence wraps to two lines while one name sits alone in the right-hand column. Such a row STACKS —
@@ -2620,6 +2638,14 @@ export function TransferOutcome({ d, preview }) {
 
     vkfb.length ? [T("Peers on the panel-wide call link — the other panel resolves its own"), names(vkfb)] : null,
     un.length ? [T("Never set up through this panel — nothing to hand over"), names(un)] : null,
+    /* ⚠️ NOT "re-wrapped there the next time you unlock the vault" — nothing does that (NODE-TRANSFER I.18). Each user's
+       encryption key arrives wrapped under THIS panel's key, which the other panel does not hold: their links keep opening
+       (the blobs and the public token map travel), but that panel can neither open these users' stored configs nor store
+       a new one for them — it never overwrites a key that exists. */
+    esc.length ? [T("These users' encryption keys stay sealed to this panel's vault — their links keep working, but the other panel can't show their stored configs or store new ones"),
+                  plural(esc.length, "user"), "stack"] : null,
+    rk.length ? [T("Dial-in exits' router configs are sealed to this panel's vault, so they stay here — open them here first, or regenerate one there"),
+                 rk.map(x => x.title || T("Dial-in exit :{v1}", { v1: x.port })).join(", "), "stack"] : null,
     subs.length ? [T("Subscription links keep this panel's address in them"), plural(subs.length, "sub link")] : null,
     d.declarative ? [T("Managed by its own configuration — it will point itself back"),
                      T("update panelUrl and the token file there too")] : null,
@@ -2632,8 +2658,6 @@ export function TransferOutcome({ d, preview }) {
                     plural(users.length, "user") + " · " + plural(d.peers || 0, "peer")] : null,
     d.blobs ? [T("Stored configs — the links your users already hold keep opening them"),
                plural(d.blobs, "config")] : null,
-    esc.length ? [T("Users' encryption keys — re-wrapped there the next time you unlock the vault"),
-                  plural(esc.length, "user")] : null,
     d.mesh_links ? [T("Mesh links — the other panel builds its own"), plural(d.mesh_links, "link")] : null,
     /* ⚠️ ESCROW BELONGS HERE, not in the red box it used to sit in. The ciphertext genuinely cannot
        travel — a blob is sealed to THIS panel's vault, so the far panel would hold something openable by
@@ -2877,7 +2901,7 @@ export function NodeRemoveSheet({ node }) {
   }); };
   const force = () => pushModal(html`<${ForceRemoveNodeSheet} node=${node}/>`);   // typed "DELETE <name>" confirmation (matches interface/turn-proxy deletes)
   return html`<${Sheet} title=${T("Remove {v1}", { v1: node.name })}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>
       ${flagged ? null : html`<button class="btn btn-primary" onClick=${flag}>${T("Flag for removal")}</button>`}
       <button class="btn btn-danger" onClick=${force}>${T("Force remove now")}</button></>`}>
     ${flagged

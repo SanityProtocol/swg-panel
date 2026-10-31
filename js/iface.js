@@ -11,7 +11,7 @@
  */
 
 import { T, Trich, Tsplit, plural, pluralWord, srvText, fmtNum } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge} from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
@@ -95,6 +95,12 @@ function adoptPreselect(type, why) {
   const [a, b] = Tsplit(". Preselected {type} because {why}", "type", { why });
   return html`<${Fragment}>${a}<b>${type}</b>${b}<//>`;
 }
+
+// An interface's AmneziaWG values: on a phone folded under their heading, a tap away — a dozen lines of numbers pushed the
+// rest of the page down (operator, 2026-10-29); a desktop shows them as before
+const awgFold = body => isMobile()
+  ? html`<details class="iface-amnezia m-awgfold"><summary><span class="ig-l">AmneziaWG</span></summary>${body}</details>`
+  : html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span>${body}</div>`;
 
 export function IgnoredIfacesCard() {
   useStore();
@@ -331,6 +337,12 @@ export function AdoptCsqttSheet({ node, c }) {
   // the promise below is withdrawn and the operator has to accept the loss instead of being told the opposite.
   // Undefined = a node older than this signal, whose only working case was a local read; treat as read.
   const storeGone = c.store_found === false;
+  // Which csqtt line it runs, so ours starts on the same one ("" = the node couldn't name it: the panel refuses the adopt).
+  const lineUnknown = c.line === "";
+  // …or names one this panel does not offer (a later csqtt): the panel refuses that adopt too, so the button says so first
+  const lineUnoffered = !!c.line && (Store.csqttLines || []).length > 0 && !(Store.csqttLines || []).includes(c.line);
+  // Either way there is no adopt to describe: the version notice stands where the sheet would say what Adopt does
+  const lineBlocked = lineUnknown || lineUnoffered;
   const [accept, setAccept] = useState(false);
   const doAdopt = async () => {
     setBusy(true);
@@ -341,8 +353,8 @@ export function AdoptCsqttSheet({ node, c }) {
     location.hash = "#/node/" + encodeURIComponent(node);
   };
   return html`<${Sheet} title=${T("Adopt csqtt server · {v1}", { v1: c.iface })} width=${620}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class=${"btn " + (storeGone ? "btn-danger" : "btn-primary")} disabled=${busy || (storeGone && !accept)} onClick=${doAdopt}>${storeGone ? T("Adopt without its users") : T("Adopt")}</button></>`}>
-    ${storeGone
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class=${"btn " + (storeGone ? "btn-danger" : "btn-primary")} disabled=${busy || lineBlocked || (storeGone && !accept)} onClick=${doAdopt}>${storeGone ? T("Adopt without its users") : T("Adopt")}</button></>`}>
+    ${lineBlocked ? null : storeGone
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node *can't read this server's password store* at {v1}, so its users cannot come across. Adopting stops it and starts ours in its place with *no users at all* — everyone it is serving right now is dropped, and you have nothing to re-issue their access from.", { v1: c.config_dir })}</span></div>
         <div class="hint" style="margin:-6px 0 14px">${T("This usually means the server runs inside a container of its own, where the node can't reach its files. To keep its users, stop it and re-create the server from the panel instead.")}</div>`
       : html`<div class="notice ok"><${Ic} i="check"/><span>${Trich("Its *users are kept* — the panel takes the server over on its own address and port, keeps serving every password it already had, and imports each one as a peer you can see and manage.")}</span></div>`}
@@ -350,12 +362,15 @@ export function AdoptCsqttSheet({ node, c }) {
       <div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${c.config_dir}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Listen")}</span><span class="ig-v">${c.listen || "—"}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${c.tun_addr || "—"}</span></div>
+      ${c.line != null ? html`<div class="ig-item"><span class="ig-l">${T("Version")}</span><span class="ig-v">${c.line || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>` : null}
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${storeGone ? html`<span class="faint">${T("couldn't be read")}</span>` : (n || html`<span class="faint">${T("none found")}</span>`)}</span></div>
     </div>
-    ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
+    ${lineUnoffered ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><span>${T("This server runs csqtt {v1}, which this panel doesn't run: taking it over would cut off its clients.", { v1: (c.version || c.line).slice(0, 16) })}</span></div>` : null}
+    ${lineUnknown ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><span>${T("The node couldn't tell which csqtt version this server runs, and taking it over on a guess could cut off its clients. Refresh in a minute; if it stays unknown, stop that server and create one from the panel.")}</span></div>` : null}
+    ${n && !lineBlocked ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
     <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>
       <div class="hint">${T("Which csqtt server implements this instance")}</div></div>
-    ${storeGone
+    ${lineBlocked ? null : storeGone
       ? html`<label class="ivk-esc-row" style="margin-top:12px"><${Switch} on=${accept} onChange=${setAccept}/><span>${T("I understand its current users will be lost")}</span></label>`
       : html`<div class="notice warn" style="margin-top:12px"><${Ic} i="warn"/><span>${T("The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.")}</span></div>`}
   <//>`;
@@ -402,7 +417,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
     location.hash = "#/node/" + encodeURIComponent(node);
   };
   return html`<${Sheet} title=${T("Adopt WDTT install · {v1}", { v1: d.config_dir })} width=${640}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!iperr || !!nameErr || !forks.length} title=${nameErr || iperr || (forks.length ? "" : T("No WDTT forks are enabled in Settings → Turn proxies"))} onClick=${doAdopt}>${T("Adopt")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!iperr || !!nameErr || !forks.length} title=${nameErr || iperr || (forks.length ? "" : T("No WDTT forks are enabled in Settings → Turn proxies"))} onClick=${doAdopt}>${T("Adopt")}</button></>`}>
     <div class="notice ok"><${Ic} i="check"/><span>${Trich("Its *server key and passwords are kept* — the panel installs our build over this config directory and starts it, so any client that already has a config keeps working.")}</span></div>
     <div class="iface-grid" style="margin:0 0 16px">
       <div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${d.config_dir}</span></div>
@@ -502,7 +517,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
     : "";
   const adoptBlocked = type === "wdtt" && needsIdentity && !idPath.trim();
   return html`<${Sheet} title=${T("Adopt interface · {v1}", { v1: iface })} width=${640}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!iperr || !!wgErr || adoptBlocked || (type === "wdtt" && !forks.length)} title=${(adoptBlocked ? blockMsg : "") || iperr || wgErr || ((type === "wdtt" && !forks.length) ? T("No WDTT forks are enabled in Settings → Turn proxies") : "")} onClick=${doAdopt}>${T("Adopt")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!iperr || !!wgErr || adoptBlocked || (type === "wdtt" && !forks.length)} title=${(adoptBlocked ? blockMsg : "") || iperr || wgErr || ((type === "wdtt" && !forks.length) ? T("No WDTT forks are enabled in Settings → Turn proxies") : "")} onClick=${doAdopt}>${T("Adopt")}</button></>`}>
     <div class="iface-intro"><div>${adoptIntro(nrec.name || node)}${cand.type_why ? adoptPreselect((cand.type_hint || "wg").toUpperCase(), cand.type_why) : null}.</div></div>
     <div class="notice ok"><${Ic} i="check"/><span>${type === "wdtt"
       ? Trich("Its *server key and passwords are kept* — a panel-managed instance is built that reuses them, then the old process is stopped. Every client that already has a config keeps working.")
@@ -693,7 +708,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             <div class="ig-item"><span class="ig-l">${T("Subnet")}</span><span class="ig-v">${missIf.subnet || "—"}</span></div>
             <div class="ig-item"><span class="ig-l">${T("Listen port")}</span><span class="ig-v">${missIf.listen_port || "—"}</span></div>
           </div>
-          ${type === "awg" ? html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span><div class="iface-grid" style="margin-top:8px">${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}</div><${Awg3Row} ap=${ap}/></div>` : null}
+          ${type === "awg" ? awgFold(html`<div class="iface-grid" style="margin-top:8px">${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}</div><${Awg3Row} ap=${ap}/>`) : null}
         <//></>`
       : ghostIf ? html`<${Fragment}>
           <div class="notice danger"><${Ic} i="warn"/><span>${Trich("Interface *{iface}* is gone from {node} with *no recoverable key*, so it can't be restored — this view is *read-only*. Recreating it means a *new server key*, and every peer below must *re-import* a fresh QR / config. The only action here is *Recreate and rekey interface*.", { iface, node: dname })}</span></div>
@@ -711,8 +726,8 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             // invites commands against an interface that is going away; show what is happening instead.
             ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
             : html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${ifopDone(op.verb)}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${ifopFail(op.verb)} msg=${op.err || T("the action failed on the node")} title=${T("Action failed on the node")}/>` : null}${(op && op.phase === "busy") ? null : notup
-              ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bring this interface up on the node")} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
-              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Take this interface down on the node (stays down until started)")} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/>${T("Edit interface")}</button><//>`}>
+              ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bring this interface up on the node")} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
+              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Take this interface down on the node (stays down until started)")} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/>${(isMobile() ? T("Edit") : T("Edit interface"))}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${T("Stop + remove this interface and its peers' deployments on it")} onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -727,18 +742,15 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
               : html`<span class="faint" title=${T("This node hasn't reported drop counters for this interface yet.")}>—</span>`}</span></div>`;
           })()}
         </div>
-        ${type === "awg" ? html`<div class="iface-amnezia">
-          <span class="ig-l">AmneziaWG</span>
-          <div class="iface-grid" style="margin-top:8px">
+        ${type === "awg" ? awgFold(html`<div class="iface-grid" style="margin-top:8px">
             ${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}
           </div>
-          <${Awg3Row} ap=${ap}/>
-        </div>` : null}
+          <${Awg3Row} ap=${ap}/>`) : null}
       <//>`}
 
     ${meta ? html`<${IfaceThroughput} node=${node} iface=${iface}/>` : null}
 
-    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${T("Reachable via turn-proxy")} iface=${iface}/>` : null}
+    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${isMobile() ? T("Reachable via") : T("Reachable via turn-proxy")} iface=${iface}/>` : null}
 
     <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
@@ -827,14 +839,14 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // being ADOPTED, and "Recreate fresh" there would mint a new key and break the very clients the adoption
   // exists to keep. `adopting` therefore wins over `missing`, and stands down every lifecycle control until
   // the node reports the result.
-  const adopting = !isCsq && (nrec.wdtt_adopting || []).includes(iface);
+  const adopting = ((isCsq ? nrec.csqtt_adopting : nrec.wdtt_adopting) || []).includes(iface);   // a csqtt take-over too: same window
   const awaiting = !adopting && (!!w.await_restore || !!missing);
   const stopped = !!cfg.stopped;
   // The node REFUSED to install this one (no binary for the fork, bad params) — it never existed, so there is
   // no identity to restore, nothing to recreate, and nothing to stop or restart. Its only honest actions are
   // reading the reason and removing it.
   const failErr = (nrec.cmd_errors || {})[iface] || "";
-  const never = !!missing && !!failErr && !((nrec.wdtt_vault || {})[iface]);
+  const never = !adopting && !!missing && !!failErr && !((nrec.wdtt_vault || {})[iface]);   // a take-over's failure is not "never created"
   // csqtt derives every client credential from the panel-owned password — there is no server keypair to escrow,
   // so a missing csqtt server is never "restorable", only recreatable from panel state (which self-heals).
   const restorableK = !isCsq && !!((nrec.wdtt_vault || {})[iface]);
@@ -862,7 +874,9 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
       <div class="grow"></div>
     </div>
-    ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.")}</span></div>` : null}
+    ${adopting && failErr   /* the attempt failed and the node retries: say why and how it ends — never "never created" or Remove here */
+      ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node couldn't take this server over yet: *{err}*. It keeps trying — once that server is stopped, the take-over completes; otherwise the panel stops trying 5 minutes after the take-over started.", { err: failErr })}</span></div>`
+      : adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.")}</span></div>` : null}
     ${never ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node refused to install this server, so it was never created: *{err}*. Fix that and create it again, or remove it — there is no identity to restore and nothing to recreate.", { err: failErr })}
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary danger" onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> ${T("Remove this server")}</button></div></span></div>`
     : awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${missing ? T("This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).") : T("This server was wiped.")} ${restorable
@@ -875,7 +889,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
           ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
           : adopting
           // Take-over in flight: Stop/Restart/Edit/Delete would all act on a server that is being replaced.
-          ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
+          ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("The node applies the take-over on its next sync")}/>`
           : unclaimed
           // ⚠️ OWNERLESS: the node still holds this server, this panel has no record of it, and so nothing
           // will ever start it — a node runs only what the panel desires. Offering Start here was worse than
@@ -886,8 +900,8 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
               title=${T("Take this server back under the panel, keeping the users in its store")}><${Ic} i="check"/>${
               reclaiming ? T("Reclaiming…") : T("Reclaim")}</button>`
           : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") || awaiting ? null : notup
-          ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : (isCsq ? T("Bring this csqtt server up on the node") : T("Bring this WDTT server up on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
-          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Take this csqtt server down (stays down until started)") : T("Take this WDTT server down (stays down until started)"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Bounce this csqtt server on the node") : T("Bounce this WDTT server on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => (isCsq ? openEditCsqtt(node, iface) : openEditWdtt(node, iface))}><${Ic} i="pencil"/>${T("Edit interface")}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${(isCsq ? T("Stop + remove this csqtt server and disconnect its users") : T("Stop + remove this WDTT server and disconnect its users"))} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
+          ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : (isCsq ? T("Bring this csqtt server up on the node") : T("Bring this WDTT server up on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "start")}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
+          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Take this csqtt server down (stays down until started)") : T("Take this WDTT server down (stays down until started)"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "stop")}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Bounce this csqtt server on the node") : T("Bounce this WDTT server on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "restart")}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => (isCsq ? openEditCsqtt(node, iface) : openEditWdtt(node, iface))}><${Ic} i="pencil"/>${(isMobile() ? T("Edit") : T("Edit interface"))}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${(isCsq ? T("Stop + remove this csqtt server and disconnect its users") : T("Stop + remove this WDTT server and disconnect its users"))} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
@@ -1050,7 +1064,7 @@ function AwgDevicesSheet({ node, iface }) {
   const rows = ql ? all.filter(x => ((x.p.title || "") + " " + who(x) + " " + (x.t.ip || "")).toLowerCase().includes(ql)) : all;
   const pg = Math.min(page, Math.max(1, Math.ceil(rows.length / LIST_PAGE)));
   return html`<${Sheet} title=${T("Devices on {v1}", { v1: iface })} width=${560} noGuard=${true}
-    foot=${html`<span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Back")}</button>`}>
+    foot=${html`<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Back")}</button>`}>
     ${all.length > LIST_PAGE ? html`<input class="reachev-filter awgdev-filter" value=${q} placeholder=${T("Filter by device, user or address…")}
       aria-label=${T("Filter by device, user or address…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
     ${rows.length ? html`<div class="reachev-list">${pageSlice(rows, pg).map(x => html`<div class="reachev-row awgdev" key=${x.p.id}>
@@ -1093,7 +1107,7 @@ function AwgSwitchSheet({ node, iface, to, commit, sent }) {
   const devBtn = html`<button type="button" class="linkbtn" onClick=${() => pushModal(html`<${AwgDevicesSheet} node=${node} iface=${iface}/>`)}>${plural(peers.length, "device")}</button>`;
   const line = (tone, icon, body) => html`<div class=${"notice" + (tone ? " " + tone : "")}><${Ic} i=${icon}/><span>${body}</span></div>`;
   return html`<${Sheet} title=${to === "3.1" ? T("Switch {v1} to AmneziaWG 3.1", { v1: iface }) : T("Switch {v1} back to AmneziaWG 2.0", { v1: iface })} width=${620} noGuard=${true}
-    foot=${html`<span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-danger"
+    foot=${html`<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-danger"
       disabled=${busy || !!blk.length || !typeOk} title=${blk.length ? T("A turn proxy whose app carries AmneziaWG 2.0 only points here") : !typeOk ? T("Type {phrase} to confirm", { phrase: iface }) : null} onClick=${go}>${busy
         ? html`<span class="spin sm"></span>${T("Working…")}` : to === "3.1" ? T("Switch to 3.1") : T("Switch back to 2.0")}</button>`}>
     ${gws.length ? html`<div class="notice danger awgsw-gw"><${Ic} i="warn"/><div>
@@ -1474,15 +1488,15 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
         summary=${rulesSummary(node, eg.rows, eg.catchAll)}
         open=${disc.routing} onToggle=${() => tog("routing")}>
-        <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
+        <${RoutingRules} node=${node} iface=${iface} blk=${blk} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
       <//>` : null}
       <${ReachField} value=${reach} onChange=${setReach} create=${true}
         unvouched=${/* the build a create installs, as the catalog vouches for it (§11.2 F4) */ isWdtt ? !(_wdttForks.find(f => f.id === fork) || {}).reach_vouched
           : isCsqtt ? !(_csqttForks.find(f => f.id === cfork) || {}).reach_vouched : false}/>
       <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-        summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
+        summary=${blockActiveN(node, blk, eg.p2p) ? T("{v1} active", { v1: blockActiveN(node, blk, eg.p2p) }) : html`<span class="faint">${T("val|none")}</span>`}
         open=${disc.filters} onToggle=${() => tog("filters")}>
-        <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+        <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>
       <//>
       ${/* ⚠️ TWO NAMED SECTIONS, ONE ACCORDION. The tunnel settings are named after the PROTOCOL rather
             than left as a nameless run of fields, because the NAT source card now sits beside them and two
@@ -2052,9 +2066,9 @@ export function EditIfaceSheet({ node, iface }) {
   return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef} err=${saveErr}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${notup
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
-        : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !!mimErr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || mimErr || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
+        : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}
+      <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !!mimErr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || mimErr || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     <div class="iface-intro"><div>${Trich("Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.")}</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("This interface is *down* on the node. Change the *Listen port* to a free one and *Save* — the panel will write the new port and restart the interface to bring it up.")}</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
@@ -2135,13 +2149,13 @@ export function EditIfaceSheet({ node, iface }) {
     ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
+      <${RoutingRules} node=${node} iface=${iface} blk=${blk} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-      summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
+      summary=${blockActiveN(node, blk, eg.p2p) ? T("{v1} active", { v1: blockActiveN(node, blk, eg.p2p) }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
-      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>
     <//>
     <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail + " · " + MIMIC_TAIL[mimicOf(mimEff)]() : "") + (natPinApplies(eg) ? natTail : "")}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>

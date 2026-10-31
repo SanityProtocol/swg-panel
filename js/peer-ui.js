@@ -13,7 +13,8 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget, targetRole,
-         useStableOrder, isSelfContainedKind } from "./util.js";
+         useStableOrder, isSelfContainedKind, isMobile } from "./util.js";
+import { openGroupView } from "./sheets-crud.js";   // a cycle (sheets-crud imports this module): used only on a click, after both have loaded
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt, peerUncategorised } from "./model.js";
 import { go } from "./router.js";
@@ -69,7 +70,7 @@ export function openPeerConfigs(peer, opts) {
   // In a subscription: subscription status in the header (right), the peer's own status on a line under it.
   // Not in a subscription: the peer's own status takes the header slot (nothing under it).
   const headExtra = vkUser ? html`<${SubStatusLine} user=${vkUser} pos="hr"/>` : html`<${PeerStatusLine} peer=${peer} pos="hr"/>`;
-  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
+  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child && !isMobile() ? closeModal : null}
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
     <${VaultUnlockPanel} need=${(peer.targets || []).some(t => !isSelfContainedKind(targetType(t)))}/>
@@ -222,8 +223,11 @@ export function SubLinkActions({ user }) {
         ? html`<div class="hint warn">${Trich("Set a public base URL in {v1} to build the link.", { v1: settingsLink })}</div>`
         : html`<div class="hint">${T("Building link…")}</div>`}
       <span class="fieldbtns">
-        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${rotate}>${T("Rotate token")}</button>
-        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${disable}>${T("Disable URL")}</button>
+        ${/* a phone: icon buttons on the link's own line (operator, 2026-10-29); their words are their names */""}
+        ${isMobile() ? html`<button class="btn btn-ghost btn-mini fbtn m-icob" disabled=${busy} onClick=${rotate} title=${T("Rotate token")} aria-label=${T("Rotate token")}><${Ic} i="refresh"/></button>
+          <button class="btn btn-ghost btn-mini fbtn m-icob" disabled=${busy} onClick=${disable} title=${T("Disable URL")} aria-label=${T("Disable URL")}><${Ic} i="off"/></button>`
+        : html`<button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${rotate}>${T("Rotate token")}</button>
+        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${disable}>${T("Disable URL")}</button>`}
       </span>
     </div>
   </div>`;
@@ -251,8 +255,8 @@ export function UserPeerCard({ peer, onOpen }) {
       // This head is SHARED by every card kind in the configs modal, which is why fixing the deploy-head
       // below did not reach it — that branch only renders when no head is passed, and one always is.
       ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
-      : html`<${Badge} s=${lt.status}/>`}</div>
-    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
+      : html`<${Badge} s=${lt.status}/>`}${/* a phone: how many targets, ×N beside the status (operator, 2026-10-29) */""}${isMobile() && targets.length > 1 ? html`<span class="upc-xn" title=${kinds.join(" · ")}>×${targets.length}</span>` : null}</div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${targets.length > 1 && !isMobile() ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
   </div>`;
   // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
   // fully presented here). When it does: the whole card opens it EXCEPT the QR image (enlarges) and the action
@@ -305,8 +309,11 @@ export function targetsWantVk(targets) {
   return (targets || []).some(isSelfContainedTgt);
 }
 export const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
-// let the operator paste a VK link with or without the scheme — add https:// when it's missing
-export function normVkLink(s) { s = (s || "").trim(); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
+// let the operator paste a VK link with or without the scheme — add https:// when it's missing — or its bare hash.
+// The browser twin of the server's _vk_link_norm (tests/cross_language_twins_selftest.py): same rule, same link.
+export const VK_JOIN_URL = "https://vk.ru/call/join/";
+export function normVkLink(s) { s = (s || "").trim(); if (/^[A-Za-z0-9_-]{16,}$/.test(s)) return VK_JOIN_URL + s;
+  return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
 // Per-user VK call link, editable inline from the QR modals. Shown only when the user has a peer behind a
 // turn-proxy. Empty → amber border + a hint (the panel falls back to the test link; the subscription page won't).
 // Saves on blur / Enter; re-renders turn configs with the new link.
@@ -347,17 +354,19 @@ export function VkLinkField({ user }) {
     <div class="vkfield-row">
       <div class="vkbox">
         <${Ic} i="link"/>
-        <input class="vkbox-input" data-noautofocus value=${val} placeholder=${T("vk.ru/call/join/…")} disabled=${busy}
+        <input class="vkbox-input" data-noautofocus value=${val} placeholder=${T("A hash, or vk.ru/call/join/…")} disabled=${busy}
           onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); add(); } }}/>
       </div>
       <span class="fieldbtns">
         ${saveStatus === "saved" ? html`<span class="vk-status ok"><${Ic} i="check"/> ${T("Saved")}</span>`
           : saveStatus === "failed" ? html`<span class="vk-status err"><${Ic} i="warn"/> ${T("Failed")}</span>` : null}
-        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy || !dirty || invalid || empty} onClick=${add}>${busy ? T("Adding…") : T("Add link")}</button>
-        <button class="btn btn-ghost btn-mini fbtn" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage all of this user's VK call links (add more, set primary)")}>${T("Manage")}${(lu.vk_links && lu.vk_links.length > 1) ? ` (${lu.vk_links.length})` : ""}</button>
+        ${isMobile() ? html`<button class="btn btn-ghost btn-mini fbtn m-icob" disabled=${busy || !dirty || invalid || empty} onClick=${add} title=${T("Add link")} aria-label=${T("Add link")}><${Ic} i="plus"/></button>
+          <button class="btn btn-ghost btn-mini fbtn m-icob" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage")} aria-label=${T("Manage")}><${Ic} i="pencil"/>${(lu.vk_links && lu.vk_links.length > 1) ? html`<span class="m-icob-n">${lu.vk_links.length}</span>` : null}</button>`
+        : html`<button class="btn btn-ghost btn-mini fbtn" disabled=${busy || !dirty || invalid || empty} onClick=${add}>${busy ? T("Adding…") : T("Add link")}</button>
+        <button class="btn btn-ghost btn-mini fbtn" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title=${T("Manage all of this user's VK call links (add more, set primary)")}>${T("Manage")}${(lu.vk_links && lu.vk_links.length > 1) ? ` (${lu.vk_links.length})` : ""}</button>`}
       </span>
     </div>
-    ${invalid ? html`<div class="hint err">${T("Expected a VK call link like")} <span class="mono">https://vk.ru/call/join/…</span></div>`
+    ${invalid ? html`<div class="hint err">${T("Expected a VK call link or its hash, like")} <span class="mono">https://vk.ru/call/join/…</span></div>`
       : empty ? html`<div class="hint vk-warn">${noVkLinks()}${subd ? html` ${noVkSubbed()}` : ""}</div>` : null}
   </div>`;
 }
@@ -373,6 +382,9 @@ export function VkLinksSheet({ user }) {
   const poolUrls = new Set(Object.values(lu.vk_pool || {}));
   const fromPool = (url) => poolUrls.has(url);
   const [rows, setRows] = useState(start.length ? start.map(u => ({ url: u })) : [{ url: "" }]);
+  // The links as they were when the rows were seeded. A pool change (the alive check's cascade) can replace one while
+  // the sheet is open, and saving the rows back would restore the dead link as a personal one and drop its replacement.
+  const seeded = useRef(start);
   const [adding, setAdding] = useState(false);
   const [primary, setPrimary] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -382,8 +394,9 @@ export function VkLinksSheet({ user }) {
     setPrimary(p => (i === p ? 0 : i < p ? p - 1 : p)); };
   const norm = rows.map(r => normVkLink(r.url));                       // add https:// where missing
   const bad = norm.some(u => u && !_VK_CALL_RE.test(u));
-  const poolLeft = ((Store.panelSettings || {}).vk_pool || [])
-    .filter(e => e && e.url && !e.dead && !norm.includes(e.url)).length;   // links this user could still be given
+  // Links this user could still be given: the live count the poll carries, less the pool links still in this sheet.
+  // Exact, because the cascade never leaves anyone holding a dead pool link. (The pool itself is not in the poll.)
+  const poolLeft = Math.max(0, ((Store.panelSettings || {}).vk_pool_live || 0) - norm.filter(u => u && poolUrls.has(u)).length);
   // The pick happens on the server (it holds the pool and excludes what they already have). Unsaved edits in
   // this sheet would be lost by the round trip, so save them first when there are any.
   const addFromPool = async () => {
@@ -393,14 +406,22 @@ export function VkLinksSheet({ user }) {
     setAdding(false);
     if (!r || !r.ok) return toast(srvText(r) || T("Couldn't add a link from the pool"), "err");
     const got = (r.data || {}).vk_links || [];
+    seeded.current = got;
     setRows(got.map(u => ({ url: u })));
-    Store.poll(); Store.configEpoch++; bus.emit();
+    await Store.poll().catch(() => {});             // the live user catches up before a Save compares against it
+    Store.configEpoch++; bus.emit();
     toast(T("Added a link from the pool."), "ok");
   };
   const dirty = JSON.stringify(norm.filter(Boolean)) !== JSON.stringify(start);
   const persist = async (close) => {
+    if (JSON.stringify(start) !== JSON.stringify(seeded.current)) {
+      seeded.current = start;
+      setRows(start.length ? start.map(u => ({ url: u })) : [{ url: "" }]); setPrimary(0);
+      toast(T("This user's links changed while the sheet was open — check them and save again."), "err");
+      return false;
+    }
     const clean = norm.filter(Boolean);
-    if (clean.some(u => !_VK_CALL_RE.test(u))) { toast(T("One of the links isn't a valid VK call link."), "err"); return false; }
+    if (clean.some(u => !_VK_CALL_RE.test(u))) { toast(T("One of the links isn't a VK call link or its hash."), "err"); return false; }
     const uniq = [...new Set(clean)];
     const primUrl = norm[primary];                                    // move the chosen primary to the front
     const ordered = primUrl && uniq.includes(primUrl) ? [primUrl, ...uniq.filter(u => u !== primUrl)] : uniq;
@@ -408,6 +429,7 @@ export function VkLinksSheet({ user }) {
     const r = await api.userUpdate({ id: user.id, vk_links: ordered });
     setBusy(false);
     if (!r || !r.ok) { toast(srvText(r) || T("Couldn't save the VK links"), "err"); return false; }
+    seeded.current = ordered;
     if (close) closeModal();
     Store.poll(); Store.configEpoch++; bus.emit();                    // turn configs re-render with the updated links
     if (close) toast(ordered.length ? T("Saved {v1}.", { v1: plural(ordered.length, "VK link") }) : T("VK links cleared."), "ok");
@@ -419,7 +441,7 @@ export function VkLinksSheet({ user }) {
       <button class="btn btn-ghost" disabled=${adding || busy || !poolLeft} onClick=${addFromPool}
         title=${poolLeft ? T("Give this user one more link from the shared pool") : T("No unused link left in the shared pool")}>
         <${Ic} i="users"/> ${adding ? T("Adding…") : T("Add from pool")}</button>
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
+      <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || bad} onClick=${save}>${busy ? T("Saving…") : T("Save")}</button></>`}>
     <div class="iface-intro" style="margin-top:2px"><div>${vkLinksIntro()}</div></div>
     <div class="vklinks-grid">
@@ -433,7 +455,7 @@ export function VkLinksSheet({ user }) {
             ${/* A pool link is the POOL's to edit: retyping it here would silently detach this user from the
                   pool entry, and the next edit or mark-dead would no longer reach them. Read-only, and the
                   tooltip says where to change it. Personal links stay fully editable. */ ""}
-            <input class="vkbox-input" value=${r.url} placeholder=${T("vk.ru/call/join/…")}
+            <input class="vkbox-input" value=${r.url} placeholder=${T("A hash, or vk.ru/call/join/…")}
               readOnly=${fromPool(r.url)}
               title=${fromPool(r.url) ? T("From the shared pool — change it in Settings → Turn proxies, or remove it here") : ""}
               onInput=${e => setUrl(i, e.target.value)}/>
@@ -441,7 +463,7 @@ export function VkLinksSheet({ user }) {
           <button class="iconbtn" title=${T("Remove this link")} onClick=${() => delRow(i)}><${Ic} i="trash"/></button>
         </div>`; })}
     </div>
-    ${bad ? html`<div class="hint err">${T("Every link must look like")} <span class="mono">https://vk.ru/call/join/…</span></div>` : null}
+    ${bad ? html`<div class="hint err">${T("Every link must be a VK call link or its hash, like")} <span class="mono">https://vk.ru/call/join/…</span></div>` : null}
     ${/* Apps genuinely differ — the vkturnproxy link carries every link, the wdtt:// one takes 4 and csqtt 6,
           and single-link apps take only the primary. So this says the ORDER matters rather than naming a cap
           that would be wrong for half the fleet. Only shown once a user holds more than the tightest cap. */ ""}
@@ -547,7 +569,7 @@ function vkLinksIntro() {
 export function VaultKeySheet() {
   const k = subKeyB64();
   if (!k) return null;
-  return html`<${Sheet} title=${T("Save your encryption key")} width=${560} onClose=${closeModal}
+  return html`<${Sheet} title=${T("Save your encryption key")} width=${560} onClose=${closeModal} noSwipe=${true}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${closeModal}>${T("I've saved it")}</button></>`}>
     <div class="vaultprompt">
       <p class="vp-reason">${keyOnlyCopy()}</p>
@@ -1141,7 +1163,7 @@ function GroupSheet({ gid, seed }) {
   const add = list.filter(u => !base.current.users.includes(u)), remove = base.current.users.filter(u => !members.includes(u));
   dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0;
   if (gid && !g) return html`<${Sheet} title=${T("Group · {name}", { name: base.current.name })}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><//>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><//>`}>
     <div class="empty"><b>${T("This group no longer exists.")}</b></div><//>`;
   const ql = q.trim().toLowerCase();
   const rows = ql ? list.filter(id => uname(id).toLowerCase().includes(ql)) : list;
@@ -1174,8 +1196,10 @@ function GroupSheet({ gid, seed }) {
     dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     foot=${html`<${Fragment}>
       ${gid ? html`<button class="btn btn-danger" onClick=${() => confirmDeleteGroup(g, true)}><${Ic} i="trash"/> ${T("Delete group")}</button>` : null}
+      ${/* a phone: the group's traffic from its editor, as its row's swipe offers it (operator, 2026-10-29) */""}
+      ${gid && isMobile() ? html`<button class="btn btn-ghost" onClick=${() => openGroupView(gid, true)}><${Ic} i="bars"/> ${T("Traffic")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>
     <div class="field"><label>${T("Name")}</label><input value=${name} maxlength="64" placeholder=${T("Ivanov family")} onInput=${e => setName(e.target.value)}/></div>
     <div class="field"><label>${T("Members")} <span class="faint gcount">${list.length}</span></label>
@@ -1254,7 +1278,7 @@ export function UserEditCard({ user, done }) {
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
     <${UserNetworksPanel} user=${user}/>
     ${saveErr ? html`<div class="formmsg err" role="alert">${saveErr}</div>` : null}
-    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${save}>${T("Save")}</button></div>
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${save}>${T("Save")}</button></div>
   </div>`;
 }
 

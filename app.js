@@ -9,12 +9,12 @@
    tree, so open inputs/editors are preserved without the old manual update()
    regions. */
 
-import { h, render, Fragment } from "preact";
+import { h, render, Fragment, options } from "preact";
 import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
 import htm from "htm";
 import { T, Tsplit, loadLang, plural, srvText } from "./js/i18n.js";
 import {
-  $, $$, esc,
+  $, $$, esc, isMobile,
 } from "./js/util.js";
 import {
   confirmLeave, matchRoute,
@@ -23,17 +23,19 @@ import {
   Store, api, hooks as storeHooks, setUnauthorizedHandler, useStore,
 } from "./js/store.js";
 import {
-  ConfirmSheet, applyForkColors, applyThemeColors, clearModalStack, closeModal, cycleLang, cycleThemeMode,
+  ConfirmSheet, Ic, Sheet, THEME_ICON, applyForkColors, applyThemeColors, clearModalStack, closeModal, cycleLang, cycleThemeMode,
   dismissHostProc, gotoSettingsSection, inProc, openConfirm, openModal, paintLangBtn, paintThemeBtn,
   procAborted, procFailed, procInClass, procLabel, procSuccess, setModalRenderer, setPendingSection,
-  setQrZoomProbe, toast, trackIfaceOps,
+  setQrZoomProbe, toast, trackIfaceOps, attachTitleTaps, attachOutsideTapGuard, attachSwipePeek, attachTypingHold, attachBubbleSwipe, attachToastSwipe, attachBackCloses, attachViewportVars,
 } from "./js/ui.js";
+import { themeMode } from "./js/theme.js";
+import { LANGS, nextLang } from "./js/i18n.js";
 import {
   cryptoReady, ifaceKeyAutoRestore, escrowAutoVerify, lockVault, looksLikeVaultKey, qrZoomEl, subAutoHeal, subBootRestore, subForget, subRewrap,
   subSKCached, subUnlock, subUnlockWithKey, subVaultCreate,
 } from "./js/crypto.js";
 import {
-  OnlineUsersTag, onlineUserRows, serviceIssues,
+  OnlineSheet, OnlineUsersTag, onlineUserCount, onlineUserRows, serviceIssues,
 } from "./js/views.js";
 import {
   maybeRekeyGhosts, setLoadIfaceOpener,
@@ -62,6 +64,14 @@ import {
   AccountScreen, PanelSettingsScreen,
 } from "./js/screen-settings.js";
 import { LogOverlay, openLogOverlay } from "./js/journal.js";   // the header's Logs button: nothing loads until it is clicked
+
+// A phone: no field takes the focus by itself, so no keyboard comes up as a sheet or a form opens (operator, 2026-10-29) — the
+// fields that ask for it with `autofocus` (node settings, a rename, a type-to-confirm…) lose the ask before Preact sets it;
+// the Sheet's own first-field focus is skipped the same way (ui.js). A tap on a field still focuses it.
+if (isMobile()) {
+  const prev = options.vnode;
+  options.vnode = v => { const p = v.props; if (typeof v.type === "string" && p && p.autofocus) delete p.autofocus; if (prev) prev(v); };
+}
 
 // Fill the Store's callback slots (see js/store.js). These live above the Store in the module graph, so it
 // cannot import them — it calls back into them instead. Each assignment moves into the owning module as the
@@ -168,6 +178,9 @@ function oldAddrCurrent() {   // → the current canonical addr {host,scheme,por
   const showPort = !((c.scheme === "https" && c.port === "443") || (c.scheme === "http" && c.port === "80"));
   return { ...c, label: c.scheme + "://" + c.host + (showPort ? ":" + c.port : "") + c.base };
 }
+// An installed app (the manifest's start_url) keeps the address it was installed from for good: after a move it can only be
+// installed again from the new one, so the ribbon says so there (docs/MOBILE-PLAN.md hook 6).
+const standalone = () => { try { return matchMedia("(display-mode: standalone)").matches; } catch (_) { return false; } };
 // The ONE address-migration ribbon — global, on every screen, server-driven so it survives navigation + reload.
 // Shows a live countdown while a confirmed migration is still gracing out (panel_migrate_until), then falls back to
 // "you're on a previous address" until this tab moves to the current one.
@@ -201,7 +214,7 @@ function OldAddrRibbon() {
     else toast(srvText(r) || T("Couldn't cancel the move."), "err");
   };
   return html`<div class="addr-old-ribbon" ref=${ref} role="status">
-    <span><b>${T("You're on a previous panel address.")}</b> ${ribbonNow(c.label)}</span>
+    <span><b>${T("You're on a previous panel address.")}</b> ${ribbonNow(c.label)}${standalone() ? " " + T("This app opens the old address for good: open the new one in the browser and install the app from there again.") : ""}</span>
     ${canRevert ? html`<button class="btn btn-mini" onClick=${revertMove}>${T("Cancel the move — keep this address")}</button>` : null}
     <a class="btn btn-mini" href=${c.label}>${T("Go to the current address ↗")}</a>
   </div>`;
@@ -296,7 +309,10 @@ function App() {
     const lp = $("#livepill");                                       // online USERS, with a per-user peer-count bubble
     if (lp) {
       lp.classList.toggle("off", onlineUserRows(null).length === 0);   // 0 = grey, no dot
-      render(html`<${OnlineUsersTag} nodeId=${null} cls="bare" trigger=${c => html`<span class="dot"></span><b id="kpi-online">${c}</b> ${T("val|online")}`}/>`, lp);
+      // a phone: the count opens a sheet (OnlineSheet), as the update badge does — no hover bubble there
+      if (isMobile()) { if (!lp._m) { lp._m = true; lp.setAttribute("role", "button"); lp.onclick = () => openModal(html`<${OnlineSheet}/>`); }
+        render(html`<${Fragment}><span class="dot"></span><b id="kpi-online">${onlineUserCount(onlineUserRows(null))}</b> ${T("val|online")}<//>`, lp); }
+      else render(html`<${OnlineUsersTag} nodeId=${null} cls="bare" trigger=${c => html`<span class="dot"></span><b id="kpi-online">${c}</b> ${T("val|online")}`}/>`, lp);
     }
     const v = Store.versions || {}, el = $("#appver");
     if (v.panel) {            // panel came back on a different version → it was updated; prompt a hard reload
@@ -319,7 +335,7 @@ function App() {
     if (ar) {
       const ref = Store.panelUpdateRef || "";
       ar.hidden = !ref;
-      if (ref) { ar.textContent = T("from {ref}", { ref }); ar.title = T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.", { ref }); }
+      if (ref) { ar.textContent = T("from {ref}", { ref }); ar.title = T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.", { ref }); }
     }
     const ht = $("#host-tport");      // how the PANEL itself is deployed (docker / bare-metal)
     if (ht && Store.env && ("docker" in Store.env)) {
@@ -354,7 +370,8 @@ function App() {
       else if (Store.hostChecking) body = `<span class="livepill upd-busy">${esc(T("checking…"))} ${UPD_SPIN_SVG}</span>`;   // Check status click → brief "checking…" pill (updates + issues)
       // Priority: a real upgrade first (updating heals too, so no "Fix" then) → else self-healable issues → else up-to-date / check.
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd">${esc(T("update to"))} <b>${esc(Store.latestRemote || "?")}</b></button>`;
-      else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix">${WARN_SVG} ${esc(fixLabel(_healN))}</button>`;
+      // data-n: the count alone, which a phone's one-line app bar shows in place of the words (m/m.css); a desktop draws nothing of it
+      else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix" data-n="${_healN}">${WARN_SVG} ${esc(fixLabel(_healN))}</button>`;
       else if (Store.updFlash && Date.now() < Store.updFlash) body = `<button class="livepill upd-uptodate" id="host-repair" title="${esc(T("This panel is on the latest version"))}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> ${esc(T("up to date"))}</button>`;
       else body = _checkBtn;
       // Steady = a badge you can act on. NOT the in-flight tags (updating / checking / proc): re-polling
@@ -374,7 +391,7 @@ function App() {
         // the versions rather than restating the label. A native tooltip would surface a second later, on top
         // of it, saying less. (parkTitles in hostHoverBubble enforces that generally; the header rewrites this
         // element every poll, so the attribute must not be here to be reinstated mid-hover.)
-        ? `<button class="livepill updpill turnpill" id="turn-upd">${esc(plural(_turnN, "update"))}</button>` : "";
+        ? `<button class="livepill updpill turnpill" id="turn-upd" data-n="${_turnN}">${esc(plural(_turnN, "update"))}</button>` : "";
       // Left of the check button in BOTH layouts: the badges read as a row of things that are true, and the
       // check is the verb that refreshes them — a verb belongs at the end of the row, not between two facts.
       if (_turnBadge) body = body.includes(_checkBtn) ? body.replace(_checkBtn, _turnBadge + _checkBtn) : body + _turnBadge;
@@ -392,6 +409,12 @@ function App() {
     const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
     const lb = $("#lang-btn"); if (lb && !lb._wired) { lb._wired = true; lb.onclick = cycleLang; paintLangBtn(lb); }            // EN / RU
     const lg = $("#logs-btn"); if (lg && !lg._wired) { lg._wired = true; lg.hidden = false; lg.onclick = openLogOverlay; }      // the live logs, full screen, from any screen
+    const mb = $("#more-btn");        // the phone's More: the header's actions that carry no status (docs/MOBILE-PLAN.md hook 1)
+    if (mb && !mb._wired) { mb._wired = true; mb.onclick = () => openModal(html`<${MoreSheet}/>`); }
+    // The way to the phone UI from the desktop one: only where the primary pointer is a finger (a tablet, or a phone switched to
+    // the desktop view), so a mouse desktop's header is unchanged.
+    const mv = $("#mview-btn");
+    if (mv && !mv._wired) { mv._wired = true; mv.hidden = isMobile() || !matchMedia("(pointer: coarse)").matches; mv.onclick = () => setUiMode("m"); }
     const vl = $("#vaultlock-btn");   // padlock: removed from the header by request — kept (wired to lockVault) but always hidden
     if (vl) { vl.hidden = true; if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
   });
@@ -403,6 +426,9 @@ function App() {
     ${modalStack}
   <//>`;
 }
+
+// The app bar's mark (index.html's .brand holds the same markup, static): the login cards and the More sheet's title.
+const brandMark = () => html`<span class="brand-mark" aria-hidden="true"></span><span class="brand-name">swg<span>Panel</span></span>`;
 
 // ───────────────────────── auth: login page + logout ─────────────────────────
 let _loginShown = false;
@@ -418,7 +444,7 @@ function showLogin() { if (_loginShown) return; _loginShown = true; document.bod
 function VaultRelinkCard({ panelPw, onDone }) {
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const ref = useRef(null);
-  useEffect(() => { ref.current && ref.current.focus(); }, []);
+  useEffect(() => { if (!isMobile() && ref.current) ref.current.focus(); }, []);   // a phone: no keyboard until a tap
   const submit = async e => {
     if (e) e.preventDefault();
     if (!pw || busy) return;
@@ -437,7 +463,7 @@ function VaultRelinkCard({ panelPw, onDone }) {
     } catch (e2) { setErr((e2 && e2.message) || T("That didn't unlock the Encryption Vault.")); setBusy(false); }
   };
   return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
-    <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
+    <div class="login-brand">${brandMark()}</div>
     <h2>${T("Reconnect your vault")}</h2>
     <p class="muted" style="margin:-4px 0 12px">${relinkWhy()}</p>
     <div class="field"><label>${T("Old panel password, or your encryption key")}</label>
@@ -457,7 +483,7 @@ function LoginScreen() {
   // (Preact doesn't special-case it either). Focus explicitly — on mount, and again when the 2FA step
   // replaces the form, so the code can be typed without reaching for the mouse.
   const focusRef = useRef(null);
-  useEffect(() => { focusRef.current && focusRef.current.focus(); }, [twofa]);
+  useEffect(() => { if (!isMobile() && focusRef.current) focusRef.current.focus(); }, [twofa]);   // a phone: no keyboard until a tap
   const submit = async e => {
     if (e) e.preventDefault();
     if (busy) return;
@@ -508,7 +534,7 @@ function LoginScreen() {
   };
   if (relink) return html`<${VaultRelinkCard} panelPw=${relink} onDone=${() => location.reload()}/>`;
   return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
-    <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
+    <div class="login-brand">${brandMark()}</div>
     <h2>${twofa ? T("Two-factor") : T("Sign in")}</h2>
     ${twofa ? html`
       <p class="muted" style="margin:-4px 0 12px">${T("Enter the 6-digit code from your authenticator app, or a recovery code.")}</p>
@@ -523,6 +549,49 @@ function LoginScreen() {
       <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? T("Signing in…") : T("button|Sign in")}</button>
     `}
   </form></div>`;
+}
+// ───────────────────────── the phone's More sheet (docs/MOBILE-PLAN.md hook 1) ─────────────────────────
+// The header actions that carry no status, one tap away. The status badges stay in #updslot (the strip under the app bar), its
+// one renderer: nothing here repeats them. The version line carries the host updater's branch when it is not main, with the
+// sentence the desktop shows in #appref's tooltip, because a phone has no hover.
+function setUiMode(m) { try { localStorage.setItem("swg-ui", m); } catch (_) {} location.reload(); }
+const LOGOUT_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>`;
+const DESKTOP_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`;
+function MoreSheet() {
+  useStore();
+  const [, force] = useState(0);
+  const go = (fn) => () => { closeModal(); fn(); };
+  const v = Store.versions || {}, ref = Store.panelUpdateRef || "";
+  const env = Store.env || {};
+  const kind = !("docker" in env) ? "" : env.docker ? (env.runtime === "podman" ? T("kind|podman") : T("kind|docker")) : T("kind|bare-metal");
+  const tm = themeMode();
+  const item = (icon, label, onClick, value, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} onClick=${onClick}>
+    <span class="ic" dangerouslySetInnerHTML=${{ __html: icon }}></span><span class="msheet-l">${label}</span>${value ? html`<span class="msheet-v">${value}</span>` : null}</button>`;
+  // its title is the app bar's own mark, as in the header (operator, 2026-10-31); a screen reader still hears "More"
+  return html`<${Sheet} title=${html`<span class="m-brand" role="img" aria-label=${T("More")}>${brandMark()}</span>`} noGuard=${true}>
+    <div class="msheet">
+      <div class="msheet-g">
+        <button class="msheet-it" onClick=${go(() => checkForUpdate())}><${Ic} i="refresh"/><span class="msheet-l">${T("Check status")}</span></button>
+        <button class="msheet-it" onClick=${go(openLogOverlay)}><${Ic} i="doc"/><span class="msheet-l">${T("Logs")}</span></button>
+      </div>
+      <div class="msheet-g">
+        ${item(THEME_ICON[tm], T("Theme"), () => { cycleThemeMode(); force(x => x + 1); },
+               tm === "auto" ? T("theme|Auto") : tm === "light" ? T("theme|Light") : T("theme|Dark"))}
+        ${/* the value is the language a tap switches TO, in its own words — someone who cannot read this one finds theirs */""}
+        <button class="msheet-it" onClick=${cycleLang}><${Ic} i="globe"/><span class="msheet-l">${T("Language")}</span><span class="msheet-v" lang=${nextLang()}>${(LANGS.find(([c]) => c === nextLang()) || [])[1] || nextLang()}</span></button>
+        ${item(DESKTOP_SVG, T("Desktop view"), () => setUiMode("d"))}
+      </div>
+      <div class="msheet-g">
+        <button class="msheet-it" onClick=${go(() => { location.hash = "#/panel/settings"; })}><${Ic} i="gear"/><span class="msheet-l">${T("Settings")}</span></button>
+        <button class="msheet-it" onClick=${go(() => { location.hash = "#/account"; })}><${Ic} i="user"/><span class="msheet-l">${T("Account")}</span></button>
+        ${item(LOGOUT_SVG, T("Log out"), go(doLogout), null, "danger")}
+      </div>
+      ${v.panel ? html`<div class="msheet-ver">
+        <div class="msheet-verl"><b>${v.panel}</b>${kind ? html`<span>${kind}</span>` : null}${ref ? html`<span class="appref">${T("from {ref}", { ref })}</span>` : null}</div>
+        ${ref ? html`<p>${T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.", { ref })}</p>` : null}
+      </div>` : null}
+    </div>
+  <//>`;
 }
 function doLogout() {
   openConfirm({ title: T("Log out"), confirmLabel: T("Log out"),
@@ -576,7 +645,8 @@ function paintChrome() {
   const brand = $(".brand"); if (brand) brand.setAttribute("aria-label", T("nav|Overview"));
   const hint = [["#host-tport", T("How this panel is deployed")], ["#vaultlock-btn", T("Lock encryption key")],
                 ["#lang-btn", T("Language")], ["#theme-btn", T("Theme")],
-                ["#logs-btn", T("Logs")], ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")]];
+                ["#logs-btn", T("Logs")], ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")],
+                ["#mview-btn", T("Mobile view")], ["#more-btn", T("More")]];
   for (const [sel, label] of hint) {
     const el = $(sel);
     if (!el) continue;
@@ -608,6 +678,7 @@ function paintChrome() {
   // straight on Access & TLS, BEFORE it mounts and defaults to Display. (The outcome modal is shown by App.)
   try { if (sessionStorage.getItem("__apply_ok")) setPendingSection("access"); } catch (_) {}
   render(h(App), viewEl);
+  if (isMobile()) { attachTitleTaps(); attachOutsideTapGuard(); attachSwipePeek(); attachTypingHold(); attachBubbleSwipe(); attachToastSwipe(); attachBackCloses(); attachViewportVars(); }   // a phone: a title= on a tap (hook 5); a tap outside a list only closes it
   // Tell the boot guard in index.html that the SPA is up. Set AFTER the first render, so it means
   // "something is on screen", not merely "this file parsed" — a module that loads and then throws
   // mid-boot must still count as a failure.

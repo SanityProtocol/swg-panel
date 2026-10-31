@@ -1,12 +1,13 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.10-beta</code></p>
+<p align="center"><code>1.8.11-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.10-beta** — [full changelog](CHANGELOG.md)
-> - **Fixes for what 1.8.9 met on its first day.** The panel no longer stays blank behind an ad or tracker blocker (uBlock Origin, AdGuard, Brave), a Docker update no longer asks to re-run the installer for an optional setting nobody set, and the csqtt 2.5 server no longer logs a web-panel password it never uses (2.5 servers move to 2.5.1-2 and restart once).
-> - **The subscription page names the csqtt version.** Each csqtt card says CSQTT 2.1 or CSQTT 2.5, and its download names the app's version.
-> - **A server that doesn't update to releases says so.** A server installed or last updated from a branch other than main shows "from dev" beside its version, with the way back to releases; the panel's header does the same for its own server.
+> **What's new in 1.8.11-beta** — [full changelog](CHANGELOG.md)
+> - **A panel built for your phone.** On a phone the panel opens in its own layout — a tab bar at the bottom, lists as cards, windows that close with a swipe down — and it can be added to the home screen as an app.
+> - **New kinds of exits.** A home router behind NAT can dial in to a server and be its exit, a SOCKS5 proxy can be an exit, and exits you run yourself are health-checked like WARP.
+> - **Torrents your way.** Each interface picks Block, Allow, the server's own address or a route; WireGuard and AmneziaWG devices get their own incoming port for seeding; and a router with several devices behind it can be marked so one device's torrent no longer cuts the others.
+> - **Never block, ports on rules, App routing per person.** One list of sites no block list may block, routing rules by protocol and port, and csqtt 2.5 App routing exceptions for a device, a user or a group.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -206,6 +207,8 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
 - Ignored candidates are recorded and listed under **Settings → Interfaces**; one that later becomes managed drops off by itself.
 
 Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert. An **expired** real-CA certificate is never pinned as if it were self-signed (the node keeps verifying it and syncs once the panel is renewed). A pin that stops matching fails closed — the node cannot tell a renewed certificate from an impersonator's — and its log says what to do. **A re-install never takes a changed certificate on its own:** it decides whom the node trusts *before* it sends the node's token anywhere or changes anything — at a terminal it asks (Enter keeps the old pin), unattended it refuses; either way a refused run **stops there**, the box exactly as it was and serving its peers, the token sent nowhere. Accept the new certificate by answering `y`, or with `TLS_FINGERPRINT=<its sha256>` (`TLS_VERIFY=yes` when a public CA vouches for it — such a certificate is then verified, not pinned, since its CA re-issues it every few months). Every installer, updater, converter and uninstaller call that carries the node token checks the panel on the very connection it sends on — the pin, or the CA — exactly as the node does.
+
+**Ports to open on a node**, beyond those of the interfaces and servers you create on it: **UDP 42821–42899** if it runs a dial-in exit (the router connects in; the panel draws the port from this range unless you type one), and **TCP and UDP 20000–29999** if torrents leave by its own address (each WireGuard / AmneziaWG device's incoming torrent port is forwarded from there). A provider or host firewall that keeps them closed fails quietly: the router never connects, and no peer reaches a seeding device. On NixOS the dial-in range goes in `services.swg-node.udpPortRanges` ([NixOS README, step 6](nix/README.md#step-6--open-the-udp-ports)).
 
 **Per-node actions:** **Edit** (endpoint/colour — the endpoint goes into client configs), **Rotate token** (the old one stops working immediately; re-enroll), **Remove** (revokes the token and unassigns the node).
 
@@ -545,6 +548,7 @@ Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 ## Troubleshooting
 
 - **A node stays "awaiting enroll" / never connects.** It hasn't synced yet. Check `swg-logs noded -f` on the node: a `fingerprint mismatch` means the pin is wrong; an HTTP `401` means the token is wrong or was rotated; a connection error means the panel URL/port or firewall is off.
+- **A node logs `sync HTTP 502` now and then.** It reaches the panel through Cloudflare, which answers a check-in with a 502 of its own from time to time. The node logs one line and skips that check-in; its peers stay as they are (while a panel-address change is pending, it may move to the new address, as on any failed check-in). To be rid of it, point the node at the panel directly: a DNS-only (grey-cloud) record for the panel's name, or an `/etc/hosts` line on the node mapping that name to the panel's own IP (on Docker, an `extra_hosts:` entry for the `swg-node` service in `docker-compose.yml`). Only for a panel with a public certificate (Let's Encrypt) that answers on the port in its URL and lets more than Cloudflare in. A panel on a Cloudflare Origin certificate (`cf15`) stays behind Cloudflare, where the 502 is harmless: nodes check the panel's certificate by default (the installer's TLS question, `TLS_VERIFY=yes` on Docker), and only Cloudflare's edge shows them one they trust — reached directly, every check-in fails.
 - **A node is "offline."** It synced before but has gone quiet — check the daemon and the node's outbound network.
 - **Peers don't appear on a node.** Confirm the peer is assigned to that node and that its interface matches one the node actually serves. Reads come from the node's latest snapshot, so a freshly added node needs one sync first.
 - **Browser warns about the certificate.** Expected with `selfsigned`. Use a real cert for production, or accept the warning behind a trusted tunnel.

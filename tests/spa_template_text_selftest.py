@@ -58,6 +58,7 @@ ALLOWED_CHUNKS = {
         "swg", "Panel",                                   # the brand, "swgPanel", split for its two colours
         "docker",                                         # the run-model tag beside a node's name (log budget table)
         "csqtt",                                          # "csqtt 2.5" — a server's csqtt version line (turn.js, 1.8.9)
+        "turn",                                           # "turn ×2" — a node page's interface summary on a phone (S13)
     },
     "commands, paths and files the operator types or greps": {
         "docker compose up -d", "systemctl status", "dkms status", "modprobe amneziawg", "mokutil --sb-state",
@@ -73,7 +74,8 @@ ALLOWED_CHUNKS = {
     },
 }
 ALLOWED_VALUES = {
-    "type chips and product names": {"wg", "wg?", "awg", "awg?", "wdtt", "csqtt", "WDTT", "turn", "t", "raw TUN", "CLI"},
+    "type chips and product names": {"wg", "wg?", "awg", "awg?", "wdtt", "csqtt", "WDTT", "turn", "t", "raw TUN", "CLI",
+                                     "awg 3.1"},   # the phone's interface summary chip (S13)
     "values handed to a function, not rendered by the template": {
         "user",                                             # a noun for plural() / pluralWord()
         "empty", "unassigned",                              # status ids for lifecycleIcon() / badgeWithReason()

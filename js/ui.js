@@ -13,14 +13,14 @@
  * handles Esc/Enter/Tab. Without it a child sheet's Escape would close its parent too.
  */
 
-import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen, panelNowS } from "./util.js";
+import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen, panelNowS, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
 import { targetType, peerUncategorised, awgGen, awgGenPending, nodeStale, tip3 } from "./model.js";
-import { turnColor, turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
+import { turnColor, turnFork, turnForkList, forkLabel, CSQTT_DEFAULT_LINE } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
 import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import htm from "htm";
@@ -225,7 +225,8 @@ export function dismissError(key) { if (Store.rowErrors[key]) { delete Store.row
 let _setStack = () => {};
 let _stack = [];
 let _modalSeq = 0;   // bumps on every open/close — lets a confirm tell if onConfirm replaced the modal
-function _applyStack(next) { _stack = next; _modalSeq++; _setStack(next); }
+let _onStack = null;   // a phone: attachBackCloses keeps one history entry per open sheet
+function _applyStack(next) { _stack = next; _modalSeq++; _setStack(next); if (_onStack) _onStack(next.length); }
 export function openModal(node) { _applyStack(_stack.length ? [..._stack.slice(0, -1), node] : [node]); }
 export function pushModal(node) { _applyStack([..._stack, node]); }
 function _blurActive() { requestAnimationFrame(() => { const a = document.activeElement; if (a && a.blur && a.tagName !== "BODY") a.blur(); }); }
@@ -372,12 +373,229 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   useEffect(() => () => clearTimeout(closeT.current), []);
   useNoNativeTitle(ref, show);
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
-    onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
-    onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
+    onClick=${hoverOnly && !isMobile() ? null : (e => {
+      // a phone has no hover: a hover-only bubble is a tap's, PINNED — opened by the emulated hover it closed on a swipe while
+      // the phone still counted the finger as hovering, and the next tap opened nothing (operator, 2026-10-29). A link or a
+      // button inside keeps its own tap, and the tap still reaches the row around it as the hover's did.
+      // A trigger with an action of its own (a gateway chip, role=button) is that action's, too (F10).
+      if (hoverOnly) { if (!e.target.closest("a, button, [role=button]") && !(ref.current && ref.current.querySelector("button, [role=button]"))) setPinned(p => !p); return; }
+      e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
+    onMouseEnter=${clickOnly || (hoverOnly && isMobile()) ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${typeof children === "function"
         ? children(() => { setPinned(false); setOpen(false); }) : children}</div><//>` : null}
   </span>`;
+}
+
+// A phone has no hover, and about 700 values of the panel live in a `title=` (MOBILE-PLAN hook 5): a status badge's reason, a
+// version chip's "ahead", a mesh row's numbers. One delegated tap, mobile only, shows the tapped element's title in the docked
+// bubble. A tap that belongs to something else never does: on a link, a button, a field, or anything with a pointer cursor (a
+// clickable row or card) the tap is that thing's, and a title-less tap anywhere just closes the bubble.
+// A phone's Back closes what is on top — a QR, a bubble, a sheet — and leaves the page under it where it was (operator, 2026-10-29:
+// "must close the slider, not go back to the previous page"). Every sheet opened pushes an entry with the same address, so each
+// Back has one to take, however deep the sheets are nested ("the next one just minimizes the browser"). A sheet closed by its X
+// or a swipe leaves its entry behind: a Back that lands on one with nothing open goes on back by itself, never a dead press. A
+// bubble or a QR has no entry of its own: the address the page had is put back (pushState fires no event) and the hashchange
+// that back navigation fires is eaten before the router sees it. Nothing open → Back is the browser's.
+export function attachBackCloses() {
+  let url = location.href, eat = false, depth = 0;
+  _onStack = n => { if (n > depth) for (; depth < n; depth++) history.pushState({ swgSheet: depth + 1 }, ""); else depth = n; };
+  window.addEventListener("popstate", () => {
+    const qr = document.querySelector(".qr-overlay"), pop = document.querySelector(".deppop"), cat = document.querySelector(".catpick-pop .pop-x");
+    if (cat) { if (location.href !== url) { eat = true; history.pushState(history.state, "", url); } cat.click(); return; }   // a routing field's search
+    if (!qr && !pop && !_stack.length && !document.querySelector(".osapp-menu")) {
+      if (location.href === url) history.back();   // a closed sheet's entry left behind: not a page, step past it
+      return;
+    }
+    // what this Back took: the top sheet's own entry when the address did not change, a page's when it did (no sheet entry left)
+    const tookSheet = location.href === url;
+    if (!tookSheet) { eat = true; history.pushState(history.state, "", url); }
+    // a layer inside a sheet (a client app menu, a QR, a bubble) has no entry of its own: the sheet gets back the one this took (F55)
+    const giveBack = () => { if (tookSheet && _stack.length) history.pushState({ swgSheet: depth }, ""); };
+    if (document.querySelector(".osapp-menu")) { document.dispatchEvent(new CustomEvent("m-outside-tap")); giveBack(); return; }   // F4
+    if (qr) { qr.click(); giveBack(); return; }
+    if (pop) { if (pop.classList.contains("m-titletap")) pop.remove(); else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); giveBack(); return; }
+    // the top sheet, through its GUARDED close — the X's, the swipe's and Esc's — so unsaved edits ask first (F51). Its entry is the
+    // one this Back took; a sheet that stays (it asked, in place) gets one back, and a confirm it opened gets its own.
+    depth = Math.max(0, _stack.length - 1);
+    const top = _sheetStack[_sheetStack.length - 1];
+    if (top && top.close) top.close(); else closeModal();
+    queueMicrotask(() => { if (_stack.length > depth) _onStack(_stack.length); });
+  });
+  window.addEventListener("hashchange", e => {
+    if (eat) { eat = false; e.stopImmediatePropagation(); return; }
+    url = location.href;
+  }, true);
+}
+
+// A phone: the visible part of the page (above the keyboard) as --m-vvt / --m-vvh, for what is docked to it rather than to the
+// layout viewport the keyboard does not shrink (m/m.css: a routing field's search)
+export function attachViewportVars() {
+  const v = window.visualViewport, root = document.documentElement;
+  // --m-kbpad: the keyboard is up (the visible page much shorter than the window) — what is pinned to its bottom stands clear of a
+  // browser bar laid over that edge (Brave, measured on the operator's phone: ~30 px)
+  const set = () => { const h = v ? v.height : innerHeight;
+    root.style.setProperty("--m-vvt", (v ? v.offsetTop : 0) + "px"); root.style.setProperty("--m-vvh", h + "px");
+    root.style.setProperty("--m-kbpad", innerHeight - h > 150 ? "36px" : "0px"); };
+  set(); if (v) { v.addEventListener("resize", set); v.addEventListener("scroll", set); }
+}
+
+export function attachTitleTaps() {
+  let bub = null;
+  const drop = () => { if (bub) { bub.remove(); bub = null; } };
+  document.addEventListener("click", e => {
+    const t = e.target;
+    if (bub && bub.contains(t)) return;
+    drop();
+    if (!t || !t.closest || t.closest(".deppop")) return;
+    let el = null;
+    for (let n = t; n && n !== document.body; n = n.parentElement) {
+      if (n.matches("a, button, input, select, textarea, label, summary, [role=button], [contenteditable]")) return;
+      if (getComputedStyle(n).cursor === "pointer") return;
+      if (!el && n.getAttribute("title")) el = n;
+    }
+    if (!el) return;
+    // a tag that names itself (an interface's protocol badge — "AWG 3.1" titled "AmneziaWG 3.1") says nothing new: no bubble
+    // (operator, 2026-10-29: "that slider is useless")
+    if (el.matches(".tg, .iftype, .tag, .capb, .ce-tag")) return;
+    bub = document.createElement("div");
+    bub.className = "deppop m-titletap";
+    bub.setAttribute("role", "status");
+    bub.textContent = el.getAttribute("title");
+    document.body.appendChild(bub);
+  });
+  window.addEventListener("hashchange", drop);
+}
+
+// A row whose actions sit behind a left swipe says so (operator, 2026-10-29: "something for users to understand they can slide
+// left"): a grab bar on its right edge (m/m.css), and the first few times a list with such rows opens, its top row slides open
+// a little and back. Counted per device (localStorage), so it teaches and then stops.
+const SWIPE_ROW = ".urow > .urow-head:has(.u-acts), table.peergrid > tbody > tr.clk:has(.rowacts), .attn-row:has(.attn-acts), .acthist .act-row:has(> .iconbtn.danger)";
+export function attachSwipePeek() {
+  const peek = () => setTimeout(() => {
+    let n = 0;
+    try { n = +(localStorage.getItem("swg-peek") || 0); } catch (_) { return; }
+    const row = n < 3 && [...document.querySelectorAll(SWIPE_ROW)].find(r => { const b = r.getBoundingClientRect(); return b.height && b.top > 60 && b.bottom < innerHeight - 80; });
+    if (!row || document.querySelector(".overlay.show")) return;
+    try { localStorage.setItem("swg-peek", String(n + 1)); } catch (_) {}
+    row.style.scrollSnapType = "none";                       // a snap point would swallow a part-way slide
+    row.scrollTo({ left: 76, behavior: "smooth" });
+    setTimeout(() => { row.scrollTo({ left: 0, behavior: "smooth" }); setTimeout(() => { row.style.scrollSnapType = ""; }, 500); }, 750);
+  }, 1200);
+  window.addEventListener("hashchange", peek);
+  peek();
+  // the ⋮ in a closed row's right lane (m/m.css) opens it, as the swipe does — and nothing under it opens
+  document.addEventListener("click", e => {
+    const row = e.target && e.target.closest && e.target.closest(SWIPE_ROW);
+    if (!row || row.scrollLeft > 4 || e.target.closest("button, a, input, .iconbtn")) return;
+    if (row.getBoundingClientRect().right - e.clientX > 26) return;
+    e.preventDefault(); e.stopPropagation();
+    row.scrollTo({ left: row.scrollWidth, behavior: "smooth" });
+  }, true);
+}
+
+// A phone draws a bubble as a sheet at the bottom (m/m.css), so it closes the way a sheet does: dragged down by more than
+// 70 px, or flicked (operator, 2026-10-29: "swiping down doesn't close this"). A pinned one closes on its own Escape, one a
+// tap opened as a hover on its mouseleave (Popover), and a bubble drawn by the title tap is simply removed. A drag that starts in a part that scrolls, not at its top, scrolls it.
+export function attachBubbleSwipe() {
+  let d = null;
+  document.addEventListener("touchstart", e => {
+    const pop = e.target && e.target.closest && e.target.closest(".deppop, .qr-overlay-inner");   // a QR enlargement is a sheet too
+    if (!pop || e.touches.length !== 1) { d = null; return; }
+    // the sheet swipe's own guards (F13): a drag that starts in a field is the field's; one in a scroller that is not at its
+    // top — the bubble itself included, which m.css makes the scroller — scrolls it
+    if (e.target.closest("input, textarea, select")) { d = null; return; }
+    let sc = e.target;
+    for (; sc; sc = sc === pop ? null : sc.parentElement) if (sc.scrollHeight > sc.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(sc).overflowY)) break;
+    if (sc && sc.scrollTop > 0) { d = null; return; }
+    d = { pop, x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), dy: 0 };
+  }, { passive: true, capture: true });
+  // ⚠️ NOT PASSIVE: on a real phone the page under a bubble took the drag as its own scroll and Chrome sent touchcancel —
+  // the bubble never closed (operator, 2026-10-29). A downward drag on it is the bubble's, so the page is told no.
+  document.addEventListener("touchmove", e => {
+    if (!d) return;
+    const ddx = Math.abs(e.touches[0].clientX - d.x), ddy = e.touches[0].clientY - d.y;
+    if (!d.dy && ddx > 10 && ddx > Math.abs(ddy)) { d.pop.style.removeProperty("transform"); d = null; return; }   // sideways: not a close
+    d.dy = Math.max(0, ddy);
+    if (d.dy > 0 && e.cancelable) e.preventDefault();
+    // important: m.css docks a bubble with `transform: none !important`, which a plain inline transform loses to — the
+    // bubble stood still under the finger (operator, 2026-10-29: "glitching")
+    d.pop.style.setProperty("transition", "none", "important");
+    if (d.dy) d.pop.style.setProperty("transform", "translateY(" + d.dy + "px)", "important"); else d.pop.style.removeProperty("transform");
+  }, { passive: false, capture: true });
+  const bubbleEnd = () => {
+    if (!d) return;
+    const { pop, dy, t } = d; d = null;
+    const back = () => { pop.style.setProperty("transition", "transform .2s var(--ease)", "important"); pop.style.removeProperty("transform"); };
+    if (dy < 70 && !(dy > 24 && dy / Math.max(1, Date.now() - t) > 0.5)) return back();
+    if (pop.classList.contains("m-titletap")) return pop.remove();
+    if (pop.classList.contains("qr-overlay-inner")) return pop.parentElement.click();   // its own close (crypto.js qrZoom)
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));   // a pinned one
+    pop.dispatchEvent(new MouseEvent("mouseleave"));                                                          // one a tap opened as a hover
+    setTimeout(() => { if (pop.isConnected) back(); }, 260);
+  };
+  document.addEventListener("touchend", bubbleEnd, { capture: true });
+  document.addEventListener("touchcancel", bubbleEnd, { capture: true });
+}
+
+// A phone: a notification goes on a swipe in any direction (operator, 2026-10-29) — dragged more than 50 px it leaves that
+// way and is gone; less, it springs back. Its own timer still ends it otherwise.
+export function attachToastSwipe() {
+  let d = null;
+  document.addEventListener("touchstart", e => {
+    const t = e.target && e.target.closest && e.target.closest(".toasts > .toast");
+    d = t && e.touches.length === 1 ? { t, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, dy: 0 } : null;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchmove", e => {
+    if (!d) return;
+    d.dx = e.touches[0].clientX - d.x; d.dy = e.touches[0].clientY - d.y;
+    d.t.style.transition = "none"; d.t.style.transform = "translate(" + d.dx + "px," + d.dy + "px)";
+    d.t.style.opacity = String(Math.max(0.2, 1 - Math.hypot(d.dx, d.dy) / 220));
+  }, { passive: true, capture: true });
+  document.addEventListener("touchend", () => {
+    if (!d) return;
+    const { t, dx, dy } = d; d = null;
+    t.style.transition = "transform .2s var(--ease), opacity .2s var(--ease)";
+    const n = Math.hypot(dx, dy);
+    if (n < 50) { t.style.transform = ""; t.style.opacity = ""; return; }
+    t.style.transform = "translate(" + (dx / n * 480) + "px," + (dy / n * 480) + "px)"; t.style.opacity = "0";
+    setTimeout(() => t.remove(), 220);
+  }, { capture: true });
+}
+
+// A phone: a sheet is docked at the bottom and as tall as what it holds, so a hint, a check or an error that comes and goes
+// while someone types moved the whole sheet, the field with it, up and down (operator, 2026-10-29: "data entry must be
+// smooth"). The first time a text field in a sheet takes the focus, the sheet takes its full height and keeps it until it
+// closes: what changes below the field no longer moves it (m/m.css .sheet.m-typed).
+const TEXT_FIELD = "textarea, input:not([type]), input[type=text], input[type=search], input[type=email], input[type=url], input[type=number], input[type=password], input[type=tel]";
+export function attachTypingHold() {
+  document.addEventListener("focusin", e => {
+    const t = e.target, sh = t && t.closest && t.matches && t.matches(TEXT_FIELD) && !t.readOnly && t.closest(".overlay .sheet");
+    if (sh) sh.classList.add("m-typed");
+  }, true);
+}
+
+// A phone: while a list or a bubble is open (a dropdown, the user picker, a bottom bubble), a tap anywhere outside it only
+// closes it and drops the keyboard — the tap does not also open what happened to be under the finger (operator,
+// 2026-10-29: "tapping anywhere else must only close the list and focus out"). The layers close themselves on that
+// pointerdown as they always did; this eats the click that follows.
+export function attachOutsideTapGuard() {
+  let eat = 0;
+  document.addEventListener("pointerdown", e => {
+    eat = 0;
+    const layer = document.querySelector(".ddpop, .uc-pop, .deppop, .osdd-menu, .osapp-menu");   // the OS / app pickers (turn.js)
+    const t = e.target, ae = document.activeElement;
+    if (!layer || (t && layer.contains(t)) || (ae && ae !== document.body && ae.contains && ae.contains(t))) return;
+    eat = Date.now();
+    if (ae && ae.blur && ae.matches && ae.matches("input, textarea, select")) ae.blur();
+    document.querySelectorAll(".deppop.m-titletap").forEach(b => b.remove());   // its own close rides the click eaten below
+  }, true);
+  document.addEventListener("click", e => {
+    if (!e.isTrusted) return;                        // a click the app sends itself (a swipe's close) is never the eaten tap
+    if (!eat || Date.now() - eat > 800) return;
+    eat = 0; e.stopPropagation(); e.preventDefault();
+    document.dispatchEvent(new CustomEvent("m-outside-tap"));   // a layer that closes on a document click closes on this instead (turn.js)
+  }, true);
 }
 
 /* Every label table below is built ONCE, on first use — never at module load. T() only answers correctly
@@ -461,8 +679,10 @@ export function SearchBox({ placeholder, value, onInput }) {
 // Collapses the ~15 dialogs that share this exact shape into one call; irregular footers (multiple actions,
 // a left-aligned Cancel) stay inline. `danger` paints the action red; `actionCls` overrides the class outright;
 // `title`/`disabled` are only emitted when passed, so the rendered DOM stays byte-identical to the old inline form.
+// `btn-dismiss` marks the footer's Close / Cancel / Back — the same `btn-ghost` as QR or Targets, so CSS could not find it — for
+// the phone's footer rule (m/m.css: the dismiss and the main action share the bottom line). It styles nothing on a desktop.
 export function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
-  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || T("Cancel")}</button>${action != null ? html`<button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button>` : null}<//>`;
+  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${onCancel}>${cancelLabel || T("Cancel")}</button>${action != null ? html`<button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button>` : null}<//>`;
 }
 // subject = {kind:"peer"|"user", id} — when that peer/user is blocked, the whole modal takes the red "blocked"
 // treatment (border + header tint + a BLOCKED chip). Looked up live (useStore) so it reacts to block/unblock
@@ -472,7 +692,65 @@ export function subjectBlocked(subject) {
   const rec = subject.kind === "user" ? Store.user(subject.id) : Store.peer(subject.id);
   return !!(rec && rec.disabled);
 }
-export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, subject, err }) {
+// Swipe down to close, on a phone (docs/MOBILE-PLAN.md hook 2; sub.js attachSwipeClose's gesture, downward only). Only the
+// TOPMOST sheet takes it — by construction: the listeners are on the sheet itself and a child's overlay covers its parent. It yields to an inner scroller that can still scroll up, a sideways move is never a close, and a touch
+// that starts on a field never closes (selecting text in a config). A committed swipe goes through the sheet's own tryClose, so
+// a dirty sheet shows its "Discard?" and springs back, and a sheet with onBack goes Back. `noSwipe`: a sheet holding a secret
+// shown once (a node token, the encryption key, a router config) ignores it, since tryClose closes a CLEAN sheet without asking.
+function attachSheetSwipe(root, canSwipe, wantsGuard, close) {
+  let st = null;
+  const scrollerAbove = el => {        // an element between the touch and the sheet that can still scroll content down
+    for (; el && el !== root; el = el.parentElement) {
+      if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) { const o = getComputedStyle(el).overflowY; if (o === "auto" || o === "scroll") return true; }
+    }
+    return false;
+  };
+  const reset = spring => {
+    root.classList.remove("m-dragging");
+    if (spring) { root.classList.add("m-springback"); setTimeout(() => root.classList.remove("m-springback"), 240); }
+    root.style.transform = "";
+  };
+  const onStart = e => {
+    st = null;
+    if (e.touches.length !== 1 || !canSwipe()) return;
+    const t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .ddpop")) return;
+    if (scrollerAbove(t)) return;
+    st = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), dy: 0, on: false };
+  };
+  const onMove = e => {
+    if (!st) return;
+    const dx = e.touches[0].clientX - st.x, dy = e.touches[0].clientY - st.y;
+    if (!st.on) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) { st = null; return; }   // sideways: a rail, a pager — never a close
+      if (dy < -6) { st = null; return; }                                              // up: the content scrolls
+      if (dy < 10) return;
+      st.on = true; root.classList.add("m-dragging");
+    }
+    e.preventDefault();
+    st.dy = Math.max(0, dy);
+    root.style.transform = "translateY(" + st.dy + "px)";
+  };
+  const onEnd = () => {
+    if (!st) return;
+    const s = st; st = null;
+    if (!s.on) return;
+    const fast = s.dy > 40 && s.dy / Math.max(1, Date.now() - s.t) > 0.6;
+    if (!(s.dy > Math.min(140, root.offsetHeight * 0.3) || fast)) return reset(true);
+    if (wantsGuard()) { reset(true); close(); return; }              // the discard prompt shows: spring back, never off the screen
+    root.classList.remove("m-dragging"); root.classList.add("m-springback");
+    root.style.transform = "translateY(100%)";
+    setTimeout(() => { close(); if (root.isConnected) reset(false); root.classList.remove("m-springback"); }, 180);
+  };
+  root.addEventListener("touchstart", onStart, { passive: true });
+  root.addEventListener("touchmove", onMove, { passive: false });
+  root.addEventListener("touchend", onEnd);
+  const onCancel = () => { if (st && st.on) reset(true); st = null; };
+  root.addEventListener("touchcancel", onCancel);
+  return () => { root.removeEventListener("touchstart", onStart); root.removeEventListener("touchmove", onMove); root.removeEventListener("touchend", onEnd);
+    root.removeEventListener("touchcancel", onCancel); };   // all four (F43)
+}
+export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, noSwipe, subject, err }) {
   useStore();                                    // track live block/unblock while the modal is open
   onClose = onClose || closeModal;
   const blocked = subjectBlocked(subject);
@@ -485,7 +763,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
   // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog. `dirtyRef`
   // lets a caller flag changes the input/change listener can't see (e.g. click-toggled grids). `noGuard` opts out
   // entirely — view modals (QR / turn configs) save every field inline, so there's nothing to discard.
-  const tryClose = () => { if (!noGuard && (dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
+  const wantsGuard = () => !noGuard && (dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current;
+  const tryClose = () => { if (wantsGuard()) { setDiscarding(true); return; } onClose(); };
   if (closeRef) closeRef.current = tryClose;   // expose the guarded close so a footer Cancel routes through it too
   // ⚠️ A SHEET THAT SAVES ITSELF NEEDS A WAY TO SAY SO. `dirty` is set by any input/change event and was
   // never cleared, so a sheet whose own body writes to the server (rather than closing through the footer
@@ -500,6 +779,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
   // correctly went back. Route Esc through the live tryClose instead.
   const tryCloseRef = useRef(tryClose); tryCloseRef.current = tryClose;
   const noGuardRef = useRef(noGuard); noGuardRef.current = noGuard;   // read live (the Sheet instance is reused across openModal)
+  const noSwipeRef = useRef(noSwipe); noSwipeRef.current = noSwipe;
+  const wantsGuardRef = useRef(wantsGuard); wantsGuardRef.current = wantsGuard;
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -511,8 +792,10 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
     // never grabs focus onto a button as a fallback
     let first = root.querySelector("[autofocus]") || root.querySelector("input:not([data-noautofocus]),textarea:not([data-noautofocus]),select,button.btn-primary");
     if (first && noGuardRef.current && first.tagName === "BUTTON") first = null;
-    if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
-    const tok = {}; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab
+    // A phone never focuses a field by itself (operator, 2026-10-29): that raises the on-screen keyboard over a sheet the
+    // operator opened to read. The field is one tap away.
+    if (first && !isMobile()) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
+    const tok = { close: () => tryCloseRef.current() }; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab; a phone's Back closes it through `close`
     const onKey = e => {
       if (_qrZoomOpen()) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
       if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it
@@ -525,6 +808,15 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       // is the signal, exactly as `_qrZoomOpen()` above is for an enlarged QR.
       if ((e.key === "Enter" || e.key === "Escape") && document.querySelector(".ddpop")) return;
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryCloseRef.current(); return; }
+      // A focused button, link or switch IN THIS SHEET owns its Enter — the browser clicks IT. Taken for the sheet's primary,
+      // Enter on Cancel or Remove saved or created instead (s9b F10). Its pickers' layers count as the sheet (portalled to
+      // <body>, as `.ddpop` above). One behind the overlay (the phone keeps focus on the button that opened the sheet) is
+      // not the sheet's: its Enter stays the primary's, never a click behind the modal.
+      if (e.key === "Enter" && e.target.closest && (root.contains(e.target) || e.target.closest(".uc-pop, .deppop, .osdd-menu, .osapp-menu, .catpick-pop"))
+          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;
+      // A held Enter is one press: its repeats never reach the primary — on a phone the Enter that opened a confirmation
+      // would otherwise, held a moment, confirm it unseen (verify F12). A textarea's repeated newlines stay its own.
+      if (e.key === "Enter" && e.repeat && e.target.tagName !== "TEXTAREA") { e.preventDefault(); return; }
       if (e.key === "Enter" && !noGuardRef.current && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         // view modals (QR / turn) have no single submit action — Enter must not fire a random primary button
         // (e.g. "Enable subscription"); their own fields (the VK box) handle Enter themselves
@@ -541,7 +833,9 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       }
     };
     document.addEventListener("keydown", onKey, true);          // capture so it works regardless of focus
+    const unswipe = isMobile() ? attachSheetSwipe(root, () => !noSwipeRef.current, () => wantsGuardRef.current(), () => tryCloseRef.current()) : null;
     return () => {
+      if (unswipe) unswipe();
       document.removeEventListener("keydown", onKey, true);
       _sheetStack = _sheetStack.filter(t => t !== tok);
       root.removeEventListener("input", onEdit, true);
@@ -557,7 +851,7 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       <div class="sheet-body">${children}${err ? html`<div class="formmsg err" role="alert">${err}</div>` : null}</div>
       ${(foot || discard) ? html`<div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> ${T("Discard unsaved changes?")}</span><span class="grow"></span>
-            <button class="btn btn-ghost" onClick=${() => setDiscarding(false)}>${T("Keep editing")}</button>
+            <button class="btn btn-ghost btn-dismiss" onClick=${() => setDiscarding(false)}>${T("Keep editing")}</button>
             <button class="btn btn-danger" onClick=${onClose}>${T("Discard")}</button></>`
         : foot}</div>` : null}
     </div></div>`;
@@ -604,7 +898,7 @@ export function ConfirmSheet({ title, body, note, log, confirmLabel, busyLabel, 
     foot=${html`<${Fragment}>
       ${canToggle ? html`<button class="btn btn-ghost logtoggle" onClick=${() => setRaw(r => !r)}>${raw ? T("Display rendered") : T("Display raw")}</button>` : null}
       <span class="grow"></span>
-      <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? (cancelLabel || T("Cancel")) : (confirmLabel || T("Close"))}</button>
+      <button class=${"btn " + (onConfirm ? "btn-ghost btn-dismiss" : "btn-primary")} onClick=${back}>${onConfirm ? (cancelLabel || T("Cancel")) : (confirmLabel || T("Close"))}</button>
       ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy || !typeOk} onClick=${go}>${busy ? html`<span class="spin sm"></span>${busyLabel || T("Working…")}` : (confirmLabel || T("Confirm"))}</button>` : null}</>`}>
     ${isLog
       ? html`<${LogBody} text=${log} raw=${raw}/>`
@@ -934,8 +1228,13 @@ export function gridStatusBadge(t, p, re) {
   if (peerUncategorised(t) && !re && st !== "blocked" && st !== "faulty") {
     return uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(st)}</span>`);
   }
-  if (t.online && t.viaTurn) {
-    const tf = turnFork(t.viaTurn), tn = forkLabel(tf), tc = turnColor(tf), ptitle = turnProxyTitle(t.node, t.viaTurn);   // the id picks the colour, the name is shown
+  // A csqtt / WDTT deployment always comes in through its own turn server: the same badge, in that server's fork colour
+  // (keylessVia, beside endpointCell) — once its node reports the server, so there is a colour to give. Not over a pinned
+  // action failure: that bubble (below) is the row's only trace of it once the toast is gone.
+  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;
+  if (t.online && (t.viaTurn || (kv && kv.fork))) {
+    const tf = kv ? kv.fork : turnFork(t.viaTurn), tn = kv ? kv.label : forkLabel(tf), tc = turnColor(tf);   // the id picks the colour, the name is shown
+    const ptitle = kv ? "" : turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap" title="">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${statusLabel(st)}</span>
       <span class="turnbub">${T("Connected via")} <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
@@ -987,15 +1286,34 @@ export function connDot(r) {
 // the raw 127.0.0.1 tells the operator nothing at all. Keep the attribution, dim it, and say "Last connected
 // via". If the exact fork can no longer be resolved (the proxy was removed, or the node predates wg_sports) we
 // still know it was relayed — say so rather than fall back to a loopback address.
+//
+// A csqtt / WDTT deployment always comes in through its own turn server, but reconcile gives it no `via` (that field
+// carries wg meaning other widgets read), so it printed "—". It gets the same cell here, named after the server that
+// carries it: the fork of that interface as its node reports it (matched by iface, as reconcile matches it), and the line
+// for csqtt, as the interface card's badge. Only what the server's own report says: ONLINE is traffic now ("Connected
+// via"); READY with the server's entry for the password (kwXfer, set exactly when the server reports holding it, bound to a
+// device or not) is idle or never used — dimmed, the server named with no claim of a past connection (a keyless deployment has
+// no last endpoint to remember). Ready with no entry (not shipped yet), creating, dangling or unknown name no path: "—".
+// The kind is the target's own type, exactly as reconcile reads it: a target with none takes reconcile's WG path, and so
+// does its cell (a plain WG row pays one compare).
+function keylessVia(t) {
+  const k = t.type;
+  if (k !== "csqtt" && k !== "wdtt") return null;
+  const r = ((Store.stats[t.node] || {})[k] || []).find(x => x && x.iface === t.iface);
+  const fork = r ? (r.fork || (k === "csqtt" ? "csqtt" : "amurcanov")) : null, line = r && k === "csqtt" ? (r.line || CSQTT_DEFAULT_LINE) : "";
+  return { fork, label: fork ? forkLabel(fork) + (line ? " " + line : "") : null };
+}
 export function endpointCell(t) {
   const obs = t.observed;
-  if (t.via === "turn") {
-    const tf = t.viaTurn ? turnFork(t.viaTurn) : null, tn = tf ? forkLabel(tf) : null;
+  const kv = keylessVia(t), ks = kv && (t.status === "online" || (t.status === "ready" && !!t.kwXfer)) ? kv : null;
+  if (t.via === "turn" || ks) {
+    const tf = ks ? ks.fork : t.viaTurn ? turnFork(t.viaTurn) : null, tn = ks ? ks.label : tf ? forkLabel(tf) : null;
     const tc = tf ? turnColor(tf) : "var(--dim)";
-    const ptitle = t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
+    const ptitle = !ks && t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
+    const verb = t.online ? T("Connected via") : ks ? "" : T("Last connected via");
     return html`<span class="turnwrap" title="">
       <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>${T("turn-proxy")}</span>
-      <span class="turnbub">${t.online ? T("Connected via") : T("Last connected via")} ${tn
+      <span class="turnbub">${verb ? verb + " " : null}${tn
           ? html`<span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>`
           : html`<span class="faint">${T("a turn-proxy")}</span>`}${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
@@ -1038,12 +1356,20 @@ export function DepBadge({ others }) {
   const [open, setOpen] = useState(false);     // hover preview
   const [pinned, setPinned] = useState(false); // click-pinned (mobile / sticky)
   const [pos, setPos] = useState(null);
-  const ref = useRef(null);
+  const ref = useRef(null), popRef = useRef(null);   // ⚠️ popRef was read by onDoc and never made: a tap outside threw, nothing closed it
   const closeT = useRef(null);
   const show = open || pinned;
   const cancelClose = () => clearTimeout(closeT.current);
   const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 6) }); };
+  // a phone: the list is a sheet, as the updates list is (operator, 2026-10-29: the bubble would not close and looked thin)
+  const rows = others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
+        <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
+        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
+        <span class="dep-ip addr">${d.ip || "—"}</span></div>`);
+  if (isMobile()) return html`<span class="depmore" role="button" onClick=${e => { e.stopPropagation(); e.preventDefault();
+      (_stack.length ? pushModal : openModal)(html`<${Sheet} title=${T("Other interfaces of this peer")} noGuard=${true}
+        foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}><div class="m-deplist">${rows}</div><//>`); }}>+${others.length}</span>`;
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
@@ -1072,12 +1398,9 @@ export function DepBadge({ others }) {
           hovering took the badge from 18px to 38.8px tall and the row from 49.5px to 60px, leaving a
           stray fragment of the split inline box under the cell. Rendering at <body> keeps the span a
           single unbroken inline box, so the row does not move at all. */""}
-    ${show && pos ? html`<${Portal}><div class="deppop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+    ${show && pos ? html`<${Portal}><div class="deppop" ref=${popRef} style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
-      ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
-        <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
-        <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
+      ${rows}
     </div><//>` : null}
   </span>`;
 }
@@ -1199,7 +1522,7 @@ export function usePopup({ keep = null, drop = "auto", onClose, disabled = false
   // Land on the SELECTED row, not the first one — opening a 40-node list on "Auto" and making the operator arrow down to
   // what is already chosen is the thing this control exists to be better than.
   // A list with a search box of its own: the box takes the focus at every open, mouse or keyboard.
-  useEffect(() => { if (!open || !pos || !search || !popRef.current) return;
+  useEffect(() => { if (!open || !pos || !search || !popRef.current || isMobile()) return;   // a phone: no keyboard over the list
     const s = popRef.current.querySelector(search); if (s) { kbd.current = null; s.focus(); } }, [open, !!pos]);
   useEffect(() => {
     if (!open || !pos || !kbd.current) return;
@@ -1357,7 +1680,11 @@ export function trackIfaceOps() {
     if (IFOP_PANEL.has(op.verb)) continue;   // panel-side: settled by its own handler, not by watching the node
     const cut = key.indexOf("|"); const node = key.slice(0, cut), iface = key.slice(cut + 1);
     const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-    const _wSnap = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface);   // WDTT lives in snap.wdtt, not snap.interfaces
+    // WDTT lives in snap.wdtt, csqtt in snap.csqtt — not snap.interfaces. ⚠️ csqtt was read from snap.interfaces, where it is
+    // not: nothing read as "up", so a Start said "Started" at once and the page offered Start again while the node was still
+    // bringing it up (operator, 2026-10-29)
+    const _snap = Store.stats[node] || {};
+    const _wSnap = (_snap.wdtt || []).find(w => w && w.iface === iface) || (_snap.csqtt || []).find(c => c && c.iface === iface);
     const istate = _wSnap
       ? { down: _wSnap.active !== "active" && !_wSnap.stopped, stopped: !!_wSnap.stopped }   // active state from the WDTT readback
       : (((Store.stats[node] || {}).interfaces || {})[iface] || {});
@@ -1370,6 +1697,15 @@ export function trackIfaceOps() {
     if (op.verb === "apply") {                                 // up iface live-apply (no restart) → time-based
       if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
       else if (now - op.started > 6000) done = { phase: "ok" };   // node has had a sync to pick it up
+    } else if (_wSnap && (op.verb === "start" || op.verb === "stop")) {
+      // a WDTT / csqtt server: the node never lists it in starting/stopping, takes the flag on its next sync and then brings a
+      // service up — the 8 s "no request queued" rule below called a start that was still on its way "didn't come up", and that
+      // tag stayed while the server ran (operator, 2026-10-29). Done when the readback says so; failed on the node's error or
+      // after a minute.
+      const there = op.verb === "start" ? !notup : notup;
+      if (there) done = { phase: "ok" };
+      else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
+      else if (now - op.started > 60000) done = { phase: "fail", err: cerr || T("timed out") };
     } else if (op.verb === "start") {                          // success once the iface is actually UP (not just "not down")
       if (!notup) done = { phase: "ok" };
       else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
@@ -1865,6 +2201,8 @@ export function applyFavicon(accent) {
 // an inline <head> script in index.html sets data-theme before first paint so there's no dark→light flash.
 export function applyThemeMode() {
   document.documentElement.dataset.theme = resolvedTheme();
+  // The phone's status bar follows the panel's theme, not the system's (MOBILE-PLAN hook 7; index.html sets it at load).
+  const tc = document.querySelector('meta[name="theme-color"]'); if (tc) tc.content = resolvedTheme() === "light" ? "#FFFFFF" : "#10151E";
   _themeSig = null;            // force the accent injection to re-pick this mode's brand colour
   applyThemeColors();
   applyForkColors();           // turn-fork tints are per-mode too

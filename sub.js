@@ -55,6 +55,10 @@
       liWings1: "1. Open *WINGS V DeX*", liWings2: "2. Click *Paste from Clipboard*", liWings3: "3. Connect",
       liGen1: "1. Open *{app}*", liGen2: "2. Open the *Add profile* / import screen",
       liGen3: "3. *Paste* the copied link (or use the app's from-clipboard button)", liGen4: "4. Confirm, then connect",
+      // csq-socks (our command-line csqtt client) and La Lune on a 2.5 server: their own steps (the csqtt cell's stepList)
+      csqSocksSteps: { linux:   ["1. Download *csq-socks* and open a *terminal* where it was saved", "2. Install it: tar xzf csq-socks.tar.gz && sudo ./csq-socks/install.sh", "3. Run csq-socks set, paste the copied link and press Enter", "4. Run csq-socks up for a SOCKS5 proxy on 127.0.0.1:1089, or csq-socks tun to send all traffic through the tunnel"],
+                       windows: ["1. Download *csq-socks* and unpack the zip", "2. Open *PowerShell* in that folder", "3. Run .\\csq-socks set, paste the copied link and press Enter", "4. Run .\\csq-socks up for a SOCKS5 proxy on 127.0.0.1:1089, or .\\csq-socks tun from an administrator PowerShell to send all traffic through the tunnel"] },
+      laluneSteps25: ["1. Open *{app}*", "2. Add a profile and choose the *CSQTTR* protocol", "3. *Paste* the copied link", "4. Save, then connect"],
       mzBtn1: "Download the GUI app", mzBtn2: "Install TURN Proxy core", mzBtn3: "Assemble and connect", mzBtn3Sub: "Follow the instructions",
       mzCopied: "Config string copied", mzGetCore: "Don't forget to download the core",
       mzStep1: "1. Open the *TURN Proxy* app", mzStep2: "2. Go to *Settings*", mzStep3: "3. Click on *Core (Binary)*", mzStep4: "4. Press *Import*",
@@ -65,6 +69,11 @@
       vkAddApp: "Add this VK call link to {app}", vkAddFork: "Add this VK call link to {fork} app",
       backup: "Backup",
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
+      p2pMark: "Torrents work here — the setting for full speed",
+      p2pPortL: "Incoming port",
+      p2pPortD: "Set exactly this port for incoming connections in the torrent client, and turn off the random port at startup (qBittorrent: Options → Connection).",
+      p2pPortAt: "Other peers reach you at {addr}:{port}.",
+      p2pHint: "Torrents work here. For full speed, set the torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
       rawT: "Faster mode available", rawD: "In the app's settings set the RAW port to {port} and the connection mode to RAW — they live there, not in this link. It drops WireGuard for speed.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
@@ -84,6 +93,7 @@
       unsupported: "Unsupported browser",
       unsupportedSub: "This page needs a modern browser with Web Crypto (and a secure https:// connection) to decrypt your configs.",
       wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Turn proxy app", forkApp: "{fork} app",
+      slowMark: "Plain mode — slower",
       slowPlain: "Plain — no obfuscation, so slower (may be throttled)",
       langName: "EN", themeToLight: "Switch to light", themeToDark: "Switch to dark", langLabel: "Language", osLabel: "Device / OS",
     },
@@ -117,6 +127,9 @@
       liWings1: "1. Откройте *WINGS V DeX*", liWings2: "2. Нажмите *Добавить из буфера*", liWings3: "3. Подключайтесь",
       liGen1: "1. Откройте *{app}*", liGen2: "2. Откройте экран *добавления профиля* / импорта",
       liGen3: "3. *Вставьте* скопированную ссылку (или кнопкой из буфера)", liGen4: "4. Подтвердите и подключитесь",
+      csqSocksSteps: { linux:   ["1. Скачайте *csq-socks* и откройте *терминал* в папке, куда он сохранился", "2. Установите его: tar xzf csq-socks.tar.gz && sudo ./csq-socks/install.sh", "3. Выполните csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или csq-socks tun, чтобы весь трафик шёл через туннель"],
+                       windows: ["1. Скачайте *csq-socks* и распакуйте архив", "2. Откройте *PowerShell* в этой папке", "3. Выполните .\\csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните .\\csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или .\\csq-socks tun в PowerShell от имени администратора, чтобы весь трафик шёл через туннель"] },
+      laluneSteps25: ["1. Откройте *{app}*", "2. Добавьте профиль и выберите протокол *CSQTTR*", "3. *Вставьте* скопированную ссылку", "4. Сохраните и подключитесь"],
       mzBtn1: "Скачать приложение (GUI)", mzBtn2: "Установить ядро TURN Proxy", mzBtn3: "Собрать и подключиться", mzBtn3Sub: "Следуйте инструкциям",
       mzCopied: "Строка конфигурации скопирована", mzGetCore: "Не забудьте скачать ядро",
       mzStep1: "1. Откройте приложение *TURN Proxy*", mzStep2: "2. Перейдите в *«Настройки»*", mzStep3: "3. Нажмите *«Ядро (Binary)»*", mzStep4: "4. Нажмите *«Импорт»*",
@@ -127,6 +140,11 @@
       vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении",
       backup: "Резерв",
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
+      p2pMark: "Торренты здесь работают — настройка для полной скорости",
+      p2pPortL: "Входящий порт",
+      p2pPortD: "Укажите в торрент-клиенте именно этот порт для входящих соединений и выключите случайный порт при запуске (qBittorrent: Настройки → Соединение).",
+      p2pPortAt: "Другие участники подключаются к вам по {addr}:{port}.",
+      p2pHint: "Торренты здесь работают. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
@@ -146,6 +164,7 @@
       unsupported: "Браузер не поддерживается",
       unsupportedSub: "Для расшифровки конфигов нужен современный браузер с Web Crypto и защищённое соединение https://.",
       wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Приложение для turn proxy", forkApp: "Приложение {fork}",
+      slowMark: "Без обфускации — медленнее",
       slowPlain: "Без обфускации — медленнее (возможно ограничение скорости)",
       langName: "RU", themeToLight: "Светлая тема", themeToDark: "Тёмная тема", langLabel: "Язык", osLabel: "Устройство / ОС",
     },
@@ -226,6 +245,9 @@
     + '<circle cx="20.4" cy="12.4" r="1.8"/>'
     + '<rect x="6" y="14.2" width="2.2" height="3.2" rx="1.1"/><rect x="14" y="14.2" width="2.2" height="3.2" rx="1.1"/>'
     + '<path d="M3.2 12.6 L.9 11.6 L2.1 13.9 Z"/></svg>';
+  // A magnet — the torrent sign — marks a deployment torrents may leave by (swg-sub's `p2p`). Body and pole tips apart.
+  var MAGNET_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true">'
+    + '<path d="M4 7h5v4.5a3 3 0 0 0 6 0V7h5v4.5a8 8 0 0 1-16 0z"/><path d="M4 3h5v3H4zM15 3h5v3h-5z"/></svg>';
   // `ver` = the server's RUNNING version (the cell's deployment): an app published from the server's own repository
   // follows it — the release that version names (the panel's `pins`), not the latest (operator, 2026-10-14).
   // `awg` = the deployment is an AmneziaWG interface: an app whose own tunnel is WireGuard only (`awg: false` in the
@@ -284,6 +306,15 @@
     // 1) the admin's chosen END-USER default for this (fork, OS): a client id, or "sidecar@<author>" (a CLI build).
     //    Honoured ONLY if that client is still COMPATIBLE with the fork — a saved default goes stale when a pairing is
     //    retired (e.g. VK TURN Proxy dropped from MYSOREZ), and a stale default must never resurrect a dead pairing.
+    // A csqtt 2.5 server reads the operator's default for its line first (turn_client_default["csqtt@2.5"]; operator,
+    // 2026-10-29): "none" hides only 2.5 servers on this OS, an app of the line is handed out, and anything else — unset,
+    // stale, of the other line — falls through to the path below, unchanged (the "csqtt" default if it speaks 2.5, else
+    // the rank).
+    if (forkId === "csqtt" && line === "2.5") {
+      var d25 = (((_lastData && _lastData.turn_client_default) || {})["csqtt@2.5"] || {})[os];
+      if (d25 === "none") return null;
+      if (d25 && clients[d25] && (compat[d25] || !hasCompat)) { var b25 = build(d25); if (b25) return b25; }
+    }
     var def = (((_lastData && _lastData.turn_client_default) || {})[forkId] || {})[os];
     // "none" = the operator chose DON'T OFFER this server on this OS. Return nothing and stop — every caller
     // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the
@@ -297,7 +328,7 @@
     }
     // 2) no (valid) default → the compat-ranked top app for this OS (matches the panel picker's default ordering):
     //    native non-CLI · friendly non-CLI · native CLI · friendly CLI · plain; hidden (no `compat` class) omitted.
-    var isCli = function (id) { return id === "sidecar" || ((clients[id] || {}).encoder === "sidecar"); };
+    var isCli = function (id) { return id === "sidecar" || ((clients[id] || {}).encoder === "sidecar") || !!(clients[id] || {}).cli; };   // `cli`: csq-socks
     var rank = function (id) { var cl = compat[id], cli = isCli(id);   // apps before sidecars in each band; plain last (matches the panel picker)
       return cl === "native" ? (cli ? 3 : 1)
         : (cl === "friendly" || cl === "friendly_core") ? (cli ? 4 : 2)
@@ -767,7 +798,17 @@
         // the protocol's own brand mark leads the row, in full colour — see rowIcon()
         var mark = rowIcon(en.mode);
         if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
-        if (en.badge) lead.appendChild(en.badge.cloneNode(true));
+        if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's
+          var bc = en.badge.cloneNode(true);   // button — each becomes its icon alone (the turtle, the magnet), shown, not pressable
+          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
+            var icon = el("span"); icon.className = x.className; icon.classList.remove("scell-mark");
+            icon.setAttribute("role", "img"); icon.setAttribute("aria-label", x.getAttribute("aria-label") || "");
+            icon.title = x.getAttribute("data-note") || x.getAttribute("aria-label") || "";   // no bubble in a row button: the note
+            while (x.firstChild) icon.appendChild(x.firstChild);
+            x.replaceWith(icon);
+          });
+          lead.appendChild(bc);
+        }
         r.appendChild(lead);
         r.onclick = function () { go(en); };
         list.appendChild(r);
@@ -820,7 +861,7 @@
   function _dlKey(e) { if (e.key === "Escape") { e.preventDefault(); closeDlBubble(); } }
   function openDlBubble(anchor, ga, files) {
     if (_dlBubble && _dlBubble._anchor === anchor) { closeDlBubble(); return; }   // second click on same trigger → toggle off
-    closeDlBubble();
+    closeDlBubble(); closeNoteBubble();
     var b = el("div", "dl-bubble"); b._anchor = anchor;
     if (ga.headerTitle) {   // multi-app bubble (WG/AWG) — a plain title, no single releases page to link
       b.appendChild(el("div", "dl-bubble-title", ga.headerTitle));
@@ -881,6 +922,61 @@
     }, 0);
   }
 
+  // Note bubble — the text a marker in a cell's badge row stands for (the torrent magnet, the plain-mode turtle). A tap or click toggles it; on a
+  // pointer that hovers, hovering opens it and leaving closes it — unless a click pinned it. A press anywhere else, Escape,
+  // a resize or a scroll (a swipe to the next cell) closes it.
+  var _noteBubble = null;
+  var _canHover = window.matchMedia ? window.matchMedia("(hover: hover)") : null;   // asked at event time (a mouse plugged in)
+  function closeNoteBubble() {
+    if (!_noteBubble) return;
+    if (_noteBubble._anchor) { _noteBubble._anchor.setAttribute("aria-expanded", "false"); _noteBubble._anchor.removeAttribute("aria-describedby"); }
+    _noteBubble.remove(); _noteBubble = null;
+    document.removeEventListener("pointerdown", _nbOutside, true);
+    document.removeEventListener("keydown", _nbKey, true);
+    window.removeEventListener("resize", closeNoteBubble);
+    window.removeEventListener("scroll", _nbScroll, true);
+  }
+  function _nbOutside(e) { if (_noteBubble && !_noteBubble.contains(e.target) && !_noteBubble._anchor.contains(e.target)) closeNoteBubble(); }
+  function _nbKey(e) { if (e.key === "Escape") { e.preventDefault(); closeNoteBubble(); } }
+  function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }   // its own (capped) text scrolls
+  function openNoteBubble(anchor, text, hover) {
+    if (_noteBubble && _noteBubble._anchor === anchor) { if (!hover) _noteBubble._hover = false; return; }
+    closeNoteBubble();
+    if (!hover) closeDlBubble();                       // a click replaces the download list; a pointer passing over does not
+    var b = el("div", "note-bubble", typeof text === "function" ? null : text); b._anchor = anchor; b._hover = !!hover;
+    if (typeof text === "function") b.appendChild(text());   // a bubble with structure (the torrent port) builds its own body
+    b.setAttribute("role", "tooltip"); b.id = "note-bubble";
+    document.body.appendChild(b);
+    anchor.setAttribute("aria-expanded", "true"); anchor.setAttribute("aria-describedby", b.id);
+    var ar = anchor.getBoundingClientRect(), w = b.offsetWidth, h = b.offsetHeight;
+    b.style.left = Math.round(Math.min(Math.max(12, ar.left + ar.width / 2 - w / 2), window.innerWidth - w - 12)) + "px";
+    // below the marker, or above it where below runs off the screen and above has more room; capped either way
+    var below = window.innerHeight - ar.bottom - 20, above = ar.top - 20;
+    if (h > below && above > below) { b.style.maxHeight = above + "px"; b.style.top = Math.round(Math.max(12, ar.top - 8 - Math.min(h, above))) + "px"; }
+    else { b.style.maxHeight = Math.max(24, below) + "px"; b.style.top = Math.round(ar.bottom + 8) + "px"; }   // no room either side: the larger, scrolled
+    _noteBubble = b;
+    setTimeout(function () {
+      if (_noteBubble !== b) return;                   // closed before the listeners went on (a quick hover sweep)
+      document.addEventListener("pointerdown", _nbOutside, true);
+      document.addEventListener("keydown", _nbKey, true);
+      window.addEventListener("resize", closeNoteBubble);
+      window.addEventListener("scroll", _nbScroll, true);
+    }, 0);
+  }
+  function noteMarker(cls, svg, label, text, body) {   // body: optional builder of the bubble's content (text stays the tooltip)
+    var m = el("button", "scell-mark " + cls); m.type = "button";
+    m.innerHTML = svg; m.setAttribute("aria-label", label); m.setAttribute("aria-expanded", "false");
+    m.setAttribute("data-note", text);   // the picker's copy has no bubble: its icon shows this as a tooltip
+    m.onclick = function (e) {
+      e.stopPropagation();
+      if (_noteBubble && _noteBubble._anchor === m && !_noteBubble._hover) closeNoteBubble();   // pinned → second click closes
+      else openNoteBubble(m, body || text, false);                                             // opens, or pins a hover's
+    };
+    m.onmouseenter = function () { if (_canHover && _canHover.matches) openNoteBubble(m, body || text, true); };
+    m.onmouseleave = function () { if (_noteBubble && _noteBubble._anchor === m && _noteBubble._hover) closeNoteBubble(); };
+    return m;
+  }
+
   // "Ask on tap" choice popover (Safari-on-iOS): Open the app (deliberate scheme fire) vs Get the app (store/TestFlight).
   var _startChoice = null;
   var _schemeFiredAt = {};
@@ -894,7 +990,7 @@
   function _scOutside(e) { if (_startChoice && !_startChoice.contains(e.target)) closeStartChoice(); }
   function _scKey(e) { if (e.key === "Escape") { e.preventDefault(); closeStartChoice(); } }
   function openStartChoice(anchor, c, onOpen, onGet) {
-    closeStartChoice(); closeDlBubble();
+    closeStartChoice(); closeDlBubble(); closeNoteBubble();
     var app = c.app || t("theApp");
     var b = el("div", "start-choice");
     b.appendChild(el("div", "start-choice-t", t("startHow")));
@@ -1017,7 +1113,9 @@
     inner.appendChild(done);   // green "Connection link copied" ✓✓
     var head = el("div", "ph-head"); head.appendChild(el("span", "ph-title", app)); inner.appendChild(head);
     var steps = el("div", "ph-steps");
-    if (c && c.instructions) {   // per-app-per-OS override from the catalog (each newline = one step) — no code change to retune
+    if (c && c.stepList && c.stepList.length) {   // the client's own steps, chosen by the cell (csq-socks, La Lune on 2.5)
+      c.stepList.forEach(function (ln) { steps.appendChild(stepEl(ln.replace("{app}", app))); });
+    } else if (c && c.instructions) {   // per-app-per-OS override from the catalog (each newline = one step) — no code change to retune
       String(c.instructions).split("\n").forEach(function (ln) { if (ln.trim()) steps.appendChild(stepEl(ln.replace("{app}", app))); });
     } else {
       // WINGS V DeX gets its exact button labels (Добавить профиль → Из буфера); anything else → a generic import flow.
@@ -1084,7 +1182,7 @@
   }
   // the 3 buttons are a COMPACT popover above the button bar (like the Safari ask-on-tap) — NOT a full-screen card
   function showVktgzChoice(c, anchor) {
-    closeStartChoice(); closeDlBubble(); closeVktgzChoice(); closeVktgzHint();
+    closeStartChoice(); closeDlBubble(); closeVktgzChoice(); closeVktgzHint(); closeNoteBubble();
     var b = el("div", "start-choice mz-choice");
     b.appendChild(el("div", "start-choice-t", "VK TURN Proxy"));
     var mk = function (n, label, sub, fn, go) {
@@ -1878,6 +1976,10 @@
         var capply = function (text) {
           ctrl.payload = text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
           ctrl.isLink = true; ctrl.hasQR = !!cart.qr; ctrl.cmd = null; ctrl.wrapCfg = true;
+          ctrl.stepList = !cga ? null : cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)
+            : (cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null;   // La Lune's Add dialog defaults to 2.1
+          // the steps show where Start copies the link (the desktop); a one-tap app (La Lune on Android) is handed the link as
+          // before (operator, 2026-10-29)
           ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
           // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
           // visitor sent to install the app first still has the link when they come back to it.
@@ -1940,7 +2042,10 @@
           var wraw = el("div", "scell-raw");
           wraw.appendChild(el("div", "scell-raw-t", t("rawT")));
           wraw.appendChild(el("div", "scell-raw-d", t("rawD").replace("{port}", wd.raw_port)));
-          cell.appendChild(wraw);
+          // In a block the portrait layout measures — appended to the cell it sat outside it: under the down chevron on a phone,
+          // above the badges on a desktop. Under the VK-missing warning when there is one (the warning is the fix the link
+          // needs; this is an option), else last in the header.
+          (wvkw || node).appendChild(wraw);
         }
         ctrl.cliApp = false; ctrl.vktgz = false;   // WDTT clients are apps, never a CLI/VKTGZ flow
         // The VK link is embedded IN the WDTT link (wrapAPassword+vkLink / wdtt://…:vkHash), so no separate "add this
@@ -2006,7 +2111,8 @@
       if (!isBackup) role.style.color = ifaceColor(tgt.type);
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
-      if (turnCellPlain(forkId, it.tgt.type === "awg")) { var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }
+      // A tap opens the same bubble as the torrent magnet (operator, 2026-10-21) — a title alone never showed on a phone.
+      if (turnCellPlain(forkId, it.tgt.type === "awg")) srvRow.appendChild(noteMarker("scell-slow", TURTLE_SVG, t("slowMark"), t("slowPlain")));
       // AXIS-3: "Get the app" install link under the badge — for a first-time user who doesn't have the client app
       // yet. Shown only when the fork's client has a published app link (CLI sidecar forks have none). Complements
       // the bar's "Open in app": open if you have it, get it if you don't (never branch on install-state — can't detect).
@@ -2221,7 +2327,24 @@
     // So base `multi` on distinct deployments (it.tgt), not on the number of turn cells.
     var _deps = {}; items.forEach(function (it) { _deps[it.tgt.node + "|" + it.tgt.iface] = 1; });
     var multi = Object.keys(_deps).length > 1;
-    var ctrls = items.map(function (it) { var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi); srow.appendChild(cc.el); return cc.ctrl; });
+    var ctrls = items.map(function (it) {
+      var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi);
+      // Torrents may leave by this deployment (swg-sub sets p2p only then): a magnet at the end of the badge row, where the
+      // plain-mode turtle sits, and the one client setting that gets them full speed through the tunnel in its bubble
+      // (operator, 2026-10-21: an icon, not a line — the line took room from the config on a crowded cell).
+      var srv = it.tgt.p2p && cc.el.querySelector(".scell-srv");
+      // Where the node forwards the device's own port (swg-sub's p2p_port, Part C) the bubble opens with it: the one number
+      // the user must type into the client, then how, then the speed setting.
+      var fp = it.tgt.p2p_port, fd = fp && t("p2pPortD") + (it.tgt.p2p_addr ? " " + t("p2pPortAt").replace("{addr}", it.tgt.p2p_addr).replace("{port}", fp) : "");
+      if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pMark"), fp ? t("p2pPortL") + " " + fp + ". " + fd + " " + t("p2pHint") : t("p2pHint"),
+        fp && function () {
+          var f = document.createDocumentFragment(), row = el("div", "note-port");
+          row.appendChild(el("span", null, t("p2pPortL"))); row.appendChild(el("b", null, String(fp)));
+          f.appendChild(row); f.appendChild(el("p", "note-port-d", fd)); f.appendChild(el("p", "note-port-hint", t("p2pHint")));
+          return f;
+        }));
+      srow.appendChild(cc.el); return cc.ctrl;
+    });
     page.appendChild(srow);
 
     // up/down swipe HINT (vertical, between peers) — flanks the QR top/bottom; render hides the ends.
@@ -2581,6 +2704,7 @@
   }
 
   function render(data, cryptoKey, keepPos) {
+    closeNoteBubble();                                 // its marker is about to leave the DOM, and its text may change language
     _lastData = data; _lastKey = cryptoKey;
     LANGS = (data.langs && data.langs.enabled && data.langs.enabled.length) ? data.langs.enabled : ["en"];
     LANG_DEFAULT = (data.langs && data.langs.default) || "en";

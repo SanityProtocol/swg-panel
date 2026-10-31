@@ -9,7 +9,7 @@
  */
 
 import { openLogs, NODE_SOURCES } from "./journal.js";   // the node's live logs, from its page
-import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS } from "./util.js";
+import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS, isMobile } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
@@ -23,7 +23,7 @@ import {
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
   trackIfaceOps, StoreOffBanner, ifaceColor, meshGenColor, meshGenLabel, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
-  rate, awgSwitchTag,
+  rate, awgSwitchTag, rateCell,
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
@@ -278,6 +278,9 @@ export function NodeDetail({ node: rawName }) {
   const migrating = !!nrec.migrating;
   const blocked = migrating || !live || inProc(nrec.proc_status);   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled (a timed-out/failed tag doesn't block)
   const down = !live && !inProc(nrec.proc_status);      // genuinely not reporting (not just mid-convert) → offer one-click Recover in place of rotate-token
+  // the header's "update node to" button (updateNode: the node's own updater) — the one condition both that button and the
+  // "from <ref>" / "own update command" label beside the version read, so the label always names what the button runs
+  const nodeUpd = nrec.outdated && !(nrec.local && Store.panelOutdated);
   const dhUpdating = nrec.updating || (nrec.local && (hostUpdating || inProc(Store.hostProc) || inProc(nrec.proc_status)));  // the dh-ver pill already shows "updating…" — so suppress a duplicate "updating" proc-tag next to the title
   const snap = Store.stats[name];
   // turn-proxies present (installed, a pending install, or onboarding) → show the Turn-proxies block;
@@ -309,34 +312,43 @@ export function NodeDetail({ node: rawName }) {
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
         ${(() => {   /* what the Update button installs when it is not a release. A hand-update from a branch or tag is
-              remembered for good; a master's own node updates with the panel host, so its ref is the host updater's
-              (Store.panelUpdateRef), and an operator's own update_cmd never runs there */
+              remembered for good. A master's own node updates with the panel host (the host updater's ref,
+              Store.panelUpdateRef) — except when the header offers "update node to" below (the node lags a current
+              panel): that button runs the node's own updater, its ref or an operator's own update_cmd */
           if (nrec.uninstalled) return null;
-          const ref = nrec.local ? Store.panelUpdateRef : nrec.update_ref;
-          if (ref) return html`<span class="nm-ver out" title=${nrec.local ? T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.", { ref }) : T("Update installs {ref}, not the latest release — this node was installed or last updated from it. Run its update once with SWG_REF=main to follow releases again.", { ref })}>${T("from {ref}", { ref })}</span>`;
-          if (nrec.update_custom && !nrec.local) return html`<span class="nm-ver out" title=${T("Update runs this node's own update command (update_cmd in its agent config, /etc/swg-agent/config.json by default), not the release updater. Remove it there and restart swg-noded to follow releases again.")}>${T("own update command")}</span>`;
+          const viaHost = nrec.local && !nodeUpd;
+          const ref = viaHost ? Store.panelUpdateRef : nrec.update_ref;
+          if (ref) return html`<span class="nm-ver out" title=${viaHost ? T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.", { ref }) : T("Update installs {ref}, not the latest release — this node was installed or last updated from it. Run its update once with SWG_REF=main to follow releases again.", { ref })}>${T("from {ref}", { ref })}</span>`;
+          if (nrec.update_custom && !viaHost) return html`<span class="nm-ver out" title=${T("Update runs this node's own update command (update_cmd in its agent config, /etc/swg-agent/config.json by default), not the release updater. Remove it there and restart swg-noded to follow releases again.")}>${T("own update command")}</span>`;
           return null;
         })()}
         ${nrec.uninstalled ? null : dhUpdating ? html`<span class="livepill upd-busy">${T("updating…")} <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
           : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec))
           : (nrec.local && Store.panelOutdated) ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateHost()} title=${T("Update this master (panel + co-located node) to the latest release")}>${T("update to")} <b>${Store.latestRemote || "?"}</b></button>`
-          : nrec.outdated ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? T("Unavailable while the node is down / converting") : T("Update this node")}>${T("update node to")} <b>${nrec.latest || "?"}</b></button>`
+          : nodeUpd ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? T("Unavailable while the node is down / converting") : T("Update this node")}>${T("update node to")} <b>${nrec.latest || "?"}</b></button>`
           : nrec.repairable ? html`<button class="livepill updpill fixpill" disabled=${blocked} onClick=${() => nrec.local ? updateHost() : updateNode(nrec)} title=${(nrec.kind === "docker" ? T("A container or the datapath isn't running on this node — recreating it should fix it. ")
             // D2: repairable no longer means DOWN. A node with the userspace fallback keeps its interfaces up; only
             // datapath_broken (no module AND no fallback — or a node too old to say) keeps the "can't come up" sentence.
             : nrec.datapath_broken ? T("The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ")
             : T("AmneziaWG on this node is running on the slower fallback datapath — its kernel module isn't loaded, or its interfaces haven't moved back to it yet. ")) + (nrec.local ? T("Re-run the updater to repair.") : T("Update this node to repair."))}><${Ic} i="warn"/> ${T("repair node")}</button>`
           : (nrec.local ? (Store.updFlash && Date.now() < Store.updFlash) : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until))
-          ? html`<span class="livepill upd-uptodate" title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}><${Ic} i="check"/> ${T("up to date")}</span>`
-          : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+          // a phone keeps the Check cell where it is (the row of four): its icon a green check, its word "Up to date"
+          ? (isMobile() ? html`<button class="iconbtn m-uptodate" data-lbl=${T("Up to date")} title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}
+                onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><${Ic} i="check"/></button>`
+            : html`<span class="livepill upd-uptodate" title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}><${Ic} i="check"/> ${T("up to date")}</span>`)
+          : html`<button class="iconbtn" disabled=${blocked} data-lbl=${T("Check")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
-        <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
-        <button class="iconbtn" title=${T("This node's live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: NODE_SOURCES })}><${Ic} i="doc"/></button>
+        <button class="iconbtn" disabled=${blocked} data-lbl=${T("Settings")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
+        <button class="iconbtn" data-lbl=${T("Logs")} title=${T("This node's live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: NODE_SOURCES })}><${Ic} i="doc"/></button>
         ${/* T-20: shown for a DOWN node too, and that is the point. It used to hide exactly when it was
               needed — a node locked out by a rotate is by definition not reporting — leaving "Restore or
               migrate" as the only door, which arms a whole rebuild for a box whose only problem is its
               credential. Rotating is also the right verb here: the sheet it opens now carries a one-line
               "only fix the credential" command beside the re-install ones. */ null}
+        ${/* A phone: these four doors go into the node's More sheet (MOBILE-PLAN hook 8) — their titles are sentences, too
+              long to label an icon with */ ""}
+        ${isMobile() ? html`<button class="iconbtn" data-lbl=${T("More")} title=${T("More")} onClick=${() => openModal(html`<${NodeMoreSheet} id=${nrec.id}/>`)}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>` : html`<${Fragment}>
         <button class="iconbtn" title=${down ? T("Rotate token — and get a one-line command that fixes only the credential") : T("Rotate token (re-enroll / re-install)")} onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
         ${/* The two doors that MOVE a node, on the card as well as in its settings sheet. Both are about
               this node's whole existence — the same class of act as rotating its token or removing it —
@@ -346,6 +358,7 @@ export function NodeDetail({ node: rawName }) {
         <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(nrec)}><${Ic} i="server"/></button>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec))}><${Ic} i="link"/></button>
         <button class="iconbtn danger" title=${nrec.removing ? T("Force remove node") : T("Remove node")} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
+        <//>`}
         ${/* §3.1: the door for a node that is NOT reporting — and it says "or migrate" because not
               reporting is not the same as gone for good: the same command rebuilds this node on the same
               box, a damaged one, or a brand-new one. The reporting node's door is "Migrate", in its settings. */
@@ -355,8 +368,9 @@ export function NodeDetail({ node: rawName }) {
 
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>${T("This node isn't sending any data right now")}</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
-        ${nodeIfaces(name).map(x => IfaceTag(name, x))}
-        ${turnEnabled() ? nodeTurns(name).map(tp => TurnTag(name, tp)) : null}
+        ${/* a phone counts them by kind, as its node card does; each one is in the sections below */""}
+        ${isMobile() ? ifaceSummary(name, turnEnabled() ? nodeTurns(name).length : 0) : html`${nodeIfaces(name).map(x => IfaceTag(name, x))}
+        ${turnEnabled() ? nodeTurns(name).map(tp => TurnTag(name, tp)) : null}`}
       </div>
       <span class="grow"></span>
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">${T("up {v1}", { v1: dur(nrec.health.uptime) })}</span>` : null}</div>
@@ -435,7 +449,7 @@ export function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title=${T("User interfaces")} tone="ready" count=${userKeys.length + wdttIfaces.length + Object.keys(nrec.wdtt_cfg || {}).filter(ifn => !wdttIfaces.some(w => w.iface === ifn)).length + csqttIfaces.length + Object.keys(nrec.csqtt_cfg || {}).filter(ifn => !csqttIfaces.some(c => c.iface === ifn)).length}
-        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title=${T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> ${mr > 1 ? T("Restore {v1}", { v1: plural(mr, "interface") }) : T("Restore interface")}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? T("Unavailable while the node is down / converting") : nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy")} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${T("Setup turn-proxy")}</button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${T("Create new interface")}</button><//>`}>
+        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title=${T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> ${mr > 1 ? T("Restore {v1}", { v1: plural(mr, "interface") }) : T("Restore interface")}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? T("Unavailable while the node is down / converting") : nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy")} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${isMobile() ? T("New proxy") : T("Setup turn-proxy")}</button>` : null}${isMobile() ? html`<button class="btn btn-mini ico" title=${T("These interfaces' live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: ["iface:*"] })}><${Ic} i="doc"/></button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Create new interface")}</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -614,7 +628,7 @@ export function NodeDetail({ node: rawName }) {
           const ifn0 = ifn;   // T-23: the card names the SERVER, not its fork's product name
           return html`<div class="ifcard down" key=${"wdtt-adopting:" + ifn}>
             <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <${ForkTag} fork=${fork}/><${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node takes it over on its next sync")}/></div>
+              <${ForkTag} fork=${fork}/><${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("The node takes it over on its next sync")}/></div>
             <div class="ifcard-rows">
               <div class="ifrow"><span class="l">${T("Listen (local)")}</span><span class="r addr">${ifn0}${dtls ? ":" + dtls : ""}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${wc.wg_addr || "—"}</span></div>
@@ -664,7 +678,7 @@ export function NodeDetail({ node: rawName }) {
               ${_cop
                 ? _cop
                 : adopting
-                ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
+                ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("Taking it over — the node applies this on its next sync")}/>`
                 : html`<span class=${"tg " + ((ig || alien) ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : alien ? (wctr ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")) : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : alien ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
             <div class="ifcard-rows">
               ${/* An ALIEN's path is INSIDE its container: it does not exist on the node, so printing it as "Found at"
@@ -704,7 +718,7 @@ export function NodeDetail({ node: rawName }) {
             ${(taking || blocked) ? null : html`<button class="mi-restore" title=${T("Adopt this WDTT server — its key and passwords are kept")}
               onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptDormantWdttSheet} node=${name} d=${d} nrec=${nrec}/>`); }}><${Ic} i="plus"/> ${T("Adopt")}</button>`}
             ${taking
-              ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
+              ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("Taking it over — the node applies this on its next sync")}/>`
               : html`<span class="tg tg-cand" title=${T("On the node, not managed by the panel")}><${Ic} i="warn"/>${T("tag|orphan")}</span>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${d.config_dir}</span></div>
@@ -727,7 +741,7 @@ export function NodeDetail({ node: rawName }) {
             ${(taking || blocked) ? null : html`<button class="mi-restore" title=${T("Adopt this csqtt server — its users are kept and imported")}
               onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptCsqttSheet} node=${name} c=${c}/>`); }}><${Ic} i="plus"/> ${T("Take over")}</button>`}
             ${taking
-              ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
+              ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("Taking it over — the node applies this on its next sync")}/>`
               : html`<span class=${"tg " + "tg-ign"} title=${c.container ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")}><${Ic} i="warn"/>${T("tag|alien")}</span>`}</div>
           <div class="ifcard-rows">
             ${c.container                        /* container-internal path — see the note on the iface card */
@@ -735,6 +749,8 @@ export function NodeDetail({ node: rawName }) {
               : html`<div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>`}
             <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${c.tun_addr || "—"}</span></div>
+            ${c.line != null                  /* which csqtt line runs (2.1 / 2.5) — both can sit side by side on one box; the label inside our 2.5.1 says 2.5.0 */
+              ? html`<div class="ifrow"><span class="l">${T("Version")}</span><span class="r">${c.line || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>` : null}
             <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${(c.users || []).length
               ? html`<b>${(c.users || []).length}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>
           </div></div>`; };
@@ -870,15 +886,19 @@ export function NodeDetail({ node: rawName }) {
             <div class="ifcard-rows"><div class="ifrow"><span class="l faint">${T("it comes back with the node")}</span></div></div>
           </div>` : html`<a class="ifcard down" key=${"csqtt-cfg:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the csqtt server — details and settings")}>
           <div class="ifcard-top"><span class="iftype csqtt">CSQTT</span><span class="ifname">${(cc.title || "").trim() || ifn}</span><span class="grow"></span>
-            ${cc.stopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
+            ${_cAdopting.has(ifn) ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("The node applies the take-over on its next sync")}/>`
+              : cc.stopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
               : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("The node brings it up on its next sync")}/>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("Listen (local)")}</span><span class="r addr">${ifn + (portOf(cc.listen) ? ":" + portOf(cc.listen) : "")}</span></div>
             <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cc.tun_addr || "—"}</span></div>
             <div class="ifrow"><span class="l faint">${T("waiting for the node to bring it up…")}</span></div>
           </div></a>`);
+        // A take-over in flight is already on screen as the foreign server's own card ("adopting") while the node still
+        // reports it — as the WDTT grid does, skip this one then, so one server is not shown twice, once as "starting"
         const cmcards = Object.entries(nrec.csqtt_cfg || {})
-          .filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn))
+          .filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn)
+                             && !(_cAdopting.has(ifn) && (nrec.csqtt_candidates || []).some(c => c && c.iface === ifn)))
           .map(([ifn, cc]) => cmcard(ifn, cc || {}));
         // csqtt-owned interface card — same chrome as the WDTT card (self-contained kind), but raw-TUN: Listen shows
         // the host:port, Subnet shows the tun_addr, no fork tag, and the pencil opens the csqtt edit modal.
@@ -1076,7 +1096,7 @@ export function NodesScreen() {
   return html`<div class="screen">
     <div class="section-title" style="margin:6px 2px 16px"><h2>${T("col|Nodes")}</h2><span class="count">${plural(ns.length, "server")}</span>
       <span class="nodehint">${entryServersRun()}</span><span class="grow"></span>
-      <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> ${T("Add node")}</button></div>
+      <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> ${T("Add node")}</button></div>
     <${ReachNotice}/>
     ${!ns.length ? html`<div class="empty"><b>${T("No nodes yet")}</b>${T("Add your first entry server — you'll get a one-time command to run on it.")}</div>`
       : html`<div class="nodegrid" ...${nReorder.container()}>${ns.map(n => html`<${NodeCard} key=${n.id} n=${n} reorder=${nReorder}/>`)}</div>`}
@@ -1215,6 +1235,17 @@ export const IfaceTag = (node, { ifn, type, muted }) => {
 };
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 export const ifaceTags = node => nodeIfaces(node).map(x => IfaceTag(node, x));
+// …and on a phone's node card and page, counted by kind instead — one tag per interface ran a dozen deep (operator, 2026-10-29: "too
+// crowded and unstructured"); the node's page lists every one. `nTurn`: its turn-proxies, one more count.
+function ifaceSummary(node, nTurn) {
+  const c = {};
+  nodeIfaces(node).forEach(x => { const k = x.type === "awg" && awg3Cls(node, x.ifn) ? "awg3" : x.type; c[k] = (c[k] || 0) + 1; });
+  const order = ["wg", "awg", "awg3", "wdtt", "csqtt"];
+  const keys = [...order.filter(k => c[k]), ...Object.keys(c).filter(k => !order.includes(k))];
+  const tags = keys.map(k => html`<span class=${"tg m-sum tg-" + (k === "awg3" ? "awg awg3" : k)}>${k === "awg3" ? "awg 3.1" : k}${c[k] > 1 ? " ×" + c[k] : ""}</span>`);
+  if (nTurn) tags.push(html`<span class="tg m-sum tg-turn">turn${nTurn > 1 ? " ×" + nTurn : ""}</span>`);
+  return tags;
+}
 
 // The other half of the same badge rows: the node's turn-proxies, in the operator's saved order.
 // `turn_order` also holds "wdtt:<iface>" entries, because the Turn-proxies grid it comes from lists
@@ -1254,19 +1285,48 @@ function NodeLanPanel({ nrec }) {
     : lb.ok ? html`<div class="lanstat ok"><${Ic} i="check"/> ${T("Closed on the node.")}</div>`
     : lb.why === "addresses_unreadable" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't read its own addresses, so it left the block as it was.")}</span></div>`
     : html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't close it, so its clients still reach it: {why}", { why: lb.detail || lb.why || "" })}</span></div>`;
+  const lanMsg = share
+      ? T("Clients of this node can reach the private network it sits on — every device on it, not only this node — and so can clients of other nodes whose traffic leaves through this one. A client whose traffic this node sends on to another node reaches that node's network instead. Nobody set this up: it is what routing does when the node's local network is also its way out.")
+      : T("Clients of this node, and of other nodes whose traffic leaves through it, are kept off the private network it sits on. They still reach the internet and this node itself.");
   return html`<${Panel} icon="shield" title=${T("Local network")} tone=${share ? "pending" : "online"}
       actions=${html`<span class="lanswitch">${T("Clients can reach it")}<${Switch} on=${share} onChange=${set}
         title=${share ? T("Keep this node's clients off its local network") : T("Let this node's clients reach its local network")}/></span>`}>
     <div class="lanlist">${lans.map(l => html`<span class="lanaddr"><span class="mono">${l.ip}</span>${l.iface ? html`<span class="faint">${l.iface}</span>` : null}</span>`)}</div>
-    <p class="lanmsg">${share
-      ? T("Clients of this node can reach the private network it sits on — every device on it, not only this node — and so can clients of other nodes whose traffic leaves through this one. A client whose traffic this node sends on to another node reaches that node's network instead. Nobody set this up: it is what routing does when the node's local network is also its way out.")
-      : T("Clients of this node, and of other nodes whose traffic leaves through it, are kept off the private network it sits on. They still reach the internet and this node itself.")}</p>
+    ${/* a phone folds the explanation under one line (MOBILE-PLAN P0), the switch and the addresses stay */""}
+    ${isMobile() ? html`<details class="lanfold"><summary>${T("What this switch does")}</summary><p class="lanmsg">${lanMsg}</p></details>`
+      : html`<p class="lanmsg">${lanMsg}</p>`}
     ${status}
   <//>`;
 }
 
+// The node's lifecycle doors on a phone (MOBILE-PLAN hook 8): the desktop header's four icons, as labelled rows. Read live by id,
+// so a door the node's state closes (converting, down) closes here too.
+function NodeMoreSheet({ id }) {
+  useStore();
+  const nrec = (Store.nodes || []).find(n => n.id === id);
+  // the node gone (force-removed, a poll later): closed from an effect, never from render — a render pass may run twice and
+  // popped the sheet under this one too (F42)
+  useEffect(() => { if (!nrec) closeModal(); }, [!nrec]);
+  if (!nrec) return null;
+  const blocked = !!nrec.migrating || Store.recon.nodeStatus[id] !== "live" || inProc(nrec.proc_status);   // NodeDetail's own rule
+  const row = (icon, label, on, off, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} disabled=${off} onClick=${() => { closeModal(); on(); }}>
+    <${Ic} i=${icon}/><span class="msheet-l">${label}</span></button>`;
+  return html`<${Sheet} title=${Store.nodeName(id)} noGuard=${true}>
+    <div class="msheet"><div class="msheet-g">
+      ${row("key", T("Rotate token"), () => openNodeRotate(nrec))}
+      ${row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked)}
+      ${row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked)}
+      ${/* flagged for removal: the way back, which the desktop has on the Health panel (F5) */""}
+      ${nrec.removing ? row("refresh", T("Cancel removal — keep this node"), () => unflagNode(nrec)) : null}
+      ${row("trash", nrec.removing ? T("Force remove node") : T("Remove node"), () => openNodeRemove(nrec), false, "danger")}
+    </div>${blocked ? html`<p class="hint msheet-note">${T("Unavailable while the node is down / converting")}</p>` : null}</div>
+  <//>`;
+}
 export function NodeHealthPanel({ name, nrec }) {
   const [range, setRange] = useState("live");
+  // A phone: the three meters, live — no range and no chart (MOBILE-PLAN hook 4)
+  if (isMobile()) return html`<${Panel} icon="activity" title=${T("Health")} tone="online" actions=${html`<span class="faint">${T("range|live")}</span>`}>
+    <${HealthAlerts} health=${nrec.health}/><${HealthMeters} health=${nrec.health}/><//>`;
   const removing = nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span><button class="btn btn-mini" style="margin-left:9px" title=${T("Cancel removal — keep this node")} onClick=${() => unflagNode(nrec)}>${T("Cancel")}</button>` : null;
   const actions = html`<div class="panel-tools">${removing}${nrec.health_history ? html`<${RangeTabs} range=${range} setRange=${setRange}/>` : null}</div>`;
   return html`<${Panel} icon="activity" title=${T("Health")} tone="online" actions=${actions}>
@@ -1280,6 +1340,7 @@ export function NodeThroughput({ name, nrec }) {
   const [peers, setPeers] = useState(true);
   const [mesh, setMesh] = useState(true);
   const [range, setRange] = useState("live");
+  // a phone draws the same chart, range and Peers / Mesh switch as a desktop and an interface's page (operator, 2026-10-29)
   const togP = () => { if (peers && !mesh) { setPeers(false); setMesh(true); } else setPeers(!peers); };
   const togM = () => { if (mesh && !peers) { setMesh(false); setPeers(true); } else setMesh(!mesh); };
   // Peers/Mesh sits on the LEFT (as the header's `lead`, right after the title); the range picker stays on the right.
@@ -1513,6 +1574,8 @@ function parkTitles(anchor) {
 // Rich hover bubble for the innerHTML header update widget (no Preact there) — right-aligned under the anchor;
 // contentFn() returns HTML (empty string → no bubble). Replaces the plain title= tooltip.
 export function hostHoverBubble(anchor, contentFn, onAction) {
+  // A phone has no hover: the tap that opens the badge's own sheet would also raise this bubble over it (MOBILE-PLAN hook 1).
+  if (isMobile()) return;
   // SINGLETON, self-hiding bubble. The header is innerHTML-driven and re-renders every poll, replacing `anchor` —
   // so the anchor's own mouseleave can't be trusted to clean up. Guard against orphans (remove any stray bubble
   // before showing) and hide when the pointer leaves the BUBBLE too, so it never gets stuck or stacks a glow.
@@ -1590,6 +1653,7 @@ export function loadChangelog(want) {
 // is not (that was 1.8.8's publish-day bug: the previous release's notes under the new version).
 export const changelogEntry = (version) => ((_changelogCache && _changelogCache.entries) || []).find(e => e.version === version) || null;
 export function versionHoverBubble(anchor) {
+  if (isMobile()) return;   // the version is a line of the More sheet on a phone (MOBILE-PLAN hook 1)
   let bub = null, t = null, detach = null, untitle = null;
   const drop = () => { if (untitle) { untitle(); untitle = null; } if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
   const hide = () => { if (bub && bub.matches(":hover")) { later(); return; } clearTimeout(t); drop(); };
@@ -1763,13 +1827,14 @@ export function NodeCard({ n, reorder }) {
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
       : html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers faint">${T("val|none")}</span>`}</span>
-    <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
+    <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
+      : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"
       ? html`<span class=${"nm-v thru" + ((n.rx_speed || 0) + (n.tx_speed || 0) > 0 ? "" : " idle")}><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
       : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl danger" title=${removing ? T("Force remove") : T("Remove node")} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
 
-    ${turnEnabled() && tps.length ? html`<div class="nc-turn nm-item"><span class="nm-l">${T("Turn-proxies")}</span><span class="tags">${tps.map(tp => TurnTag(n.id, tp))}</span></div>` : null}
+    ${turnEnabled() && tps.length && !isMobile() ? html`<div class="nc-turn nm-item"><span class="nm-l">${T("Turn-proxies")}</span><span class="tags">${tps.map(tp => TurnTag(n.id, tp))}</span></div>` : null}
   </div>`;
 }
 

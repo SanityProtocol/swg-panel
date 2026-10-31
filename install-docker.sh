@@ -1213,9 +1213,6 @@ info "Docker"
 if ! have docker; then
   info "installing Docker (get.docker.com)"; run sh -c "curl -fsSL https://get.docker.com | sh"
 fi
-if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"
-elif have docker-compose; then COMPOSE="docker-compose"
-else COMPOSE="docker compose"; $DRYRUN || warn "docker compose plugin not detected — install it if 'up' fails"; fi
 # The client binary existing says NOTHING about the daemon being up — `docker compose version` answers from the
 # plugin alone, and `docker pull` failing is treated as "offline, use the local image". So a stopped daemon used
 # to sail all the way to the bare→docker switch, which tears the bare-metal install down BEFORE starting the
@@ -1232,6 +1229,11 @@ if ! $DRYRUN; then
   # simply not come back after a reboot.
   systemctl is-enabled docker >/dev/null 2>&1 || { systemctl enable docker >/dev/null 2>&1 && sub "enabled docker.service (it was disabled — the panel must survive a reboot)"; }
 fi
+# …and Compose, which nothing below can start without: a Docker that came without it stops the install here, while
+# nothing is changed, with what to install for this Docker (lib/common.sh compose_missing). A dry run only reads.
+if $DRYRUN; then COMPOSE="$(compose_probe)" || COMPOSE="docker compose"
+else COMPOSE="$(compose_probe)" || die "$(compose_missing) — nothing has been changed${SWG_CONVERT_DIR:+, and your bare-metal install is still serving}."
+fi
 
 # ───────────────────────── stage project ─────────────────────────
 # Default pulls prebuilt images from GHCR, so only the compose file is needed on the host
@@ -1247,6 +1249,7 @@ if $BUILD; then
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   done
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+  [ -d "$SRC/m" ] && cp -a "$SRC/m" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true     # m/ = the phone UI (docs/MOBILE-PLAN.md)
   [ -d "$SRC/js" ] && cp -a "$SRC/js" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   # flip compose: uncomment the build: blocks. The `image:` lines STAY.
@@ -1531,6 +1534,9 @@ fi
 # Let's Encrypt HTTP-01 needs host port 80 — publish it via an override ONLY for letsencrypt(-ip), so the
 # other TLS methods (cloudflare/cf15/selfsigned/none) leave :80 free for an existing nginx/apache.
 OVERRIDE="$PREFIX$INSTALL_DIR/docker-compose.override.yml"
+# Who holds :80 when we could not publish it, beside the container's acme state: its renewal loop names it in the
+# failure the panel's TLS row shows, with the way out — the operator would otherwise read only "renewal failed" (S9f).
+P80HELD="$PREFIX$INSTALL_DIR/data/etc/acme/.port80-held"
 if [ "$PROFILE" = node ]; then :   # the override publishes :80 on the PANEL container — not this run's business
 elif [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
   # ⚠️ …BUT ONLY IF :80 IS ACTUALLY FREE. Publishing a port something else holds does not fail here — it
@@ -1542,13 +1548,20 @@ elif [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
   # A held :80 is not a reason to refuse the install: the certificate that already exists keeps serving, and
   # only RENEWAL needs the challenge. So skip the publish, keep the panel startable, and say plainly what
   # will not happen by itself. `SWG_FORCE_PORT80=1` overrides for an operator who is about to free it.
-  if [ "${SWG_FORCE_PORT80:-}" != 1 ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
+  # …and the holder is not THIS panel: on a re-install the running container still holds :80 through its docker-proxy,
+  # and reading that as "taken" dropped the publish, so the panel came back unable to renew (S9f review F5).
+  _own80=0
+  if have docker && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
+    _own80="$(docker ps --filter 'name=^swg-panel$' --format '{{.Ports}}' 2>/dev/null | grep -c ':80->80/tcp' || true)"
+  fi
+  if [ "${SWG_FORCE_PORT80:-}" != 1 ] && ! $DRYRUN && have ss && [ "${_own80:-0}" = 0 ] && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
     _p80who="$(ss -lntpH 'sport = :80' 2>/dev/null | grep -oE '"[^"]+"' | sed -n 1p | tr -d '"' || true)"
     warn "host port 80 is already in use${_p80who:+ (by $_p80who)} — NOT publishing it"
     echo "    Let's Encrypt HTTP-01 renews through :80, so renewal cannot run by itself while that holds."
     echo "    The certificate you have keeps serving. Free :80 and re-run, front the panel with that web"
     echo "    server, or switch to a DNS-01 method ($(b cloudflare)) to get renewal back."
     rm -f "$OVERRIDE" 2>/dev/null || true
+    mkdir -p "${P80HELD%/*}" 2>/dev/null && printf '%s\n' "${_p80who:-another program}" > "$P80HELD" 2>/dev/null || true
   elif $DRYRUN; then echo "    [skip] write $INSTALL_DIR/docker-compose.override.yml (publish :80 for HTTP-01)"
   else
     cat > "$OVERRIDE" <<'YAML'
@@ -1560,9 +1573,10 @@ services:
       - "80:80"
 YAML
     ok "$TLS: publishing host port 80 for HTTP-01 (docker-compose.override.yml)"
+    rm -f "$P80HELD" 2>/dev/null || true
   fi
 elif [ -f "$OVERRIDE" ]; then
-  $DRYRUN || rm -f "$OVERRIDE"
+  $DRYRUN || rm -f "$OVERRIDE" "$P80HELD"
   ok "removed docker-compose.override.yml (TLS=$TLS doesn't need host port 80)"
 fi
 
@@ -1747,6 +1761,7 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   fi
   info "Switching over — stopping the bare-metal services, then starting the container(s)…"
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
+  [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && retire_carried_acme "$PREFIX$INSTALL_DIR/data/etc/acme"   # …and the host's copy of its acme entries (S9f)
   # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
   [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-}

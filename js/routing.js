@@ -17,9 +17,10 @@ import { classify, classifyAll, patternTier, TIER2_MIN } from "./classify.js";
 import { idnHost, idnDiffers } from "./idn.js";
 import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
-         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers } from "./rulerows.js";
-import { esc, seen } from "./util.js";
-import { isSelfContainedName, nodeStale, kindOf, awgGen } from "./model.js";
+         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers,
+         portsClean, portsOf, portsReach, rowCovers } from "./rulerows.js";
+import { esc, seen, isMobile } from "./util.js";
+import { isSelfContainedName, nodeStale, nodeStatusOf, kindOf, awgGen } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
 import { UserPicker } from "./peer-actions.js";
 import { Store, api, bus, useStore } from "./store.js";
@@ -585,7 +586,7 @@ export function ResetRoutingSheet({ node, name }) {
   };
   return html`<${Sheet} title=${T("Reset routing · {v1}", { v1: name })} onClose=${closeModal}
     foot=${html`<${Fragment}><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
+      <button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-warn" disabled=${busy || !learnOk} onClick=${() => run("learned")}><${Ic} i="refresh"/> ${T("Reset learned IPs")}</button>
       <button class="btn btn-danger" disabled=${busy || !allOk} onClick=${() => run("all")}><${Ic} i="refresh"/> ${T("Reset all routing")}</button></>`}>
     <div class="notice warn"><${Ic} i="warn"/><span>${Trich("*Reset learned IPs* clears only the IPs this node has learned from SNI so far — its tables and lists stay in place and it re-learns as traffic flows. *Reset all routing* wipes the smart-routing tables, learned IPs and cached lists, then rebuilds from scratch and re-pulls every list from the panel; routing may blip for a few seconds.")}</span></div>
@@ -1029,8 +1030,7 @@ let _mech_hint = null;
 // Mechanisms the node does not build yet. They stay in the catalog and in any stored block[] (nothing is rewritten), but no
 // screen offers them: a switch that blocks nothing is worse than no switch — and blocking WebRTC would break calls (Meet).
 const MECH_UNBUILT = new Set(["cryptomining", "webrtc"]);
-export const MECH_HINT = () => (_mech_hint || (_mech_hint = {
-  torrents:     T("Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out."),
+export const MECH_HINT = () => (_mech_hint || (_mech_hint = {   // Torrents / P2P is a choice of its own (`IfaceP2p`), not a chip
   smtp:         T("Drop outbound mail on TCP :25 — stops spam being relayed through this exit."),
   portscan:     T("Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface."),
   cryptomining: T("Drop known cryptomining / Stratum-pool traffic."),
@@ -1151,20 +1151,125 @@ export function defaultBlockFor(node) {
 // category enabled on this node that can enforce in its mode. block[] can hold more — a category since switched off for
 // this node keeps its id so switching it back restores it — and those enforce nothing (the panel skips them too), so
 // counting them in "N active" claimed protection that was not there. Before the catalog loads: the plain length.
-export function blockActiveN(node, value) {
+// …and the interface's own torrent route or Direct (`p2p`) is one more, only where it counts: under "Each interface decides".
+export function blockActiveN(node, value, p2p) {
   const bc = Store.blockCatalog; const ids = value || [];
-  if (!bc) return ids.length;
-  const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
-  return ids.filter(id => { const c = (bc.categories || {})[id];
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const own = p2p && p2p.action && nrec.p2p_eff === "iface" ? 1 : 0;
+  if (!bc) return ids.length + own;
+  const mode = nrec.routing_mode || "kernel";
+  return own + ids.filter(id => { const c = (bc.categories || {})[id];
     return c && c.enabled !== false && (c.kind === "mechanism" ? !MECH_UNBUILT.has(id)
       : ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
+}
+
+// ── Torrents / P2P — the choice, its route rows and their hints: ONE builder for the node-wide picker (Settings ▸ node ▸
+// Filters & abuse) and each interface's own (`IfaceP2p`), docs/IFACE-P2P-PICK-PLAN.md §5. A value names its target —
+// "dev:<exit id>" (one of this node's exits) or "exit:<node id>" (another node over the mesh) — and the stored record is
+// {action:"dev", exit_id} / {action:"exit", node}, the routing rule's shape.
+export const p2pVal = p => !p || !p.action ? "" : p.action === "dev" ? "dev:" + p.exit_id : p.action === "exit" ? "exit:" + p.node : p.action;
+export const p2pRec = val => val.startsWith("dev:") ? { action: "dev", exit_id: val.slice(4) }
+  : val.startsWith("exit:") ? { action: "exit", node: val.slice(5) } : { action: val };
+const p2pNodeName = id => ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
+export const p2pTarget = (p, exits, node) => {
+  if (p.action === "exit") return p2pNodeName(p.node);
+  if (p.action !== "dev") return "";
+  const x = (exits || []).find(e => String(e.id) === String(p.exit_id));
+  // the exits' own namer — but an exit no longer in the list is named by its id: `exitLabel` of a bare id reads "Custom"
+  return x ? exitLabel(x, node) : String(p.exit_id || "");
+};
+const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
+export const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
+  ? T("via {v1}", { v1: p2pTarget(p, exits, node) }) : (P2P_SHORT()[p.action] || "");
+// The route rows. The exits are the ROUTING PICKERS' OWN LIST (`exitOptionGroups`): a switched-off exit and a WARP account that is
+// not ready are refused with their own reason, health is read from the stored record (a draft carries none), and every exit is
+// named as it is everywhere else. A copy of that list had missed the not-ready case (code review, 2026-10-03). Choosing a row
+// that cannot carry anything says why instead (`refuse`) — only for what is structurally impossible: a node with no mesh link.
+// A node that is not reporting is a passing state judged in this browser, so it is a warning on the chosen target
+// (`p2pTargetHints`), never a refusal.
+export function p2pTargetOpts(node, exits) {
+  const linked = new Set((node.mesh_peers || []).filter(m => m && m.iface).map(m => m.peer));
+  const viaNode = (Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id,
+    label: T("Route through node {v1}", { v1: n.name }),
+    ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));
+  return [...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })
+      .map(g => ({ ...g, items: g.items.map(it => ({ ...it, label: T("Route through {v1}", { v1: it.label }) })) })),
+    ...(viaNode.length ? [{ group: T("Through another node"), items: viaNode }] : [])];
+}
+// What the chosen target says beside it. A node that drops P2P other nodes send it — Block, or a route of its own (it routes only
+// its own clients' P2P) — and one not reporting: `nodeStatusOf`, recon's verdict where this browser has judged the node, the
+// SERVER'S where it has not, so a node that has never reported ("dangling") warns too. And (Q-B, operator 2026-10-21: a hint,
+// never a refusal) a SOCKS5 exit that carries no UDP: DHT and µTP cannot pass it. Its `udp_ok` is read from the STORED record's
+// live state; null — not proven yet — reads as no UDP, as the node runs it (SOCKS5 D-d). Any other exit kind says nothing.
+export function p2pTargetHints(rec, node, draft = null) {
+  const out = [];
+  const tgt = rec && rec.action === "exit" ? (Store.nodes || []).find(n => n.id === rec.node) : null;
+  const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
+  const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";
+  if (tgtStale) out.push(html`<div class="hint warnish">${T("{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.", { v1: tgt.name })}</div>`);
+  if (tgtDrops) out.push(html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>`);
+  const byId = l => (l || []).find(e => e && String(e.id) === String(rec.exit_id));   // stored first (its live udp_ok), else the
+  const x = rec && rec.action === "dev" ? (byId((node || {}).exits) || byId(draft)) : null;   // draft's: one added in this edit (F37)
+  if (x && exitProv(x) === "socks5" && (x.live || {}).udp_ok !== true)
+    out.push(html`<div class="hint warnish">${T("This exit carries TCP only — DHT and µTP can't pass it, so torrents find fewer peers and download slower.")}</div>`);
+  return out;
+}
+
+// An interface's (WDTT's, csqtt's) own Torrents / P2P — what `block[]` can say (Block: "torrents" in it) and what it cannot
+// (`p2p`: Direct, or a route). The rows follow the SERVER'S policy: its own choice counts only under "Each interface decides";
+// under any other the allow/route rows are refused, naming where to change it — a save of one interface never switches the
+// whole node (§5, reversed in review: under Block that would stop judging mesh arrivals and the node's own programs). Block
+// counts everywhere, as it always has.
+export function ifaceP2pModel(nrec, block, p2p) {
+  const pol = nrec.p2p_eff || "block";
+  const iface = pol === "iface";
+  const cur = (block || []).includes("torrents") ? "block" : p2pVal(p2p);
+  const elsewhere = T("Counts only when {v1}'s Torrents / P2P setting is “Each interface decides” — Settings ▸ Network ▸ Filters & abuse.", { v1: nrec.name || nrec.id });
+  const deny = it => iface ? it : { ...it, refuse: elsewhere, className: "dim" };
+  const opts = [{ value: "block", label: T("Block") },
+    { value: "", label: iface ? T("Allow — not checked") : T("As the server — {v1}", { v1: p2pLabel(nrec.p2p || { action: pol }, nrec.exits, nrec) }) },
+    deny({ value: "direct", label: T("Allow, only out this server's own address") }),
+    ...p2pTargetOpts(nrec, nrec.exits || []).map(g => ({ ...g, items: g.items.map(deny) }))];
+  const rec = p2p && p2p.action ? p2p : null;
+  const hint = cur === "block" ? T("Torrent traffic from this interface is dropped, whichever way it leaves.")
+    : !rec ? (iface ? T("Torrent traffic from this interface is not checked — it follows the interface's own routing.")
+                    : T("This interface follows the server's Torrents / P2P setting."))
+    : rec.action === "direct" ? T("Torrent traffic from this interface may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.")
+    : T("Torrent traffic from this interface may leave only through {v1}. If that way is down, it is blocked — never sent out another way.", { v1: p2pTarget(rec, nrec.exits, nrec) });
+  // a pick → [block[], p2p]: Block is "torrents" in block[] and no p2p; every other row takes "torrents" out
+  const pick = a => { const rest = (block || []).filter(id => id !== "torrents");
+    return [a === "block" ? [...rest, "torrents"] : rest, a === "block" || a === "" ? null : p2pRec(a)]; };
+  return { iface, cur, opts, rec, hint, warn: rec && !iface ? elsewhere : "", pick };
+}
+function IfaceP2p({ node, block, p2p, onPick }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || { id: node };
+  const M = ifaceP2pModel(nrec, block, p2p);
+  return html`<div class="field blk-p2p"><label>${T("Torrents / P2P")}</label>
+    <${Dropdown} value=${M.cur} onChange=${a => onPick(...M.pick(a))} options=${M.opts}/>
+    <div class="hint">${M.hint}</div>
+    ${M.warn ? html`<div class="hint warnish">${M.warn}</div>` : null}
+    ${M.rec && M.iface ? p2pTargetHints(M.rec, nrec) : null}
+  </div>`;
+}
+
+// The Never-block list under an interface's content filters — where an operator looks when a site is blocked. Names are taken
+// out only by a Force-DNS / Hybrid SNI node whose noded reports `allow`; addresses by the panel, on every node. Entries read by
+// the rules' own grammar (classifyAll), as the Settings box reads them.
+function nbLine(node, mode) {
+  const kinds = new Set(classifyAll((Store.panelSettings?.block_allow || []).join("\n")).map(c => c.kind));
+  const names = kinds.has("site") && (mode === "forcedns" || mode === "sni") && !!((Store.stats[node] || {}).smartroute || {}).allow;
+  const nets = kinds.has("ip");
+  if (!names && !nets) return null;
+  return html`<div class="hint blk-allow">${names && nets ? T("Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")
+    : names ? T("Sites on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")
+    : T("Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")}</div>`;
 }
 
 // Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
 // THIS node plus the built-in traffic/abuse mechanisms; a chip toggles the category id in the interface's block[], and
 // the node drops matching traffic on its next sync. Domain (content) categories are inert on an IP-only (kernel) node
 // — shown greyed with a reason, the choice kept for when the mode changes.
-export function BlockTraffic({ node, value, onChange }) {
+export function BlockTraffic({ node, value, onChange, p2p, onP2p }) {
   useStore(); useEffect(() => { loadBlockCatalog(); }, []);
   const bc = Store.blockCatalog;
   const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
@@ -1175,7 +1280,7 @@ export function BlockTraffic({ node, value, onChange }) {
   const list = [...new Set([...(bc.cat_order || []), ...Object.keys(cats)])].map(id => cats[id]).filter(c => c && c.enabled !== false);
   const availOn = c => (c.enabled_nodes || []).includes(node);
   const content = list.filter(c => (c.kind === "content" || c.kind === "ip") && availOn(c));
-  const mech = list.filter(c => c.kind === "mechanism" && !MECH_UNBUILT.has(c.id));
+  const mech = list.filter(c => c.kind === "mechanism" && !MECH_UNBUILT.has(c.id) && !(onP2p && c.id === "torrents"));   // its own row below
   const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c);
     const dead = !dis && !blockCatLive(mode, bc.providers, c);   // enforceable in this mode, but none of its lists is switched on / present
     return html`<button type="button" key=${c.id} disabled=${dis}
@@ -1189,8 +1294,11 @@ export function BlockTraffic({ node, value, onChange }) {
   return html`<div class="blk-field">
     <div class="blk-grp"><div class="blk-gtitle">${T("Content filtering")}</div>
       ${content.length ? html`<div class="blk-chips">${content.map(chip)}</div>`
-        : html`<div class="hint blk-empty">${noFilterCats(() => { closeAllModals(); goSettings("routing"); })}</div>`}</div>
+        : html`<div class="hint blk-empty">${noFilterCats(() => { closeAllModals(); goSettings("routing"); })}</div>`}
+      ${content.length ? nbLine(node, mode) : null}</div>
     <div class="blk-grp"><div class="blk-gtitle">${T("Traffic & abuse")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— built-in")}</span></div>
+      ${onP2p ? html`<${IfaceP2p} node=${node} block=${value} p2p=${p2p}
+        onPick=${(b, p) => { onChange(b); onP2p(p); }}/>` : null}
       <div class="blk-chips">${mech.map(mchip)}</div></div>
   </div>`;
 }
@@ -1216,7 +1324,7 @@ export function BlockListPicker({ providers, provLists, current, nodeMode, onAdd
       trigger=${html`<button class="btn btn-mini"><${Ic} i="plus"/> ${T("Add list")}</button>`}>
     ${close => html`<div class="bk-pick" onClick=${e => e.stopPropagation()}>
       <div class="bk-pickhead">
-        <input class="bk-picksearch" ref=${el => { if (el && !el._foc) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder=${T("Search lists…")} value=${q} onInput=${e => setQ(e.target.value)}/>
+        <input class="bk-picksearch" ref=${el => { if (el && !el._foc && !isMobile()) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder=${T("Search lists…")} value=${q} onInput=${e => setQ(e.target.value)}/>
         <button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${close}><${Ic} i="x"/></button>
       </div>
       <div class="bk-picklist">
@@ -1243,7 +1351,7 @@ export function NewBlockCatSheet({ existingIds, onCreate }) {
   const bad = !nm || id === "cl_" || dup;
   const create = () => { if (bad) return; onCreate({ id, label: nm }); closeModal(); };
   return html`<${Sheet} title=${T("New block category")} onClose=${closeModal}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${bad} onClick=${create}>${T("Create")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${bad} onClick=${create}>${T("Create")}</button></>`}>
     <div class="field"><label>${T("Name")}</label>
       <input type="text" autofocus spellcheck="false" value=${name} placeholder=${T("e.g. Corporate block")}
         onInput=${e => setName(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") create(); }}/>
@@ -1317,12 +1425,15 @@ export const badgeGate = (mode, node, b) => b.t === "list" ? listGate(mode, b.id
    the nft row and its hostnames route nobody, until the node reports `src: 2`. A hostname badge there is inert with the
    switch to Hybrid SNI; a list holding both kinds routes its IP half and says so. */
 const _ipKind = k => k === "ip" || k === "asn";
+/** Does this badge match by site name? A list by what it can hold, a typed target by its kind. The ONE test: the per-person
+ *  Kernel SNI gate, the Block notices, the port chip and the lints all ask it. */
+const _listCaps = b => customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id);
+const _nameBadge = b => { const caps = b.t === "list" ? _listCaps(b) : null; return caps ? !!caps.host : !_ipKind(b.kind); };
 export function rowGate(row, mode, node, b) {
   const g = badgeGate(mode, node, b);
   if (!g.ok || mode !== "sni_kernel") return g;
-  const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
-  const host = caps ? !!caps.host : !_ipKind(b.kind);
-  if (!host) return g;
+  const caps = b.t === "list" ? _listCaps(b) : null;
+  if (!_nameBadge(b)) return g;
   // A DIRECT OR BLOCK ROW BY SITE NAME RUNS HERE since 1.8.8 (KSNI-HOSTNAMES D3) — the badge that said it was inert
   // (F19) is gone with the gap; only a per-person row still needs the kernel to bind its devices, below.
   if (!(row && row.who) || ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) >= 2) return g;
@@ -1334,11 +1445,64 @@ export function rowGate(row, mode, node, b) {
    rule has learned yet — before its site name can be read — so a rule above it that matches by site name never sees one: an
    allow-list by name blocks everything. The datapath change was judged not worth it (it would let a Block's first packets out),
    so the rule list says it where the operator builds it. A Block row above it loses nothing; the others are counted. */
+const _byName = r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(_nameBadge);
 export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")
   && !!catchAll && catchAll.action === "block"          // only a catch-all that is on reaches here (rulesToRows, setCatch)
-  && (rows || []).some(r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
-    const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
-    return caps ? !!caps.host : !_ipKind(b.kind); }));
+  && (rows || []).some(_byName);
+/* …and the same for a Block ROW to every address (0.0.0.0/0, D10) that reaches TCP 443 (B.6): it drops the same first packets,
+   so the rows above it that match by site name never see one — for the people it is for: a Block for chosen people (the
+   only way to block everything for them, D10) preempts a name row for everyone or for the same people. The index of the
+   first such row, or -1. */
+export const allBlockPreemptsNames = (mode, rows) => {
+  if (mode !== "sni" && mode !== "sni_kernel") return -1;
+  return (rows || []).findIndex((r, k) => r.enabled !== false && r.action === "block" && portsReach(portsOf(r), "tcp", 443)
+    && (r.badges || []).some(b => b.t === "target" && b.kind === "ip" && /^0\.0\.0\.0\/0$/.test(String(b.value)))
+    && rows.slice(0, k).some(up => _byName(up) && (!r.who || rowCovers(up, r))));
+};
+
+/* PORTS ON A RULE (B.4, the engine matrix — kept here only, fact 12): what the node does with a row's ports, every sentence
+   that applies, for the chip — and whether it is a WARNING: part of what the operator named never reaches the rule. A port
+   only inside "every port" (UDP 443 in "every UDP port") is said, not warned: the rule works for all the rest. `blk` is the
+   interface's Block-traffic switches, which drop their ports before any rule. */
+export function portsNote(mode, row, blk = []) {
+  const p = portsOf(row);
+  if (!p) return null;
+  if (portsClean(p.proto, p.list).bad)
+    return { warn: true, text: T("These ports can't be read, so this rule applies nowhere — open it and set them again.") };
+  const names = (row.badges || []).some(_nameBadge), out = [];
+  const say = (warn, text) => out.push({ warn, text });
+  const named = n => !!p.list && p.list.split(",").some(t => { const [a, b] = t.split("-").map(Number); return a <= n && n <= (b || a); });
+  if (((mode === "sni" || mode === "sni_kernel") || (blk || []).includes("quic")) && portsReach(p, "udp", 443))
+    say(named(443), mode === "sni" || mode === "sni_kernel"
+      ? T("This node drops QUIC (UDP 443) before any rule, so web browsers fall back to TCP — this rule never sees UDP 443.")
+      : T("This interface's QUIC filter drops UDP 443 before any rule — this rule never sees it."));
+  if ((blk || []).includes("smtp") && portsReach(p, "tcp", 25))
+    say(named(25), T("This interface's SMTP filter drops TCP 25 before any rule — this rule never sees it."));
+  if (mode === "forcedns" && (portsReach(p, "udp", 53) || portsReach(p, "tcp", 53)))
+    say(named(53) || row.action === "block", row.action === "block"
+      ? T("This rule drops your clients' DNS to these addresses before Force DNS can answer it.")
+      : T("With Force DNS this node answers port 53 itself, whatever this rule says."));
+  const only443 = p.proto === "tcp" && p.list === "443";
+  if (names && mode === "sni_kernel" && !only443)
+    say(true, portsReach(p, "tcp", 443)
+      ? T("Kernel SNI reads site names on TCP 443 only — on the other ports only this rule's addresses and networks apply.")
+      : T("Kernel SNI reads site names on TCP 443 only — on these ports only this rule's addresses and networks apply."));
+  if (names && mode === "sni" && !only443)
+    say(row.action === "block", row.action === "block"
+      ? T("On Hybrid SNI a Block by site name acts on TCP 443 only — on other ports it blocks only this rule's addresses and networks.")
+      : T("Hybrid SNI learns a site's addresses from its web connections — on other ports this rule matches the addresses already learned."));
+  return out.length ? { warn: out.some(x => x.warn), text: out.map(x => x.text).join(" ") } : null;
+}
+const PROTO_LABEL = () => ({ tcp: "TCP", udp: "UDP", both: T("TCP and UDP") });
+/** "UDP 19302–19309", "TCP 443, 8000–8100", "every UDP port". */
+export const portsLabel = p => !p ? "" : portsClean(p.proto, p.list).bad ? T("ports unreadable")
+  : p.list ? PROTO_LABEL()[p.proto] + " " + p.list.split(",").join(", ").replace(/-/g, "\u2013")
+  : T("every {proto} port", { proto: PROTO_LABEL()[p.proto] });
+function PortChip({ row, mode, blk }) {
+  const n = portsNote(mode, row, blk);
+  return html`<span class=${"whochip portchip" + (n && n.warn ? " warn" : "")} title=${(n ? n.text + " " : "") + T("Only this traffic takes the rule — the rest goes on to the rules below.")}>${n && n.warn
+    ? html`<${Ic} i="warn"/>` : null}${portsLabel(portsOf(row))}</span>`;
+}
 
 /* Why a badge cannot run here, said in one sentence, plus the label of the mode that would fix it. Never a
    bare "unsupported": the operator has to be able to act on it, and for three of the five reasons the action
@@ -1638,6 +1802,14 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // If a third reading is ever added, replace the booleans with one mode enum rather than adding a flag —
   // two flags are already the most that can be checked by reading.
   const [q, setQ] = useState("");
+  // A phone: a pick clears the box for the next search but the list stays on what was being browsed, scrolled where the pick
+  // was, until something is typed (operator, 2026-10-29: "keep it where I just added an item")
+  const [holdQ, setHoldQ] = useState(null);
+  // …and has no pages: its list grows by a page as it is scrolled near its end (operator, 2026-10-29: "remove pagination")
+  const [more, setMore] = useState(1);
+  // one page per render: a fling fires many scroll events before the grown list is drawn (F57); a closed search starts over
+  const growing = useRef(false);
+  useEffect(() => { growing.current = false; }, [more]);
   const [open, setOpen] = useState(false);
   const onKeyRef = useRef(null);   // the latest `onKey`, for the dropdown's window-level Escape (its effect runs only on `open`)
   const [pos, setPos] = useState(null);
@@ -1683,7 +1855,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // showed a stale count beside AsnHint's fresh one; see the note on `_asnSubs`.
   useAsnCounts(badges.filter(b => b.t === "target" && b.kind === "asn").map(b => b.value));
 
-  const ql = q.trim().toLowerCase();
+  const lq = (holdQ != null && !q) ? holdQ : q;   // what the list is searched by: the typed box, or the search a pick left held
+  const ql = lq.trim().toLowerCase();
   // A `list:` TOKEN IS NOT A TARGET, and the classifier is right to refuse it — `list:youtube` is not a
   // hostname. But then typing one did nothing at all: Enter is gated on `readGate.ok`, so a valid list
   // pasted as text committed while the same text TYPED sat in the box being called a bad domain. Read here,
@@ -1773,7 +1946,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   const commit = b => {
     const { added } = addAll([b]);
     setEditing(null);
-    setQ(""); setPage(0); setAct(-1); setPending({ text: "", forQ: null });
+    if (isMobile() && b.t === "list" && q.trim()) { setHoldQ(q); setQ(""); setAct(-1); setPending({ text: "", forQ: null }); }   // page and scroll stay
+    else { setHoldQ(null); setQ(""); setPage(0); setAct(-1); setPending({ text: "", forQ: null }); }
     setSay(added.length ? T("Added {v1}", { v1: added[0] }) : T("Already in this rule."));
     if (inRef.current) inRef.current.focus();
   };
@@ -1861,10 +2035,15 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // reload. Not keyed on `cidx` either: an empty answer would then re-run this on every render.
   const ckey = catalogKey();
   useEffect(() => { if (open) { let live = true; loadCatalogIndex().then(x => live && setCidx(x)); return () => { live = false; }; } }, [open, ckey]);
+  useEffect(() => { if (!open) { setMore(1); setHoldQ(null); } }, [open]);   // a closed search starts over (F57)
   const place = () => { const el = ref.current; if (!el) return; setPos(placeWide(el)); };
   useEffect(() => {
     if (!open) return; place();
-    const onMove = () => place();
+    // a phone's search takes a history entry as a sheet does, so Back closes it (ui.js attachBackCloses) rather than the page
+    if (isMobile()) history.pushState({ swgSearch: 1 }, "");
+    // A phone scrolls the sheet under a list that is pinned to the screen: once its field leaves the sheet's view the list is
+    // closed (and the keyboard with it) rather than drawn over the sheet's head or its buttons (operator, 2026-10-29)
+    const onMove = () => { if (!isMobile()) place(); };   // a phone's list is docked by m/m.css (.m-tfsearch), not placed
     const onDoc = e => { const t = e.target;
       // The foot's controls (the rule's settings button, its destination) sit inside this field but are not the search: a
       // click there closes it, or the list stays open under the window or the dropdown it opened.
@@ -1892,7 +2071,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // has to mean the same thing to Enter as it does to the eye. An empty query offers only the presets and the
   // operator's own lists: 3,000 alphabetical country files is not an answer to "what do you want to route",
   // and rendering a page of them would fire a page of list-info fetches on every focus.
-  const per = 50;
+  const per = isMobile() ? 50 * more : 50;
   const _curated = SMART_CATEGORIES().filter(([id]) => id !== "all")
     .map(([id, label]) => ({ id, provider: "curated", provider_label: T("Curated"), caps: catCap(id), disp: label }))
     .filter(it => !ql || it.id.toLowerCase().includes(ql) || it.disp.toLowerCase().includes(ql) || catDescOf(it.id).toLowerCase().includes(ql))
@@ -1914,7 +2093,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // A star means a PATTERN is being written, not a search (the empty-state note below says the same): `*meta*` must not
   // append all 1,796 MetaCubeX lists.
   const _qn = ql.replace(/[^a-z0-9]/g, "");
-  const _provHit = _qn.length >= 3 && !q.includes("*") ? (Store.catalogProviders || []).filter(p => !p.builtin && p.enabled
+  const _provHit = _qn.length >= 3 && !lq.includes("*") ? (Store.catalogProviders || []).filter(p => !p.builtin && p.enabled
     && String(p.label || "").toLowerCase().replace(/[^a-z0-9]/g, "").startsWith(_qn)) : [];
   const _provGroups = _provHit.map(p => ({ p, all: (cidx || []).filter(it => it.provider === p.id) }));
   const _hitIds = new Set(_hits.map(it => it.id));
@@ -2234,7 +2413,10 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     <span class="tf-live" aria-live="polite">${say}</span>
   </div>`;
 
-  return html`<div class="tfield" ref=${ref}>
+  // A PHONE SEARCHES IN A MODE OF ITS OWN: while the list is open the field's input is pinned to the top of what is visible and
+  // the catalog fills the rest down to the keyboard (m/m.css .m-tfsearch). A list anchored to a field in a scrolling sheet floated
+  // over the sheet's head and its buttons, and a scroll broke it (operator, 2026-10-29).
+  return html`<div class=${"tfield" + (open && isMobile() ? " m-tfsearch" : "")} ref=${ref}>
     ${/* Badges cannot be selected, so without this a rule can be built and never read back out. */""}
     ${listEditor ? null : vtog(false)}
     <div class="tf-box" onClick=${() => inRef.current && inRef.current.focus()}>
@@ -2254,7 +2436,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
         placeholder=${badges.length ? T("add another…")
           : listEditor ? T("Address, IP range, AS number or pattern…")
           : T("Search a service, or type an address, IP range or AS number…")}
-        value=${q} onInput=${e => { setQ(e.target.value); setPage(0); setAct(-1); setOpen(true); }}
+        value=${q} onInput=${e => { setHoldQ(null); setMore(1); setQ(e.target.value); setPage(0); setAct(-1); setOpen(true); }}
         onFocus=${() => setOpen(true)} onKeyDown=${onKey} onPaste=${onPaste}/>
     </div>
     <div class="tf-foot">
@@ -2286,8 +2468,9 @@ ${/* The reading and its consequence live in the dropdown's "use what you typed"
     ${open && pos && (!listEditor || rows.length) ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop wide tfpop" + (pos.flip ? " flip" : "")}
         style=${"left:" + pos.left + "px;top:" + pos.top + "px;width:" + pos.width + "px;--catpick-maxh:" + (pos.maxh - 119) + "px"}>
       ${/* 119 = the 90 the list always left for the pager and padding, plus the 29px ✕ strip above it */""}
-      <div class="tfpop-head"><button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${() => setOpen(false)}><${Ic} i="x"/></button></div>
-      <div class="catpick-list">
+      <div class="tfpop-head"><button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${() => { setOpen(false); setHoldQ(null); if (isMobile() && inRef.current) inRef.current.blur(); }}><${Ic} i="x"/></button></div>
+      <div class="catpick-list" onScroll=${isMobile() ? (e => { const l = e.currentTarget;
+          if (!growing.current && _cat.length > per && l.scrollTop + l.clientHeight > l.scrollHeight - 400) { growing.current = true; setMore(m => m + 1); } }) : null}>
 ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch this node to…" control that
        used to live inside this row was dead to a real mouse — and it is rendered ONLY when `readGate.ok` is
        false, which is exactly when the row is disabled, so it was dead every single time it appeared. Script
@@ -2335,12 +2518,26 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
         ${!listEditor && ql.length === 1 ? html`<div class="catpick-empty">${T("Keep typing to search the provider catalog.")}</div>` : null}
         ${!listEditor && !rows.length && !ql ? html`<div class="catpick-empty">${T("Type a service name, an address, an IP range or an AS number.")}</div>` : null}
       </div>
-      ${_cat.length > per ? html`<div class="catpick-foot">
+      ${_cat.length > per && !isMobile() ? html`<div class="catpick-foot">
         <span class="catpick-count">${T("{v1}–{v2} of {v3}", { v1: page * per + 1, v2: Math.min(_cat.length, (page + 1) * per), v3: _cat.length })}</span><span class="grow"></span>
         <div class="catpick-nav">
-          <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => { setPage(p => Math.max(0, p - 1)); setAct(-1); }}>${T("‹ Prev")}</button>
-          <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => { setPage(p => Math.min(pages - 1, p + 1)); setAct(-1); }}>${T("Next ›")}</button>
+          <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => { setPage(p => Math.max(0, p - 1)); setAct(-1); }} >${T("‹ Prev")}</button>
+          <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => { setPage(p => Math.min(pages - 1, p + 1)); setAct(-1); }} >${T("Next ›")}</button>
         </div></div>` : null}
+      ${isMobile() ? html`<button type="button" class="btn btn-primary m-tfdone" onClick=${() => {
+          // ONE RESULT IS NOT A CHOICE here either: Done takes it, as Enter does, then closes (operator, 2026-10-29). What could
+          // not be added stays in the box with its reason, and the search stays open on it.
+          if (q.trim() && rows.length === 1) {
+            const r0 = rows[0];
+            if (r0.k === "list" && !has(r0.it.id)) {   // already in the rule: nothing to add, Done closes
+              const g = listGate(mode, r0.it.id, node);
+              if (!g.ok) { setSay(gateReason(g, modeLabel)); return; }   // refused: stays open on its row, which says why (F56)
+              commitList(r0.it.id);
+            }
+            else if (readGate && readGate.ok && commitTyped()) return;
+          }
+          setOpen(false); setHoldQ(null); if (inRef.current) inRef.current.blur(); }}>
+        <${Ic} i="check"/> ${T("Done")}</button>` : null}
     </div><//>` : null}
   </div>`;
 }
@@ -2350,7 +2547,7 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
 // and it is the whole story on Kernel-SNI — but it does not decide an overlap between two DIFFERENT targets:
 // swg-sni and dnsmasq both answer that by specificity (measured, plan §10.4x), which is what the label over
 // the list now says and what the `takenBy` lint below points at where the two disagree.
-export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, onChange, scope }) {
+export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, onChange, scope, blk }) {
   // `scope="node"` — THE NODE'S OWN DEFAULT LIST (D2, ROUTING-PEERS-MESH-PLAN §7.3): the same rows for the same grammar, but
   // its rules narrow themselves to an AUDIENCE rather than to people (D9), it has no "node default" to fall back to (it IS
   // the default), and its "Everything else" left silent means this node's own way out.
@@ -2468,8 +2665,8 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   const whoOf = useWhoReport(node, iface, dispRows.filter(r => r.who).map(r => r.who));
   const openRule = row => row && pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} row=${row} exitIps=${ips}
     directIp=${dipOn ? directIp || "" : undefined} dests=${destOpts(false, destVal(row))} dest=${destVal(row)} mode=${_mode} nodeScope=${nodeScope}
-    onApply=${(v, who, xs, aud, dip) => emit(dispRows.map(r => r._gid === row._gid
-      ? { ...r, ...destPatch(v), who: who || undefined, aud: nodeScope ? (aud || undefined) : r.aud } : r), undefined, xs, dip)}/>`);
+    onApply=${(v, who, xs, aud, dip, ports) => emit(dispRows.map(r => r._gid === row._gid
+      ? { ...r, ...destPatch(v), who: who || undefined, aud: nodeScope ? (aud || undefined) : r.aud, ports: nodeScope ? r.ports : (ports || undefined) } : r), undefined, xs, dip)}/>`);
   // THE CATCH-ALL'S OWN WINDOW (D10, §7.1). `everyone` fixes "For whom", so the only thing it can change besides the
   // destination is the address — which is the whole reason it opens at all.
   const openCatch = () => pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} everyone exitIps=${ips} nodeScope=${nodeScope}
@@ -2512,7 +2709,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   // so both rules resolve to one key and the chain takes the earlier. (This is the one place row order really
   // is the answer, which is why this check survived the label change unaltered.) Per badge, not per row: one
   // row of fifteen services shadowing one entry of the next is what the old per-rule check couldn't see.
-  const lints = rowLints(dispRows, destVal);   // per row: dupes, takenBy, takenFew — see rulerows.js
+  const lints = rowLints(dispRows, destVal, { mode: _mode, isName: _nameBadge });   // per row: dupes, takenBy, takenFew — see rulerows.js
   // T32 — D11 SPANS TWO LISTS, AND SO DOES "MOST SPECIFIC WINS". On Hybrid SNI and Force-DNS a node rule for `shop.example.com`
   // takes those hosts from this interface's `example.com` rule although this interface's rules come first, and nothing on this
   // screen would show it. Only where the silence actually falls through (no "Everything else" of its own), only on those two
@@ -2558,9 +2755,10 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
               is the only one, and it is what joins "Everything else" to the control. */""}
         ${(() => { const _xip = row.action === "exit" ? shownIps[row.node] : "", _dip = row.action === "direct" && dipOn ? directIp : "";
           const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)} node=${node}/>` : null}
+              ${row.ports ? html`<${PortChip} row=${row} mode=${_mode} blk=${blk}/>` : null}
               ${row.aud ? html`<span class="whochip" title=${row.aud === "local" ? T("This node's own clients") : T("Traffic cascaded in from other nodes")}><${Ic} i="users"/>${row.aud === "local" ? T("chip|own clients") : T("chip|cascaded in")}</span>` : null}
               ${_xip ? html`<${AsChip} ip=${_xip} node=${row.node}/>` : _dip ? html`<${AsChip} ip=${_dip} node=${node} direct/>` : null}
-              ${row.locked ? null : tuneBtn(row.who || row.aud || _xip || _dip, () => openRule(row))}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
+              ${row.locked ? null : tuneBtn(row.who || row.aud || row.ports || _xip || _dip, () => openRule(row))}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
             <${Dropdown} disabled=${!!row.locked} value=${destVal(row)}
               onChange=${v => onDest(row._gid, v)} options=${destOpts(false, destVal(row))}/>
           </span>`;
@@ -2632,6 +2830,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Node default (Settings ▸ Network ▸ Default exit):")} ${nodeRows.slice(0, 10).map(r => html`<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span> · `)}${nodeRows.length > 10 ? T("…and {v1} more", { v1: nodeRows.length - 10 }) + " · " : ""}<span>${T("everything else")} → ${_ncatch ? (goneDest(destVal(_ncatch)) || {}).label || destLabelOf(_ncatch) : T("Direct (this node)")}</span></div>` : null}
     ${nodeScope && _mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2 && dispRows.some(r => r.aud !== "local")
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.")}</span></div>` : null}
+    ${allBlockPreemptsNames(_mode, dispRows) >= 0 ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("A Block to every address (0.0.0.0/0) stops each new connection before its site name is read, so the rules above it that match by site name never take effect: those sites are blocked too. Route them by address instead, or give the Block ports that leave out TCP 443.")}</span></div>` : null}
     ${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.")}</span></div>` : null}
     ${dispRows.length || catchAll ? null : html`<div class="hint">${others.length
       ? Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")
@@ -2667,12 +2866,12 @@ const whoTally = (rep, only) => { const c = { ok: 0, soon: 0, no: 0 };
   for (const [pid, st] of Object.entries((rep || {}).devices || {})) if (!only || only(pid)) c[st] = (c[st] || 0) + 1;
   return c; };
 // Which of a report's devices one entry of the selection accounts for — a user's own, a group's members', or the one device.
-const whoEntryHas = (e, pid) => { const p = Store.peer(pid), uid = p && p.user_id;
+export const whoEntryHas = (e, pid) => { const p = Store.peer(pid), uid = p && p.user_id;
   return e.k === "p" ? pid === e.id : e.k === "u" ? uid === e.id : !!uid && ((Store.group(e.id) || {}).users || []).includes(uid); };
-const whoEntryName = e => e.k === "g" ? ((Store.group(e.id) || {}).name || T("a group that no longer exists"))
+export const whoEntryName = e => e.k === "g" ? ((Store.group(e.id) || {}).name || T("a group that no longer exists"))
   : e.k === "u" ? ((Store.user(e.id) || {}).name || T("a user who no longer exists"))
   : (Store.peer(e.id) ? deviceLabel(Store.peer(e.id)) : T("a device that no longer exists"));
-const whoEntries = w => [...(w.groups || []).map(id => ({ k: "g", id })), ...(w.users || []).map(id => ({ k: "u", id })),
+export const whoEntries = w => [...(w.groups || []).map(id => ({ k: "g", id })), ...(w.users || []).map(id => ({ k: "u", id })),
                          ...(w.peers || []).map(id => ({ k: "p", id }))];
 
 // Why a device reads red: its build can't prove its source — or the node runs no per-person rule yet (D4), and then none do.
@@ -2734,6 +2933,48 @@ function AsChip({ ip, node, direct }) {
     ? html`<${Ic} i="warn"/>` : null}${T("as {v1}", { v1: ip })}</span>`;
 }
 
+// The devices on one interface (or csqtt / WDTT server) — what the picker offers as single devices.
+export const peersOn = (node, iface) => Store.recon.peers.filter(p => (p.targets || []).some(t => t && t.node === node && t.iface === iface));
+export const whoCount = w => (w.groups || []).length + (w.users || []).length + (w.peers || []).length;
+const whoSorted = (sel, k, key) => sel[key].slice().sort((a, b) => whoEntryName({ k, id: a }).localeCompare(whoEntryName({ k, id: b }))).map(id => ({ k, id }));
+
+/* "FOR WHOM" — people, groups and single devices as a list: search-to-add (`UserPicker`), a filter above a page, the shared
+   pager, a × per row. Rule settings and a csqtt server's App routing exceptions choose people with it; `cell` says what a
+   row's devices are to its caller (the rule's coverage there, the devices on the server here). */
+export function WhoPicker({ sel, setSel, here, cell, onTyped, empty }) {
+  const [q, setQ] = useState(""), [page, setPage] = useState(1);
+  const list = [...whoSorted(sel, "g", "groups"), ...whoSorted(sel, "u", "users"), ...whoSorted(sel, "p", "peers")];
+  const ql = q.trim().toLowerCase();
+  const rows = ql ? list.filter(e => whoEntryName(e).toLowerCase().includes(ql)) : list;
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
+  const addTo = (k, id) => { if (!id || sel[k].includes(id)) return; setSel(s => ({ ...s, [k]: [...s[k], id].sort() })); setQ(""); };
+  const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
+  return html`<${Fragment}>
+      <div class="sharebar" onInput=${onTyped} onChange=${onTyped}>
+        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person, group or device…")} exclude=${sel.users}
+          groups=${Store.groups().filter(g => !sel.groups.includes(g.id))} onGroup=${id => addTo("groups", id)} onChange=${id => addTo("users", id)}
+          devices=${here.filter(p => !sel.peers.includes(p.id)).map(p => ({ id: p.id, name: deviceLabel(p), sub: (Store.user(p.user_id) || {}).name || "" }))}
+          onDevice=${id => addTo("peers", id)}/></div>
+        ${list.length > LIST_PAGE || q ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+            aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+      </div>
+      ${list.length ? html`<div class="sharegrid gmembers" role="table">
+          <div class="sharegrid-h" role="row"><span>${T("col|User, group or device")}</span><span>${T("Devices here")}</span><span></span></div>
+          ${pageSlice(rows, pg).map(e => { const gone = e.k === "g" ? !Store.group(e.id) : e.k === "u" ? !Store.user(e.id) : !Store.peer(e.id);
+            return html`<div class=${"sharegrid-r" + (e.k === "u" ? "" : " grp") + (gone ? " gone" : "")} role="row" key=${e.k + ":" + e.id}>
+            <span class="nm">${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}${e.k === "g" && !gone
+              ? html`<span class="faint sharegrid-sub">${plural(Store.group(e.id).users.length, "member")}</span>` : e.k === "p" && !gone && Store.user(Store.peer(e.id).user_id)
+              ? html`<span class="faint sharegrid-sub">${Store.user(Store.peer(e.id).user_id).name}</span>` : null}</span>
+            <span>${cell(e)}</span>
+            <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name}", { name: whoEntryName(e) })}
+              aria-label=${T("Remove {name}", { name: whoEntryName(e) })} onClick=${() => drop(e)}><${Ic} i="x"/></button></span></div>`; })}
+          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
+        </div>
+        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`
+      : html`<div class="sharegrid-empty">${empty}</div>`}
+  <//>`;
+}
+
 /* RULE SETTINGS — where a rule leaves by, and for whom. Built from what exists: `ShareListSheet`'s layout (search-to-add with
    `UserPicker`, a filter above 15 rows, the shared pager, per-row ×, the count in the foot), the Networks window's audience
    switch, and its colour-coded device counts. Nothing here is written until the interface is saved. */
@@ -2744,11 +2985,16 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const [aud, setAud] = useState(nodeScope && !everyone ? (row.aud || "") : "");
   const [chosen, setChosen] = useState(!nodeScope && !everyone && !!row.who);
   const [sel, setSel] = useState(() => canonWho(row.who || {}));
+  // PORTS (B.6) — an interface rule's only; "Any" protocol with no port is the rule as it always was (no ports at all).
+  const withPorts = !nodeScope && !everyone;
+  const [proto, setProto] = useState(portsOf(row) ? String(portsOf(row).proto || "") : "both");   // "" — a stored one that doesn't read
+  const [plist, setPlist] = useState(String((portsOf(row) || {}).list || "").split(",").join(", "));
+  const pc = proto === "both" && !plist.trim() ? null : portsClean(proto, plist);
+  const pBad = !!(withPorts && pc && pc.bad);
   // A DRAFT OF THE INTERFACE'S WHOLE ADDRESS MAP, not one address. The field below edits the entry for
   // whichever node "Leaves by" currently names, so picking another node up there shows THAT node's address
   // without anything having to reset anything: the old node's entry is simply not the one being read.
   const [ips, setIps] = useState(() => ({ ...(exitIps || {}) }));
-  const [q, setQ] = useState(""), [page, setPage] = useState(1);
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
   // WHICH NODE THIS FORWARDS TO, if it forwards at all — the address list, the sentence and the warning all
   // hang off it, and it is read from the control rather than from the row so that choosing another node
@@ -2776,32 +3022,25 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   // THE address field, whichever it is: the far node's for Forward, this node's for Direct — one picker, one stale test.
   const addr = asRec ? { node: asNode, ips: asIps, value: ip, set: setIp } : dRec ? { node, ips: dIps, value: dip, set: setDip } : null;
   const addrStale = !!(addr && addr.value && addr.ips.length && !addr.ips.includes(addr.value));
-  const key = JSON.stringify([dest, chosen, chosen ? sel : null, ips, aud, dip]);
+  const key = JSON.stringify([dest, chosen, chosen ? sel : null, ips, aud, dip, withPorts ? [proto, plist] : null]);
   if (base.current === null) base.current = key;
   dirtyRef.current = key !== base.current;
   const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };      // the filter and the search change nothing
   const whoOf = useWhoReport(node, iface, chosen ? [sel] : []);
   const rep = chosen ? whoOf(sel) : null;
-  const here = Store.recon.peers.filter(p => (p.targets || []).some(t => t && t.node === node && t.iface === iface));
-  const list = [...sel.groups.slice().sort((a, b) => whoEntryName({ k: "g", id: a }).localeCompare(whoEntryName({ k: "g", id: b }))).map(id => ({ k: "g", id })),
-                ...sel.users.slice().sort((a, b) => whoEntryName({ k: "u", id: a }).localeCompare(whoEntryName({ k: "u", id: b }))).map(id => ({ k: "u", id })),
-                ...sel.peers.slice().sort((a, b) => whoEntryName({ k: "p", id: a }).localeCompare(whoEntryName({ k: "p", id: b }))).map(id => ({ k: "p", id }))];
-  const ql = q.trim().toLowerCase();
-  const rows = ql ? list.filter(e => whoEntryName(e).toLowerCase().includes(ql)) : list;
-  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
-  const addTo = (k, id) => { if (!id || sel[k].includes(id)) return; setSel(s => ({ ...s, [k]: [...s[k], id].sort() })); setQ(""); };
-  const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
-  const empty = chosen && !list.length;
+  const here = peersOn(node, iface);
+  const empty = chosen && !whoCount(sel);
   const c = whoTally(rep);
-  const apply = () => { if (empty) return; onApply(dest, chosen ? sel : null, ips, aud, directIp !== undefined ? dip : undefined);
+  const apply = () => { if (empty || pBad) return; onApply(dest, chosen ? sel : null, ips, aud, directIp !== undefined ? dip : undefined,
+    withPorts && pc ? { proto: pc.proto, list: pc.list } : null);
     dirtyRef.current = false; if (cleanRef.current) cleanRef.current(); closeModal(); };
   const count = [sel.groups.length ? plural(sel.groups.length, "group") : "", sel.users.length ? plural(sel.users.length, "user") : "",
                  sel.peers.length ? plural(sel.peers.length, "device") : ""].filter(Boolean).join(", ");
   const kSni = chosen && mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2;
   return html`<${Sheet} title=${T("Rule settings")} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     foot=${html`<${Fragment}><span class="faint">${chosen && count ? T("{v1} chosen", { v1: count }) : ""}</span><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
-      <button class="btn btn-primary" disabled=${empty} title=${empty ? T("Choose at least one person or device, or pick “Everyone on this interface”.") : ""} onClick=${apply}>${T("Apply")}</button><//>`}>
+      <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${empty || pBad} title=${empty ? T("Choose at least one person or device, or pick “Everyone on this interface”.") : ""} onClick=${apply}>${T("Apply")}</button><//>`}>
     ${/* WHERE IT LEAVES AND AS WHAT, ON ONE LINE: the address refines the destination beside it, and the notes about the
           address run under both at full width rather than down a half-width column.
           THE EXIT IP (D6). For a "Forward to node" destination it is that node's SNAT, and only for a node still in this
@@ -2838,6 +3077,21 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
       </div>
       ${note ? html`<div class="hint rs-where-note">${note}</div>` : null}
       ${addrStale ? html`<div class="hint err rs-where-note">${T("{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.", { v1: Store.nodeName(addr.node) })}</div>` : null}`; })()}
+    ${/* PORTS (B.6): which traffic to the destination takes the rule. Its own line under "Leaves by": the protocol in the same
+          three-part switch as a node list's audience, the ports beside it. Empty = every port; "Any" + empty = no ports,
+          the rule as it always was. Not on "Everything else" (it is every port, D10) nor on a node's default list (B.1). */""}
+    ${withPorts ? html`<div class="row2 rs-ports">
+        <div class="field"><label>${T("Protocol")}</label>
+          <div class="dpsw netsw-share netsw-aud" role="radiogroup" aria-label=${T("Protocol")}>${[["both", T("proto|Any")], ["tcp", "TCP"], ["udp", "UDP"]].map(([v, l]) => html`<button type="button" role="radio"
+            aria-checked=${proto === v} class=${proto === v ? "on" : ""} onClick=${() => setProto(v)}>${l}</button>`)}</div></div>
+        <div class="field"><label for="rs-ports-in">${T("Ports")}</label>
+          <input id="rs-ports-in" class=${pBad ? "bad" : ""} value=${plist} autocomplete="off" spellcheck="false" placeholder=${T("all ports — or 443, 8000-8100")}
+            aria-invalid=${pBad ? "true" : "false"} onInput=${e => setPlist(e.target.value)}/></div>
+      </div>
+      <div class=${"hint rs-where-note" + (pBad ? " err" : "")}>${pBad ? (pc.bad === "proto" ? T("Choose a protocol.") : pc.bad === "empty" ? T("“Any” with no port is every connection — choose TCP or UDP, or name a port.")
+          : pc.bad === "too_many" ? T("At most 32 ports or ranges.") : T("Write ports and ranges from 1 to 65535, like 443, 8000-8100."))
+        : pc ? T("Only {ports} to this destination takes the rule — the rest goes on to the rules below.", { ports: portsLabel(pc) })
+        : T("Every port. Choose TCP or UDP, or name ports, to narrow the rule.")}</div>` : null}
     ${/* D10 — "Everything else" is for everyone on the interface, so its window says so rather than
           offering a switch that cannot move. */""}
     <div class="field"><label>${T("For whom")}</label>
@@ -2853,29 +3107,9 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
        : html`<div class="dpsw netsw-share" role="radiogroup" aria-label=${T("For whom")}>${[[false, T("Everyone on this interface")], [true, T("Chosen people and devices")]].map(([v, l]) => html`<button type="button" role="radio"
         aria-checked=${chosen === v} class=${chosen === v ? "on" : ""} onClick=${() => setChosen(v)}>${l}</button>`)}</div>`}</div>
     ${chosen ? html`<${Fragment}>
-      <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
-        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person, group or device…")} exclude=${sel.users}
-          groups=${Store.groups().filter(g => !sel.groups.includes(g.id))} onGroup=${id => addTo("groups", id)} onChange=${id => addTo("users", id)}
-          devices=${here.filter(p => !sel.peers.includes(p.id)).map(p => ({ id: p.id, name: deviceLabel(p), sub: (Store.user(p.user_id) || {}).name || "" }))}
-          onDevice=${id => addTo("peers", id)}/></div>
-        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
-            aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
-      </div>
-      ${list.length ? html`<div class="sharegrid gmembers" role="table">
-          <div class="sharegrid-h" role="row"><span>${T("col|User, group or device")}</span><span>${T("Devices here")}</span><span></span></div>
-          ${pageSlice(rows, pg).map(e => { const gone = e.k === "g" ? !Store.group(e.id) : e.k === "u" ? !Store.user(e.id) : !Store.peer(e.id);
-            return html`<div class=${"sharegrid-r" + (e.k === "u" ? "" : " grp") + (gone ? " gone" : "")} role="row" key=${e.k + ":" + e.id}>
-            <span class="nm">${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}${e.k === "g" && !gone
-              ? html`<span class="faint sharegrid-sub">${plural(Store.group(e.id).users.length, "member")}</span>` : e.k === "p" && !gone && Store.user(Store.peer(e.id).user_id)
-              ? html`<span class="faint sharegrid-sub">${Store.user(Store.peer(e.id).user_id).name}</span>` : null}</span>
-            <span><${WhoDevices} rep=${rep} e=${e} node=${node}/></span>
-            <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name}", { name: whoEntryName(e) })}
-              aria-label=${T("Remove {name}", { name: whoEntryName(e) })} onClick=${() => drop(e)}><${Ic} i="x"/></button></span></div>`; })}
-          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
-        </div>
-        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
-        ${rep && !c.ok && !c.soon && !c.no ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</span></div>` : null}`
-      : html`<div class="sharegrid-empty">${T("Choose at least one person or device, or pick “Everyone on this interface”.")}</div>`}
+      <${WhoPicker} sel=${sel} setSel=${setSel} here=${here} onTyped=${typedOnly} cell=${e => html`<${WhoDevices} rep=${rep} e=${e} node=${node}/>`}
+        empty=${T("Choose at least one person or device, or pick “Everyone on this interface”.")}/>
+      ${!empty && rep && !c.ok && !c.soon && !c.no ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</span></div>` : null}
       ${rep && rep.node_old ? html`<div class="notice warn"><${Ic} i="warn"/><span>${whoNoWhy(rep, node)}</span></div>` : null}
       ${kSni ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.")}</span></div>` : null}
     <//>` : null}
@@ -3213,7 +3447,10 @@ export const egressInit = m => {
     exitId: m.exit_id || "", rows, catchAll,
     // The interface's {far node: address} map (§4.2). Read and written whole, beside the rows rather than
     // inside them — see `_apply_exit_ips` on the panel for why that is where it lives.
-    exitIps: { ...(m.routing_exit_ips || {}) } };
+    exitIps: { ...(m.routing_exit_ips || {}) },
+    // Its own Torrents / P2P (Direct or a route; Block is "torrents" in block[]). Carried here so every save sends it back — a
+    // WDTT/csqtt restart re-posts `egressBody(egressInit(cfg))`, which without it would clear the choice (IFACE-P2P-PICK §2.4).
+    p2p: m.p2p && m.p2p.action ? { ...m.p2p } : null };
 };
 
 // WHY SAVE IS BLOCKED, or null. One call, consulted by all four Save buttons — and it is deliberately ONE
@@ -3330,6 +3567,27 @@ export const cardGateway = (node, name) => String((((node || {}).ether_gws) || {
  *              seeing it ("nothing is checked until the node next syncs"). Silence is the DOCUMENTED
  *              flow, not a fault — refusing it here would break the feature that exists to allow it.
  */
+/** An imported exit's KIND, by name — every test of it compares to a name, never "not profile ⇒ WARP" (docs/SOCKS5-EXIT-PLAN.md
+ *  T6): a kind this panel does not know is neither, and a later kind is added by name. Empty is a legacy WARP account. */
+export const exitProv = x => String((x || {}).provider || "warp");
+/** The kinds this panel can make, by name — a TWIN of the panel's EXIT_PROVIDERS and swg-noded's EXIT_KINDS
+ *  (tests/cross_language_twins_selftest.py, s9a F28). */
+export const EXIT_KINDS = ["warp", "profile", "socks5"];
+/** A DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2): a pasted SERVER config — a ListenPort, no Endpoint — which the upstream (a
+ *  router behind NAT) dials. Derived from the stored profile, as the panel and the node derive it; nothing else marks it. */
+export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profile || {}).listen_port
+  && !((x || {}).profile || {}).endpoint;
+
+/** Where the traffic of an exit the NODE is routing around goes meanwhile, by its kill-switch — and the plain stalled
+ *  sentence — shared by the imported and the adopted arm, so both say it in one set of words (and one set of RU keys). */
+const exitFellSay = ex => ex.killswitch
+  ? T("Meanwhile the kill-switch is holding everything that uses this exit.")
+  : T("Meanwhile everything that uses this exit goes out through this node's own IP.");
+const exitStalledSay = ex => ex.killswitch
+  ? T("This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.")
+  : T("This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.");
+const exitRecoveringSay = () => T("Traffic crosses it again — the node routes back through it within a minute.");
+
 export function exitHealth(x, node) {
   const ex = x || {};
   const l = ex.live || {};
@@ -3337,6 +3595,10 @@ export function exitHealth(x, node) {
   const why = String(ex.why_not || "").trim();
   // The panel's own refusal outranks anything the node says: a device we will never lower cannot be
   // "waiting", and telling the operator to wait for something that is never coming is the worse lie.
+  // A SOCKS5 exit on a node older than the kind (s9a F17): the panel does not send it there — an older node would register a
+  // WARP account for it — so the row says what to do, as a dial-in exit on an older node does.
+  if (why === "kind_unsupported") return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
+    why: T("This node needs the 1.8.11 update for SOCKS5 exits.") };
   if (why) return { state: "refused", tone: "bad", dot: "bad", why: T("Refused: {v1}", { v1: why }) };
   // ⚠️ A NODE OLDER THAN THE FEATURE ITSELF, which no test below can catch because it has nothing to read.
   // Such a node reports no exits at all, so `l` is empty for ever — and the tests then resolved to PROGRESS:
@@ -3357,6 +3619,16 @@ export function exitHealth(x, node) {
                         why: T("This node hasn't reported a device by this name.") };
     if (cand.up === false) return { state: "down", tone: "warn", dot: "down",
                                     why: T("The node reports this device is not up.") };
+    // ⚠️ UP AND CARRYING NOTHING, as the node judged it (SOCKS5-EXIT-PLAN §5): a TUN the operator runs — their own
+    // tun2socks or sing-box — stays up when the proxy behind it dies, and the node has already routed around it by this
+    // exit's kill-switch. `live` here is the device's report (state + verdict), not a created exit's row. Absent on a node
+    // too old to judge adopted devices, which reads exactly as before.
+    const nt = l.no_traffic;
+    const fresh = !nodeStale((node || {}).id);       // a stale node's last `back_in` is not believed (as for an imported exit)
+    if (nt && Number.isFinite(nt.back_in) && fresh)
+      return { state: "recovering", tone: "busy", icon: "refresh", dot: "down", why: exitRecoveringSay() + " " + exitFellSay(ex) };
+    if (nt) return { state: "stalled", tone: "warn", icon: "warn", dot: "down", why: exitStalledSay(ex)
+      + (String(nt.why || "").trim() ? " " + T("The node reports: {v1}", { v1: String(nt.why).trim() }) : "") };
     return { state: "ok", tone: "", dot: "up", why: T("Up on the node.") };
   }
   // ⚠️ A REPORT ABOUT THE CONFIG YOU JUST REPLACED IS NOT A REPORT ABOUT THIS ONE, and every test below
@@ -3380,6 +3652,11 @@ export function exitHealth(x, node) {
   if (ex.cfg_sig && l.cfg_sig && l.cfg_sig !== ex.cfg_sig && !nodeStale((node || {}).id))
     return { state: "configuring", tone: "busy", icon: "refresh", dot: "unknown",
              why: T("Applying your changes on the node…") };
+  // A node older than dial-in exits refuses one as a profile with no endpoint; a 1.8.11 node reports the port on every row.
+  if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
+    why: T("This node needs the 1.8.11 update for dial-in exits.") };
+  // A SOCKS exit whose tunnel program is still being fetched: progress, not a fault (review F13)
+  if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) };
   if (l.error) return { state: "failed", tone: "bad", dot: "bad",
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
     // ⚠️ THROUGH T(), like every other sentence the SPA shows. The node's own words arrived verbatim, so a
@@ -3398,18 +3675,39 @@ export function exitHealth(x, node) {
   // names the real obstacle — timed out, connection refused, network unreachable — which no sentence the
   // panel can compose from `up`/`handshake` ever could. Reported separately from `l.error` on purpose: that
   // one means the exit could not be built, this one means it was built and carried nothing.
-  const probe = String((l.trace || {}).err || "").trim();
+  // …and while the node routes around it, the reason it gave for that (a SOCKS exit's is the proxy's own words — review F14)
+  const probe = String(((l.no_traffic || {}).why) || (l.trace || {}).err || "").trim();
   const said = t => probe ? t + " " + T("The node reports: {v1}", { v1: probe }) : t;
   if (!l.up) return { state: "down", tone: "warn", dot: "down",
                       why: said(T("The node reports this device is not up.")) };
+  // ⚠️ A DIAL-IN EXIT WAITS FOR THE ROUTER, and the sentences below are written for a server we dial — "check the
+  // endpoint" names a field this exit does not have. Never a handshake: the router has not connected (its config, its
+  // power, or this node's UDP port). A handshake and no traffic: it connected but forwards nothing — NAT on the router is
+  // missing, the most likely mistake (LISTEN-EXIT §2.4). A handshake older than WireGuard keeps a session (180 s — the router
+  // re-handshakes every 2 min while it is there) is a router that has gone, not one that is connected.
+  // Only a handshake KNOWN to be fresh is "connected" (an unreadable one, null, is not); only a pass whose trace crossed
+  // nothing blames NAT (a router that just came back carries while the judge waits out its hysteresis); and what the
+  // failover did with the traffic is said too, by this exit's kill-switch, as the plain `stalled` row says it.
+  const _fell = l.no_traffic ? " " + exitFellSay(ex) : "";
+  if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
+    why: T("Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.",
+           { v1: (ex.profile || {}).listen_port }) + _fell };
+  // Carrying again, and the node is waiting out EXIT_ALIVE_AFTER_S before it moves traffic back: say that, not "passes no
+  // traffic" — that minute read as the fault still being there (live, 2026-10-22).
+  // Progress, not a fault (`busy`, as `configuring`); no countdown — a figure from the last report cannot age with the poll —
+  // and a stale node's word is not taken for it.
+  if (l.no_traffic && Number.isFinite(l.no_traffic.back_in) && !nodeStale((node || {}).id)) return { state: "recovering", tone: "busy", icon: "refresh", dot: "down",
+    why: exitRecoveringSay() + _fell };
+  // A stale node's last `back_in` is not believed (above), but it did say the tunnel carried again: that is no router with
+  // NAT missing — the row takes the plain stalled reading below rather than send the operator to the router (s9d F9)
+  if (exitIsDialin(ex) && l.no_traffic && !Number.isFinite(l.no_traffic.back_in) && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
+    why: said(T("The router is connected but passes no traffic — check NAT on the router.")) + _fell };
   // ⚠️ UP AND CARRYING NOTHING, as the NODE judged it — not a guess from `handshake` or `trace` here. The node
   // has already routed around it (`no_traffic` is only reported once it did), so the row states what happened to
   // the traffic, which depends on this exit's own kill-switch. Absent on a node too old to judge: it falls
   // through to the tests below exactly as before.
   if (l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
-    why: said(ex.killswitch
-      ? T("This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.")
-      : T("This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.")) };
+    why: said(exitStalledSay(ex)) };
   // ⚠️ UP IS NOT WORKING. This returned "ok" the moment the device existed, whatever was at the other end —
   // so a pasted AmneziaWG profile brought up as plain WireGuard was drawn GREEN while carrying nothing: the
   // interface was up, and up was the whole question. A handshake is the first fact that is only true if the
@@ -3445,7 +3743,8 @@ export function exitHealth(x, node) {
   // RECORD, which returns nothing the moment record and device disagree — exactly the case worth reporting.
   // It now asks by what the device IS and falls back to the other tool, so `handshake` is answerable for any
   // device that exists, and the `=== 0` test above catches the reported case without inventing a second one.
-  return { state: "ok", tone: "", dot: "up", why: T("Up on the node.") };
+  return { state: "ok", tone: "", dot: "up", why: exitIsDialin(ex) && l.endpoint
+    ? T("Up on the node. The router connects from {v1}.", { v1: l.endpoint }) : T("Up on the node.") };
 }
 
 /** The one marker for an exit's health. Three screens rendered this by hand and all three hardcoded the
@@ -3596,8 +3895,10 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   // which list you opened it from, and an untitled one never said what it WAS.
   // …and grouped by what they are: a WireGuard profile the operator pasted is imported too, but it is no WARP account (OE, 1.8.9)
   const imp = exits.filter(x => (x.producer || "adopted") === "imported");
-  const warp = imp.filter(x => x.provider !== "profile").map(x => mk(x, exitLabel(x, node)));
-  const prof = imp.filter(x => x.provider === "profile").map(x => mk(x, exitLabel(x, node)));
+  const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));
+  const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));
+  const socks = imp.filter(x => exitProv(x) === "socks5").map(x => mk(x, exitLabel(x, node)));
+  const other = imp.filter(x => !EXIT_KINDS.includes(exitProv(x))).map(x => mk(x, exitLabel(x, node)));
   const ext = exits.filter(x => (x.producer || "adopted") !== "imported")
     .map(x => mk({ ...x, _ext: true }, exitLabel(x, node)));
   // ⚠️ AND EVERY DEVICE THE NODE ALREADY HAS. An exit record is the panel's bookkeeping, not the world:
@@ -3640,6 +3941,8 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   return [
     ...(warp.length ? [{ group: T("Exit via WARP"), items: warp }] : []),
     ...(prof.length ? [{ group: T("Exit via a custom config"), items: prof }] : []),
+    ...(socks.length ? [{ group: T("Exit via a SOCKS5 proxy"), items: socks }] : []),
+    ...(other.length ? [{ group: T("Other exits"), items: other }] : []),
     // "an external interface" stopped being true the moment a NIC could be one — the node's own card is
     // not external to it. The group is what traffic LEAVES BY, whichever kind of device that is.
     ...(ext.length ? [{ group: T("Leave by a device"), items: ext }] : []),
@@ -3657,6 +3960,7 @@ export const exitIsPlus = ex => !!(String((ex || {}).licence || "").trim()
  *    imported · warp            WARP exit          (a registered Cloudflare account)
  *    imported · warp · licence  WARP+ exit         (paid — the whole point of the row is knowing which)
  *    imported · profile         Custom exit        (a WireGuard profile the operator pasted)
+ *    imported · socks5          SOCKS5 exit        (a proxy the node runs a tunnel to)
  *    adopted  · node reports it Discovered         (a device already on the box)
  *    adopted  · it does not     Custom             (a name the operator typed ahead of the device)
  *
@@ -3666,8 +3970,9 @@ export const exitIsPlus = ex => !!(String((ex || {}).licence || "").trim()
 export function exitTypeLabel(ex, node) {
   const x = ex || {};
   if ((x.producer || "adopted") === "imported")
-    return x.provider === "profile" ? T("Custom exit")
-      : exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit");
+    return exitProv(x) === "profile" ? (exitIsDialin(x) ? T("Dial-in exit") : T("Custom exit"))
+      : exitProv(x) === "warp" ? (exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit"))
+      : exitProv(x) === "socks5" ? T("SOCKS5 exit") : exitProv(x);
   // ⚠️ A NETWORK CARD SAYS SO, and this is the whole of decision B1 in one line. `Direct — source from
   // eth2` (a NAT pin) and an eth2 EXIT (a route) can now both be on screen at once, and they do completely
   // different things. Naming each by WHAT IT CHANGES is what keeps them apart: this half is the route, so
@@ -3742,12 +4047,13 @@ export function ifTrafficBadge(mode, egNode, node, exitId) {
 
 // serialise an egress selection into the API body shape (shared by the interface and WDTT save paths)
 // `routing_v: 2` tells the panel this tab knows per-person rules: a save WITHOUT it over a stored one is refused (D7), because an
-// older tab's rowsToRules drops `who` and would re-save the rule without its people.
-export const egressBody = eg => eg.mode === "smart"
+// older tab's rowsToRules drops `who` and would re-save the rule without its people. 3: …and ports on a rule (B.2), the same way.
+export const egressBody = eg => ({ ...(eg.mode === "smart"
   // `egress_ip` rides along: the node source-NATs by it in every mode, and it is what a Direct rule leaves as (Rule settings).
-  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_exit_ips: eg.exitIps || {}, routing_v: 2, egress_ip: eg.ip || "" }
+  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_exit_ips: eg.exitIps || {}, routing_v: 3, egress_ip: eg.ip || "" }
   // An exit carries an ID and nothing else — not a NIC and not a node. Sending the others alongside would
   // be harmless today (the server's ladder pops them) and a trap tomorrow, since a stale `wan_iface` riding
   // along is how a mode ends up meaning two things.
   : eg.mode === "exit" ? { egress_mode: "exit", exit_id: eg.exitId || "" }
-  : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" };
+  : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" }),
+  p2p: eg.p2p || null });   // the torrent choice, in every mode (null: none)

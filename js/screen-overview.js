@@ -9,7 +9,7 @@
  */
 
 import {
-  ago, dur, fmtBytes, seen, panelNowS,
+  ago, dur, fmtBytes, seen, panelNowS, isMobile,
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvName, srvText } from "./i18n.js";
 import {
@@ -33,7 +33,7 @@ import {
 import { RailCustom } from "./traffic-ui.js";
 import { panelToday, chartsFirstDay, trafficTotals, talkerGroups } from "./traffic.js";
 import {
-  DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
+  DASH_RANGES, OnlineUsersTag, onlinePeerRows, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
   revealOrphans, revealPeer, revealPeersFiltered, revealUser, serviceIssues, svcKey, svcSaveSilence,
   svcSilence, svcSilencedSet,
 } from "./views.js";
@@ -79,7 +79,7 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
   // The panel's own "last heard from it", like the node page's (model.js lastHeard) — one clock at both ends, so
   // the age can never disagree with the live dot beside it.
   const seenAt = lastHeard(nrec, snap);
-  let sync = T("no data"); if (seenAt) { const a = Math.floor(panelNowS() - seenAt); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
+  let sync = T("no data"); if (seenAt) { const a = Math.floor(panelNowS() - seenAt); sync = live ? (isMobile() ? seen(a) : T("{v1} ago", { v1: seen(a) })) : T("stale · {v1}", { v1: seen(a) }); }
   const al = healthAlerts(health);
   // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
   // An AmneziaWG 3.1 interface is counted on its own badge, in the 3.1 colour (docs/AWG3-PLAN.md D-colour) — one badge per colour.
@@ -93,13 +93,16 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c, g3]) => html`<span key=${t + (g3 ? "3" : "")} class=${"iftype " + t + (g3 ? " awg3" : "")} ...${tip3(g3)}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">${T("Throughput")}</span>${trafCell}</div>
-        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${rangeWord(histRange)} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
+        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${rangeWord(histRange)} trigger=${isMobile()
+          // a phone: who and how many devices, one tap target opening the node's Online sheet (operator, 2026-10-29)
+          ? c => html`<span class="faint">${plural(c, "user")} · ${plural(onlinePeerRows(n.id, null).length, "peer")}</span>`
+          : (c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
         <div><span class="fl">${T("Sync")}</span><span class="fv">${sync}</span></div>
       </div>
     </div>
-    <div class="fnode-health">
+    ${isMobile() ? null : html`<div class="fnode-health">
       ${health ? html`<${NodeHealth} health=${health} node=${n.id} compact=${true} range=${histRange} nodeHist=${nodeHist}/>` : html`<div class="fnode-nohealth">${live ? T("no health data reported") : T("node offline")}</div>`}
-    </div>
+    </div>`}
   </a>`;
 }
 
@@ -1185,7 +1188,7 @@ export const joinNodes = (nodes, sep) => nodes.flatMap((n, i) => i ? [sep, n] : 
 // Popover portal (.deppop.onlpop shell — fixed-position, escapes the card, JS hover with a grace period). rows =
 // [{user, peers:[], count}]. ≤15 rows show as-is; 16–50 scroll the list; >50 paginate 50/page (Next → top, Prev → bottom).
 export const WHO_PER_PAGE = 50, WHO_VISIBLE = 15;
-export function WhoBubble({ rows, color }) {
+export function WhoBubble({ rows, color, foot }) {
   // Flatten user→peers into ONE row per peer ("user · peer  ·  when"), newest first — reads at a glance, no nesting.
   const flat = [];
   for (const g of rows) for (const q of (g.peers || [])) flat.push({ user: g.user, name: q.name, ago: q.ago, dur: q.dur });
@@ -1214,6 +1217,7 @@ export function WhoBubble({ rows, color }) {
         <button class="prot-who-pgb" disabled=${p >= pages - 1} onClick=${() => go(1)}>${T("Next")}</button>
       </span>
     </div>` : null}
+    ${foot ? html`<div class="prot-who-foot">${foot}</div>` : null}
   </div>`;
 }
 export function CatsBubble({ cats, color, counts }) {
@@ -1271,7 +1275,9 @@ export function Protection({ range, bs }) {
       // Prefer per-category counts (SNI mode, what's actually catching traffic); fall back to composition (what's loaded).
       bcats: bcats.length ? bcats : null, cats: (cov.cats && cov.cats.length) ? cov.cats : null });
   }
-  tiles.push({ k: T("Torrents caught"), v: kmb(torrents), n: torrents, sub: torrents ? T("connections · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }), spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent });
+  tiles.push({ k: T("Torrents caught"), v: kmb(torrents), n: torrents, sub: torrents ? T("connections · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }), spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent,
+    // where the operator finds a router cut by one device's torrent (S11b) — the fix, said beside the offender
+    foot: T("Several devices behind one router? Mark that device as a router — one device's torrent then no longer cuts the others.") });
   tiles.push({ k: T("Scanners flagged"), v: kmb(scan), n: scan, sub: scan ? plural(scan, "source") + " · " + rw : T("none flagged"), color: "var(--partial)", who: who.scan });
   // The free port rules, shown only where they are switched on. Deliberately its own tile rather than folded
   // into "Blocked": that one counts content filtering, this one counts SMTP / QUIC / the torrent port-hint, and
@@ -1316,9 +1322,14 @@ export function Protection({ range, bs }) {
           // portal (fixed-position, escapes the card, hover with a grace period so moving into the bubble never drops
           // it). Plain tiles render as a div.
           const pop = w
-            ? html`<${WhoBubble} rows=${w} color=${t.color}/>`
+            ? html`<${WhoBubble} rows=${w} color=${t.color} foot=${t.foot}/>`
             : (t.bcats ? html`<${CatsBubble} cats=${t.bcats} color=${t.color} counts/>`
               : (t.cats ? html`<${CatsBubble} cats=${t.cats} color=${t.color}/>` : null));
+          // a phone: the drill-down is a sheet, as the online and updates lists are — a bubble was too thin there (operator,
+          // 2026-10-29). Its title is the tile's name; the bubble's own head line keeps only its note and count (m/m.css).
+          if (pop && isMobile()) return html`<div class="prot-tile haswho" role="button" key=${t.k} onClick=${() => openModal(html`<${Sheet}
+              title=${t.k} noGuard=${true} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}>
+              <div class="m-protsheet">${pop}</div><//>`)}>${inner}</div>`;
           return pop
             ? html`<${Popover} key=${t.k} hoverOnly flipFit cls="prot-tile haswho" popCls="prot-who-pop" trigger=${inner}>
                 ${pop}
@@ -1346,13 +1357,35 @@ export function Protection({ range, bs }) {
 }
 
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
+// A phone sets attention rows aside (operator, 2026-10-29), kept per device. A row is keyed by WHAT it says — its group and its
+// count — so a group that grows (or shrinks) is a new thing to look at and shows on top again (F37). Keys are not pruned against
+// the rows of a render: a render with no service issues (the panel updating) forgot every dismissed one (F14); the newest 200 are
+// kept instead. The row's swipe action Dismisses, or Restores.
+const ATTN_KEY = "swg-attn-dismissed";
+function attnRead() { try { return new Set(JSON.parse(localStorage.getItem(ATTN_KEY) || "[]")); } catch (_) { return new Set(); } }
+function attnWrite(set) { try { localStorage.setItem(ATTN_KEY, JSON.stringify([...set].slice(-200))); } catch (_) {} }
+// Everything set aside: "nothing else needs attention" for 5 s after the operator's own Dismiss, then the note and its heading
+// go (operator, 2026-10-29) — never on a page load, where nothing was just dismissed ("only if a user actually dismissed")
+let _attnDismissAt = 0;
+function attnQuiet() { return Date.now() - _attnDismissAt >= 5000; }
+function attnAct(key, awaySet) {   // awaySet: the render's one read of the dismissed keys (F47)
+  if (!isMobile()) return null;
+  const away = awaySet.has(key);
+  return html`<span class="attn-acts" onClick=${e => e.stopPropagation()}><button type="button" class="iconbtn" data-lbl=${away ? T("Restore") : T("Dismiss")}
+    aria-label=${away ? T("Restore") : T("Dismiss")} onClick=${e => { e.stopPropagation(); const s2 = attnRead(); away ? s2.delete(key) : s2.add(key); attnWrite(s2);
+      if (!away) { _attnDismissAt = Date.now(); setTimeout(() => bus.emit(), 5100); } bus.emit(); }}>
+    <${Ic} i=${away ? "refresh" : "x"}/></button></span>`;
+}
 export function Overview() {
   useStore();
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
   // Every widget aggregates over the SELECTED node set (default = whole fleet). A peer is "in scope" if
   // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
-  const selIds = dashNodes(), sel = new Set(selIds);
-  const dKey = dashKey();                                        // the range, or a custom window's key (its days)
+  // A PHONE draws no rail (MOBILE-PLAN hook 4), so it has no range and no node set to choose: live, the whole fleet — a choice
+  // kept from the desktop view would scope every figure with nothing on screen saying so. Live also means no history fetch.
+  const m = isMobile();
+  const selIds = m ? (Store.fleet || []).map(n => n.id) : dashNodes(), sel = new Set(selIds);
+  const dKey = m ? "live" : dashKey();                           // the range, or a custom window's key (its days)
   const rangeHist = useRangeHistory(dKey, selIds);              // one fetch, shared by the doughnuts + flow map
   const blockStats = useBlockStats(dKey);                       // Protection card feed (independent, supports live)
   // Fresh install (or every node removed) → there's no fleet to chart. Skip the whole dashboard and invite
@@ -1412,7 +1445,6 @@ export function Overview() {
   orphans.forEach(o => { const k = o.node + "|" + o.iface; (orphByIf[k] || (orphByIf[k] = { node: o.node, iface: o.iface, n: 0 })).n++; });
   const orphGroups = Object.values(orphByIf);
   const svcIssues = serviceIssues();   // panel-host service health — one box, so shown regardless of the node filter (critical first)
-  const attnCount = svcIssues.length + statusGroups.length + unGroups.length + orphGroups.length;
 
   const recent = recentActivity();
 
@@ -1558,7 +1590,7 @@ export function Overview() {
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${DashRail}/>
+    ${m ? null : html`<${DashRail}/>`}
     ${isCustomKey(dKey) && rangeHist.range === dKey && rangeHist.err ? html`<div class="notice warn">${srvText(rangeHist.err)}</div>` : null}
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections" onClick=${openLiveTab("peers")}><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">${T("Online now")}</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">${T("live connections →")}</div></div></a>
@@ -1569,7 +1601,7 @@ export function Overview() {
     </div>
 
     ${secTitle(T("Fleet"), scoped ? T("{n} of {total}", { n: fleetSel.length, total: plural(fleet.length, "server") }) : plural(fleet.length, "server"), undefined, "fleet")}
-    ${fleetSel.length ? html`<div class="trends">
+    ${fleetSel.length && !m ? html`<div class="trends">
       <div class="trendcard wide">
         <div class="donutcard-h"><h3>${T("Fleet throughput")}</h3></div>
         ${(fleetHist.t || []).length > 1
@@ -1586,29 +1618,29 @@ export function Overview() {
     ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n} traffic=${nodeTraffic.find(x => x.id === n.id)} ranged=${dRanged} histRange=${effRange} nodeHist=${(rangeHist.byNode || {})[n.id] || null} presence=${dRanged && _pres ? (_pres.nodes || {})[n.id] || null : null}/>`)}</div>`
       : html`<div class="allclear">${T("No servers configured in fleet.json.")}</div>`}
 
-    ${fleetSel.length ? html`<${Fragment}>
+    ${fleetSel.length && !m ? html`<${Fragment}>
       ${secTitle(T("Distribution"), html`${scoped ? T("selected nodes") : T("whole fleet")} · ${rangeWord(effRange)}`, undefined, "distribution")}
       <${DashDoughnuts} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
-    ${fleetSel.length ? html`<${Fragment}>
+    ${fleetSel.length && !m ? html`<${Fragment}>
       ${secTitle(T("Traffic flow map"), T("signal flow · by category"), undefined, "flow")}
       <${FlowMap2} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
     ${fleetSel.length ? html`<${Protection} range=${effRange} bs=${blockStats}/>` : null}
 
-    ${fleetSel.length > 1 ? html`<${Fragment}>
+    ${fleetSel.length > 1 && !m ? html`<${Fragment}>
       ${secTitle(T("Top nodes by peers"), rnkTotal ? T("total peers") : (dRanged ? T("online · {range}", { range: rangeWord(effRange) }) : T("online now")), undefined, "topnodes")}
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
     <//>` : null}
 
-    ${fleetSel.length > 1 && anyTraffic ? html`<${Fragment}>
+    ${fleetSel.length > 1 && anyTraffic && !m ? html`<${Fragment}>
       ${secTitle(T("Top nodes by traffic"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "topnodestraf")}
       <div class="rankcard"><${RankBars} rows=${rankRowsTraffic}/></div>
     <//>` : null}
 
-    ${talkerRows.length || (dRanged && (!talkD || talkE.off || talkE.err)) ? html`<${Fragment}>
+    ${!m && (talkerRows.length || (dRanged && (!talkD || talkE.off || talkE.err))) ? html`<${Fragment}>
       ${secTitle(T("Top talkers"), dRanged ? talkSub(effRange, talkD, scoped) : T("by live throughput"), undefined, "toptalkers")}
       ${talkerRows.length ? html`<div class="rankcard"><${RankBars} rows=${talkerRows}/></div>`
         : talkE.off ? html`<div class="hint">${T("Traffic totals are off — Settings → Display says why.")}</div>`
@@ -1616,19 +1648,19 @@ export function Overview() {
         : html`<div class="hint faint">…</div>`}
     <//>` : null}
 
-    ${catRows.length ? html`<${Fragment}>
+    ${catRows.length && !m ? html`<${Fragment}>
       ${secTitle(T("Top destinations"), html`${dRanged ? rangeWord(effRange) : rangeWord("live")} · ${T("categories overlap")}${(totClientRx + totClientTx) ? (() => { const f = dRanged ? fmtBytes : rate, [d, u] = dlul(totClientRx, totClientTx); return html` · ${ofTotal(f(d), f(u))}`; })() : ""}`, undefined, "topdest")}
       <div class="rankcard"><${RankBars} rows=${catRows}/></div>
     <//>` : null}
 
-    ${exitRows.length ? html`<${Fragment}>
+    ${exitRows.length && !m ? html`<${Fragment}>
       ${secTitle(T("Traffic by exit"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "byexit")}
       <div class="rankcard"><${RankBars} rows=${exitRows}/></div>
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
       ${secTitle(T("Recent activity"), null, false, "activity")}
-      <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
+      <div class="actlist">${(m ? recent.slice(0, 5) : recent).map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
           onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
         <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
         <span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${srvName(e)}</span>` : null}
@@ -1637,24 +1669,34 @@ export function Overview() {
       <div class="act-morewrap"><a class="act-more" href="#/activity">${T("Show all history »")}</a></div>
     <//>` : null}
 
-    ${secTitle(T("Needs attention"), attnCount ? plural(attnCount, "group") : null, undefined, "attention")}
-    ${!attnCount
-      ? html`<div class="allclear"><${Ic} i="check"/><span>${T("Everything's deployed and reporting. No drift across the fleet.")}</span></div>`
-      : html`<div class="attn">
-          ${svcIssues.map(is => html`<div class=${"attn-row svc " + is.sev} key=${"svc" + svcKey(is)} onClick=${() => openModal(html`<${ServiceIssueSheet} issues=${[is]}/>`)}>
+    ${(() => {
+      // Each group a row, keyed so a phone can set one aside (operator, 2026-10-29: "dismiss … move it to bottom, and keep there")
+      const awaySet = m ? attnRead() : new Set();
+      const rows = [
+        ...svcIssues.map(is => ["svc" + svcKey(is), html`<div class=${"attn-row svc " + is.sev} key=${"svc" + svcKey(is)} onClick=${() => openModal(html`<${ServiceIssueSheet} issues=${[is]}/>`)}>
             <span class=${"svc-badge " + is.sev}><${Ic} i="warn"/>${is.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span>
             <span class="name">${is.label} — ${SVC_KINDWORD[is.kind] || is.kind}</span>
-            <span class="why">${is.msg}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${statusGroups.map(g => html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>
+            <span class="why">${is.msg}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("svc" + svcKey(is), awaySet)}</div>`]),
+        ...statusGroups.map(g => ["s" + g.status + ":" + g.peers.length, html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>
             <${Badge} s=${g.status}/><span class="name">${Trich("*{v1}* {v2}", { v1: plural(g.peers.length, "peer"), v2: STATUS_WORD[g.status] || g.status })}</span>
-            <span class="why">${why[g.status] || ""}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${unGroups.map(g => html`<div class="attn-row" key=${"u" + g.node} onClick=${() => revealPeersFiltered({ node: g.node, status: "unassigned" })}>
+            <span class="why">${why[g.status] || ""}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("s" + g.status + ":" + g.peers.length, awaySet)}</div>`]),
+        ...unGroups.map(g => ["u" + g.node + ":" + g.peers.size, html`<div class="attn-row" key=${"u" + g.node} onClick=${() => revealPeersFiltered({ node: g.node, status: "unassigned" })}>
             <${Badge} s="unassigned"/><span class="name">${Trich("*{v1}* unassigned on {v2} on {v3}", { v1: plural(g.peers.size, "peer"), v2: ifCountPhrase(g), v3: Store.nodeName(g.node) })}</span>
-            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${orphGroups.map(g => html`<div class="attn-row" key=${"o" + g.node + g.iface} onClick=${() => revealOrphans(g.node, g.iface)}>
+            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("u" + g.node + ":" + g.peers.size, awaySet)}</div>`]),
+        ...orphGroups.map(g => ["o" + g.node + g.iface + ":" + g.n, html`<div class="attn-row" key=${"o" + g.node + g.iface} onClick=${() => revealOrphans(g.node, g.iface)}>
             <${Badge} s="orphan"/><span class="name">${Trich("*{v1}* orphan on {v2} ({v3}) on {v4}", { v1: plural(g.n, "peer"), v2: g.iface, v3: ifTypeLabel(g.node, g.iface), v4: Store.nodeName(g.node) })}</span>
-            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-        </div>`}
+            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span>${attnAct("o" + g.node + g.iface + ":" + g.n, awaySet)}</div>`]),
+      ];
+      const away = awaySet;
+      const shown = rows.filter(r => !away.has(r[0])), set = rows.filter(r => away.has(r[0]));
+      const quiet = m && !shown.length && set.length && attnQuiet();
+      return html`
+    ${quiet ? null : html`${secTitle(T("Needs attention"), shown.length ? plural(shown.length, "group") : null, undefined, "attention")}
+    ${!shown.length
+      ? html`<div class="allclear"><${Ic} i="check"/><span>${set.length ? T("Nothing else needs attention — what you set aside is at the bottom.") : T("Everything's deployed and reporting. No drift across the fleet.")}</span></div>`
+      : html`<div class="attn">${shown.map(r => r[1])}</div>`}`}
+    ${set.length ? html`${secTitle(T("Dismissed"), plural(set.length, "group"), undefined, "dismissed")}<div class="attn attn-away">${set.map(r => r[1])}</div>` : null}`;
+    })()}
   </div>`;
 }
 

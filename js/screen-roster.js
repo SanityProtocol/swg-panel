@@ -7,7 +7,7 @@
  */
 
 import {
-  ago, seen, tkey, isPrimaryTarget,
+  ago, seen, tkey, isPrimaryTarget, isMobile,
 } from "./util.js";
 import { T, Tsplit, Trich, plural, srvVerb, srvDetail, srvName } from "./i18n.js";
 import {
@@ -17,15 +17,15 @@ import {
   ifaceIsAll, ifaceMatch, targetType, awgGen,
 } from "./model.js";
 import {
-  CapList, Dropdown, Ic, Popover, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
-  rowNoSelect, rowSingle, secTitle, xferCell, tgt3,
+  CapList, Dropdown, Ic, Popover, RowError, SearchBox, Sheet, StoreOffBanner, Tag, closeModal, dlul, lifecycleIcon, openConfirm, openModal,
+  rateCell, rowDouble, rowNoSelect, rowSingle, secTitle, xferCell, tgt3,
 } from "./ui.js";
 import {
   EV_ACTIONS, EV_ITEMS, evItemLabel, evActionLabel, peerStatusFilters, USER_DEFDIR, activityView, connView, evDecorate,
   ifaceFilterOptions, ifaceOptGroups, nodeFilterOptions, pageScroll, pageSizeOpts, peerMatchesQ, peerSortBy, peersView,
   searchMatch, sortColToggle, sortPeerRows, sortUsers, unassignedView, userIdentityMatchesQ, userMatchesQ,
   userOnNodeIface, userPeerViews, userStatTag, userStats, usersView, groupShares, shareDeviceName,
-  groupMemberViews, groupStats, sortGroups, GROUP_DEFDIR, trafficRangeLabel,
+  groupMemberViews, groupStats, sortGroups, GROUP_DEFDIR, PEER_DEFDIR, trafficRangeLabel,
 } from "./views.js";
 import {
   confirmCorrectAll, confirmRestoreAll,
@@ -39,7 +39,7 @@ import {
 import { TrafficRail, TrafficCell, UserTrafficCell } from "./traffic-ui.js";
 import { trafficTotals } from "./traffic.js";
 import {
-  EmbeddedPeers, PeerGrid, UsersHeader,
+  EmbeddedPeers, PeerGrid, UsersHeader, filterBtn, sortField, PEER_SORT, USER_SORT, GROUP_SORT,
 } from "./grids.js";
 import {
   OrphanRow,
@@ -135,36 +135,49 @@ export function PeersScreen() {
   const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
   const setPage = p => { peersView.page = p; force(x => x + 1); };
 
-  return html`<div class="screen">
-    <${StoreOffBanner}/>
-    <${TrafficRail}/>
-    <div class="toolbar">
-      <button class=${"onlbtn" + (grouped ? " on" : "")}
+  // The toolbar's pieces, drawn once for both layouts: a phone keeps the search and New peer, and puts the grouping and the
+  // three filters behind its Filters button (MOBILE-PLAN, Peers promoted to T1 on 2026-10-29). `r` redraws that sheet.
+  const re = r => { peersView.page = 1; force(x => x + 1); if (r) r(); };
+  const groupBtn = html`<button class=${"onlbtn" + (grouped ? " on" : "")}
         title=${grouped ? T("One row per peer — its other deployments are behind the +N") : T("Collapse each peer's deployments into one row")}
-        onClick=${() => { peersView.group = !peersView.group; peersView.page = 1; force(x => x + 1); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>
-      <${SearchBox} placeholder=${T("Search title, user, address…")} value=${peersView.q} onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/>
+        onClick=${() => { peersView.group = !peersView.group; re(); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>`;
+  const filters = r => html`<${Fragment}>
+      ${isMobile() ? null : groupBtn}
+      ${search(false)}
       <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
-        onChange=${v => { peersView.node = v; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}
+        onChange=${v => { peersView.node = v; peersView.iface = ""; re(r); }}
         options=${[...(multiServer ? [{ value: "*", label: T("All nodes") }]
                      : !fleet.length ? [{ value: "*", label: T("No nodes") }] : []),
                    ...fleet.map(n => ({ value: n.id, label: n.name }))]}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${iface}
-        onChange=${v => { peersView.iface = v; peersView.page = 1; force(x => x + 1); }}
+        onChange=${v => { peersView.iface = v; re(r); }}
         options=${[...(ifaceOpts.length && (node === "*" || ifaceOpts.length > 1) ? [{ value: "*", label: T("All interfaces") }] : []),
                    ...(ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : [{ value: "", label: T("No interfaces") }])]}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All statuses")} value=${peersView.status || ""}
-        onChange=${v => { peersView.status = v || null; peersView.page = 1; force(x => x + 1); }}
-        options=${peerStatusFilters()}/>
+        onChange=${v => { peersView.status = v || null; re(r); }}
+        options=${peerStatusFilters()}/><//>`;
+  // the desktop draws the search between the grouping and the filters; a phone, in the toolbar (`on` = where it goes)
+  const search = on => on === isMobile() ? html`<${SearchBox} placeholder=${T("Search title, user, address…")} value=${peersView.q} onInput=${e => { peersView.q = e.target.value; re(); }}/>` : null;
+
+  return html`<div class="screen">
+    <${StoreOffBanner}/>
+    ${isMobile() ? null : html`<${TrafficRail}/>`}
+    <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
+      ${isMobile() ? groupBtn : null}
+      ${search(true)}
+      ${/* "set" = not the screen's own default: a one-node fleet defaults to its node and its only interface (F22) */""}
+      ${isMobile() ? filterBtn(node !== (multiServer ? "*" : (fleet[0] ? fleet[0].id : "")) || iface !== ifaceDefault() || !!peersView.status,
+        r => html`${filters(r)}${sortField(peersView, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => re(r))}`) : filters()}
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
-      <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
+      <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
     </div>
 
     <div class="section-title"><h2>${agg ? T("Peers") : T("Peers on")}</h2><span class="tags">
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface} gen3=${itype === "awg" && awgGen(node, iface) === "3.1"}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} ranged=${true} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} ranged=${!isMobile()} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     <${RowsPager} total=${rows.length} page=${page} pageSize=${pageSize} onPage=${setPage}
       onSize=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
 
@@ -208,17 +221,21 @@ export function ActivityHistoryScreen() {
   const clearAll = () => openConfirm({ title: T("Clear all activity?"), confirmLabel: T("Clear history"), danger: true,
     body: Trich("Delete *all {v1}* from the activity log? This can't be undone.", { v1: plural(all.length, "record") }),
     onConfirm: async () => { await api.eventsClear(); activityView.page = 1; await load(); } });
+  const m = isMobile();
+  const clearBtn = html`<button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> ${T("Clear history")}</button>`;
   return html`<div class="screen">
     <div class="crumb"><a href="#/">${T("Overview")}</a><span class="sep">/</span><b>${T("Activity history")}</b></div>
-    <div class="toolbar">
+    <div class=${"toolbar" + (m ? " mtoolbar" : "")}>
       <${SearchBox} placeholder=${T("Search action, name, detail…")} value=${activityView.q} onInput=${e => { activityView.q = e.target.value; activityView.page = 1; bump(); }}/>
-      <${Dropdown} className="selwrap" ariaLabel=${T("All items")} value=${activityView.item}
-        onChange=${v => { activityView.item = v; activityView.page = 1; bump(); }}
+      ${(() => { const dd = r => html`<${Dropdown} className="selwrap" ariaLabel=${T("All items")} value=${activityView.item}
+        onChange=${v => { activityView.item = v; activityView.page = 1; bump(); if (r) r(); }}
         options=${[{ value: "", label: T("All items") }, ...EV_ITEMS.map(i => ({ value: i, label: evItemLabel(i) }))]}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All actions")} value=${activityView.action}
-        onChange=${v => { activityView.action = v; activityView.page = 1; bump(); }}
-        options=${[{ value: "", label: T("All actions") }, ...EV_ACTIONS.map(a => ({ value: a, label: evActionLabel(a) }))]}/>
-      <button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> ${T("Clear history")}</button>
+        onChange=${v => { activityView.action = v; activityView.page = 1; bump(); if (r) r(); }}
+        options=${[{ value: "", label: T("All actions") }, ...EV_ACTIONS.map(a => ({ value: a, label: evActionLabel(a) }))]}/>`;
+        // a phone: the search, the two filters behind the Filters button; Clear history goes under the list
+        return m ? filterBtn(!!(activityView.item || activityView.action), dd) : dd(); })()}
+      ${m ? null : clearBtn}
     </div>
     ${secTitle(T("Activity history"), html`${list.length}${list.length !== all.length ? " / " + all.length : ""}`, false)}
     ${rows === null ? html`<div class="loading"><${Ic} i="refresh"/> ${T("Loading…")}</div>`
@@ -233,7 +250,7 @@ export function ActivityHistoryScreen() {
           <span class="grow"></span>
           <span class="act-cat">${e.itemLabel || e.item}</span>
           <span class="when">${ago(e.ts)}</span>
-          <button class="iconbtn danger" title=${T("Delete entry")} onClick=${() => delOne(e)}><${Ic} i="x"/></button>
+          <button class="iconbtn danger" title=${T("Delete entry")} data-lbl=${T("Delete")} onClick=${() => delOne(e)}><${Ic} i="x"/></button>
         </div>`)}</div>`}
     ${list.length > pageSize ? html`<div class="pager">
       <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, list.length), total: list.length })}</span>
@@ -241,6 +258,7 @@ export function ActivityHistoryScreen() {
       <span class="pager-pg">${page} / ${totalPages}</span>
       <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>${T("Next ›")}</button>
     </div>` : null}
+    ${m && all.length ? html`<div class="m-actclear">${clearBtn}</div>` : null}
   </div>`;
 }
 
@@ -278,17 +296,23 @@ export function ConnectionsScreen() {
   const paginate = (list) => { const pageSize = connView.pageSize || 20, totalPages = Math.max(1, Math.ceil(list.length / pageSize));
     const page = Math.min(Math.max(1, connView.page || 1), totalPages); return list.slice((page - 1) * pageSize, page * pageSize); };
 
-  const toolbar = html`<div class="toolbar">
+  const filters = redraw => { const r = () => { reset(); if (redraw) redraw(); };
+    return html`<${Fragment}>
+    <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${connView.node}
+      onChange=${v => { connView.node = v; connView.iface = ""; r(); }} options=${nodeFilterOptions("")}/>
+    <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${connView.iface}
+      onChange=${v => { connView.iface = v; r(); }} options=${ifaceFilterOptions(connView.node ? Store.userIfacesOf(connView.node) : allIfaces, "")}/>
+    <button class=${"onlbtn" + (connView.online ? " on" : "")} title=${T("Show only online connections")} onClick=${() => { connView.online = !connView.online; r(); }}>${T("status|Online")}</button><//>`; };
+  const toolbar = html`<div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
     <div class="pmode">
-      <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "")} onClick=${() => setMode("peers")}>${T("Peers")}</button>
-      <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>${T("Users")}</button>
+      ${/* a phone: the device and person icons, the words kept for a screen reader (operator, 2026-10-29: "to save space") */""}
+      <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "") + (isMobile() ? " pm-ico" : "")} aria-label=${isMobile() ? T("Peers") : null} onClick=${() => setMode("peers")}>${isMobile() ? html`<${Ic} i="device"/>` : T("Peers")}</button>
+      <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "") + (isMobile() ? " pm-ico" : "")} aria-label=${isMobile() ? T("Users") : null} onClick=${() => setMode("users")}>${isMobile() ? html`<${Ic} i="user"/>` : T("Users")}</button>
     </div>
     <${SearchBox} placeholder=${mode === "users" ? T("Search users, tags, peers…") : T("Search peer, user, endpoint, IP…")} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
-    <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${connView.node}
-      onChange=${v => { connView.node = v; connView.iface = ""; reset(); }} options=${nodeFilterOptions("")}/>
-    <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${connView.iface}
-      onChange=${v => { connView.iface = v; reset(); }} options=${ifaceFilterOptions(ifaceOpts, "")}/>
-    <button class=${"onlbtn" + (connView.online ? " on" : "")} title=${T("Show only online connections")} onClick=${() => { connView.online = !connView.online; reset(); }}>${T("status|Online")}</button>
+    ${isMobile() ? filterBtn(!!(connView.node || connView.iface || connView.online), r => html`${filters(r)}${mode === "users"
+        ? sortField(connView, "usort", "udir", USER_SORT(true), USER_DEFDIR, () => { reset(); if (r) r(); })
+        : sortField(connView, "sort", "dir", [...PEER_SORT().slice(0, 4), ["endpoint", T("col|Endpoint")], ...PEER_SORT().slice(4)], PEER_DEFDIR, () => { reset(); if (r) r(); })}`) : filters()}
   </div>`;
 
   if (mode === "users") {
@@ -347,6 +371,29 @@ function nodesOfPeers(peers) {
   return Object.keys(nm).map(nid => ({ node: nid, ifaces: Object.values(nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
     .sort((a, b) => Store.byNode(a.node, b.node));
 }
+// A phone has no Nodes column and no hover: on the row's second line, two counts with their icons (nodes, interfaces), whose
+// tap opens a sheet with each node's interfaces and peer counts, each a way to its page (operator, 2026-10-29: two lines, no
+// long text)
+function nodesTap(srvNodes, title) {
+  if (!isMobile() || !srvNodes.length) return null;
+  const nif = srvNodes.reduce((a, n) => a + n.ifaces.length, 0);
+  const label = plural(srvNodes.length, "node") + " · " + plural(nif, "interface");
+  return html`<span class="u-srvtap" role="button" aria-label=${label} onClick=${e => { e.stopPropagation(); openModal(html`<${NodesSheet} title=${title} label=${label} srvNodes=${srvNodes}/>`); }}
+    onDblClick=${e => e.stopPropagation()}><span class="u-srv-n"><${Ic} i="server"/>${srvNodes.length}</span><span class="u-srv-i"><${Ic} i="globe"/>${nif}</span></span>`;
+}
+function NodesSheet({ title, label, srvNodes }) {
+  const to = h => { closeModal(); location.hash = h; };
+  return html`<${Sheet} title=${title} noGuard=${true} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}>
+    <div class="m-nodesheet">
+      <div class="m-ns-sum">${label}</div>
+      ${srvNodes.map(n => html`<div class="m-ns-node" key=${n.node}>
+        <button class="m-ns-nm" onClick=${() => to("#/node/" + encodeURIComponent(n.node))}><span class="nsrv" style=${"--c:" + Store.nodeColor(n.node)}>${Store.nodeName(n.node)}</span><${Ic} i="arrow"/></button>
+        ${n.ifaces.map(f => html`<button class="m-ns-if" key=${f.iface} onClick=${() => to("#/node/" + encodeURIComponent(n.node) + "/" + encodeURIComponent(f.iface))}>
+          <${Tag} kind=${f.type} label=${f.iface} gen3=${f.gen3}/><span class="m-ns-pc">${plural(f.count, "cap|Peer")}</span><${Ic} i="arrow"/></button>`)}
+      </div>`)}
+    </div>
+  <//>`;
+}
 // The Nodes cell (users and groups): one node's badge, or "N Nodes"; hover lists each node's interfaces and peer counts.
 function nodesChip(srvNodes) {
   if (!srvNodes.length) return html`<span class="faint">—</span>`;
@@ -394,19 +441,22 @@ export function UserRow({ user, live, onlineOnly, q, nested }) {
           const sep = html`<span class="u-dot"> · </span>`;
           return live ? html`${onc}${sep}${pc}` : html`${pc}${user.peerCount ? html`${sep}${onc}` : null}`;
         })()}</span>
-        <span class="u-servers">${nodesChip(srvNodes)}</span>
+        <span class="u-servers">${nodesChip(srvNodes)}</span>${nodesTap(srvNodes, user.name)}
         <span class="u-last">${st.last == null ? html`<span class="u-never">${T("Never")}</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
         ${live ? html`<span class="u-total">${xferCell(db, ub)}</span>`
+          // a phone draws no traffic window, so no figure from one (MOBILE-PLAN hook 4): the ledger is not fetched there
+          : isMobile() ? null
           // the user's figure opens the user's view — their graph and every device they had (O12)
           : html`<span class="u-total clk" role="button" tabindex="0" title=${T("Open this user's traffic — graph and devices")}
               onClick=${e => { e.stopPropagation(); openUserView(user.id); }} onDblClick=${e => e.stopPropagation()}
               onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); openUserView(user.id); } }}><${UserTrafficCell} uid=${user.id}/></span>`}
-        ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
-          <button class="iconbtn qr" title=${T("Show QR / configs")} onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
-          <button class="iconbtn" title=${T("Traffic — graph and devices")} aria-label=${T("Traffic — graph and devices")} onClick=${() => openUserView(user.id)}><${Ic} i="bars"/></button>
-          <button class="iconbtn" title=${T("Edit user")} onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
-          <button class="iconbtn iconbtn-add" title=${T("Add peer")} onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
+        ${live && !isMobile() ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
+          ${/* data-lbl: the word a phone shows under each icon, where the row's swipe reveals them (m/m.css); nothing on a desktop */""}
+          <button class="iconbtn qr" title=${T("Show QR / configs")} data-lbl="QR" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
+          <button class="iconbtn" title=${T("Traffic — graph and devices")} aria-label=${T("Traffic — graph and devices")} data-lbl=${T("Traffic")} onClick=${() => openUserView(user.id)}><${Ic} i="bars"/></button>
+          <button class="iconbtn" title=${T("Edit user")} data-lbl=${T("Edit")} onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
+          <button class="iconbtn iconbtn-add" title=${T("Add peer")} data-lbl=${T("rowact|Device")} onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         </span>`}
       </span>
     </div>
@@ -481,7 +531,8 @@ function GroupRow({ g, st, q }) {
       <span class="u-right">
         <span class="u-counts"><span class="u-pc">${plural(st.members, "cap|Member")}</span>${st.members ? html`<span class="u-dot"> · </span><span class=${"u-onc" + (lit ? " on" : "")}>${T("{n} Online", { n: st.online })}</span>` : null}</span>
         <span class="u-counts g-peers"><span class="u-pc">${plural(st.peers, "cap|Peer")}</span>${st.peers ? html`<span class="u-dot"> · </span><span class=${"u-onc" + (st.peersOn ? " on" : "")}>${T("{n} Online", { n: st.peersOn })}</span>` : null}</span>
-        <span class="u-servers">${nodesChip(nodesOfPeers(g.users.flatMap(u => Store.peersByUser(u))))}</span>
+        ${(() => { const gn = nodesOfPeers(g.users.flatMap(u => Store.peersByUser(u)));
+          return html`<span class="u-servers">${nodesChip(gn)}</span>${nodesTap(gn, g.name)}`; })()}
         <span class="g-nets" onClick=${e => e.stopPropagation()}>
           <${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub" trigger=${html`<span class=${"grp-n" + (shares.length ? " lit-net" : " zero")}
               aria-label=${T("Devices whose networks are shared with {name}: {n}", { name: g.name, n: shares.length })}><${Ic} i="network"/>${shares.length}</span>`}>
@@ -491,13 +542,14 @@ function GroupRow({ g, st, q }) {
           <//>
         </span>
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
-        <span class="u-total"><${TrafficCell} a=${st.traffic} e=${trafficTotals()} ctx=${{ group: true }}/></span>
+        ${isMobile() ? null : html`<span class="u-total"><${TrafficCell} a=${st.traffic} e=${trafficTotals()} ctx=${{ group: true }}/></span>`}
         <span class="u-acts" onClick=${e => e.stopPropagation()} onDblClick=${e => e.stopPropagation()}>
-          <button type="button" class="iconbtn" title=${T("Traffic — graph and members")} aria-label=${T("Traffic — graph and members")} onClick=${() => openGroupView(g.id)}><${Ic} i="bars"/></button>
-          <button type="button" class="iconbtn" title=${T("Show this group on the users list")} aria-label=${T("Show this group on the users list")}
-            onClick=${() => { usersView.mode = "users"; usersView.group = g.id; usersView.q = ""; usersView.page = 1; bus.emit(); }}><${Ic} i="user"/></button>
-          <button type="button" class="iconbtn" title=${T("Edit group")} aria-label=${T("Edit group")} onClick=${() => openGroup(g.id)}><${Ic} i="pencil"/></button>
-          <button type="button" class="iconbtn danger" title=${T("Delete group")} aria-label=${T("Delete group")} onClick=${() => confirmDeleteGroup(g, false)}><${Ic} i="trash"/></button>
+          <button type="button" class="iconbtn" data-lbl=${T("Traffic")} title=${T("Traffic — graph and members")} aria-label=${T("Traffic — graph and members")} onClick=${() => openGroupView(g.id)}><${Ic} i="bars"/></button>
+          ${/* not on a phone: its swipe holds four actions at most (operator, 2026-10-29); the Filters sheet's group does the same */""}
+          ${isMobile() ? null : html`<button type="button" class="iconbtn" data-lbl=${T("Users")} title=${T("Show this group on the users list")} aria-label=${T("Show this group on the users list")}
+            onClick=${() => { usersView.mode = "users"; usersView.group = g.id; usersView.q = ""; usersView.page = 1; bus.emit(); }}><${Ic} i="user"/></button>`}
+          <button type="button" class="iconbtn" data-lbl=${T("Edit")} title=${T("Edit group")} aria-label=${T("Edit group")} onClick=${() => openGroup(g.id)}><${Ic} i="pencil"/></button>
+          <button type="button" class="iconbtn danger" data-lbl=${T("Delete")} title=${T("Delete group")} aria-label=${T("Delete group")} onClick=${() => confirmDeleteGroup(g, false)}><${Ic} i="trash"/></button>
         </span>
       </span>
     </div>
@@ -544,12 +596,14 @@ function GroupsView({ force }) {
   const setPage = p => { usersView.gpage = p; force(x => x + 1); };
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${TrafficRail}/>
-    <div class="toolbar">
+    ${isMobile() ? null : html`<${TrafficRail}/>`}
+    <div class=${"toolbar" + (isMobile() ? " mtoolbar" : "")}>
       <${ModeIcons} users=${true} force=${force}/>
       <${SearchBox} placeholder=${T("Search groups or members…")} value=${usersView.gq} onInput=${e => { usersView.gq = e.target.value; usersView.gpage = 1; force(x => x + 1); }}/>
-      <${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); }}/>
-      <button class="btn btn-primary" onClick=${() => openCreateGroup()}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
+      ${isMobile() ? filterBtn(filtersOn(), r => html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); r(); }}/>
+          ${sortField(usersView, "gsort", "gdir", GROUP_SORT(), GROUP_DEFDIR, () => { usersView.gpage = 1; force(x => x + 1); r(); })}`)
+        : html`<${RosterFilters} reset=${() => { usersView.gpage = 1; force(x => x + 1); }}/>`}
+      <button class=${"btn btn-primary" + (isMobile() ? " mfab" : "")} onClick=${() => openCreateGroup()}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
     </div>
     ${secTitle(T("Groups"), list.length, false)}
     ${!all.length ? html`<div class="empty"><b>${T("No groups yet")}</b>${T("Put people in a group to share a network with all of them at once, from a device's Networks window.")}</div>`
@@ -589,8 +643,19 @@ export function UsersScreen() {
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${TrafficRail}/>
-    <div class="toolbar">
+    ${isMobile() ? null : html`<${TrafficRail}/>`}
+    ${isMobile() ? html`<div class="toolbar mtoolbar">
+      <${ModeIcons} users=${true} force=${force}/>
+      <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
+      ${filterBtn(filtersOn() || usersView.group, redraw => { const reset = () => { usersView.page = 1; redraw(); force(x => x + 1); };
+        return html`<${Fragment}>
+          <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
+            onChange=${v => { usersView.group = v; reset(); }}
+            options=${[{ value: "", label: T("All groups") }, ...Store.groups().map(g => ({ value: g.id, label: g.name }))]}/>
+          <${RosterFilters} reset=${reset}/>
+          ${sortField(usersView, "sort", "dir", USER_SORT(false), USER_DEFDIR, reset)}<//>`; })}
+      <button class="btn btn-primary mfab" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
+    </div>` : html`<div class="toolbar">
       <${Dropdown} className="selwrap grpsel" ariaLabel=${T("Groups")} value=${usersView.group}
         onChange=${v => { usersView.group = v; usersView.page = 1; force(x => x + 1); }}
         options=${[{ value: "", label: T("All groups") }, ...groups.map(g => ({ value: g.id, label: g.name }))]}/>
@@ -598,7 +663,7 @@ export function UsersScreen() {
       <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
       <${RosterFilters} reset=${() => { usersView.page = 1; force(x => x + 1); }}/>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
-    </div>
+    </div>`}
 
     ${secTitle(inGroup ? T("{name} users", { name: Store.group(usersView.group).name }) : T("Total users"), users.length, false)}
     ${!allUsers.length ? html`<div class="empty"><b>${T("No users yet")}</b>${T("Create a user, then add devices for them — or create a peer on the Peers screen and assign it later.")}</div>`

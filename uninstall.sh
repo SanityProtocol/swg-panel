@@ -662,7 +662,8 @@ rm_log_ns(){   # <namespace> <unit or unit prefix>...
 _swg_left(){ local f
   if $DRYRUN; then [ "${#DID_KEEP[@]}" -gt 0 ]; return; fi   # a dry run removed nothing: judged by its answers
   for f in "$SD"/swg-panel-server.service "$SD"/swg-noded.service "$SD"/swg-sub.service "$SD"/swg-netctl*.service \
-           "$SD"/swg-update.service "$SD"/swg-relay@.service "$SD"/vk-turn-proxy-*.service "$SD"/swg-wdtt-*.service "$SD"/swg-csqtt-*.service; do
+           "$SD"/swg-update.service "$SD"/swg-relay@.service "$SD"/vk-turn-proxy-*.service "$SD"/swg-wdtt-*.service "$SD"/swg-csqtt-*.service \
+           /run/systemd/transient/swg-s5x-*.service; do
     [ -e "$f" ] && return 0; done
   docker_running swg-panel || docker_running swg-node; }
 # ⚠️ AN /etc/swg-panel HOLDING ONLY THE RELAY'S DIR, OR NOTHING, IS NO DATA. swg-noded makes /etc/swg-panel/relay on a node
@@ -722,6 +723,11 @@ rm_node(){
   rmrf $SD/"swg-relay@.service" $SD/swg-relay.slice /etc/swg-panel/relay
   rmrf /run/swg-relay-*.sock   # its status sockets: outside the unit's RuntimeDirectory, unlinked only at a relay's next start
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
+  # The SOCKS5 exits' tunnels (hev-socks5-tunnel, swg-noded's own transient units in swg-exit.slice — SOCKS5-EXIT-PLAN
+  # §6.4): after swg-noded, which would make them again. Their binary and configs go with /var/lib/swg-noded below; the
+  # slice's CPU cap was --runtime and dies with it. (A Docker node's hev is a child of its container.)
+  run sh -c 'for u in $(systemctl list-units --all --plain --no-legend "swg-s5x-*.service" 2>/dev/null | awk "{print \$1}"); do systemctl stop "$u" >/dev/null 2>&1; systemctl reset-failed "$u" >/dev/null 2>&1; done; true'
+  run systemctl stop swg-exit.slice 2>/dev/null || true
   docker_running swg-node || rm_smartdns_redirect   # its dnsmasq just went with it — see rm_smartdns_redirect
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
   rmrf $SD/swg-noded.service; _node_dropins_away; run systemctl daemon-reload
@@ -801,7 +807,7 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
          "$DOCKER_DIR/.dockerignore" "$DOCKER_DIR/VERSION" "$DOCKER_DIR/docker" "$DOCKER_DIR/vendor" \
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js" \
-         "$DOCKER_DIR/js"
+         "$DOCKER_DIR/js" "$DOCKER_DIR/m"   # m/: the phone UI's stylesheet, staged beside js/ since 1.8.11 (S13)
     # Say what that .env still holds. A panel-only install has no node token — its NODE_TOKEN is the placeholder
     # set-in-nodes-screen — and "(node token)" named a key the box never had (1.8.8 qualification, q5).
     local _tok _held="" _env=""
@@ -1293,9 +1299,9 @@ rm_smartdns_redirect(){ local l n=0
     [ -n "$l" ] || continue
     run sh -c "iptables -t nat $(printf '%s' "$l" | sed 's/^-A /-D /')" && n=$((n+1))
   done <<EOS
-$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- "$(_ipt_comment_re swg-smartdns)|$(_ipt_comment_re swg-smartdns-net)")
+$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- "$(_ipt_comment_re swg-smartdns)|$(_ipt_comment_re swg-smartdns-net)|$(_ipt_comment_re swg-s5x-dns)|$(_ipt_comment_re swg-s5x-dns-net)")
 EOS
-  [ "$n" -gt 0 ] && ! $DRYRUN && info "  removed Force-DNS's redirect to the node's own resolver ($n rule(s)) — an interface kept here resolves through its clients' own DNS server again"
+  [ "$n" -gt 0 ] && ! $DRYRUN && info "  removed the DNS redirects to the node's own resolvers — Force DNS's and a SOCKS5 exit's ($n rule(s)) — an interface kept here resolves through its clients' own DNS server again"
   return 0; }
 
 # Remove the node's DATAPATH objects — the filtering / routing / NAT state swg-noded creates at runtime and that
@@ -1362,7 +1368,8 @@ rm_node_netobjects(){
     # the 7000 band, flushed above), so only the rule goes — never `table 6890`. Band spelled out: this file does not
     # read swg-noded; derived there as BASE − (MAX − BASE) − 11, so a change to the table band moves it. …And 6880, the torrent
     # policy's rule (P2P_RULE_PRI: `fwmark 0x40000000 lookup main` under Direct) — a rule only, too (1.8.9 qualification NR-6).
-    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6880 || ($1>=6890 && $1<=6989)'); do
+    # …And 6870, a SOCKS5 exit's partial arrivals' DNS bypass (S5X_ARR_DNS_PRI: `from S ipproto udp dport 53 lookup main`).
+    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989)'); do
       run ip rule del pref "$n"
     done
   fi

@@ -31,6 +31,13 @@ carry traffic asks `_devexit_state`, which reads `dead` for an up device whose t
       ADDS a peer it does not find); any family counts as current, a move keeps the family it was dialling or falls
       back to v4 (never into v6); both CLIs are tried (an amneziawg-go device is a plain `tun` to `ip -d link`); an
       answer that arrives after the probe bound is acted on the next pass; a rebuilt tunnel starts with no history.
+  [9] ADOPTED devices (SOCKS5-EXIT-PLAN §5 — a TUN the operator runs, their own tun2socks or sing-box) are judged in
+      the same batch: dead after 30 s / 3 probes, routed by their kill-switch like WARP; never a network card, a mesh
+      link or an interface the node manages; probed every 60 s while carrying and every pass while failing or dead; a
+      verdict goes with its device (and the imported reap drops a removed exit's history); the snapshot carries
+      `no_traffic` per devexit entry and the panel joins it by device. Reach needs a completed TLS handshake (T1): a
+      userspace stack answers the connect itself, so a connect through a dead proxy proves nothing — run for real on
+      `lo` against a local accept-and-close server and a local TLS server.
 
 Hermetic: `run()` is stubbed and argv inspected; the probes are injected; nothing touches the network.
 
@@ -51,6 +58,7 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-clis        only the first CLI is asked (an amneziawg-go device never re-pointed) — RED in [8]
      --perturb-late        the lookup's answer is not parked for the caller (a late one is lost) — RED in [8]
      --perturb-rebuild     a rebuilt tunnel inherits the old one's lookup history — RED in [5]
+     --perturb-backin      a dead tunnel carrying again reports no `back_in` (the row keeps blaming it) — RED in [5]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile, threading
 
@@ -74,6 +82,7 @@ PLANTS = {
                           "    except BaseException:\n        raise\n    if True:\n        # ⚠️ IN A `finally`: a later exit"),
     "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
     "--perturb-redial": ("            _exit_resolve(dev, rec)              # nothing crossed", "            pass  #"),
+    "--perturb-backin": ('if st.get("ok_since") is not None else {}))', 'if False else {}))'),
     "--perturb-redial-rr": ("    if live_ip in ips:", "    if live_ip in ips[:1]:"),
     "--perturb-ghost": ("    if live is None:\n        return None", "    if live is None:\n        live = \"\""),
     "--perturb-thread": ("            _exit_resolve(dev, rec)              # nothing crossed",
@@ -83,8 +92,30 @@ PLANTS = {
                        "    for c in _exit_clis(rec, dev)[:1]:\n        r = run(c + [\"show\", dev, \"endpoints\"])"),
     "--perturb-late": ("    _EXIT_RESOLVED[dev] = (time.time(), (host, port, ips))\n", ""),
     "--perturb-rebuild": ("                _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)\n", ""),
+    # [9] — Part A
+    "--perturb-adopted-nic": ("        if _dev_is_ether(dev):\n            continue\n", ""),
+    "--perturb-adopted-mesh": ('or dev in mine or dev in managed or dev.startswith("swg_"):', 'or dev in mine:'),
+    "--perturb-adopted-idle": ("or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S)", "or True)"),
+    "--perturb-adopted-pop": ("            _EXIT_HEALTH.pop(k, None); _EXIT_PROBED_AT.pop(k, None)", "            pass"),
+    "--perturb-reap-pop": ("                    _m.pop(od, None)", "                    pass"),
+    "--perturb-adopted-snap": ("        out.append(dict(e, no_traffic=nt) if nt else e)", "        out.append(e)"),
+    "--perturb-adopted-batch": ("+ [(d, {}) for d, due in _ad if due])", ")"),
+    "--perturb-reach-tls": ("            t.do_handshake()\n            return True", "            return True"),
+    "--perturb-blip": ("            out.append((dev, None))\n            continue", "            continue"),                    # F1
+    "--perturb-window": ('                    _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)\n', "                    pass\n"),   # verify F8
+    "--perturb-unseen": ("                if dev in _EXIT_HEALTH:\n                    _exit_judge(dev, {\"err\": \"the device is not up\"}",
+                         "                if True:\n                    _exit_judge(dev, {\"err\": \"the device is not up\"}"),   # review F5
+    # s10-p2-f8 F5/F6: a pass on which the device is not up counts as a failure — the old way only aged the window
+    "--perturb-blipfails": ('                    _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)\n',
+                            '                    _EXIT_HEALTH.get(dev, {}).update(ok_since=None)\n'),
+    "--perturb-nostamp": ('                if dev in _pr and _exit_probe_answered(tr, _rch):   # an unanswered', '                if True:   #'),  # F3
+    "--perturb-snapall": ("        nt = None if d in mine or d in said else _exit_no_traffic(", "        nt = _exit_no_traffic("),  # F5
 }
-MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
+# …and the panel's half of [9] (`devexit_live`), planted in the PANEL source
+PANEL_PLANTS = {
+    "--perturb-adopted-live": ('**({"no_traffic": e["no_traffic"]} if isinstance(e.get("no_traffic"), dict) else {}))', "**{})"),
+}
+MODE = next((a for a in sys.argv[1:] if a in PLANTS or a in PANEL_PLANTS), None)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -101,7 +132,7 @@ def _load(path, name):
         pass
     return mod
 
-if MODE:
+if MODE in PLANTS:
     _src = open(NODED, encoding="utf-8").read()
     _cut, _new = PLANTS[MODE]
     assert _src.count(_cut) == 1, "perturbation anchor for %s is missing or not unique — would FALSE-PASS" % MODE
@@ -111,8 +142,18 @@ if MODE:
     os.unlink(_tmp)
 else:
     N = _load(NODED, "swgnoded")
-P = _load(PANEL, "swgpanel")
+if MODE in PANEL_PLANTS:
+    _src = open(PANEL, encoding="utf-8").read()
+    _cut, _new = PANEL_PLANTS[MODE]
+    assert _src.count(_cut) == 1, "perturbation anchor for %s is missing or not unique — would FALSE-PASS" % MODE
+    _tmp = os.path.join(HERE, ".perturbed-panel-failover.py")
+    open(_tmp, "w", encoding="utf-8").write(_src.replace(_cut, _new, 1))
+    P = _load(_tmp, "swgpanel")
+    os.unlink(_tmp)
+else:
+    P = _load(PANEL, "swgpanel")
 _REAL_PING = N._exit_ping          # the real one, before any section stubs it
+_REAL_REACH = N._exit_reach        # likewise — [9] runs it for real on `lo`
 _REAL_RESOLVE, _REAL_REDIAL = N._exit_resolve, N._exit_redial   # likewise — [5] and [7] record the calls instead
 _redialled, _redial_main = [], []                                 # (the real ones would ask a real resolver)
 FOUND = ("h", "1", ["192.0.2.1"])
@@ -275,6 +316,13 @@ check("…and the routing reads the same verdict", N._devexit_state(D) == "dead"
 check("a tunnel carrying nothing asks whether its endpoint's name has moved", _redialled == [D, D], _redialled)
 check("…and the answer is acted on in the CALLING thread, never by a probe that may outlive its pass",
       _redial_main == [(D, FOUND, True)] * 2, _redial_main)
+# (S9d) carrying again, still dead until EXIT_ALIVE_AFTER_S: the report says how long until traffic moves back
+N._exit_trace = lambda d: dict(OK)
+N.reconcile_exits(_want, {"changed": 0, "errors": []})
+_r3 = next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd")
+check("a dead tunnel carrying again still reports no_traffic, with back_in — the seconds before traffic moves back",
+      isinstance(_r3.get("no_traffic"), dict) and 0 < (_r3["no_traffic"].get("back_in") or 0) <= N.EXIT_ALIVE_AFTER_S, _r3)
+check("…and only then: a tunnel still failing reports none", "back_in" not in _r2["no_traffic"], _r2)
 _calls.clear()
 N._dev_link_state = lambda d: "up" if any(" up " in x for x in _calls) else "absent"
 N._exit_trace = lambda d: dict(OK)
@@ -501,6 +549,195 @@ check("…and never the down-device advice to 'bring it up' (the device is fine)
 _on = issues(True)
 check("dead, kill-switch ON: says the kill-switch is holding it, never that it went direct",
       len(_on) == 1 and "kill-switch is holding" in _on[0] and "own IP" not in _on[0], _on)
+
+# ── 9. ADOPTED devices are judged too (SOCKS5-EXIT-PLAN §5) ───────────────────────────────────────────
+import socket as _so, ssl as _ssl, subprocess as _sp
+_real_time9, _real_ether9, _real_run9 = N.time, N._dev_is_ether, N.run
+_clk = [1000.0]
+N.time = types.SimpleNamespace(time=lambda: _clk[0], monotonic=lambda: _clk[0], sleep=_t.sleep)
+N.EXIT_DEAD_AFTER_S, N.EXIT_DEAD_MIN_PROBES, N.EXIT_PROBE_BOUND_S = 30, 3, 40
+N.EXIT_DIR = tempfile.mkdtemp()
+_up9, _ether9 = {"tun9", "eth7", "swg_q", "awg0"}, {"eth7"}
+N._dev_link_state = lambda d: "up" if d in _up9 else "absent"
+N._dev_is_ether = lambda d: d in _ether9
+_tr9, _probed9 = {"v": dict(BAD)}, []
+N._exit_trace = lambda d: (_probed9.append(d), dict(_tr9["v"]))[1]
+N._exit_reach = lambda d, *a, **k: False
+N._exit_ping = lambda ep, *a, **k: None
+N._exit_judge = _real_judge
+# the onward hop's mesh leg (swg_q), a managed interface (awg0), a network card (eth7), a device that is not there (gone0)
+_DX9 = [{"subnet": "10.17.0.0/24", "dev": d, "table": 7000, "killswitch": False} for d in ("tun9", "eth7", "swg_q", "awg0", "gone0")]
+def pass9(dx=_DX9, want=()):
+    N.reconcile_exits(list(want), {"changed": 0, "errors": []}, devexit=dx, managed={"awg0"})
+    _clk[0] += 5
+try:
+    N._EXIT_HEALTH.clear(); N._EXIT_PROBED_AT.clear()
+    pass9()
+    check("[9] an adopted point-to-point device the routing names is probed (in the pass's one batch)", _probed9 == ["tun9"], _probed9)
+    check("[9] …a network card never enters _EXIT_HEALTH (T5: a probe pinned to it lies)", "eth7" not in N._EXIT_HEALTH, N._EXIT_HEALTH)
+    check("[9] …nor a mesh link or an interface the node manages (the onward hop's leg has its own health)",
+          not ({"swg_q", "awg0"} & set(N._EXIT_HEALTH)), sorted(N._EXIT_HEALTH))
+    for _i in range(5):                      # 1005 … 1025: failing, probed every pass, not dead before 30 s
+        pass9()
+    check("[9] failing, it is probed EVERY pass (not the 60 s idle cadence)", _probed9 == ["tun9"] * 6, _probed9)
+    check("[9] …and 25 s of failure is not dead (the same hysteresis as WARP)", N._devexit_state("tun9") == "up", N._EXIT_HEALTH.get("tun9"))
+    pass9()                                  # 1030
+    check("[9] 30 s / 3+ probes carrying nothing: the adopted device is judged dead", N._devexit_state("tun9") == "dead",
+          N._EXIT_HEALTH.get("tun9"))
+    def lower9(ks):
+        calls = []
+        N.run = lambda argv, **kw: (calls.append(argv if isinstance(argv, list) else [str(argv)]), _R(""))[1]
+        N._DEVEXIT["list"] = []
+        N.reconcile_cascade({"interfaces": {}}, {"devexit": [{"subnet": "10.17.0.0/24", "dev": "tun9", "table": 7000,
+                                                              "killswitch": ks}]}, None, "")
+        return [" ".join(map(str, c)) for c in calls if c and c[0] == "ip"]
+    _R9 = "ip route replace default dev tun9 table 7000"
+    _c = lower9(False)
+    check("[9] dead adopted device, kill-switch OFF: no route into it and no prohibit — traffic goes direct",
+          _R9 not in _c and GUARD not in _c, _c)
+    _c = lower9(True)
+    check("[9] dead adopted device, kill-switch ON: the prohibit holds it, with the from-rule that reaches it",
+          _R9 not in _c and GUARD in _c and RULE in _c, _c)
+    _rep9 = [e for e in N._devexit_report() if e.get("dev") == "tun9"]
+    check("[9] the snapshot's devexit entry says it is dead and why (`no_traffic`) — how the panel learns it",
+          _rep9 and _rep9[0].get("state") == "dead" and (_rep9[0].get("no_traffic") or {}).get("why") == BAD["err"], _rep9)
+    # F5: once per device, and never for an imported exit's device (its row carries it)
+    N._DEVEXIT["list"] = [{"dev": "tun9", "subnet": "10.17.0.0/24", "state": "dead"}, {"dev": "tun9", "subnet": "10.18.0.0/24", "state": "dead"},
+                          {"dev": "wgx-imp", "subnet": "10.19.0.0/24", "state": "dead"}]
+    N._EXIT_HEALTH["wgx-imp"] = dict(N._EXIT_HEALTH["tun9"]); _xl = N._EXITS["list"]
+    N._EXITS["list"] = [{"id": "imp", "device": "wgx-imp"}]
+    _rp = N._devexit_report()
+    check("[9] …once per device (the panel reads one), and not for an imported exit's device (its row has it) — F5",
+          [bool(e.get("no_traffic")) for e in _rp] == [True, False, False], _rp)
+    N._EXITS["list"] = _xl; N._EXIT_HEALTH.pop("wgx-imp", None)
+    # F1: the device blips (its service recreated it) for a pass while the routing still names it — the verdict stays
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")
+    check("[9] a dead device that blips down for a pass keeps its verdict: back up, it is still dead (kill-switch holds) — F1",
+          N._devexit_state("tun9") == "dead", N._EXIT_HEALTH.get("tun9"))
+    # verify F8: …and its windows restart, so one probe after the blip cannot flip it: a dead one that had begun carrying
+    # (ok_since set long ago) needs EXIT_ALIVE_AFTER_S again, not one good probe
+    if "tun9" in N._EXIT_HEALTH:                        # (gone already when F1's plant is in: the check below then fails)
+        N._EXIT_HEALTH["tun9"]["ok_since"] = _clk[0] - 600
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")
+    _tr9["v"] = dict(OK); pass9(); _tr9["v"] = dict(BAD)
+    check("[9] …and its windows restart across the blip: one good probe after it does not bring a dead device back — F8",
+          N._devexit_state("tun9") == "dead" and (N._EXIT_HEALTH.get("tun9") or {}).get("ok_since") is not None
+          and _clk[0] - N._EXIT_HEALTH["tun9"]["ok_since"] < N.EXIT_ALIVE_AFTER_S, N._EXIT_HEALTH.get("tun9"))
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")          # (a blip again: the recovery below is timed from scratch)
+    # F8 card F1/F2: a FAILING (not yet dead) device that blips keeps its failure count and is probed again the moment it is back
+    _saved9 = dict(N._EXIT_HEALTH["tun9"]) if "tun9" in N._EXIT_HEALTH else None
+    N._EXIT_HEALTH["tun9"] = {"dead": False, "fail_since": _clk[0] - 25, "fails": 2, "ok_since": None, "since": 0, "why": ""}
+    N._EXIT_PROBED_AT["tun9"] = _clk[0]
+    _up9.discard("tun9"); pass9(); _up9.add("tun9"); _probed9.clear()
+    pass9()
+    check("[9] a failing device that blips is probed again the moment it is back — F8 card F1", _probed9 == ["tun9"], _probed9)
+    check("[9] …and its failures kept counting across the blip, so it is judged dead (a flapping TUN cannot dodge the judge) — F8 card F2",
+          N._devexit_state("tun9") == "dead", N._EXIT_HEALTH.get("tun9"))
+    # …and so is a HEALTHY one: a TUN its service recreated is checked at once, not when its idle minute runs out
+    N._EXIT_HEALTH["tun9"] = {"dead": False, "fail_since": None, "fails": 0, "ok_since": _clk[0] - 100, "since": 0, "why": ""}
+    N._EXIT_PROBED_AT["tun9"] = _clk[0]
+    _tr9["v"] = dict(OK)
+    _up9.discard("tun9"); pass9(); _up9.add("tun9"); _probed9.clear()
+    pass9()
+    check("[9] a healthy device that blips is probed the moment it is back, not when its idle minute ends — F8 card F1",
+          _probed9 == ["tun9"], _probed9)
+    # s10-p2-f8 F5/F6: a device that STAYS down is judged by its downtime alone — it carries nothing, so "30 s over 3+ passes"
+    # holds of it too — and no probe is spent on a device that is not there
+    # review F5: …but only once it has been judged at all — a TUN named before it is first created is not "dead" when it appears
+    N._EXIT_HEALTH.pop("tun9", None); N._EXIT_PROBED_AT.pop("tun9", None)
+    _up9.discard("tun9"); _probed9.clear()
+    for _i in range(7):                      # +0 … +30 s, never up yet
+        pass9()
+    check("[9] a device not yet created is not judged by its absence: no verdict, no probe — review F5",
+          "tun9" not in N._EXIT_HEALTH and _probed9 == [], (N._EXIT_HEALTH.get("tun9"), _probed9))
+    _up9.add("tun9"); _tr9["v"] = dict(OK); pass9()                                   # seen once, carrying
+    _up9.discard("tun9"); _probed9.clear()
+    for _i in range(7):                      # +0 … +30 s down
+        pass9()
+    _st9 = dict(N._EXIT_HEALTH.get("tun9") or {})
+    _up9.add("tun9")
+    check("[9] a device seen before and down for 30 s over 3+ passes is judged dead with no probe at all, and says why — F5/F6",
+          _st9.get("dead") is True and _st9.get("why") == "the device is not up" and _probed9 == [], (_st9, _probed9))
+    _tr9["v"] = dict(BAD)
+    if _saved9 is not None:
+        N._EXIT_HEALTH["tun9"] = _saved9
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")
+    _probed9.clear(); _tr9["v"] = dict(OK)
+    _n = 0
+    while N._devexit_state("tun9") == "dead" and _n < 20:
+        pass9(); _n += 1
+    check("[9] dead, it is probed every pass, and carrying again for 60 s brings it back",
+          N._devexit_state("tun9") == "up" and _probed9 == ["tun9"] * _n and _n == 13, (_n, _probed9))
+    _probed9.clear()
+    for _i in range(11):                     # +5 … +55 after the recovery probe
+        pass9()
+    check("[9] carrying, it is probed at most every 60 s (a metered proxy is not billed for a probe every 5 s)",
+          _probed9 == [], _probed9)
+    pass9()
+    check("[9] …and again once the minute is up", _probed9 == ["tun9"], _probed9)
+    # F3: a probe that answered nothing does not start the idle minute
+    _tr_save, _rch_save = N._exit_trace, N._exit_reach
+    N._exit_trace = lambda d: (_probed9.append(d), {})[1]; N._exit_reach = lambda d, *a, **k: None
+    N._EXIT_PROBED_AT.pop("tun9", None); _probed9.clear()
+    pass9(); pass9()
+    check("[9] a probe that answered nothing (no trace, reach unaskable) is asked again next pass, not in a minute — F3",
+          _probed9 == ["tun9", "tun9"], _probed9)
+    N._exit_trace, N._exit_reach = _tr_save, _rch_save
+    pass9(dx=[])
+    check("[9] a device the routing no longer names loses its verdict and its probe clock (T9)",
+          "tun9" not in N._EXIT_HEALTH and "tun9" not in N._EXIT_PROBED_AT, (N._EXIT_HEALTH, N._EXIT_PROBED_AT))
+    # the imported reap: a removed exit's verdict and lookup history go with it
+    json_ = __import__("json")
+    json_.dump({"device": "wgx-deadbeef"}, open(os.path.join(N.EXIT_DIR, "deadbeef.json"), "w"))
+    N._EXIT_REDIAL_AT["wgx-deadbeef"] = 1; N._EXIT_RESOLVED["wgx-deadbeef"] = (0, FOUND)
+    pass9(dx=[])
+    check("[9] the reap of a removed exit drops its redial clock and parked lookup (T9, §12.2 item 8)",
+          "wgx-deadbeef" not in N._EXIT_REDIAL_AT and "wgx-deadbeef" not in N._EXIT_RESOLVED,
+          (N._EXIT_REDIAL_AT, N._EXIT_RESOLVED))
+finally:
+    N.time, N._dev_is_ether, N.run = _real_time9, _real_ether9, _real_run9
+
+# T1 — the reach probe for real, pinned to `lo`: a server that accepts and closes is a userspace stack with a dead proxy
+_cd = tempfile.mkdtemp()
+_crt, _key = os.path.join(_cd, "c.pem"), os.path.join(_cd, "k.pem")
+_sp.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=reach", "-days", "1",
+         "-keyout", _key, "-out", _crt], capture_output=True, check=True)
+def _srv(tls):
+    ls = _so.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(8)
+    ctx = None
+    if tls:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(_crt, _key)
+    def loop():
+        while True:
+            try:
+                c, _ = ls.accept()
+            except OSError:
+                return
+            try:
+                if ctx:
+                    c = ctx.wrap_socket(c, server_side=True)
+            except Exception:
+                pass
+            with contextlib.suppress(Exception):
+                c.close()
+    threading.Thread(target=loop, daemon=True).start()
+    return ls, ls.getsockname()[1]
+import contextlib
+_ls1, _p1 = _srv(False)
+_ls2, _p2 = _srv(True)
+_r_close = _REAL_REACH("lo", targets=(("127.0.0.1", _p1),), timeout=2)
+_r_tls = _REAL_REACH("lo", targets=(("127.0.0.1", _p1), ("127.0.0.1", _p2)), timeout=2)
+_ls1.close(); _ls2.close()
+check("[9] T1: a connect the far end closes without a TLS answer is NOT reach (a dead proxy behind a TUN)", _r_close is False, _r_close)
+check("[9] T1: …a completed TLS handshake is (any target, all at once)", _r_tls is True, _r_tls)
+
+# the panel joins the verdict by DEVICE for an adopted exit's `live` (an adopted device has no `snap.exits` row)
+_dl = P.devexit_live({"devexit": [{"dev": "tun9", "subnet": "10.17.0.0/24", "state": "dead",
+                                   "no_traffic": {"since": 1, "why": "x"}},
+                                  {"dev": "tun9", "subnet": "10.18.0.0/24", "state": "dead"},
+                                  {"dev": "wgx-a", "state": "up"}, "junk"]})
+check("[9] panel: an adopted device's live = its state and verdict, one per device",
+      _dl == {"tun9": {"state": "dead", "no_traffic": {"since": 1, "why": "x"}}, "wgx-a": {"state": "up"}}, _dl)
 
 N._dev_link_state = _REAL_LINK
 

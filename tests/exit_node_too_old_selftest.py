@@ -24,6 +24,9 @@ the real `exitHealth` in a node process.
 Run: python3 tests/exit_node_too_old_selftest.py      (0 = pass)
      --perturb-panel   panel stops deriving the flag  -> the old node must go back to spinning
      --perturb-spa     SPA stops reading it           -> same, from the other end
+     --perturb-join    the panel stops joining an ADOPTED exit's device verdict (`snap.devexit`) into its `live`
+                       -> [5]: an adopted device the node judged dead reads ok again (SOCKS5 P2)
+     --perturb-join-all  every exit reads the device report, imported ones too -> [5]: the imported row loses its own
 """
 import importlib.machinery, importlib.util, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 
@@ -32,6 +35,8 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PP = "--perturb-panel" in sys.argv
 PS = "--perturb-spa" in sys.argv
+PJ = "--perturb-join" in sys.argv
+PJA = "--perturb-join-all" in sys.argv
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -46,9 +51,17 @@ _DERIVE = '            _x_unsup = bool(snap) and not isinstance(snap.get("exits"
 assert SRC.count(_DERIVE) == 1, "anchor missing — this run would FALSE-PASS:\n" + _DERIVE
 if PP:
     SRC = SRC.replace(_DERIVE, '            _x_unsup = False\n')
+_JOIN = '                                             else (_dxlive.get(str(e.get("device") or "")) or {})),\n'
+assert SRC.count(_JOIN) == 1, "anchor missing — this run would FALSE-PASS:\n" + _JOIN
+_JALL = '                                       live=((_xlive.get(str(e.get("id"))) or {}) if e.get("producer") == "imported"\n'
+assert SRC.count(_JALL) == 1, "anchor missing — this run would FALSE-PASS:\n" + _JALL
+if PJA:
+    SRC = SRC.replace(_JALL, _JALL.replace('e.get("producer") == "imported"', "False"))
+if PJ:
+    SRC = SRC.replace(_JOIN, '                                             else {}),\n')
 
 panel = PANEL
-if PP:                                           # the planted copy (and its pyc) in a temp dir, never in tests/
+if PP or PJ or PJA:                                     # the planted copy (and its pyc) in a temp dir, never in tests/
     _pd = tempfile.mkdtemp(prefix="xtoo-panel-")
     _fd, panel = tempfile.mkstemp(suffix=".py", prefix="xtoo-", dir=_pd)
     os.write(_fd, SRC.encode()); os.close(_fd)
@@ -58,7 +71,7 @@ try:
     _l.exec_module(P)
 except SystemExit:
     pass
-if PP:
+if PP or PJ or PJA:
     shutil.rmtree(_pd, ignore_errors=True)
 P.ev_append = lambda *a, **k: None
 
@@ -73,7 +86,16 @@ EXITS = [{"id": "aabbccdd", "label": "imported one", "producer": "imported", "pr
 #   never  a node that has never synced (no snapshot)                     -> ordinary "creating"
 SNAPS = {"old":   {"hostname": "old", "interfaces": {}, "generated_at": 1789000000},
          "new":   {"hostname": "new", "interfaces": {}, "generated_at": 1789000000, "exits": []},
-         "never": None}
+         "never": None,
+         # a CURRENT node that judged the adopted device dead (SOCKS5 P2): the verdict rides its devexit entry
+         # (its imported exit is healthy by its own row, and its device's entry reads up)
+         "judged": {"hostname": "judged", "interfaces": {}, "generated_at": 1789000000,
+                    "exits": [{"id": "aabbccdd", "device": "wgx-aabbccdd", "provider": "warp", "up": True, "handshake": 9,
+                               "cfg_sig": "0123456789ab", "trace": {"ip": "203.0.113.7"}, "error": ""}],
+                    "exit_candidates": [{"name": "lab0", "up": True}],
+                    "devexit": [{"dev": "lab0", "subnet": "10.17.0.0/24", "state": "dead", "killswitch": False,
+                                 "no_traffic": {"since": 1789000000, "why": "TimeoutError: timed out"}},
+                                {"dev": "wgx-aabbccdd", "subnet": "10.18.0.0/24", "state": "up", "killswitch": False}]}}
 
 
 def state_nodes():
@@ -181,10 +203,17 @@ _nf = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").rea
 check("…and nFields still does not carry the field (it is panel-derived, not operator-owned)",
       "exits_unsupported" not in _nf.split("const nFields")[1].split("const [nodeEdits")[0])
 
+print("\n[5] an ADOPTED device's verdict travels from the node's devexit entry to the row (SOCKS5 P2)")
+_j = (V.get("judged") or {}).get("adopted") or {}
+check("an adopted device the node judged dead reads `stalled` off the panel's own record", _j.get("state") == "stalled", _j)
+check("…saying where its traffic went (kill-switch off: the node's own IP)", "node's own IP" in (_j.get("why") or ""), _j.get("why"))
+check("…and the imported exit on the same node keeps its own row (by id), not the device's report",
+      ((V.get("judged") or {}).get("imported") or {}).get("state") == "ok", (V.get("judged") or {}).get("imported"))
+
 print()
-if PP or PS:
+if PP or PS or PJ or PJA:
     ok = bool(FAILS)
-    print(("PERTURB OK (%s) — %d checks went red" % ("panel" if PP else "spa", len(FAILS))) if ok
+    print(("PERTURB OK (%s) — %d checks went red" % ("panel" if PP else "join-all" if PJA else "join" if PJ else "spa", len(FAILS))) if ok
           else "PERTURB FAILED — the fix was removed and every check still passed")
     sys.exit(0 if ok else 1)
 print(("FAILED: " + ", ".join(FAILS)) if FAILS else "ALL PASS")

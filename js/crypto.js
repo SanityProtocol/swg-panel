@@ -18,7 +18,7 @@ import { Store, api, bus } from "./store.js";
 import { Ic, Sheet, Panel, toast, copy, closeModal, pushModal } from "./ui.js";
 import { turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
 import { h, Fragment } from "preact";
-import { useState, useEffect, useRef } from "preact/hooks";
+import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -607,10 +607,10 @@ export async function subMaybePublish(userId, peerId, privkey, psk) {
     // every publish 500'd and the only trace was a console line. Pin it to the peer's row — the same surface
     // rotatePeerKeys already uses for the failures it can name, auto-expiring like the rest.
     if (peerId) {
-      Store.rowErrors["peer:" + peerId] = {
-        msg: T("its config wasn't published to the subscription — {v1}", { v1: String((e && e.message) || e) }),
-        at: Date.now() };
+      const msg = T("its config wasn't published to the subscription — {v1}", { v1: String((e && e.message) || e) });
+      Store.rowErrors["peer:" + peerId] = { msg, at: Date.now() };
       Store.apply();
+      return msg;   // and to a caller that waits for it (a phone's Rotate, review F83); the row's copy may be swept by now
     }
   }
 }
@@ -621,12 +621,14 @@ export async function subMaybePublish(userId, peerId, privkey, psk) {
 // in-session key copy — after that the config is unrecoverable and the peer must be rekeyed.
 const _pendingPublish = new Map();
 export async function subFlushPending() {
-  if (Store.storeMode !== "encrypted" || !subSKCached() || !_pendingPublish.size) return;
+  if (Store.storeMode !== "encrypted" || !subSKCached() || !(_pendingPublish.size || _pendingKeep.size)) return;
   let n = 0;
   for (const [peerId, p] of [..._pendingPublish]) {
     try { await subMaybePublish(p.userId, peerId, p.privkey, p.psk); _pendingPublish.delete(peerId); n++; } catch (_) {}
   }
-  if (n) bus.emit();
+  const tried = _pendingKeep.size;
+  for (const a of [..._pendingKeep.values()]) if ((await exitKeepRouter(...a)) === true) n++;   // a dial-in router's key, the same way
+  if (n || tried) bus.emit();      // a failed keep too: the open router sheet says why (s9c F60)
 }
 // Peers the backfill confirmed have NO recoverable config server-side (no session key, no stored plaintext, no
 // blob) — the panel never held their private key, so it can't rebuild or publish them (key custody). Re-probing
@@ -657,7 +659,8 @@ export function subNoConfHas(pid, pubkey) { return !!pubkey && _subNoConf.get(pi
 // skipping. Never throws.
 let _vaultPromptPending = null;   // the in-flight unlock promise while the modal is open — coalesces concurrent asks
 export function ensureVaultUnlocked(opts) {
-  if (Store.storeMode !== "encrypted") return Promise.resolve(true);   // nothing is stored encrypted → no key needed
+  // nothing is stored encrypted → no key needed; `always`: something kept while it was on is still read with the key
+  if (Store.storeMode !== "encrypted" && !(opts && opts.always)) return Promise.resolve(true);
   if (subSKCached()) return Promise.resolve(true);                     // already unlocked this session
   if (_vaultPromptPending) return _vaultPromptPending;                 // a modal is already up → share it (one prompt for a burst of actions)
   _vaultPromptPending = new Promise(function (resolve) {
@@ -677,8 +680,9 @@ export async function subPublishOrPrompt(userId, peerId, privkey, psk) {
     });
     if (!ok) { _pendingPublish.set(peerId, { userId, privkey, psk }); return; }   // skipped → remember, so a later in-session unlock still saves it (incl. overwriting a stale rotate blob)
   }
-  await subMaybePublish(userId, peerId, privkey, psk);
+  const err = await subMaybePublish(userId, peerId, privkey, psk);
   _pendingPublish.delete(peerId);   // published → no longer pending
+  return err;
 }
 // A subscription-affecting action that DOESN'T hand us a fresh private key (e.g. assigning an EXISTING peer to a
 // user, which keeps its key) can still leave that user with an unpublished peer → an empty "Not ready yet" QR on
@@ -1151,9 +1155,11 @@ function vaultMissing(onNav) {
   return html`<${Fragment}>${before}<a href="#/panel/settings" onClick=${onNav}>${T("Settings → Client configs → Encryption")}</a>${after}<//>`;
 }
 
+// A sheet that re-renders on every poll (the router config's, while a keep may still land) shows the same config again
+// without encoding it again (backlog C review F5) — memoised PER QR, so the image (it encodes a private key) goes with the
+// QR that showed it: a module-wide cache kept up to 8 keys in the tab after the sheet closed and the vault locked (verify F7)
 export function QR({ conf, label, px }) {
-  let src = null;
-  try { src = qrDataURL(conf, px || 360); } catch (_) { src = null; }
+  const src = useMemo(() => { try { return qrDataURL(conf, px || 360); } catch (_) { return null; } }, [conf, px]);
   if (!src) return html`<div class="qr-fail">${T("config too large")}<br>${T("to encode as QR")}</div>`;
   return html`<div class="qr" title=${T("Tap to enlarge for scanning")} onClick=${() => qrZoom(conf, label)}>
     <img class="qrimg" alt=${T("config QR")} src=${src}/></div>`;
@@ -1309,13 +1315,85 @@ export async function blobConfig(peer, node, iface) {
     }
   } catch (_) { return CONF_UNREACHABLE; }     // fetch threw → we did not learn anything about this peer
   try {
-    const secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));   // GCM auth fails on a wrong key
+    let secret;
+    // GCM refuses a blob sealed under a key this bucket's unlock-key is not (one moved in from another bucket): the same
+    // answer as an unwrap that fails above — not "no stored config", which recommends re-issuing as if nothing were there
+    try { secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec))); } catch (_) { return CONF_SEALED_OLD; }
     if (!secret || !secret.k) return null;
     const eff = effectiveClientParams(peer, t, meta);
     return buildConf({ privkey: secret.k, address: (t.ip || "").split("/")[0] + "/32",
       dns: eff.dns, mtu: eff.mtu, awg_params: meta.awg_params, server_pubkey: meta.public_key,
       psk: secret.p || peer.psk, endpoint: meta.endpoint, allowed: eff.allowed, keepalive: eff.keepalive });
   } catch (_) { return null; }
+}
+
+// A dial-in exit's ROUTER key is kept in the same store (1.8.11 S9c), in its node's bucket (SUB_EXIT_PFX on the server):
+// {k: the router's private key, n: the node's public key}, encrypted here under the bucket's unlock-key as a peer's {k, p}
+// is. The config itself is never stored — it is rebuilt from the exit's stored profile each time it is shown.
+export const exitBucket = nid => "_x_" + nid;
+// Keeps skipped while the vault was locked — "node|exit" → exitKeepRouter's arguments. The router's private key lives only
+// in this tab, so, as a peer's in _pendingPublish, unlocking later in the same session still keeps it (subFlushPending).
+const _pendingKeep = new Map();
+// "node|exit" → why the last try to keep a queued one failed (a flush after an unlock), so the open sheet can say it (s9c F60)
+const _keepFail = new Map();
+// What exitKeepRouter answers while the vault is locked: a sentinel, not a sentence — a sentence compared against T() stops
+// matching after a language switch (s9d F10)
+export const EXIT_KEEP_LOCKED = Symbol("exit-keep-locked");
+// The keep of this exit's router key as this tab knows it: "queued" (waiting for an unlock), a sentence (its last try failed —
+// still queued, or refused for good and dropped), or null (nothing waiting: kept). The router sheet reads it again after a
+// flush (s9d F11).
+export function exitKeepState(nid, exitId) {
+  const pk = nid + "|" + exitId;
+  return _keepFail.get(pk) || (_pendingKeep.has(pk) ? "queued" : null);
+}
+// → true (kept), false (the store is off), EXIT_KEEP_LOCKED, or a sentence saying why it was not kept. Never throws.
+export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub, nodePriv) {
+  if (Store.storeMode !== "encrypted") return false;
+  const pk = nid + "|" + exitId;
+  try {
+    if (!subSKCached()) { _pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); _keepFail.delete(pk); return EXIT_KEEP_LOCKED; }
+    const uid = exitBucket(nid), unlockKey = await ensureUserUnlockKey(uid);
+    // null is either a key this vault cannot open or a refused mint — the map ensureUserUnlockKey just read says which
+    if (!unlockKey) {
+      const sealed = !!((await subUsersMap())[uid] || {}).unlock_by_sk;
+      const why = sealed ? T("its encryption bucket was sealed with a previous encryption key") : T("couldn't store the router config");
+      // a queued keep says why it failed, as the request's own failures do — and a sealed bucket opens on no later unlock
+      // either, so it is not re-tried on each one (backlog C review F1)
+      if (_pendingKeep.has(pk)) { _keepFail.set(pk, why); if (sealed) _pendingKeep.delete(pk); }
+      return why;
+    }
+    const sec = await subEnc(unlockKey, new TextEncoder().encode(JSON.stringify({ k: routerPriv, n: nodePub })));
+    // the node key sealed inside, named by the digest the panel stamps from the record — a re-paste in between is refused
+    const nkh = (await sha256hex(nodePriv)).slice(0, 16);
+    const r = await api.subExitBlob({ node: nid, exit: exitId, pub: routerPub, nkh, sec });
+    if (r && r.ok !== false) { _pendingKeep.delete(pk); _keepFail.delete(pk); return true; }   // only now: a failed keep stays queued
+    const why = srvText(r) || T("couldn't store the router config");
+    // …unless the panel refused it for good — the exit is gone, its keys changed since, the request is malformed: re-posting
+    // that on every unlock would fail the same way for ever (s9c F57)
+    if (_pendingKeep.has(pk)) _keepFail.set(pk, why);
+    if (r && ["stale", "not_found", "bad_request"].includes(r.code)) _pendingKeep.delete(pk);   // its reason stays for the sheet
+    return why;
+  } catch (e) { const why = String((e && e.message) || e); if (_pendingKeep.has(pk)) _keepFail.set(pk, why); return why; }
+}
+// A kept key the vault is locked for: the caller asks to unlock (whatever the store's mode now) and reads again.
+export const EXIT_LOCKED = Symbol("exit-locked");
+// → {k, n, pub}; null when none is kept; EXIT_LOCKED; CONF_UNREACHABLE / CONF_SEALED_OLD as blobConfig says them. One request:
+// the bucket's wrapped unlock-key comes with the ciphertext, so a blip in a second read cannot turn into "nothing kept".
+export async function exitRouterKey(nid, exitId) {
+  let r, unlockKey;
+  try {
+    r = await api.subExitBlobGet(nid, exitId);
+    if (r && r.code === "not_found") return null;                 // no longer a dial-in exit here: nothing to show
+    if (!r || r.ok === false || !r.data) return CONF_UNREACHABLE;
+    if (!r.data.sec) return null;
+    if (!subSKCached()) return EXIT_LOCKED;
+    if (!r.data.unlock_by_sk) return CONF_SEALED_OLD;             // a key with no bucket key: nothing here opens it
+    try { unlockKey = await subRecoverUnlock(r.data); } catch (_) { return CONF_SEALED_OLD; }
+  } catch (_) { return CONF_UNREACHABLE; }
+  try {
+    const s = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, r.data.sec)));
+    return s && s.k && s.n ? { k: s.k, n: s.n, pub: r.data.pub || "" } : null;
+  } catch (_) { return CONF_SEALED_OLD; }                         // GCM refused it: sealed under a key this vault does not hold
 }
 
 // A config the server currently can't build (e.g. the peer's interface is a ghost — gone with no key) returns
@@ -1346,7 +1424,20 @@ export function getConfig(pubkey, node, iface) {
   // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   return blobConfig(peer, node, iface).then(c => {
     if (c === CONF_UNREACHABLE) { _confUnreach.set(mk, Date.now()); return null; }   // learned nothing — do NOT miss()
-    if (c === CONF_SEALED_OLD) { _confSealed.set(mk, Date.now()); return null; }     // permanent: the key is gone, not the panel
+    if (c === CONF_SEALED_OLD) {                // permanent: the key is gone, not the panel —
+      _confSealed.set(mk, Date.now());
+      // …but a panel still migrating may hold this peer's config in plaintext too, and that one still opens (backlog C review F2)
+      if (!(Store.configsPlaintext > 0)) return null;
+      // no copy either: asked once this epoch, not on every render (verify F8) — the in-memory miss only, never the persisted
+      // "no config" mark: after a reload the peer must still read sealed, not "No stored config — re-issue"
+      const sealedMiss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); return null; };
+      return api.config(pubkey, node, iface).then(r => {
+        const conf = rerenderConf(r.ok ? r.data.config : null, node, iface);
+        if (!conf) return sealedMiss();
+        _confSealed.delete(mk); hit();
+        return conf;
+      }).catch(sealedMiss);
+    }
     _confUnreach.delete(mk);
     if (c) { hit(); return c; }
     // /api/config is the LEGACY plaintext endpoint; in the (normal) encrypted-at-rest steady state there are no
@@ -1383,7 +1474,7 @@ export function VaultPromptSheet({ opts, onDone }) {
   };
   return html`<${Sheet} title=${opts.title || T("Enter your password to continue")} width=${480} onClose=${() => done(false)}
     foot=${html`<${Fragment}><span class="grow"></span>
-      <button class="btn btn-ghost" disabled=${busy} onClick=${() => done(false)}>${T("Skip")}</button>
+      <button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${() => done(false)}>${T("Skip")}</button>
       <button class="btn btn-primary" disabled=${busy || !pw || exists === false} onClick=${unlock}>${busy ? T("Unlocking…") : T("Unlock vault")}</button></>`}>
     <div class="vaultprompt">
       <p class="vp-reason">${opts.reason || T("This action needs your Encryption Vault, which isn’t unlocked in this session.")}</p>

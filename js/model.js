@@ -13,6 +13,7 @@
 import { isWdttIface, isCsqttIface, isSelfContainedIface, portOf } from "./util.js";
 import { Store } from "./store.js";
 import { T } from "./i18n.js";
+import { portsClean, portsToks, portsSpans } from "./rulerows.js";   // the port rules' grammar — the never-cut list reads it too
 
 // ── interface / target taxonomy ──────────────────────────────────────────────────────────────────
 // wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
@@ -165,6 +166,25 @@ export const platformLabel = p => PLATFORM_NAMES[p] || (p ? p.charAt(0).toUpperC
 
 export const iTypeOf = (node, iface) => kindOf(node, iface, null);   // by (node, iface) — the TargetPicker's one-kind lock + peer-create dispatch key off it
 export const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // by roster TARGET — every protocol tag/colour uses this
+// Ports the torrent filter never cuts (S11c). The built-in list — twinned with the panel's P2P_PORTOK_DEFAULT and the
+// node's _P2P_PORTOK (a gate compares the three). `portokRead` reads what the operator typed by the port rules' own grammar
+// (`portsClean`, gated on tests/ports_vectors.json, as the panel stores it): `list` canonical, `bad` the entries it cannot
+// take, `tooMany` past the token limit, `ports` how many ports from 1024 up it covers — below that nothing is ever cut.
+export const P2P_PORTOK_DEFAULT = ["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-8810", "19302-19309", "27000-27200", "51820"];
+export const PORTOK_WIDE = 1000;   // more ports than this: encrypted torrents get through on a real share of the range
+export function portokRead(text) {
+  const bad = portsToks(text).filter(t => portsClean("both", t).bad);
+  const r = portsClean("both", text == null ? "" : String(text));
+  const list = r.list ? r.list.split(",") : [];
+  const sp = r.list ? (portsSpans({ proto: "both", list: r.list }) || [])[1] || [] : [];
+  const ports = sp.reduce((n, [a, b]) => n + Math.max(0, b - Math.max(a, 1024) + 1), 0);
+  return { list, bad, tooMany: r.bad === "too_many", ports };
+}
+export const portokSame = (a, b) => (a || []).join(",") === (b || []).join(",");
+
+// Can this device be marked a router (S11b)? Only through a wg/awg deployment — a router runs WireGuard / AmneziaWG, and a
+// keyless one (WDTT / csqtt) is an app on one device. A device already marked keeps the switch, so it can be turned off.
+export const routerCapable = p => !!p && (p.router === true || (p.targets || []).some(t => ["wg", "awg"].includes(targetType(t))));
 // The port a CLIENT dials for an adoption candidate. For wg/awg that is the interface's own listen port; for a
 // running WDTT server it is NOT — the fork's DTLS listener is what clients dial, and the candidate's listen_port
 // is the tunnel's own internal WG port, which nothing outside ever connects to. Reporting that as "Listen" put a
@@ -354,7 +374,7 @@ export function suggestPort(node, kind, extra) {
   const wdttPorts = (snap.wdtt || []).flatMap(w => w ? [Number(String(w.listen || "").split(":").pop()), Number(w.wg_port)] : []).filter(Boolean);
   // csqtt instances (raw TUN) each claim ONE port — the DTLS listen — and, like WDTT, don't appear in snap.interfaces.
   const csqttPorts = (snap.csqtt || []).map(c => c ? Number(String(c.listen || "").split(":").pop()) : 0).filter(Boolean);
-  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...csqttPorts, ...pendingCsqttPorts(node), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
+  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...csqttPorts, ...pendingCsqttPorts(node), ...dialinPorts(node).map(x => x[1]), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
   const mine = kind === "turn" ? turnPorts : ifacePorts;
   // Never hand out the UPSTREAM DEFAULTS. An unmanaged WDTT server binds 56000 (DTLS) + 56001 (internal WG) out
   // of the box and a stock WireGuard 51820, so suggesting one walks straight into a collision with something the
@@ -381,13 +401,18 @@ export function suggestPort(node, kind, extra) {
   // makes a fresh node suggest the documented default, the same as a node with no interfaces at all.
   const mineUser = mine.filter(q => !inMesh(q));
   let p = mineUser.length ? Math.max(...mineUser) + 1 : (kind === "turn" ? 56002 : 51821);
-  while ((used.has(p) || reserved.has(p) || inMesh(p)) && p < 65535) p++;
+  // …and the devices' incoming torrent ports (P2P_PORT_POOL), which the server refuses for a new listener too.
+  while ((used.has(p) || reserved.has(p) || inMesh(p) || (p >= 20000 && p <= 29999)) && p < 65535) p++;
   return p;
 }
 // Client-side port-collision check (mirrors the server's _node_ports). Returns a human label of whatever
 // already occupies `port` on this node, or null if the port is free. `own` = ports this instance already
 // holds, so editing it doesn't flag its own port. Lets port fields validate live, before the optimistic
 // save closes the modal (else a clash only surfaces as a node-side "FAILED TO APPLY" after the fact).
+// The UDP ports this node's dial-in exits listen on, [[exit, port]] — the server counts them in _node_ports (LISTEN-EXIT §2.3).
+const dialinPorts = node => (((Store.nodes || []).find(n => n.id === node) || {}).exits || [])
+  .filter(x => x && x.provider === "profile" && x.profile && x.profile.listen_port && !x.profile.endpoint)
+  .map(x => [x, Number(x.profile.listen_port)]);
 export function portHolder(node, port, own) {
   const p = Number(port); if (!p) return null;
   const skip = new Set((own || []).map(Number).filter(Boolean));
@@ -405,6 +430,7 @@ export function portHolder(node, port, own) {
     if (Number(String(c.listen || "").split(":").pop()) === p) return (c.iface || T("a csqtt proxy")) + T(" (CSQTT)");
   }
   for (const pt of pendingIf(node)) if (Number(pt.port) === p) return (pt.name || T("a pending interface"));
+  for (const [x, q] of dialinPorts(node)) if (q === p) return T("the dial-in exit {v1}", { v1: x.label || x.device || "" });
   // WDTT instances the panel wants but the node has not started yet — named, so the inline error says which
   // instance is taking the port instead of only failing server-side on save.
   const _nrec = (Store.nodes || []).find(n => n.id === node) || {};

@@ -68,7 +68,7 @@ PLANTS = {
     "forward": ('("iface_key_sealed", "ip_forward", "relay", "rp_filter", "wdtt_key_sealed"), (dict, None))',
                 '("iface_key_sealed", "relay", "wdtt_key_sealed"), (dict, None))'),
     "turnproxies": ('"node_ip_ifaces", "turn_proxies", "wdtt_dormant"), (list, dict))', '"node_ip_ifaces", "wdtt_dormant"), (list, dict))'),
-    "shape": ('    **dict.fromkeys(("ether_ifaces", "ifaces_awaiting_key", "node_ifaces", "node_ips"), (list, str)),\n', ""),
+    "shape": ('    **dict.fromkeys(("ether_ifaces", "exit_kinds", "ifaces_awaiting_key", "node_ifaces", "node_ips"), (list, str)),\n', ""),
     "bad": ('    if _bad and not (isinstance(_bad, list) and all(isinstance(b, str) for b in _bad)):\n', '    if False:\n'),
     "ifacelist": ('    if isinstance(snap.get("interfaces"), list):', '    if False:'),
     "said": ('            log(LOG_WARNING, "node %s: snapshot field %r is %s, not %s — ignored", nid or "?", field, got, want)\n',
@@ -79,7 +79,8 @@ PLANTS = {
     "bigfloat": ("    if not math.isfinite(n) or abs(n) > 1e100:", "    if not math.isfinite(n):"),
     "bigint": ('    if len(s.lstrip("-")) > 100:\n', "    if False:\n"),
     "snapnum": ("    return n if math.isfinite(n) else None\n", "    return n\n"),
-    "overflow": ("except (TypeError, ValueError, OverflowError):", "except (TypeError, ValueError):"),   # PANEL-1b
+    "overflow": ("except (TypeError, ValueError, OverflowError):   # an int past a double",
+                 "except (TypeError, ValueError):   # an int past a double"),   # PANEL-1b
     "mirror644": ("atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o640)",
                   "atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)"),
     "startmode": ('                os.chmod(os.path.join(Handler.deps["stats_dir"], _f), 0o640)\n',

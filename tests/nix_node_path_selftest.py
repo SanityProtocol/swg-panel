@@ -54,7 +54,7 @@ PROVIDES = {
     "sh": "bash", "bash": "bash", "id": "coreutils", "modprobe": "kmod", "modinfo": "kmod", "tar": "gnutar", "openssl": "openssl",
     "systemctl": "systemd", "systemd-run": "systemd",
     "cat": "coreutils", "base64": "coreutils", "chmod": "coreutils", "mkdir": "coreutils", "sleep": "coreutils", "grep": "gnugrep",
-    "rm": "coreutils", "tail": "coreutils", "journalctl": "systemd",
+    "rm": "coreutils", "tail": "coreutils", "journalctl": "systemd", "nice": "coreutils",
     "nsenter": "util-linux", "lsns": "util-linux", "awg-quick": "amneziawg-tools", "wg-quick": "wireguard-tools",
 }
 SYSTEMD_APPENDED = {"coreutils", "findutils", "gnugrep", "gnused", "systemd"}
@@ -126,7 +126,7 @@ DEB = {"ping": "iputils-ping", "ip": "iproute2", "ss": "iproute2", "tc": "iprout
        "iptables-save": "iptables", "iptables-restore": "iptables", "ipset": "ipset", "wg": "wireguard-tools", "curl": "curl",
        "dnsmasq": "dnsmasq", "pgrep": "procps", "pkill": "procps", "kill": "procps", "sysctl": "procps", "ps": "procps",
        "conntrack": "conntrack", "nsenter": "util-linux", "lsns": "util-linux"}
-SLIM_BASE = {"sh", "bash", "id", "tar"}              # dash, bash, coreutils, tar: essential in every Debian slim image
+SLIM_BASE = {"sh", "bash", "id", "tar", "nice"}      # dash, bash, coreutils, tar: essential in every Debian slim image
 IMAGE_EXCLUDED = {
     "journalctl": "swg-agent's _bounce reads it only after an awg-quick@ UNIT failed to start — by_unit is False in a container (_unit_started)",
     "modprobe": "only in swg-agent's reload-awg-module, which refuses first in a container (the module is the host's)",

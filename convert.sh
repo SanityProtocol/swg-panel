@@ -55,6 +55,11 @@ sub(){  echo "${C_BL}::${RESET} $*"; }                    # indented sub-item / 
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
+# Compose for the Docker this hands off to (install-docker.sh needs it after the staging): a Docker that came without it
+# stops the conversion before it touches anything, with what to install (lib/common.sh compose_missing). No Docker yet:
+# install-docker.sh's get.docker.com brings the plugin with it.
+need_compose(){ command -v docker >/dev/null 2>&1 || return 0
+  compose_probe >/dev/null || die "$(compose_missing) — nothing has been changed, and your bare-metal install is still serving."; }
 # ── the docker-only one-click updater, retired on the way OUT of docker ────────────────────────────────
 # `wire_host_updater` lays `swg-update{,-check}` + swg-update.service/.timer down on EVERY docker profile,
 # node included, because a container cannot recreate itself: the panel/node touches a trigger and this
@@ -527,6 +532,7 @@ PY
     for _dwait in 1 2 3 4 5 6 7 8 9 10; do docker info >/dev/null 2>&1 && break; sleep 1; done
     docker info >/dev/null 2>&1 || die "the Docker daemon isn't running (docker info failed). Start it with $(b 'systemctl start docker') and re-run — nothing has been changed, and your bare-metal install is still serving."
   fi
+  need_compose
 
   info "Converting the bare-metal $(b "$ROLE") → docker — keeping the panel's URL/login/roster/nodes/cert$([ "$ROLE" = master ] && echo " and the local node")."
   PURL="$PDOM"; write_recovery ""   # persist FROM/TO/ROLE for resume BEFORE any teardown
@@ -573,6 +579,7 @@ PY
   for f in Dockerfile Dockerfile.node .dockerignore VERSION swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$DOCKER_DIR/" 2>/dev/null || true; done
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$DOCKER_DIR/" 2>/dev/null || true
+  [ -d "$SRC/m" ] && cp -a "$SRC/m" "$DOCKER_DIR/" 2>/dev/null || true     # m/ = the phone UI (docs/MOBILE-PLAN.md)
   [ -d "$SRC/js" ] && cp -a "$SRC/js" "$DOCKER_DIR/" 2>/dev/null || true   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true
 
@@ -1212,6 +1219,7 @@ PY
     exit 0
   fi
   if docker_node_present; then die "a docker node (swg-node container) already exists — remove it first (run with --check)"; fi
+  need_compose          # before the leftover is moved aside, "converting" is signalled and the recovery marker is written
   # RESUME keeps the half-built $DOCKER_DIR (it holds the confs/turn records already staged before the interrupt).
   # A FRESH convert clears any leftover from a previous FAILED attempt — it's just an outdated copy, no prompt.
   if [ "$RESUMING" != yes ] && [ -e "$DOCKER_DIR" ]; then

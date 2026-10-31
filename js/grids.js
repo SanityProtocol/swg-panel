@@ -11,7 +11,7 @@
  * modal. views.js is layer 3 and derives rows; this renders them and acts on them.
  */
 
-import { esc, tkey, seen, dur, fmtBytes } from "./util.js";
+import { esc, tkey, seen, dur, fmtBytes, isMobile } from "./util.js";
 import { T } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgtSeenAge, peerUncategorised } from "./model.js";
@@ -19,12 +19,12 @@ import {
   Ic, Tag, Badge, Dropdown, SearchBox, secTitle, footRow, Popover, toast, openModal, openConfirm,
   rowSingle, rowDouble, rowNoSelect, RowError, connDot, endpointCell, rateCell, xferCell, DepBadge,
   gridIfaceTag, gridIfacesTag, gridStatusBadge, uncatPop, badgeWithReason, lifecycleIcon, statusLabel, dlul, rowError, statusReason,
-  Portal,
+  Portal, Sheet, closeModal,
 } from "./ui.js";
 import {
   peersView, sortPeerRows, peerSortBy, pageScroll, pageSizeOpts, searchMatch, peerMatchesQ, ifaceOptGroups,
   nodeFilterOptions, ifaceFilterOptions, orphCount, OnlinePeersTag, revealUser,
-  dashNodes, dashNodeOn, dashToggleNode, trafficRangeLabel,
+  dashNodes, dashNodeOn, dashToggleNode, trafficRangeLabel, PEER_DEFDIR,
 } from "./views.js";
 import {
   UserCombo, assignPeer, confirmUnassign, confirmDeletePeer, confirmRestoreDeployment,
@@ -116,12 +116,14 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
               // layout, so it sits by the title like the networks chip below: in one row with it, the TITLE truncating
               // and the tags never pushed past the cell's edge.
               const priv = p.private ? html`<span class="tg tg-priv" title=${T("Only this user's own devices reach it and the networks behind it")}>${T("tag|private")}</span>` : null;
+              const rtr = p.router ? html`<span class="tg tg-router" title=${T("Several devices share this address — the torrent guard never cuts it as a whole")}>${T("tag|router")}</span>` : null;
               // No interface column in this layout, so the networks chip stays by the title too.
               const chip = !loc && !agg && gw ? gw : null;
-              return priv || chip ? html`<span class="namewrap">${nm}${priv}${chip}</span>` : nm;
+              return priv || rtr || chip ? html`<span class="namewrap">${nm}${priv}${rtr}${chip}</span>` : nm;
             })()}</td>`;
-            const addrCell = html`<td data-label=${T("col|Address")}><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
-            const epCell = html`<td data-label=${T("col|Endpoint")}>${endpointCell(t)}</td>`;
+            // c-addr / c-ep and the actions' data-lbl are what the phone's card layout reads (m/m.css); nothing styles them on a desktop
+            const addrCell = html`<td data-label=${T("col|Address")} class="c-addr"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
+            const epCell = html`<td data-label=${T("col|Endpoint")} class="c-ep">${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label=${T("col|Node")} class="c-node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
             // The row's tooltip advertises "Double-click for QR / configs", but this cell is a SINGLE-click link to
             // the user — so it carries its own title, overriding the row's. A cell whose tooltip describes a
@@ -148,18 +150,19 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
                 ungrouped=${!grouped && !loc && p.targets.length > 1}
                 filtered=${(grouped || loc) && matchedOf(p).length < p.targets.length}/>`
             : xferCell(...dlul(xf ? xf.rx_bytes : 0, xf ? xf.tx_bytes : 0))}</td>`; })()}
-          ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
+          ${/* Live draws no controls on a desktop; a phone keeps them behind the row's swipe, as on every list (operator, 2026-10-29) */""}
+          ${live && !isMobile() ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             ${(() => { const gh = ghostIface(t.node, t.iface); return (gh && gh.ripe)
-              ? html`<button class="iconbtn ghost" title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
+              ? html`<button class="iconbtn ghost" data-lbl=${T("Recreate")} title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
               : t.restorable
-                ? html`<button class="iconbtn restore" title=${T("Restore interface {iface} (recreate the missing interface with its original identity — recovers every peer on it)", { iface: t.iface })} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
+                ? html`<button class="iconbtn restore" data-lbl=${T("Restore")} title=${T("Restore interface {iface} (recreate the missing interface with its original identity — recovers every peer on it)", { iface: t.iface })} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
                 : t.correctable
-                  ? html`<button class="iconbtn correct" title=${T("Fix address — {ip} is outside {iface}'s subnet", { ip: t.ip || "?", iface: t.iface })} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
-                  : html`<button class="iconbtn qr" title=${T("Show QR / configs")} onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`; })()}
-            <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Edit peer")} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
+                  ? html`<button class="iconbtn correct" data-lbl=${T("Fix")} title=${T("Fix address — {ip} is outside {iface}'s subnet", { ip: t.ip || "?", iface: t.iface })} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
+                  : html`<button class="iconbtn qr" data-lbl="QR" title=${T("Show QR / configs")} onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`; })()}
+            <button class="iconbtn" disabled=${blocked} data-lbl=${T("Edit")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Edit peer")} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
-              ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Delete peer")} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
-              : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Unassign peer")} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
+              ? html`<button class="iconbtn danger" disabled=${blocked} data-lbl=${T("Delete")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Delete peer")} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
+              : html`<button class="iconbtn danger" disabled=${blocked} data-lbl=${T("Unassign")} title=${blocked ? T("Unavailable while the node is down / converting") : T("Unassign peer")} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
           </td>`}</tr>`;
       }) : html`<tr><td colspan=${((agg || loc) ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? T("No matches") : T("No peers here")}</b>${q ? T("Try a different search.") : (!agg ? T("Create one, or copy an existing peer onto this interface.") : T("No peers deployed yet."))}</td></tr>`}
     </tbody></table></div>`;
@@ -179,6 +182,44 @@ export function UsersHeader({ sort, dir, onSort, live }) {
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
+// A list's toolbar on a phone (MOBILE-PLAN P0): the search stays, the filters go behind one Filters button into a sheet — five
+// controls do not fit a 390 px row. A dot on the button while one is set. `controls(redraw)` draws them; each filter's own
+// handler re-renders the screen, `redraw` the sheet.
+// ⚠️ THE SCREEN'S LATEST CONTROLS, not the ones it opened with: its node and interface dropdowns are built from that render's
+// values, so a closure kept from the opening tap showed the old selection and the old node's interfaces after a pick (review
+// F6). Every render of the screen hands filterBtn its controls; the open sheet draws those and redraws when they arrive.
+// Which button: `key` (a grid's own view object where one screen draws several), else the call site's code.
+let _fsCtl = null, _fsRedraw = null, _fsKey = null;
+export function FilterSheet({ controls }) {
+  useStore();
+  const [, redraw] = useState(0);
+  useEffect(() => { _fsRedraw = () => redraw(x => x + 1); return () => { _fsRedraw = null; _fsCtl = null; _fsKey = null; }; }, []);
+  return html`<${Sheet} title=${T("Filters")} noGuard=${true}
+    foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
+    <div class="mfilters">${(_fsCtl || controls)(() => redraw(x => x + 1))}</div>
+  <//>`;
+}
+// …and the list's ORDER there too: a phone draws no column headers to click (operator, 2026-10-29). `view[sk]` / `view[dk]` are
+// the same sort and direction the headers set on a desktop; `cols` = [[key, label]].
+export function sortField(view, sk, dk, cols, defdir, reset) {
+  return html`<div class="msort"><span class="msort-l">${T("Sort by")}</span>
+    <${Dropdown} className="selwrap" ariaLabel=${T("Sort by")} value=${view[sk]} options=${cols.map(([value, label]) => ({ value, label }))}
+      onChange=${v => { view[sk] = v; view[dk] = defdir[v] || 1; reset(); }}/>
+    <button type="button" class="btn btn-ghost msort-dir" aria-label=${view[dk] < 0 ? T("Descending") : T("Ascending")} title=${view[dk] < 0 ? T("Descending") : T("Ascending")}
+      onClick=${() => { view[dk] = -(view[dk] || 1); reset(); }}>${view[dk] < 0 ? "↓" : "↑"}</button></div>`;
+}
+export const PEER_SORT = () => [["status", T("col|Status")], ["title", T("col|Title")], ["user", T("col|User")], ["server", T("col|Node")],
+  ["address", T("col|Address")], ["online", T("col|Online")], ["rate", T("col|Rate")], ["total", T("col|Total")]];
+export const USER_SORT = live => [["status", T("col|Status")], ["name", T("col|User")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
+  ["last", T("col|Online")], ["rate", T("col|Rate")], ...(live ? [["total", T("col|Total")]] : [])];
+export const GROUP_SORT = () => [["name", T("col|Group")], ["members", T("col|Members")], ["peers", T("col|Peers")], ["nodes", T("col|Nodes")],
+  ["nets", T("col|Networks")], ["rate", T("col|Rate")]];
+export const filterBtn = (on, controls, key) => {
+  const k = key || String(controls);
+  if (_fsRedraw && _fsKey === k && _fsCtl !== controls) { _fsCtl = controls; queueMicrotask(_fsRedraw); }
+  return html`<button class=${"iconbtn mfilter-btn" + (on ? " on" : "")} title=${T("Filters")} aria-label=${T("Filters")}
+    onClick=${() => { _fsKey = k; _fsCtl = controls; openModal(html`<${FilterSheet} controls=${controls}/>`); }}><${Ic} i="sliders"/></button>`; };
+
 export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly, freezeKey, owner }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
@@ -235,17 +276,19 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
   const setPage = p => { view.page = p; bump(); };
 
   return html`<div class="peerspanel">
-    ${hideToolbar ? null : html`<div class="toolbar sub">
+    ${hideToolbar ? null : html`<div class=${"toolbar sub" + (isMobile() ? " mtoolbar" : "")}>
       <${SearchBox} placeholder=${T("Search title, address…")} value=${view.q || ""} onInput=${e => { view.q = e.target.value; view.page = 1; bump(); }}/>
-      ${multiServer ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
-        onChange=${v => { view.node = v; view.iface = ""; view.page = 1; bump(); }}
+      ${(() => { const dd = r => html`${multiServer ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
+        onChange=${v => { view.node = v; view.iface = ""; view.page = 1; bump(); if (r) r(); }}
         options=${[{ value: "*", label: T("All nodes") }, ...nodes.map(n => ({ value: n, label: Store.nodeName(n) }))]}/>` : null}
       ${ifaceOpts.length > 1 ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${iface}
-        onChange=${v => { view.iface = v; view.page = 1; bump(); }}
-        options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}
+        onChange=${v => { view.iface = v; view.page = 1; bump(); if (r) r(); }}
+        options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}`;
+        // a phone: the search, and the filters (and the order) behind the Filters button, as on every list there
+        return isMobile() ? filterBtn(node !== (multiServer ? "*" : (nodes[0] || "*")) || iface !== ifaceDefault(), r => html`${dd(r)}${sortField(view, "sort", "dir", PEER_SORT(), PEER_DEFDIR, () => { view.page = 1; bump(); r(); })}`, view) : dd(); })()}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || T("New peer")}</button>` : null}
     </div>`}
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} ranged=${!live} owner=${owner} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} ranged=${!live && !isMobile()} owner=${owner} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">${T("Rows per page")}
         <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
@@ -288,7 +331,7 @@ export function NodesRailPanel({ nav, active }) {
 }
 
 export function NodeRail({ active }) {
-  if ((Store.nodes || []).length < 2) return null;
+  if ((Store.nodes || []).length < 2 || isMobile()) return null;   // a phone has no room for a rail: the Nodes tab is the way (MOBILE-PLAN hook 4)
   // Render at <body> (Portal) so the fixed rail escapes the .screen "rise" transform — otherwise a fixed child of a
   // transformed ancestor is positioned relative to THAT ancestor and rides the 0.32s enter animation into place.
   return html`<${Portal}><div class="dashrail noderail"><div class="dashrail-stack">

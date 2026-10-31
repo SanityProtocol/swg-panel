@@ -308,7 +308,7 @@ check("…and a node that HAS a key falls through to the live path instead", "_b
 # whole-file search matched one of those and the check stayed green while the exits record folded the two
 # fields back together. Cut to the live append this is about. [[lesson-identity-is-not-provenance]]
 _live_rec = _nd[_nd.index('return {"id": xid, "device": dev, "provider": prov, "up": _live,'):]   # _exit_row: every live record
-_live_rec = _live_rec[:_live_rec.index('"awg": bool(_exit_awg(rec))}')]
+_live_rec = _live_rec[:_live_rec.index('"awg": bool(_exit_awg(rec)),')]
 check("⚠️ …carrying the reason in its OWN field, not in the health one",
       '"restore_error": _blob_err,' in _live_rec and '"error": err,' in _live_rec
       and "_blob_err" not in _live_rec.split('"error":')[1].split(",")[0])

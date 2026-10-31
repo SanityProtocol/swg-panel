@@ -24,7 +24,19 @@
  *      stack), and App routing follows the picked line; both sheets hold only a PICK (useCsqttPick): untouched, the field
  *      follows the polled record and nothing is sent; the csqtt-proxy sheet hands only a real pick to the interface sheet
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame> plants one regression, expects RED.
+ *  [11] App routing exceptions: a row stores null for "No App routing" (an own rule that sets nothing included) and only the
+ *      kinds it names; the save sends the rows in order without the sheet's keys, only on 2.5 and only when the list or the
+ *      rule changed (another tab's newer list is not overwritten by an untouched copy); the switch questions read the sheet's
+ *      draft — a 2.1 switch with exceptions alone asks, one whose exceptions were all removed does not; Rule settings hands
+ *      the picker its search guard and its device column
+ *
+ *  [12] a csqtt take-over in flight (the panel's csqtt_adopting — cleared on the snapshot that first reports the server, so
+ *      only the not-yet-reported card and page ever see it): the node page's pending card says "adopting", not "starting",
+ *      and is skipped while the foreign server's own card still shows the take-over; the server's page reads the csqtt list,
+ *      so it shows the take-over notice instead of "missing" with Recreate, and a failed attempt is not "never created"
+ *      (seen live on swgt, 10-24). Read from the source: both are components with hooks, not rendered here
+ *
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -39,13 +51,27 @@ const PLANTS = {
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
   runline: ["turn.js", "  return seen ? s.run : s.want;", "  return s.want;"],
-  ardrop: ["turn.js", "export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && cfg.app_routing);",
+  ardrop: ["turn.js", "export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && (cfg.app_routing || (cfg.app_routing_except || []).length));",
     "export const csqttArDropAsk = (cfg, line) => false;"],
   artpl: ["turn.js", "template_domains: a.domains_mode === \"direct\" && !!a.template_domains,", "template_domains: !!a.template_domains,"],
   runseen: ["turn.js", "  return seen ? s.run : s.want;", "  return s.run;"],
   ifver: ["turn.js", "      <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>\n    </div>", "    </div>"],
-  ifline: ["turn.js", "      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);",
-           "      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);"],
+  ifline: ["turn.js", "...(lineDirty ? { line } : {}), ...(is25 && arNow !== arKey.current", "...(is25 && arNow !== arKey.current"],
+  arxnull: ["turn.js", "  app_routing: own && arOn(ar).length ? arBody(ar) : null });", "  app_routing: arBody(ar) });"],
+  arxempty: ["turn.js", "  app_routing: own && arOn(ar).length ? arBody(ar) : null });", "  app_routing: own ? arBody(ar) : null });"],
+  axalways: ["turn.js", "...(is25 && axNow !== axKey.current ?", "...(is25 ?"],
+  arondraft: ["turn.js", "  const arOn = csqttArDropAsk(cfg, CSQTT_DEFAULT_LINE);",
+              "  const arOn = csqttArDropAsk((((Store.nodes || []).find(x => x.id === node) || {}).csqtt_cfg || {})[iface], CSQTT_DEFAULT_LINE);"],
+  aronoff: ["turn.js", "  const arOn = csqttArDropAsk(cfg, CSQTT_DEFAULT_LINE);", "  const arOn = csqttArDropAsk({}, CSQTT_DEFAULT_LINE);"],
+  cqadopt: ["screen-nodes.js", "            ${_cAdopting.has(ifn) ? html`<${StatusTag} cls=\"tg-busy\" icon=\"clock\" label=${T(\"tag|adopting\")}", "            ${false ? html`<${StatusTag} cls=\"tg-busy\" icon=\"clock\" label=${T(\"tag|adopting\")}"],
+  cqtwice: ["screen-nodes.js", "\n                             && !(_cAdopting.has(ifn) && (nrec.csqtt_candidates || []).some(c => c && c.iface === ifn)))", ")"],
+  adopterr: ["iface.js", "    ${adopting && failErr   /*", "    ${false && failErr   /*"],
+  ifnever: ["iface.js", "  const never = !adopting && !!missing", "  const never = !!missing"],
+  ifadopt: ["iface.js", "  const adopting = ((isCsq ? nrec.csqtt_adopting : nrec.wdtt_adopting) || []).includes(iface);",
+            "  const adopting = !isCsq && (nrec.wdtt_adopting || []).includes(iface);"],
+  rswho: ["routing.js", " here=${here} onTyped=${typedOnly} cell=${e => html`<${WhoDevices} rep=${rep} e=${e} node=${node}/>`}", " here=${here}"],
+  arxkeys: ["turn.js", "export const arxSend = ax => ax.map(({ who, app_routing }) => ({ who, app_routing }));", "export const arxSend = ax => ax;"],
+  arx21: ["turn.js", "...(is25 && axNow !== axKey.current ? { app_routing_except", "...(axNow !== axKey.current ? { app_routing_except"],
   ifopen: ["turn.js", "  const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);", "  const { line, setLine, lineDirty } = useCsqttPick(cfg);"],
   picksame: ["turn.js", "export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);", "export const csqttPickOf = (v, cfg) => v || null;"],
   pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
@@ -64,8 +90,21 @@ async function load(name) {
   const p = path.join(ROOT, "js", "__perturbed_" + name); fs.writeFileSync(p, src.replace(old, nu)); made.push(p);
   return import(pathToFileURL(p).href);
 }
-let TU, ST, TSRC;
-try { TU = await load("turn.js"); TSRC = fs.readFileSync(made[0] || path.join(ROOT, "js", "turn.js"), "utf8"); ST = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href); }
+let TU, ST, TSRC, RSRC, ISRC, NSRC;
+try { TU = await load("turn.js"); TSRC = fs.readFileSync((MODE && PLANTS[MODE][0] === "turn.js" && made[0]) || path.join(ROOT, "js", "turn.js"), "utf8");
+  ST = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
+  RSRC = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");   // read only (Rule settings is not rendered here)
+  ISRC = fs.readFileSync(path.join(ROOT, "js", "iface.js"), "utf8");     // read only (the interface page has hooks)
+  NSRC = fs.readFileSync(path.join(ROOT, "js", "screen-nodes.js"), "utf8");   // read only (the node page has hooks)
+  for (const [f, get, set] of [["iface.js", () => ISRC, v => { ISRC = v; }], ["screen-nodes.js", () => NSRC, v => { NSRC = v; }]])
+    if (MODE && PLANTS[MODE][0] === f) {
+      if (get().split(PLANTS[MODE][1]).length !== 2) throw new Error("plant anchor did not match exactly once — this run would measure nothing");
+      set(get().replace(PLANTS[MODE][1], PLANTS[MODE][2]));
+    }
+  if (MODE && PLANTS[MODE][0] === "routing.js") {
+    if (RSRC.split(PLANTS[MODE][1]).length !== 2) throw new Error("plant anchor did not match exactly once — this run would measure nothing");
+    RSRC = RSRC.replace(PLANTS[MODE][1], PLANTS[MODE][2]);
+  } }
 finally { for (const p of made) fs.rmSync(p, { force: true }); }
 const { Store } = ST;
 
@@ -166,7 +205,7 @@ check("[10] the interface sheet exists where this gate looks", sheet.length > 50
 const row = (sheet.split('<div class="row2">')[1] || "").split("\n    </div>")[0];
 check("[10] the Version sits on the csqtt server's line (one row2)", /T\("csqtt server"\)/.test(row) && row.includes("<${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>"), row.slice(0, 200));
 check("[10] a changed version is sent with the save", sheet.includes("...(lineDirty ? { line } : {})"));
-check("[10] …after the same questions as the csqtt-proxy modal", sheet.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, doSave)) return;")
+check("[10] …after the same questions as the csqtt-proxy modal", sheet.includes("if (lineDirty && askCsqttLine(sw, node, iface, { ...cfg, app_routing: arOn(ar).length ? arBody(ar) : null, app_routing_except: ax }, line, doSave)) return;")
       && TSRC.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;"));
 check("[10] both sheets hold a pick, not a copy of the record", sheet.includes("const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);")
       && TSRC.includes("  const { line, setLine, lineDirty } = useCsqttPick(cfg);   // the csqtt version"));
@@ -194,7 +233,7 @@ const UI = await import(pathToFileURL(path.join(ROOT, "js", "ui.js")).href);
 let top = null; UI.setModalRenderer(st => { top = st[st.length - 1] || null; });
 const ask = (iface, cfg, line) => { UI.clearModalStack(); top = null; let went = 0;
   const asked = TU.askCsqttLine(TU.csqttSwitchState("nnew", iface), "nnew", iface, cfg, line, () => went++);
-  const p = (top && top.props) || {}; if (p.onConfirm) p.onConfirm(); return { asked, title: p.title, went }; };
+  const p = (top && top.props) || {}; if (p.onConfirm) p.onConfirm(); return { asked, title: p.title, went, note: !!p.note }; };
 const a1 = ask("z", {}, "2.1");
 check("[10] picking what already runs, nothing to drop: no question, nothing saved by it", !a1.asked && !a1.title && a1.went === 0, a1);
 const a2 = ask("q", Store.nodes[0].csqtt_cfg.q, "2.1");
@@ -202,5 +241,47 @@ check("[10] a switch away from what runs is confirmed, and confirming saves", a2
 Store.stats.nnew.csqtt[0].line = "2.1";   // q now runs 2.1, its record still holds a 2.5 rule
 const a3 = ask("q", Store.nodes[0].csqtt_cfg.q, "2.1");
 check("[10] back to the 2.1 that runs with a rule: asked to remove it, and confirming goes on to the caller's next step", a3.asked && a3.title === "Remove App routing?" && a3.went === 1, a3);
+
+// [11] App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §5): what a row stores and what the save sends
+const sel11 = { users: ["u1"], groups: [], peers: ["p2", "p3"] };
+const e11 = TU.arxEntry(sel11, false, TU.arInit({}));
+check("[11] \"No App routing\" stores null (the panel sends the server's \"no rule\" for it)", e11.app_routing === null, e11);
+check("[11] the row names only the kinds it holds", JSON.stringify(e11.who) === '{"users":["u1"],"peers":["p2","p3"]}', e11.who);
+const o11 = TU.arxEntry(sel11, true, { ...TU.arInit({}), domains: "ya.ru vk.com" });
+check("[11] an own rule is stored as the form reads it", JSON.stringify(o11.app_routing) === JSON.stringify(TU.arBody({ ...TU.arInit({}), domains: "ya.ru vk.com" })), o11);
+const s11 = TU.arxSend([{ ...e11, _id: "arx1" }, { ...o11, _id: "arx2" }]);
+check("[11] the save sends the rows in order, without the sheet's keys", JSON.stringify(s11) === JSON.stringify([e11, o11]), s11);
+check("[11] an own rule that sets nothing is no App routing (the panel stores it so; the row says so from the start)",
+      TU.arxEntry(sel11, true, TU.arInit({})).app_routing === null);
+check("[11] the save sends the rule and the list only on 2.5, and only when they changed (an untouched copy never goes back over a newer one)",
+      sheet.includes("...(is25 && arNow !== arKey.current ? { app_routing: arBody(ar) } : {}),")
+      && sheet.includes("...(is25 && axNow !== axKey.current ? { app_routing_except: arxSend(ax) } : {})"));
+check("[11] …and the fold's draft is what the discard guard watches", sheet.includes("dirtyRef.current = arNow !== arKey.current || axNow !== axKey.current")
+      && sheet.includes("dirtyRef=${dirtyRef} closeRef=${closeRef}"));
+Store.stats.nnew.csqtt[0].line = "2.5";   // q runs 2.5 again; its record holds a rule, and a switch to 2.1 asks
+const a4 = ask("q", { line: "2.5" }, "2.1");
+check("[11] the switch reads the sheet's draft: rule cleared and no exceptions → no App routing note", a4.title === "Switch to csqtt 2.1?" && !a4.note, a4);
+const a5 = ask("q", { line: "2.5", app_routing_except: [e11] }, "2.1");
+check("[11] …exceptions alone in the draft → the note says App routing is removed", a5.title === "Switch to csqtt 2.1?" && a5.note, a5);
+check("[11] Rule settings hands the shared picker its search guard and its device column",
+      RSRC.includes("<${WhoPicker} sel=${sel} setSel=${setSel} here=${here} onTyped=${typedOnly} cell=${e => html`<${WhoDevices} rep=${rep} e=${e} node=${node}/>`}"));
+check("[11] back to 2.1 with exceptions only (no server rule): asked, they go",
+      TU.csqttArDropAsk({ app_routing_except: [e11] }, "2.1") === true && TU.csqttArDropAsk({ app_routing_except: [] }, "2.1") === false);
+check("[11] the exceptions sit in the App routing fold, under the server's rule",
+      sheet.includes("<${AppRoutingFields} value=${ar} onChange=${setAr}/>\n      <${ArExceptions} node=${node} iface=${iface} value=${ax} onChange=${setAx}/>"));
+
+// [12] a csqtt take-over in flight — read from the source (the node page and the server's page have hooks)
+const cm12 = NSRC.slice(NSRC.indexOf("const cmcard = (ifn, cc) =>"), NSRC.indexOf("const csqCard = c =>"));
+check("[12] the pending csqtt card says adopting during a take-over, ahead of stopped/starting",
+      /\$\{_cAdopting\.has\(ifn\) \? html`<\$\{StatusTag\} cls="tg-busy" icon="clock" label=\$\{T\("tag\|adopting"\)\}[^\n]*\n\s*: cc\.stopped \?[^\n]*\n\s*: html`<\$\{StatusTag\} cls="tg tg-pending" icon="clock" label="starting"/.test(cm12));
+check("[12] …and is skipped while the foreign server's own card still shows the take-over (one card per server)",
+      cm12.includes(".filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn)\n                             && !(_cAdopting.has(ifn) && (nrec.csqtt_candidates || []).some(c => c && c.iface === ifn)))"));
+check("[12] …the set it reads is the panel's csqtt_adopting", NSRC.includes("const _cAdopting = new Set(nrec.csqtt_adopting || []);"));
+check("[12] the server's page reads the csqtt take-over list (adopting wins over missing)",
+      ISRC.includes("const adopting = ((isCsq ? nrec.csqtt_adopting : nrec.wdtt_adopting) || []).includes(iface);")
+      && ISRC.includes("const awaiting = !adopting && (!!w.await_restore || !!missing);"));
+check("[12] …and a take-over's failed attempt is not \"never created\" with a live Remove", ISRC.includes("  const never = !adopting && !!missing && !!failErr"));
+check("[12] …it says why it failed and how it ends, in the take-over notice itself (the node's error, the 5-minute give-up)",
+      /\$\{adopting && failErr[^\n]*\n\s*\? html`<div class="notice warn">[^\n]*The node couldn't take this server over yet: \*\{err\}\*[^\n]*\{ err: failErr \}\)\}<\/span><\/div>`\n\s*: adopting \? /.test(ISRC));
 
 done(!!MODE, MODE || "");

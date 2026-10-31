@@ -126,7 +126,7 @@ check("www. dropped (the app applies the parent), a link's host kept, whitespace
       e is None and r["domains"] == ["google.com", "ya.ru", "vk.com"], (r, e))
 
 print("[2] delivery")
-check("csqtt_cfg publishes app_routing", '"bind_ip", "line",\n' in open(PANEL).read() and '"app_routing") if k in ov}' in open(PANEL).read())
+check("csqtt_cfg publishes app_routing", '"bind_ip", "line",\n' in open(PANEL).read() and '"app_routing", "app_routing_except") if k in ov}' in open(PANEL).read())
 AR = {"apps_mode": "except", "packages": ["org.telegram.messenger"], "domains_mode": "direct", "domains": ["ya.ru"],
       "template_domains": True, "ips_mode": "direct", "ips": []}
 nodes = {"n1": {"csqtt": {"csqtt1": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.70.1/24", "app_routing": AR}}}}

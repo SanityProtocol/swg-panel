@@ -129,8 +129,12 @@ export const api = {
   exitEscrowForget(node, id) { return this.post("/api/exit/escrow/forget", { node, id }); },
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
-  vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev }); },     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
+  vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev, pool_v: 2 }); },   // pool_v: built from GET /api/vk-pool, not the poll (a pre-S12b tab is refused)     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
   vkPoolPerUser(n) { return this.post("/api/vk-pool/per-user", { n }); },   // how many pool links a NEW user gets
+  vkPoolGet() { return this.get("/api/vk-pool"); },                        // the pool itself + the check's answers (the poll carries only its rev and a live count)
+  vkPoolResults() { return this.get("/api/vk-pool/results"); },            // the check's answers alone, while a run is going
+  vkCheck(id) { return this.post("/api/vk-pool/check", id ? { id } : {}); },   // ask VK about one link (any, dead included), or start "Check all"
+  vkCheckAuto(on) { return this.post("/api/vk-pool/check-auto", { on }); },    // the every-6-hours switch
   userVkPoolAdd(id) { return this.post("/api/user/vk-pool-add", { id }); },  // give this user one more link from the pool
   subVault() { return this.get("/api/sub/vault"); },
   subVaultSet(b) { return this.post("/api/sub/vault", b); },
@@ -141,6 +145,8 @@ export const api = {
   subUserDisable(b) { return this.post("/api/sub/user/disable", b); },
   subBlob(b) { return this.post("/api/sub/blob", b); },
   subBlobGet(pid) { return this.get("/api/sub/blob?peer_id=" + encodeURIComponent(pid)); },   // read one peer's ciphertext for in-browser Show-QR decrypt
+  subExitBlob(b) { return this.post("/api/sub/exitblob", b); },   // keep a dial-in exit's router key (ciphertext)
+  subExitBlobGet(node, exit) { return this.get("/api/sub/exitblob?node=" + encodeURIComponent(node) + "&exit=" + encodeURIComponent(exit)); },
   subEscrow(b) { return this.post("/api/sub/escrow", b); },   // ensure a user holds an encryption unlock-key (encrypted config storage, no subscription)
   purgePlaintext(b) { return this.post("/api/config/purge-plaintext", b || {}); },   // migration: delete legacy plaintext where a blob exists
   plaintextPeers() { return this.get("/api/config/plaintext-peers"); },   // migration: exactly which peers still hold plaintext (+ orphan count)
@@ -194,6 +200,7 @@ export const api = {
   userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
   peerNetworkProbe(b) { return this.post("/api/peers/networks/probe", b); },   // {peer_id, node, addr, port?} arms one reachability test from that node · {peer_id, id} reads it · {peer_id} lists this peer's
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
+  exitTest(b) { return this.post("/api/exit/test", b); },   // {node, exit_id?, socks_text, socks_pass} tests a SOCKS5 proxy from that node · {node, id} reads it
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
   peerSetRole(b) { return this.post("/api/peers/set-role", b); },   // role: "primary" | "backup" | "" (clear)
@@ -316,6 +323,7 @@ export const Store = {
     // two ends can never disagree about the exact string — it is what says "keep the key you already hold".
     this.exitKeyKeep = d.exit_key_keep || "";
     this.exitPskKeep = d.exit_psk_keep || "";   // the same sentinel trick for the peer's preshared key
+    this.exitPassKeep = d.exit_pass_keep || "";   // …and for a SOCKS5 exit's password, which the browser never sees
     this.storeConfigs = this.storeMode !== "off";
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};

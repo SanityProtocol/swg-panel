@@ -50,7 +50,8 @@ assert NSRC.count(_FLOOR) == 1, "handshake-floor anchor missing — this run wou
 assert NSRC.count(_STAMP) == 1, "cfg_sig stamp anchor missing — this run would FALSE-PASS"
 if PERTURB:
     NSRC = NSRC.replace(_FLOOR, "return 0 if ts == 0 else max(0, int(time.time()) - ts)")
-    NSRC = NSRC.replace(_STAMP, "    pass")
+    # The loop stays: the dial-in rows' `listen_port` is stamped in the same loop, after the cfg_sig (S9a).
+    NSRC = NSRC.replace(_STAMP, "    for _o in out:\n        pass")
 
 npath = NODED
 if PERTURB:
@@ -152,7 +153,7 @@ print("\n[3] the seam — it has to survive the trip to the node and back")
 # nothing. The panel builds the node's `exits` payload key by key.
 check("the sync payload ships it", '"cfg_sig": x.get("cfg_sig") or "",' in PSRC)
 check("/api/state ships the stored record whole (so the browser sees it)",
-      '"exits": [dict({k: v for k, v in e.items() if k != "profile"},' in PSRC)
+      '"exits": [dict({k: v for k, v in e.items() if k not in ("profile", "socks")},' in PSRC)
 
 # ⚠️ THE COVERAGE INVARIANT, SAID ONCE, INSTEAD OF TWO LISTS THAT AGREE TODAY. The digest's whole claim is
 # "if this is unchanged, the node has nothing new to apply". That claim is only true while EVERY field the
@@ -164,6 +165,9 @@ check("/api/state ships the stored record whole (so the browser sees it)",
 _mat = re.search(r"def exit_cfg_sig\(rec\):(?:.|\n)*?\n    mat = \{((?:.|\n)*?)\}\n", PSRC)
 assert _mat, "exit_cfg_sig's material literal was not found — this section would measure nothing"
 SIGNED = set(re.findall(r'"([a-z_]+)":', _mat.group(1)))
+# …and a field signed only when the record has it (a SOCKS exit's `socks`): `mat["<key>"] = …` in the same function
+_fn = re.search(r"def exit_cfg_sig\(rec\):(?:.|\n)*?\n    return ", PSRC)
+SIGNED |= set(re.findall(r'mat\["([a-z_]+)"\] = ', _fn.group(0) if _fn else ""))
 _pay = re.search(r'"exits": \[\{"id": x\.get\("id"\)((?:.|\n)*?)\n\s*for x in \(node\.get\("exits"\)', PSRC)
 assert _pay, "the sync payload's exit literal was not found — this section would measure nothing"
 SENT = {"id"} | set(re.findall(r'"([a-z_]+)":', _pay.group(1)))

@@ -12,17 +12,25 @@ real IP normaliser from a file:// feed) and `_blku_store` (builds the union).
   [2] a network AROUND a never-routable range keeps the rest of itself (96.0.0.0/4 minus 100.64/10), one INSIDE goes
   [3] an ip union built with the cut has a NEW name (a node loads a new list at once, a changed one only in its nightly
       window); a host union keeps its name
+  [4] the Never-block list (1.8.11 S5): its addresses are cut from the union as the never-routable ranges are — an address
+      inside a listed range splits it, a listed range inside an allowed one goes — under a new union name; its names
+      change nothing
+  [5] a union the list empties is built once and then waits out the back-off like any empty list — not rebuilt (two
+      fsync'd writes) on every node sync; a member that changes is built at once, not after the back-off
 
-Run: python3 tests/blku_bogon_selftest.py      --plant nocut | norename   (exit 0 when caught)
+Run: python3 tests/blku_bogon_selftest.py      --plant nocut | norename | noallow | rebuild | stuck   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, ipaddress, os, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
-PLANTS = {"nocut": ("[1] [2]", "        items = [str(n) for n in ipaddress.collapse_addresses(_blku_public(nets))]",
+PLANTS = {"nocut": ("[1] [2] [4]", "        items = [str(n) for n in ipaddress.collapse_addresses(_blku_public(nets, _al))]",
                     "        items = [str(n) for n in ipaddress.collapse_addresses(nets)]"),
-          "norename": ("[3]", '(("nb;" if tier == "ip" else "") + ";".join(', '(";".join(')}
+          "norename": ("[3]", '(("nb;" if tier == "ip" else "") + al + ";".join(', '(al + ";".join('),
+          "noallow": ("[4]", "        _al = [ipaddress.ip_network(n) for n in (_BLKU_ALLOW.get(cat) or ())]", "        _al = []"),
+          "rebuild": ("[5]", '    if list_failed(cat, tier) and (not _union or _meta_n(m) or (m and (m.get("mv") or {}) == _blku_member_vers(cat, tier))):', "    if list_failed(cat, tier) and (not _union or _meta_n(m)):"),
+          "stuck": ("[5]", '    if list_failed(cat, tier) and (not _union or _meta_n(m) or (m and (m.get("mv") or {}) == _blku_member_vers(cat, tier))):', "    if list_failed(cat, tier) and (not _union or m):")}
 FAILS, SECTION = [], [""]
 
 
@@ -105,6 +113,46 @@ check("the ip union's name is not the one it had before the cut", m._blku_key("i
 check("…and the plan names it that way", cat and cat[0] == m._blku_key("ip", ["blk:ti:lvl1"]), cat)
 check("a host union keeps its name (no reload for lists the cut never touched)",
       m._blku_key("host", ["blk:tp:a", "blk:tp:b"]) == old_key("host", ["blk:tp:a", "blk:tp:b"]))
+
+SECTION[0] = "[4]"
+print("\n[4] the Never-block list's addresses")
+PS4 = dict(PS, block_allow=["5.188.10.7", "45.9.20.0/23", "185.0.0.0/8", "example.com"])
+ents4 = m._resolve_iface_blocks(NODE, SNAP, PS4, "sni", "n1")[0]; settle()
+cat4 = [e["category"] for e in ents4 if str(e["category"]).startswith("blku:ip:")]
+meta4, st4 = m._blku_store(cat4[0], "ip") if cat4 else (None, "no union")
+nets4 = [ipaddress.ip_network(l) for l in (open(m._list_path(cat4[0], "ip")).read().split() if cat4 and st4 == "ok" else [])]
+inn = lambda a, ns: any(ipaddress.ip_address(a) in n for n in ns)
+check("a new union name while the list holds addresses", cat4 and cat and cat4[0] != cat[0], (cat, cat4))
+check("built", st4 == "ok" and nets4, (st4, meta4))
+check("an allowed address inside a listed range splits it: 5.188.10.7 out, 5.188.10.6 and .8 still in",
+      not inn("5.188.10.7", nets4) and inn("5.188.10.6", nets4) and inn("5.188.10.8", nets4), [str(n) for n in nets4])
+check("an allowed range inside a listed one goes, the rest stays: 45.9.20.0/23 out, 45.9.22.1 in",
+      not inn("45.9.20.1", nets4) and not inn("45.9.21.255", nets4) and inn("45.9.22.1", nets4), [str(n) for n in nets4])
+check("a listed range inside an allowed one goes whole (185.220.101.1/32 under 185.0.0.0/8)", not inn("185.220.101.1", nets4))
+check("the never-routable cut still holds beside it", not inn("10.20.1.1", nets4) and not inn("100.100.0.1", nets4))
+ents5 = m._resolve_iface_blocks(NODE, SNAP, dict(PS, block_allow=["example.com"]), "sni", "n1")[0]
+cat5 = [e["category"] for e in ents5 if str(e["category"]).startswith("blku:ip:")]
+check("names alone: the union keeps its name", cat5 == cat, (cat, cat5))
+
+SECTION[0] = "[5]"
+print("\n[5] a union the list empties")
+PS6 = dict(PS, block_allow=["5.188.10.0/24", "45.9.20.0/22", "185.0.0.0/8"] + ["%d.0.0.0/8" % i for i in range(96, 112)])
+ents6 = m._resolve_iface_blocks(NODE, SNAP, PS6, "sni", "n1")[0]
+cat6 = [e["category"] for e in ents6 if str(e["category"]).startswith("blku:ip:")]
+builds, _real = [], m._blku_store
+m._blku_store = lambda c, t: (builds.append(c), _real(c, t))[1]
+m.list_ensure(cat6[0], "ip"); settle()
+check("built once, empty", len(builds) == 1 and m._meta_n(m.list_meta(cat6[0], "ip")) == 0, (builds, m.list_meta(cat6[0], "ip")))
+for _ in range(5):                                       # five node syncs
+    m.list_ensure(cat6[0], "ip"); settle()
+check("…and not again on the next syncs (it waits out the back-off)", len(builds) == 1, len(builds))
+open(os.path.join(feeds, "lvl1.txt"), "w").write("\n".join(NEVER + PUBLIC + ["96.0.0.0/4", "10.20.0.0/16", "203.0.113.0/24"]) + "\n")
+m._LIST_FAILED.pop("blk:ti:lvl1|ip", None)
+m.list_ensure("blk:ti:lvl1", "ip", force=True); settle()
+m.list_ensure(cat6[0], "ip"); settle()
+check("a member that changed is built at once, back-off or not (203.0.113.0/24 now blocked)",
+      len(builds) == 2 and "203.0.113.0/24" in open(m._list_path(cat6[0], "ip")).read().split(), (len(builds), m.list_meta(cat6[0], "ip")))
+m._blku_store = _real
 
 print()
 if PLANT:

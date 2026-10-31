@@ -79,7 +79,7 @@ PLANTS = {   # name: (sections it must redden, file, anchor, replacement)
                  "                if False:                    # only Block rules use it"),
     "nosvb": ("[7]", "noded", "            if ex:\n                svb_of[(i + 1) << 16 | SNI_BLOCK_MARK] = ex",
               "            if False:\n                svb_of[(i + 1) << 16 | SNI_BLOCK_MARK] = ex"),
-    "nosig": ("[8]", "noded", '    if (queue and _nb(("block",))) or blk_rst:', "    if False:"),
+    "nosig": ("[8]", "noded", '    if (queue and _has_blk) or blk_rst:', "    if False:"),
     "relay": ("[10]", "noded", """ct state != new meta mark & 0x0000fffe != %#010x meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept"
                  % (S, SNI_BLOCK_MARK, RELAY_MARK))""", """ct state != new meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept"
                  % (S, RELAY_MARK))"""),
@@ -348,7 +348,7 @@ for label, queue, pin in (("Hybrid SNI", True, True), ("Kernel SNI", False, True
 _old_src = open(NODED, encoding="utf-8").read()
 for a, b in (('            return [] if str(c).startswith("blku:host:") else [(_smart_setname(c), [])]',
               '            return [(_smart_setname(c), []), (_smart_learnsetname(c), [])]'),
-             ('    if (queue and _nb(("block",))) or blk_rst:', '    if False:')):
+             ('    if (queue and _has_blk) or blk_rst:', '    if False:')):
     assert _old_src.count(a) == 1, "the previous build cannot be rebuilt from this file (anchor %r) — the upgrade check would measure nothing" % a[:60]
     _old_src = _old_src.replace(a, b, 1)
 open(os.path.join(TMP, "previous-noded.py"), "w").write(_old_src)

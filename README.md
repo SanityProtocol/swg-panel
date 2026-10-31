@@ -1,12 +1,13 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.10-beta</code></p>
+<p align="center"><code>1.8.11-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.10-beta** — [full changelog](CHANGELOG.md)
-> - **Fixes for what 1.8.9 met on its first day.** The panel no longer stays blank behind an ad or tracker blocker (uBlock Origin, AdGuard, Brave), a Docker update no longer asks to re-run the installer for an optional setting nobody set, and the csqtt 2.5 server no longer logs a web-panel password it never uses (2.5 servers move to 2.5.1-2 and restart once).
-> - **The subscription page names the csqtt version.** Each csqtt card says CSQTT 2.1 or CSQTT 2.5, and its download names the app's version.
-> - **A server that doesn't update to releases says so.** A server installed or last updated from a branch other than main shows "from dev" beside its version, with the way back to releases; the panel's header does the same for its own server.
+> **What's new in 1.8.11-beta** — [full changelog](CHANGELOG.md)
+> - **A panel built for your phone.** On a phone the panel opens in its own layout — a tab bar at the bottom, lists as cards, windows that close with a swipe down — and it can be added to the home screen as an app.
+> - **New kinds of exits.** A home router behind NAT can dial in to a server and be its exit, a SOCKS5 proxy can be an exit, and exits you run yourself are health-checked like WARP.
+> - **Torrents your way.** Each interface picks Block, Allow, the server's own address or a route; WireGuard and AmneziaWG devices get their own incoming port for seeding; and a router with several devices behind it can be marked so one device's torrent no longer cuts the others.
+> - **Never block, ports on rules, App routing per person.** One list of sites no block list may block, routing rules by protocol and port, and csqtt 2.5 App routing exceptions for a device, a user or a group.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -81,21 +82,53 @@ subscription and no one else sitting in the middle of your traffic.
   size and monthly cost of what it sends, and refuses a line some app could not read.
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
-  which user is behind the torrents and port-scans it flags.
+  which user is behind the torrents and port-scans it flags. One wrong entry in a public list? Put the site or address on
+  the fleet-wide **Never block** list (Settings → Geo data providers → Blocking) instead of switching the list off: no block
+  list blocks it anywhere, and your routing rules still route it. Addresses leave the address lists on every server; site
+  names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated. Torrents are blocked, allowed or
+  routed per server — or, under **Each interface decides**, per interface, WDTT and csqtt server: Block, Allow, Allow only
+  out the server's own address, or Route through one of the server's exits or another server; a route that can't be used
+  blocks those torrents, and the server's card says which interface. A device that is a router — several
+  devices behind one address — can be marked as one in its settings: one device's torrent then no longer cuts the
+  others' VPNs, calls and games, while torrent connections are still blocked one by one. A device the torrent filter has
+  flagged keeps its connections to the ports you list (Settings → Geo data providers → Blocking; OpenVPN, WireGuard, calls
+  and Steam by default, and a node can keep its own list), while torrents to those ports are still caught. A switch to
+  Block applies to new connections; one already open to a peer on a low or never-cut port runs until it closes.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
-  apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
+  apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel. A shared pool of
+  VK call links hands each user a link, and every 6 hours (a switch, on by default) asks VK whether each link still
+  exists, moving the users of one VK says is gone to another.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
   turn-proxy fronts a tunnel you already have, a **WDTT** server *is* the tunnel — create it like any
   other interface, pick one of four forks, and hand people a password instead of a key. Its config
   lands on their subscription page next to everything else, app download included.
 - **csqtt servers too.** The same idea on a newer, faster datapath — create it like any other interface
   and hand out a password. Each server runs csqtt 2.1 or 2.5 (switchable, keeping its users); a 2.5 server can tell
-  every user's app which apps, domains and addresses skip the tunnel. Note that **csqtt is free for personal use only**; running one commercially
+  every user's app which apps, domains and addresses skip the tunnel — with exceptions for chosen people, groups or
+  devices, who get their own rule or none (a device's beats its user's, a user's beats a group's). Note that **csqtt is free for personal use only**; running one commercially
   needs a licence from its author ([details](THIRD-PARTY.md)).
 - **Bring what you already have.** Already running WireGuard, AmneziaWG, WDTT or csqtt on a box by hand? The
   panel finds those servers and offers to **adopt** them — keys, port, subnet and existing users
   intact, nothing to re-issue and no downtime.
-- **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
+- **Leave through a router behind NAT.** A server's traffic can leave by Cloudflare WARP, a WireGuard profile from
+  anywhere, or a **dial-in exit**: an upstream that can't be reached — a home router abroad — connects to the server,
+  and the server's users go out through it. In **Settings → WARP & exits → Add a dial-in exit** the panel makes both sides —
+  WireGuard or AmneziaWG, a free port of 42821–42899 or one you choose, an address, and the AmneziaWG parameters drawn or
+  set by you (also editable later) — and shows the router's config with a QR and the steps for Keenetic, OpenWrt or another router,
+  kept encrypted with your client configs (when the panel keeps encrypted configs) so the exit's row shows it again, or
+  shown once otherwise; or paste a server config you already have. The server's users reach the internet through a dial-in
+  exit, never the network behind it: the router's LAN and its private addresses stay out of reach.
+- **Leave through a SOCKS5 proxy.** A residential or mobile proxy, or an xray / 3x-ui SOCKS inbound, is an exit too:
+  **Settings → WARP & exits → Add a SOCKS5 proxy**, paste it the way the provider shows it (`host:port:user:password`,
+  `user:password@host:port` or `socks5://…`), **Test** it from the server before saving, and pick it like any other exit —
+  for a whole interface, a routing rule or the server's default. The server runs a pinned tunnel program for it; names are
+  resolved by the proxy, so sites see a location that matches the exit, and when the proxy carries no UDP, calls and games
+  are refused at once (QUIC falls back to TCP) rather than left to time out. The password is never shown again.
+  Every exit is watched: one that stays up but carries nothing — WARP, a profile, a SOCKS5 proxy, or a TUN you run yourself
+  (your own tun2socks or sing-box) — has its traffic moved to the server's own address, or held when its kill-switch is on,
+  until it works again.
+- **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home. (It does
+  ask VK whether the links in its VK call-link pool still exist, every 6 hours — a switch you can turn off.)
 
 <details>
 <summary>📸 <b>More screenshots</b> — click to expand</summary>
@@ -352,6 +385,13 @@ Its limits:
   people, groups or single devices. The same window is where a rule that forwards to another server picks
   **which of that server's addresses** the traffic leaves it by — useful when a server has several and a site
   expects one of them. For a **Direct** rule it picks this server's own address — one for the whole interface.
+  The same window narrows a rule to **ports**: TCP, UDP or both, and ports or ranges (`443, 8000-8100`), so
+  "Google → server A" and "Google on UDP 19302-19309 → server B" work side by side, in either order when both are for the
+  same people; otherwise put the port rule first — the list marks one that can never fire. For **every address**, type
+  `0.0.0.0/0` as the destination. Ports are for an interface's rules (not a server's default list) and need the servers
+  updated; on the SNI modes UDP 443 never reaches a rule (QUIC is dropped first), with Force-DNS the server answers port 53
+  itself (a Block on it drops your clients' DNS), the interface's SMTP and QUIC filters drop their ports first, and a site
+  name off TCP 443 matches only what the mode can see — the rule's chip says which.
   A server's own default can be a rule list too — **Settings → Network → Default exit → Routing (smart cascade)**:
   one list for its interfaces set to **Auto** and for the traffic other servers send out through it, and each rule
   can narrow itself to **this node's own clients** or to **traffic cascaded in**. A **Forward to node** rule there
@@ -359,6 +399,12 @@ Its limits:
   and never forwards it again.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
+  Where a server runs both csqtt lines, **Settings → Turn proxies → Default client apps** keeps a default app per line:
+  a **2.1 / 2.5** switch above the operating systems picks which line you are choosing for, and each line lists only
+  the apps that speak it. Leave 2.5 unset and its servers follow 2.1's choice, as before.
+- **Manage it from your phone.** On a phone the panel opens in its own layout — a tab bar at the bottom, lists as cards,
+  windows that slide up and close with a swipe down or the phone's Back. Swipe a row left (or tap its ⋮) for its actions.
+  **More → Desktop view** switches to the full desktop layout and back. It can be added to the home screen as an app.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
   **Uptime Kuma**, and ping a webhook when a server goes offline — **Settings → Integrations**.
 
@@ -387,7 +433,15 @@ says. A reboot ends the guard; once the older version runs, this ends both now:
 ```bash
 sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
 sudo systemctl try-restart 'swg-*.service'        # back to the system journal (a reboot moves them too)
-sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # the torrent guard
+sudo nft delete table inet swg_p2p; while sudo ip rule del pref 6880 2>/dev/null; do :; done   # the torrent guard (a rule per route)
+sudo nft delete table ip swg_p2pfwd 2>/dev/null   # from 1.8.11: the devices' incoming torrent ports
+```
+From 1.8.11, a server that ran a **SOCKS5 exit** keeps its tunnel and its DNS rules too — the older version can't see
+them, so they stay until a reboot or until you remove them:
+```bash
+sudo systemctl stop 'swg-s5x-*'; sudo nft delete table inet swg_s5x 2>/dev/null
+while sudo ip rule del pref 6870 2>/dev/null; do :; done                                # traffic cascaded in: its DNS
+sudo iptables -t nat -S PREROUTING | grep -- '--comment "\?swg-s5x-dns' | sed 's/^-A/-D/' | xargs -rL1 sudo iptables -t nat
 ```
 A **Docker** server keeps the guard too (the same `nft` / `ip rule` line), and one started on an image older than 1.8.7
 keeps two more firewall tables that version can't manage, which go on refusing connections the panel has since allowed.
@@ -472,6 +526,13 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   and everything goes back on its own if you don't.
 - **A hiccup won’t lock anyone out.** If the panel is briefly unreachable, your servers keep running with
   the access they already have and catch up on the next check-in.
+- **Servers that reach the panel through Cloudflare see an occasional 502.** Cloudflare now and then answers a server's
+  check-in with a 502 of its own: the server logs one line (`sync HTTP 502: … Bad gateway`), skips that check-in and
+  its users stay connected as they are. To be rid of it, let the servers reach the panel directly — a DNS-only
+  (grey-cloud) record for the name they use, or an `/etc/hosts` line on each server that points the name at the panel's
+  own IP (on a Docker server, an `extra_hosts:` entry for the `swg-node` service in `docker-compose.yml`). This works only
+  for a panel with a public certificate (Let's Encrypt) that answers on the port in its address: a panel on a Cloudflare
+  Origin certificate, or one that lets only Cloudflare in, must stay behind Cloudflare — there the 502 is harmless.
 - **Force-DNS sees encrypted DNS; it doesn’t stop it.** In the Force-DNS routing mode a server answers its
   users’ ordinary DNS and routes by the site names it sees. A device that uses its own encrypted DNS (DoH, DoT
   or DoQ) is marked instead of cut off: its rules by site name don’t match, its rules by IP still do. To stop
@@ -531,6 +592,26 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   or a server added from another panel — because its replies couldn't be told apart. Rules toward that server are
   skipped for the interface, a forward to it is off (its traffic leaves by this server's own address), and the
   sending server's card names both sides; give one of them a different subnet.
+- **Torrents run fastest over TCP.** Through the tunnel a torrent client's default mix of µTP and TCP downloads at a
+  fraction of its TCP-only speed — measured on one server: 117 Mbit/s, against 369 with *Prefer TCP* and 540 with TCP
+  only — because peers send µTP in packets too large for the tunnel, which the server has to split, and no server
+  setting changes that. Where torrents get through, the subscription page shows a magnet beside the config's name; tap or
+  hover it for the setting to use: TCP only, or µTP-TCP mixed mode *Prefer TCP* (qBittorrent: *Options → Connection* /
+  *Advanced*). Where torrents are blocked there is no magnet.
+- **Each WireGuard / AmneziaWG device has its own incoming torrent port.** Where torrents leave by the server's own
+  address — a server on *Direct*, or an interface whose own choice is *Direct* — every such device gets a fixed port
+  (20000–29999, the same on every server it is on), and the server forwards it from its address to the device on a
+  WireGuard or AmneziaWG interface (one per server: its primary connection there): other peers can connect in, which
+  is what seeding and private trackers need. The magnet's bubble then opens with that port; set it as the client's
+  listening port and turn off the random port at startup. Where nothing is forwarded — a WDTT or csqtt connection, a
+  Docker node in bridge mode, a port another program on the server already uses — the bubble shows no port. Keep
+  20000–29999 free on the servers: the panel refuses it for a new interface, turn-proxy, WDTT or csqtt server, or
+  dial-in exit. A switch to Block also ends the incoming connections already open.
+- **In Docker, the panel keeps port 80 for its certificate.** With a Let's Encrypt certificate (for a domain or the
+  bare IP), the panel's container holds the server's port 80, so it renews on its own with nothing to set up. Another
+  certificate tool on the same server (your own acme.sh or certbot) then can't use port 80: give it hooks that stop the
+  panel for the few seconds it needs, `--pre-hook "docker stop swg-panel" --post-hook "docker start swg-panel"`. If
+  something else already held port 80 when you installed, the panel names it when its renewal fails.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more

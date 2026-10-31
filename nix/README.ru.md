@@ -380,6 +380,7 @@ sudo chmod 0600 /etc/swg-secrets/node-token /etc/swg-secrets/node.env
 services.swg-node.udpPortRanges = [
   { from = 51820; to = 51899; }   # интерфейсы — отсюда панель начинает новые
   { from = 56000; to = 56099; }   # turn-прокси, серверы WDTT и csqtt
+  { from = 42821; to = 42899; }   # обратные выходы — роутер за NAT, который сам подключается к этой ноде
   { from = 9999;  to = 10098; }   # меш-линки между вашими узлами (Настройки → Умолчания системной сети)
 ];
 ```
@@ -594,6 +595,7 @@ sudo rm -f /run/systemd/system/swg-relay@.service && sudo systemctl daemon-reloa
 
 ```bash
 sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null
+sudo nft delete table ip swg_p2pfwd 2>/dev/null   # с 1.8.11: входящие торрент-порты устройств
 ```
 
 ---

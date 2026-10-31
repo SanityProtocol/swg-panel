@@ -52,7 +52,7 @@ const WRITERS = [
   ["commitForm  (the Network screen's submit)", body(SET, "const commitForm = ()", "\n  return html"), "form."],
   ["addDevice   (mint / update the record)",    body(SET, "const addDevice = async", "const renameExit"), null],
   ["renameExit  (edit an existing exit)",       body(SET, "const renameExit = async", "const commitForm"), null],
-  ["addRow      (the manage sheet's add)",      body(SET, "const addRow = ()", "\n  // A pasted profile"), "nv."],
+  ["addRow      (the manage sheet's add)",      body(SET, "const addRow = v =>", "\n  // A pasted profile"), "r."],
 ];
 console.log("\n[1] every editable field reaches every writer");
 for (const [name, src, pfx] of WRITERS) {
@@ -73,5 +73,12 @@ for (const f of editable) {
   if (f === "title") { check("  penBtn seeds `title`", /title:/.test(pen), pen); continue; }
   check(`  penBtn seeds \`${f}\``, new RegExp(f + "\\s*:").test(pen), pen.slice(0, 260));
 }
+
+// [3] a button's onClick hands its handler the click EVENT: addRow, which takes an optional row, must be called with none from
+// the inline form's Add — wired as `onSubmit=${addRow}` the event became the row, its device was undefined and nothing was added
+// (desktop, Ways out → Add an interface by name → click Add; review F1)
+console.log("\n[3] the inline form's Add calls addRow with no argument");
+check("  `onSubmit=${addRow}` is not wired straight to a button", !SET.includes("onSubmit=${addRow}"));
+check("  the inline form calls `addRow()`", SET.includes("onSubmit=${() => addRow()}"));
 
 done(PERTURB, "gw dropped from every writer and from the pencil");

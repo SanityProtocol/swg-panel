@@ -12,9 +12,9 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStatusOf, nodeStale } from "./model.js";
+import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokRead, portokSame } from "./model.js";
 import {
-  BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
+  BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -29,14 +29,14 @@ import {
   forkSupportsAwg, turnColor, turnFork, turnForkList, turnForksVisible, forkLabel,
 } from "./turn-catalog.js";
 import {
-  ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy, footRow,
+  ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, closeModals, copy, footRow,
   goSettings, meshGenLabel, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
   ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
-  awgConfLines,
+  CONF_SEALED_OLD, CONF_UNREACHABLE, EXIT_LOCKED, EXIT_KEEP_LOCKED, exitKeepState, awgConfLines, buildConf, exitKeepRouter, exitRouterKey, genKeys, genPSK, QR,
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
   ensureVaultUnlocked, ivkResealForNodeBlob, nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
   subVaultCreate, urlPortOf, withUrlPort,
@@ -45,16 +45,18 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitLabel, exitOptionGroups, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
+  p2pVal, p2pRec, p2pTarget, p2pLabel, p2pTargetOpts, p2pTargetHints,
 } from "./routing.js";
+import { awgFieldCheck } from "./mimic.js";   // a template value a dial-in exit can take: one every app reads
 import { LogViewer } from "./journal.js";   // Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5)
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
-import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
+import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows, PORTS_MAX_TOKENS } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
   TURN_FORKS_DEFAULT, TurnCollectedIps, openRosterCheck, openServerClients, openServerDefaults,
-  turnForkPlatforms, turnUpdateTarget, turnUpdating,
+  turnDialFallback, turnForkPlatforms, turnUpdateTarget, turnUpdating,
 } from "./turn.js";
 import {
   IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, MeshGenField,
@@ -75,9 +77,8 @@ const html = htm.bind(h);
 // Turn section's dirty tracking — the save cascades to every holder and that shouldn't ride along with an
 // unrelated settings change.
 //
-// ⚠️ "Dead" is MANUAL and there is no liveness check, by measurement rather than by choice: a bogus call
-// hash and a real one both return HTTP 200 and byte-identical page shells, so the panel cannot tell them
-// apart from the outside. Anything automatic here would be a coin flip presented as a fact.
+// "Dead" is the operator's mark or the alive check's (`dead_by: "check"`): the panel asks VK's API, never the link's
+// page — a bogus call hash and a real one both return HTTP 200 and the same page shell (see the server's note).
 // ── Shared VK call-link pool ─────────────────────────────────────────────────────────────────────────────
 // One set of operations, two surfaces: five rows inline in Turn settings, twenty per page in the "View all"
 // sheet. Everything below is deliberately OPTIMISTIC — the row changes the instant it is clicked and the
@@ -85,37 +86,75 @@ const html = htm.bind(h);
 // to find out whether their click landed.
 const VK_PAGE_INLINE = 5, VK_PAGE_SHEET = 15;
 
+// The pool is NOT in the poll — it carries only vk_pool_rev, a live count and the check's state. The editor fetches
+// the list (GET /api/vk-pool) when that rev moves, and the check's answers when vk_check.seq does. One module-level
+// copy, so the inline editor and the "View all" sheet share a fetch; nothing is fetched while neither is open.
+// `asked` is the poll's rev / seq each fetch was made FOR: a fetch is made once per change the poll shows, never in a
+// loop (an answer that is newer than the poll does not ask again), and a failed one is asked again at the next poll.
+const VKP = { rev: null, pool: [], res: {}, asked: { pool: undefined, res: undefined }, busy: { pool: false, res: false } };
+function vkpTake(d) {
+  if (!d) return;
+  // the rev only moves forward: a GET served before a save but answered after it does not undo the save
+  if (Array.isArray(d.pool) && (VKP.rev === null || (d.rev || 0) >= VKP.rev)) { VKP.pool = d.pool; VKP.rev = d.rev || 0; }
+  if (d.res) VKP.res = d.res;
+}
+function vkpLoad(what, mark) {
+  const k = what === "res" ? "res" : "pool";
+  if (VKP.busy[k]) return Promise.resolve();
+  VKP.busy[k] = true;
+  if (mark !== undefined) VKP.asked[k] = mark;
+  return (k === "res" ? api.vkPoolResults() : api.vkPoolGet())
+    .then(r => { if (!(r && r.ok)) throw new Error("vk-pool"); vkpTake(r.data); })
+    .then(() => { VKP.busy[k] = false; bus.emit(); },
+          () => { VKP.busy[k] = false; VKP.asked[k] = undefined; });   // no emit: the next poll asks again, not this instant
+}
+
 function usePool() {
   useStore();
   const ps = Store.panelSettings || {};
-  const server = Array.isArray(ps.vk_pool) ? ps.vk_pool : [];
+  const ck = ps.vk_check || {};
+  const psRev = ps.vk_pool_rev || 0, psSeq = ck.seq || 0;
+  useEffect(() => {                                // every render: cheap, and the marks keep it to once per change
+    if (VKP.asked.pool !== psRev && !VKP.busy.pool) { VKP.asked.res = psSeq; vkpLoad("pool", psRev); }
+    else if (VKP.asked.res !== psSeq && !VKP.busy.res && !VKP.busy.pool) vkpLoad("res", psSeq);
+  });
+  const server = VKP.pool;
   const [local, setLocal] = useState(null);        // optimistic overlay; null = showing the server's list
+  const [checking, setChecking] = useState(() => new Set());   // the rows whose Check is waiting on VK
   const wantRev = useRef(0);
-  const revRef = useRef(ps.vk_pool_rev || 0);
+  const revRef = useRef(VKP.rev || 0);
   const chain = useRef(Promise.resolve());
+  const gen = useRef(0);                           // moves when a save fails: the saves queued behind it are dropped
   const pool = local || server;
   // Drop the overlay only once the server has caught up, so the row never flashes back to its old value in
-  // the gap between "saved" and "the next poll arrived".
+  // the gap between "saved" and "the next fetch arrived".
   useEffect(() => {
-    const rv = ps.vk_pool_rev || 0;
+    const rv = VKP.rev || 0;
     if (local && rv >= wantRev.current) setLocal(null);
     if (!local) revRef.current = rv;
-  }, [ps.vk_pool_rev, local]);
+  }, [VKP.rev, local]);
 
   // ⚠️ SERIALISED. Each save carries the revision it was read at, and the server bumps that by one, so two
   // actions fired a moment apart must not both send the old number — the second would be refused as stale by
   // the very guard that exists to stop a different session clobbering this one.
+  // ⚠️ A REFUSED SAVE DROPS THE ONES QUEUED BEHIND IT. They were built on the same list it was, and once the conflict
+  // has moved revRef to the server's rev they would pass the guard and overwrite what changed meanwhile (a link the
+  // check marked dead, handed out again).
   const send = (next, okMsg) => {
     setLocal(next);
     wantRev.current = revRef.current + 1;
+    const g = gen.current;
     chain.current = chain.current.then(async () => {
+      if (gen.current !== g) return;
       const r = await api.vkPool(next, revRef.current);
       if (!r || !r.ok) {
+        gen.current++;
         setLocal(null);                            // revert to whatever the server actually holds
-        if ((r || {}).code === "conflict") { revRef.current = (r.data || {}).rev || 0; await Store.poll(); }
+        if ((r || {}).code === "conflict" && (r.data || {}).pool) { vkpTake(r.data); revRef.current = r.data.rev || 0; VKP.asked.pool = undefined; bus.emit(); await Store.poll(); }
         toast(srvText(r) || T("Couldn't save the VK pool"), "err");
         return;
       }
+      vkpTake(r.data);
       revRef.current = (r.data || {}).rev || revRef.current + 1;
       const moved = (r.data || {}).reassigned || 0;
       Store.configEpoch++; bus.emit();
@@ -125,26 +164,51 @@ function usePool() {
     return chain.current;
   };
 
-  const holders = url => (Store.recon.users || []).filter(u => (u.vk_links || []).includes(url)).length;
+  // Holders per URL, counted ONCE per render: with no size limit a per-row scan of every user is links × users a render.
+  const held = new Map();
+  for (const u of (Store.recon.users || [])) for (const l of (u.vk_links || [])) held.set(l, (held.get(l) || 0) + 1);
+  const holders = url => held.get(url) || 0;
   const problem = (url, skipId) => {
     const v = normVkLink(url);
     if (!v) return T("Enter a VK call link.");
     // ONE key, not a translated half plus a glued literal: word order moves between languages, so the
     // example has to be a placeholder the translator can put where it belongs. peer-ui.js keeps the bare
     // key because it renders the example as markup (<span class="mono">), which is not a concatenation.
-    if (!_VK_CALL_RE.test(v)) return T("Expected a VK call link like {v1}", { v1: "https://vk.ru/call/join/…" });
+    if (!_VK_CALL_RE.test(v)) return T("Expected a VK call link or its hash, like {v1}", { v1: "https://vk.ru/call/join/…" });
     if (pool.some(e => e.id !== skipId && e.url === v)) return T("The same link is in the pool twice.");
     return "";
   };
+  // A row's Check: VK's answer in a toast, and on the row's pulse for the hour after (VkCheckBtn).
+  const checkOne = async e => {
+    if (!e.id || checking.has(e.id)) return;      // a row not saved yet has no id ({} would be "Check all")
+    setChecking(c => new Set(c).add(e.id));
+    let r = null;
+    try { r = await api.vkCheck(e.id); } catch (_) { r = null; }
+    setChecking(c => { const n = new Set(c); n.delete(e.id); return n; });
+    await vkpLoad("pool");
+    if (!r || !r.ok) { toast(srvText(r) || T("Couldn't ask VK"), "err"); return; }
+    const d = r.data || {};
+    if (d.verdict === "alive") toast(d.revived ? T("VK: the link is alive — it is handed out again.")
+      : d.operator_dead ? T("VK: the link is alive. You marked it dead — mark it alive to hand it out again.")
+      : T("VK: the link is alive."), "ok");
+    else if (d.verdict === "dead") toast(!d.marked ? T("VK: this link no longer exists.")   // already dead, or edited meanwhile
+      : d.moved ? T("VK: this link no longer exists — marked dead, moved {v1} to another link.", { v1: plural(d.moved, "user") })
+      : T("VK: this link no longer exists — marked dead."), "ok");
+    else toast(d.verdict === "limited" ? T("VK limited the check — nothing changed. Try again later.")
+      : d.verdict === "neterr" ? T("VK didn't answer — nothing changed.") : T("VK gave no clear answer — nothing changed."), "err");
+    Store.configEpoch++; bus.emit();
+    Store.poll().catch(() => {});
+  };
   return {
-    pool, holders, problem,
+    pool, holders, problem, checking, checkOne, res: VKP.res, loaded: VKP.rev !== null,
     saveUrl: (e, raw) => { const v = normVkLink(raw); const why = problem(v, e.id);
       if (why) { toast(why, "err"); return false; }
-      if (v !== e.url) send(pool.map(x => x.id === e.id ? { ...x, url: v } : x), T("Link updated."));
+      if (v !== e.url) send(pool.map(x => x.id === e.id ? { ...x, url: v, dead_by: undefined } : x), T("Link updated."));
       return true; },
     addMany: (list) => send([...pool, ...list.map(u => ({ url: u, dead: false, added: Math.floor(Date.now() / 1000) }))],
                             list.length > 1 ? T("Added {v1}.", { v1: plural(list.length, "VK link") }) : T("Link added.")),
-    toggleDead: e => send(pool.map(x => x.id === e.id ? { ...x, dead: !x.dead } : x), e.dead ? T("Marked alive.") : T("Marked dead.")),
+    // dead_by dropped in the overlay as the server drops it (an un-mark or an edit is the operator's own decision)
+    toggleDead: e => send(pool.map(x => x.id === e.id ? { ...x, dead: !x.dead, dead_by: undefined } : x), e.dead ? T("Marked alive.") : T("Marked dead.")),
     remove: e => send(pool.filter(x => x.id !== e.id), T("Link removed.")),
     removeDead: () => { const n = pool.filter(x => x.dead).length;
       send(pool.filter(x => !x.dead), T("Removed {v1}.", { v1: plural(n, "dead VK link") })); },
@@ -174,11 +238,11 @@ function VkPasteBox({ onAdd, onClose }) {
   const bad = links.filter(u => !_VK_CALL_RE.test(u)).length;
   const setOpen = () => onClose();
   return html`<div class="vkpool-add">
-    <textarea class="vkpool-paste" rows="3" autofocus placeholder=${T("Paste one link per line — or separated by commas or spaces")}
+    <textarea class="vkpool-paste" rows="3" autofocus placeholder=${T("Paste links or their hashes — one per line, or separated by commas or spaces")}
       value=${text} onInput=${e => setText(e.target.value)}
       onKeyDown=${e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (links.length && !bad) { onAdd(links); setText(""); onClose(); } } }}></textarea>
     <div class="vkpool-foot">
-      <span class="faint" style="font-size:11px">${bad ? T("{v1} of these isn't a VK call link.", { v1: String(bad) })
+      <span class="faint" style="font-size:11px">${bad ? T("{v1} of these isn't a VK call link or its hash.", { v1: String(bad) })
         : links.length ? T("{v1} ready to add", { v1: plural(links.length, "VK link") }) : T("Paste one or many.")}</span>
       <span class="grow"></span>
       <button class="btn btn-ghost btn-mini" onClick=${() => { setText(""); onClose(); }}>${T("Cancel")}</button>
@@ -197,24 +261,92 @@ function VkPoolRows({ P, rows, withDate }) {
     ${rows.map(e => { const v = urlOf(e), held = P.holders(e.url), edited = normVkLink(v) !== e.url;
       const save = () => { if (P.saveUrl(e, v)) clear(e.id); };
       return html`
-      <div class=${"vkpool-row" + (e.dead ? " dead" : "")} key=${e.id}>
+      <div class=${"vkpool-row" + (e.dead ? " dead" : "") + (e.dead_by === "check" ? " vkgone" : "")} key=${e.id}>
         <div class=${"vkbox" + (e.dead ? " dead" : "")} style="flex:1">
-          <${Ic} i="users"/>
-          <input class="vkbox-input" value=${v} placeholder=${T("https://vk.com/call/join/…")}
+          <${Ic} i=${e.dead_by === "check" ? "warn" : "users"}/>
+          <input class="vkbox-input" value=${v} placeholder=${T("A hash, or https://vk.ru/call/join/…")}
             onInput=${ev => setDraft(d => ({ ...d, [e.id]: ev.target.value }))}
             onKeyDown=${ev => { if (ev.key === "Enter") { ev.preventDefault(); save(); }
                                 if (ev.key === "Escape") clear(e.id); }}/>
           ${edited ? html`<button class="btn btn-mini vkbox-save" onClick=${save}
             title=${T("Save this link (or press Enter)")}><${Ic} i="check"/></button>` : null}
+          ${e.dead_by === "check" && !edited ? html`<span class="vkpool-gone" title=${T("VK's check found this link no longer exists — it is no longer handed out. Check it again to bring it back if VK answers that it is alive.")}>${T("VK: no longer exists")}</span>` : null}
         </div>
         ${withDate ? html`<span class="vkpool-added" title=${T("When it was added")}>${e.added ? ago(e.added) : "—"}</span>` : null}
         <span class=${"vkpool-held" + (held ? "" : " none")} title=${T("Users holding this link")}>${held || "—"}</span>
+        <${VkCheckBtn} P=${P} e=${e}/>
         <button class=${"btn btn-ghost btn-mini iconbtn vkpool-dead" + (e.dead ? " on" : "")} onClick=${() => P.toggleDead(e)}
           title=${e.dead ? T("Mark as alive — hand it out again") : T("Mark as dead — stop handing it out and move its users off")}>
           <${Ic} i=${e.dead ? "check" : "off"}/></button>
         <button class="btn btn-ghost btn-mini iconbtn" onClick=${() => P.remove(e)}
           title=${T("Remove from the pool")}><${Ic} i="trash"/></button>
       </div>`; })}
+  </div>`;
+}
+
+// A row's Check button. The pulse never changes; its COLOUR is VK's last answer for the hour after it came — green
+// alive, red dead, orange no clear answer — and blue while the question is out (a row's own, or the run's current
+// link). After the hour it goes back to grey, except on a link the check took out of circulation: the pool's amber.
+const VK_CHECK_FRESH = 3600;   // the server's VK_CHECK_KEEP
+function vkCheckTone(P, e) {
+  if (P.checking.has(e.id) || (e.id && ((Store.panelSettings || {}).vk_check || {}).cur === e.id)) return "busy";
+  const r = P.res[e.id];
+  if (r && r.url === e.url && panelNowS() - r.at < VK_CHECK_FRESH) return r.v;   // an answer about the URL the row holds now
+  return e.dead_by === "check" ? "gone" : "";
+}
+function VkCheckBtn({ P, e }) {
+  const tone = vkCheckTone(P, e), r = P.res[e.id];
+  const said = tone === "busy" ? T("Asking VK…")
+    : tone === "alive" ? T("VK answered: alive, {v1}", { v1: ago(r.at) })
+    : tone === "dead" ? T("VK answered: this link no longer exists, {v1}", { v1: ago(r.at) })
+    : tone === "unknown" ? T("VK gave no clear answer, {v1}", { v1: ago(r.at) })
+    : tone === "gone" ? T("VK's check found this link no longer exists") : "";
+  // Busy is aria-disabled, not disabled: .iconbtn:disabled takes the pointer away, and with it the "Asking VK…" title.
+  return html`<button class=${"btn btn-ghost btn-mini iconbtn vkpool-chk" + (tone ? " t-" + tone : "")} disabled=${!e.id}
+    aria-disabled=${tone === "busy" ? "true" : null} onClick=${() => P.checkOne(e)}
+    title=${(said ? said + " — " : "") + T("Ask VK whether this link still exists")}><${Ic} i="activity"/></button>`;
+}
+
+// The alive check's line, above the totals: what the last run found, the every-6-hours switch and "Check all".
+function VkCheckLine({ P }) {
+  const ps = Store.panelSettings || {};
+  const ck = ps.vk_check || {};
+  const auto = ps.vk_check_auto !== false;
+  if (!P.pool.length) return null;
+  const at = ck.at || 0;
+  const next = dur(Math.max(60, at + 6 * 3600 - panelNowS()));
+  const line = ck.checking ? html`<span class="vkcheck-st run"><${Ic} i="clock"/>${T("Checking with VK…")}</span>`
+    : !at ? html`<span class="vkcheck-st"><${Ic} i="activity"/>${T("Not checked yet")}</span>`
+    : ck.state === "limited" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${auto ? T("VK limited the check, next try in {v1}", { v1: next }) : T("VK limited the check")}</span>`
+    : ck.state === "suspect" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${T("VK called most links dead — none was marked. Check one on its row to be sure.")}</span>`
+    : ck.state === "failed" ? html`<span class="vkcheck-st warn"><${Ic} i="warn"/>${auto ? T("VK didn't answer, next try in {v1}", { v1: next }) : T("VK didn't answer")}</span>`
+    : html`<span class="vkcheck-st"><${Ic} i="check"/>${T("Checked {v1}", { v1: ago(at) })}</span>`;
+  const setAuto = async on => {
+    let r = null;
+    try { r = await api.vkCheckAuto(on); } catch (_) { r = null; }
+    if (!r || !r.ok) { toast(srvText(r) || T("Couldn't save"), "err"); return; }
+    Store.panelSettings = { ...(Store.panelSettings || {}), vk_check_auto: on };
+    bus.emit();
+    Store.poll().catch(() => {});
+  };
+  const checkAll = async () => {
+    let r = null;
+    try { r = await api.vkCheck(); } catch (_) { r = null; }
+    if (!r || !r.ok) { toast(srvText(r) || T("Couldn't ask VK"), "err"); return; }
+    const live = P.pool.filter(e => !e.dead).length;
+    toast((r.data || {}).started ? T("Checking {v1} with VK.", { v1: plural(live, "VK link") })
+      : (r.data || {}).checking ? T("A check is already running.") : T("No live links to check."), "ok");
+    Store.poll().catch(() => {});
+  };
+  return html`<div class="vkcheck">
+    ${line}
+    <span class="grow"></span>
+    ${/* A span, not a label: Switch is a <label> of its own, and a nested one is invalid and drops this title. */ ""}
+    <span class="vkcheck-auto" title=${T("Ask VK about every live link every 6 hours, one link a second, from this panel's address")}>
+      <${Switch} on=${auto} onChange=${setAuto}/><span onClick=${() => setAuto(!auto)}>${T("Every 6 h")}</span></span>
+    <button class="btn btn-ghost btn-mini" disabled=${!!ck.checking} onClick=${checkAll}
+      title=${T("Ask VK about every live link now — dead ones are skipped; check a dead one on its own row")}>
+      <${Ic} i="activity"/> ${T("vk|Check all")}</button>
   </div>`;
 }
 
@@ -241,7 +373,10 @@ function VkPoolTotals({ P, big }) {
 }
 
 // Sort is a VIEW concern only — the stored order never changes, so a sort can never rewrite the pool.
+// VK's last answer, the news first: asking, dead, no clear answer, gone for good, alive, none — the Check pulse's colours.
+const VK_TONE_RANK = { busy: 5, dead: 4, unknown: 3, gone: 2, alive: 1, "": 0 };
 const VK_SORTS = { users: (P) => (a, b) => P.holders(b.url) - P.holders(a.url),
+                   check: (P) => (a, b) => VK_TONE_RANK[vkCheckTone(P, b)] - VK_TONE_RANK[vkCheckTone(P, a)],
                    status: () => (a, b) => (a.dead ? 1 : 0) - (b.dead ? 1 : 0),
                    added: () => (a, b) => (b.added || 0) - (a.added || 0) };
 function vkSorted(P, pool, sort, desc) {
@@ -264,6 +399,7 @@ function VkSortHead({ sort, desc, setSort, setDesc, withDate, left }) {
     <span class="grow"></span>
     ${withDate ? cell("added", "vkpool-added", T("Sort by when it was added")) : null}
     ${cell("users", "vkpool-held", T("Sort by how many users hold it"))}
+    ${cell("check", "btn btn-mini iconbtn", T("Sort by VK's last answer"))}
     ${cell("status", "btn btn-mini iconbtn", T("Sort by alive or dead"))}
     <span class="btn btn-mini iconbtn vkh-pad"></span>
   </div>`;
@@ -312,11 +448,12 @@ function VkPoolSheet() {
           onConfirm: () => { P.removeAll(); return true; } })}>
         <${Ic} i="trash"/> ${T("Remove all")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button></>`}>
+      <button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button></>`}>
+    <${VkCheckLine} P=${P}/>
     <${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc} withDate=${true}
       left=${html`<${VkPoolTotals} P=${P} big=${true}/>`}/>
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_SHEET, (pg + 1) * VK_PAGE_SHEET)} withDate=${true}/>`
-      : html`<div class="vkpool-empty">${(vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
+      : html`<div class="vkpool-empty">${!P.loaded ? T("Loading…") : (vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar"><span></span><${VkPager} page=${pg} setPage=${setPage} pages=${pages}/><span></span></div>
   <//>`;
@@ -370,13 +507,18 @@ function VkPoolEditor() {
     <p class="hint" style="margin:0 0 10px">${vkPerUser() ? Trich("Links handed out to users *at random* — a new user gets them automatically, and you can give anyone more from the pool in their *Manage* view.")
       : Trich("Links handed out to users *at random* — from the pool in their *Manage* view. New users get none automatically while the setting below is 0.")}</p>
     <${VkPerUser}/>
+    <${VkCheckLine} P=${P}/>
     ${P.pool.length > 1
       ? html`<${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc}
               left=${html`<${VkPoolTotals} P=${P}/>`}/>`
       : html`<div class="vkpool-head"><${VkPoolTotals} P=${P}/></div>`}
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_INLINE, (pg + 1) * VK_PAGE_INLINE)}/>`
-      : html`<div class="vkpool-empty">${(vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
-    ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${T("No live links left — users on a dead link will keep it until you add a working one.")}</div>` : null}
+      : html`<div class="vkpool-empty">${!P.loaded ? T("Loading…") : (vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
+    ${/* _vk_user_sync drops a dead pool link from its holders even when nothing is left to replace it with, and a link
+          added later reaches only NEW users (vk_pool_per_user) — the others get it from "Add from pool" in their Manage. */ ""}
+    ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${vkPerUser()
+      ? T("No live links left — anyone who held a pool link has lost it. A working link you add goes to new users; give it to the others with Add from pool in their Manage view.")
+      : T("No live links left — anyone who held a pool link has lost it. Once you add a working link, give it to them with Add from pool in their Manage view.")}</div>` : null}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar">
       <${VkAddBtn} onClick=${() => setAddOpen(o => !o)}/>
@@ -465,10 +607,10 @@ export function WebhookSheet({ hook, onSaved, onClose }) {
     if (r.data && r.data.secret && !hook) { setSecret(r.data.secret); onSaved && onSaved(); return; }   // creation: reveal the secret, keep the sheet open
     onSaved && onSaved(); onClose && onClose();
   };
-  return html`<${Sheet} title=${hook ? T("Edit webhook") : T("Add webhook")} onClose=${onClose}
+  return html`<${Sheet} title=${hook ? T("Edit webhook") : T("Add webhook")} onClose=${onClose} noSwipe=${!!secret}
     foot=${secret ? html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${onClose}>${T("Done")}</button></>`
       : html`<${Fragment}><span class="grow"></span>
-        <button class="btn btn-ghost" onClick=${onClose}>${T("Cancel")}</button>
+        <button class="btn btn-ghost btn-dismiss" onClick=${onClose}>${T("Cancel")}</button>
         <button class="btn btn-primary" disabled=${busy || !valid} onClick=${save}>${hook ? T("Save") : T("Add webhook")}</button></>`}>
     ${secret ? html`<div class="notice ok"><${Ic} i="check"/><span>${Trich("Webhook saved. This is its *signing secret* — shown once. Every delivery carries an `X-SWG-Signature: sha256=HMAC(secret, body)` header so you can verify it's from this panel.")}</span></div>
       <div class="tokreveal"><code class="tokval">${secret}</code><button class="btn btn-mini" onClick=${() => copy(secret, T("Secret"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>`
@@ -1960,6 +2102,12 @@ export function PanelSettingsScreen() {
   // the server, so an unedited field reads clean against the stored list.
   const [scanAllow, setScanAllow] = useState((ps.scan_allow || []).join("\n"));
   const normScanAllow = s => [...new Set(String(s || "").split(/[\s,]+/).filter(Boolean).map(t => (t.includes("/") || t.includes(":")) ? t : t + "/32"))];
+  // The Never-block list (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md A.5): read by the rules' own grammar; what it cannot take is
+  // named under the box before Save, and the server refuses it again with the same reasons.
+  const [blockAllow, setBlockAllow] = useState((ps.block_allow || []).join("\n"));
+  const [pok, setPok] = useState((ps.p2p_portok || P2P_PORTOK_DEFAULT).join(", "));   // ports the torrent filter never cuts (S11c)
+  const nbRead = s => classifyAll(s).map(c => ({ ...c, ok: c.kind === "site" || (c.kind === "ip" && +String(c.value).split("/")[1] >= 8) }));
+  const normBlockAllow = s => [...new Set(nbRead(s).map(c => c.ok ? c.value : c.raw.toLowerCase()))];
   const [meshGen, setMeshGen] = useState(ps.mesh_awg_gen || "2.0");   // the type new mesh links are made as (2.0 | 3.1 | wg)
   const [meshMode, setMeshMode] = useState(ps.mesh_mode || "auto");   // which node pairs get a mesh link (auto | full | demand)
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: customTargets(l) })));
@@ -2050,13 +2198,16 @@ export function PanelSettingsScreen() {
       }
       for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) {   // self-contained kinds (keyed by fork, usually no version string)
         if (!w || w.fork !== fid || (!all && csqttOtherLine(w))) continue;
-        const cur = m[nid] || { version: "", installing: false, updatePending: false };
+        // `all`: a box runs csqtt 2.1 and 2.5 side by side, one binary each — one row per (node, version line), or the
+        // bubble shows one of them (operator, 2026-10-28: msk-shadow runs both, the row showed 2.1.9-4 only)
+        const line = all && csqttOtherLine(w) ? w.line : "", k = line ? nid + "@" + line : nid;
+        const cur = m[k] || { version: "", installing: false, updatePending: false, ...(line ? { node: nid, line } : {}) };
         cur.version = w.version || cur.version || "installed";   // i18n-keys
         if (w.active && w.active !== "active") cur.installing = true;   // starting / awaiting restore
-        m[nid] = cur;
+        m[k] = cur;
       }
     }
-    return Object.entries(m).map(([node, v]) => ({ node, ...v })).sort((a, b) => Store.byNode(a.node, b.node));
+    return Object.entries(m).map(([node, v]) => ({ node, ...v })).sort((a, b) => Store.byNode(a.node, b.node) || String(a.line || "").localeCompare(String(b.line || "")));
   };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
   const checkTurnUpdates = async () => {
@@ -2194,7 +2345,9 @@ export function PanelSettingsScreen() {
     if (secNp && secNp.length < 8) return T("New password must be at least 8 characters.");
     return null;
   };
-  const [section, setSection] = useState(takePendingSection() || "display");   // active left-rail section (a Settings activity click can deep-link here)
+  // A phone opens on the LIST of sections and drills into one (MOBILE-PLAN hook 3) — the rail does not fit beside a pane there.
+  // `null` is the list. A deep link (an activity row, a sheet's "go to settings") still lands on its section.
+  const [section, setSection] = useState(takePendingSection() || (isMobile() ? null : "display"));   // active left-rail section (a Settings activity click can deep-link here)
   useEffect(() => { registerSectionSetter(setSection); return () => registerSectionSetter(null); }, []);   // one-shot section pin + expose setSection so a modal can switch the rail (confirm modal → Access & TLS)
   const [routeTab, setRouteTab] = useState("routing");   // "Routing & Blocking" section: Routing (route→exit) | Blocking (drop) — both gated by the node's mode above
   useEffect(() => { if (routeTab === "blocking" || section === "geo") loadBlockCatalog(); }, [routeTab, section]);   // lazy-load the block catalog for the Blocking tab and the Geo-data Filters-providers list
@@ -2270,6 +2423,7 @@ export function PanelSettingsScreen() {
     // with no target, which the server refuses (measured on swgt, P3 live check)
     p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),
                                    ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,
+    p2p_portok: Array.isArray(n.p2p_portok) ? n.p2p_portok.join(", ") : null,   // its own never-cut ports, as typed; null = the fleet's
     endpoint_hosts: [...(n.endpoint_hosts || [])],
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     // ⚠️ REBUILT FROM A KEY LIST ON PURPOSE. /api/state attaches a derived `why_not` to each stored exit, and
@@ -2289,7 +2443,10 @@ export function PanelSettingsScreen() {
       // profile that is missing its key and re-submit it as a replacement. Empty box = keep what is stored.
       ...(x.producer === "imported" ? { provider: x.provider || "warp", licence: x.licence || "",
                                         dial_src: x.dial_src || "",
-                                        profile: x.profile || null, profile_text: "" } : {}) })) });
+                                        profile: x.profile || null, profile_text: "",
+                                        // a SOCKS exit's address as the browser has it (no password — T7); the paste box and
+                                        // the password field are empty = keep what is stored, as `profile_text` is
+                                        ...(x.socks ? { socks: x.socks, socks_text: "", socks_pass: "" } : {}) } : {}) })) });
   // (no mesh_awg: a link's AWG params are set on the link's own sheet, not per node — plan §8 round 13)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
@@ -2355,6 +2512,9 @@ export function PanelSettingsScreen() {
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
         show_node_lans: showLans,
         scan_allow: normScanAllow(scanAllow),
+        block_allow: normBlockAllow(blockAllow),
+        // only when changed; the defaults → null (no key). The text as typed, so the panel names what it cannot take
+        ...(pokDirty() ? { p2p_portok: (r => !r.bad.length && portokSame(r.list, P2P_PORTOK_DEFAULT) ? null : pok)(portokRead(pok)) } : {}),
         mesh_mode: meshMode,
         mesh_awg_gen: meshGen,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
@@ -2406,6 +2566,7 @@ export function PanelSettingsScreen() {
         default_routing: Array.isArray(e.default_routing) ? e.default_routing : null,
         default_routing_exit_ips: e.default_routing_exit_ips || {},
         p2p: e.p2p || null,
+        p2p_portok: e.p2p_portok ?? null,   // the text as typed, so the panel names what it cannot take; null = the fleet's
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
         catalog_cats: e.catalog_cats || [], exits: e.exits || [], log_mb: +e.log_mb || 100 });
@@ -2444,6 +2605,8 @@ export function PanelSettingsScreen() {
     // Re-seed the scan-guard allowlist from the server's CANONICAL form (it masks host bits, drops dupes), so a CIDR
     // typed with host bits — 10.0.0.1/24 → 10.0.0.0/24 — does not leave the section showing unsaved changes for ever.
     setScanAllow((((Store.panelSettings) || {}).scan_allow || []).join("\n"));
+    setBlockAllow((((Store.panelSettings) || {}).block_allow || []).join("\n"));   // its canonical form (host bits masked)
+    setPok((((Store.panelSettings) || {}).p2p_portok || P2P_PORTOK_DEFAULT).join(", "));   // merged and sorted
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
     } catch (e) {
@@ -2458,7 +2621,7 @@ export function PanelSettingsScreen() {
     if (Object.keys(blockEdits).length || blockRemoved.length) out.push(T("Content filters — categories / lists"));
     if (secChanged()) out.push(T("Authentication — panel credentials"));
     if (glDirty("turn")) out.push(T("Turn proxies — forks / colours / VK link"));
-    if (glDirty("geo")) out.push(T("Geo data providers"));
+    if (geoDirty()) out.push(T("Geo data providers"));   // the Never-block list has its own line below
     if (glDirty("defaults")) out.push(T("Interfaces — colours / defaults"));
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
@@ -2472,6 +2635,8 @@ export function PanelSettingsScreen() {
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
     if (normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) out.push(T("Port-scan guard — trusted sources updated"));
+    if (nbDirty()) out.push(T("Never-block list updated"));
+    if (pokDirty()) out.push(T("Ports the torrent filter never cuts — updated"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
     if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)))) out.push(T("System mesh defaults"));
@@ -2494,6 +2659,7 @@ export function PanelSettingsScreen() {
         fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
       if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
       if (!eq(e.p2p, o.p2p)) fl.push(T("torrents → {v1}", { v1: p2pLabel(e.p2p, e.exits || n.exits, n) }));
+      if (!eq(e.p2p_portok, o.p2p_portok)) fl.push(e.p2p_portok == null ? T("never-cut ports → the fleet's list") : T("never-cut ports → {v1}", { v1: e.p2p_portok }));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -2550,7 +2716,7 @@ export function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: T("Delete custom list"), confirmLabel: T("Delete"), danger: true,
     body: Trich("Delete *{v1}*? It's removed from *every node* it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.", { v1: l.title || T("Untitled list") }),
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["links", "Mesh"], ["exits", "WARP"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["links", "Mesh"], ["exits", "WARP & exits"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
 /* The fill-in line the panel writes into a plain-text config when no VK link is set. It has to stay
    byte-identical to turn-artifacts.js's copy: the hint below tells the operator which line to look for in
    the generated file, so a TRANSLATED placeholder would describe something that never appears there. */
@@ -2575,7 +2741,7 @@ const logLeftLabel = s => s >= 3600
    the persisted section), so only the LABEL is translated — literal T() calls, same as evItemLabel. */
 const sectionLabel = k => ({
   display: T("Display"), security: T("Authentication"), access: T("Panel access"), configs: T("Client configs"),
-  subs: T("Subscriptions"), mesh: T("Network"), links: T("Mesh"), exits: T("val|WARP"), defaults: T("Interfaces"),
+  subs: T("Subscriptions"), mesh: T("Network"), links: T("Mesh"), exits: T("WARP & exits"), defaults: T("Interfaces"),
   turn: T("Turn proxies"), routing: T("Routing & Blocking"), geo: T("Geo data providers"),
   integrations: T("Integrations"), logs: T("Logs"),
 }[k] || k);   // i18n-keys
@@ -2628,7 +2794,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "default_egress_ip", "panel_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], links: ["mesh_egress_ip", "mesh_subnet", "mesh_port", "mesh_prefix"], exits: ["exits"] };
+  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "default_egress_ip", "panel_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p", "p2p_portok"], links: ["mesh_egress_ip", "mesh_subnet", "mesh_port", "mesh_prefix"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -2636,11 +2802,15 @@ const sectionLabel = k => ({
   const tzDirty = () => tz !== (ps.time_zone || "");
   // ⚠️ THE THIRD HALF of the settings idiom: without this in the display arm below, Save never enables for these two.
   const dataDirty = () => infHist !== (ps.infinite_history !== false) || histRes !== String(ps.history_resolution || 3600);
+  // Geo data providers, without the Never-block list — which the confirm names on a line of its own (diffList).
+  const geoDirty = () => (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00"));
+  const nbDirty = () => normBlockAllow(blockAllow).join(",") !== (ps.block_allow || []).join(",");
+  const pokDirty = () => (r => r.bad.length > 0 || !portokSame(r.list, ps.p2p_portok || P2P_PORTOK_DEFAULT))(portokRead(pok));
   const glDirty = sec =>
     sec === "routing" ? (listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
-    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
+    sec === "geo" ? geoDirty() || nbDirty() || pokDirty() :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || JSON.stringify(awg3Trim(awg3Def)) !== JSON.stringify(awg3Trim(idf.awg3_params)) || reachDef !== (idf.reach || "user") || awgGenDef !== (idf.awg_gen === "3.1" ? "3.1" : "2.0") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
@@ -2665,9 +2835,10 @@ const sectionLabel = k => ({
   return html`<div class="screen setscreen">
     <div class="sethead">${Trich("*Panel settings*")}</div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
-    <div class="setbody">
-      <nav class="setrail">${SECTIONS.map(([id]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${sectionLabel(id)}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
+    <div class=${"setbody" + (isMobile() && !section ? " m-list" : "")}>
+      <nav class="setrail">${SECTIONS.map(([id]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => { setSection(id); if (isMobile()) window.scrollTo(0, 0); }}>${sectionLabel(id)}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
       <div class="setpane">
+        ${isMobile() && section ? html`<button class="m-setback" onClick=${() => { setSection(null); window.scrollTo(0, 0); }}><${Ic} i="back"/> ${T("Panel settings")}<span class="m-setcur">${sectionLabel(section)}</span></button>` : null}
         ${perNodeSection && section !== "links" && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
           ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel;
@@ -2948,15 +3119,15 @@ const sectionLabel = k => ({
                 : html`<${Fragment}><span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}<//>`}
             </span>
             ${(() => {
-              // a fleet whose csqtt servers ALL run another version is not "not yet used": show those (no update check is offered for them here)
-              const _all = !forkVersions(f.id).length;
-              const v = forkVersions(f.id, _all); const col = fcol;
+              // The label and bubble show every csqtt version a node runs (2.1 and 2.5 side by side); the update check stays
+              // 2.1's (forkVersions / forkNodeStates without `all`): another version updates from its own Version panel.
+              const v = forkVersions(f.id, true); const col = fcol;
               if (!v.length) return html`<span class="tf-ver none">${T("not yet used")}</span>`;
-              const nodes = forkNodeStates(f.id, _all); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
+              const nodes = forkNodeStates(f.id, true); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               // per-node effective version: a hold shows "Held on <held>", else the running version. The row collapses
               // to ONE label when every node agrees, or "N versions" (detail in the hover bubble) when they differ.
-              // `_all` (only other csqtt versions run): their holds sit under csqtt@<line>, not under this row's key — no hold shown here (the fork's Version panel shows them per version)
-              const perNode = nodes.map(n => { const held = _all ? "" : (Store.turnHolds[n.node] || {})[f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
+              // A csqtt 2.5 row's hold sits under csqtt@2.5 (_csqtt_hold_svc), 2.1's under the fork's own key.
+              const perNode = nodes.map(n => { const held = (Store.turnHolds[n.node] || {})[n.line ? f.id + "@" + n.line : f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
               const distinct = [...new Set(perNode.map(p => p.eff).filter(Boolean))];
               const allHeld = perNode.length > 0 && perNode.every(p => p.held);
               const bub = html`<span class="tf-verpop">
@@ -3096,7 +3267,18 @@ const sectionLabel = k => ({
               </div>
               <span class="grow"></span>
               ${p.url ? html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${T("Open {v1}", { v1: p.label })}>${(p.url || "").replace(/^https?:\/\/(github\.com|raw\.githubusercontent\.com)\//, "").replace(/^www\./, "")}</a>` : null}
-            </div>`; })}</div>` : html`<div class="hint">${T("Loading providers…")}</div>`; })()}` : null}
+            </div>`; })}</div>` : html`<div class="hint">${T("Loading providers…")}</div>`; })()}
+          <div class="seclabel" style="margin-top:20px">${T("Never block")}</div>
+          <p class="hint" style="margin:0 0 8px">${T("Never blocked by any block list, on every interface and node — and still routed by your routing rules. Your own Block rules and the abuse protections are not affected. Addresses come out of every address list; site names out of the site lists, on Force-DNS and Hybrid SNI. A name and an address are separate: a site name does not unblock an address an address list holds, and an address stays blocked by a site list while a blocked site resolves to it — list both when you need both. One site name, IP or range a line.")}</p>
+          <textarea class="ta" rows="4" spellcheck="false" autocomplete="off" placeholder=${"example.com\n203.0.113.7\n198.51.100.0/24"} value=${blockAllow} onInput=${e => setBlockAllow(e.target.value)}></textarea>
+          ${(bad => bad.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Not taken — site names and IPv4 addresses or ranges (/8 or narrower) only: {v1}", { v1: bad.slice(0, 5).map(c => c.raw).join(", ") })}</div>` : null)(nbRead(blockAllow).filter(c => !c.ok))}
+          <p class="hint" style="margin:6px 0 0">${T("To stop the port-scan guard flagging one of your own machines, use Trusted sources (Settings → Network).")}</p>
+          <div class="seclabel" style="margin-top:20px">${T("Ports the torrent filter never cuts")}</div>
+          <p class="hint" style="margin:0 0 8px">${T("A device the torrent filter has flagged keeps its connections to these ports — its VPN, calls, games. Torrents are still blocked by what they send, on every port. A node can keep its own list (Settings → Network → the node → Filters & abuse). Ports and ranges, comma-separated.")}</p>
+          <div class="field" style="margin:0"><input class="mono" value=${pok} spellcheck="false" autocomplete="off" onInput=${e => setPok(e.target.value)}/>
+            <${PortokHints} text=${pok}/>
+            ${pok === P2P_PORTOK_DEFAULT.join(", ") ? null
+              : html`<div style="margin-top:6px"><button class="btn btn-mini" onClick=${() => setPok(P2P_PORTOK_DEFAULT.join(", "))}>${T("Reset to defaults")}</button></div>`}</div>` : null}
 
           <div class="seclabel" style="margin-top:20px">${T("Update schedule")}</div>
           <p class="hint" style="margin:0 0 10px">${Trich("When each node re-fetches its lists. Refreshing briefly reloads the node's match sets, which clients can feel — so schedule it for a *quiet hour*. (A failed fetch retries on the next sync; existing lists keep working meanwhile.)")}</p>
@@ -3465,7 +3647,11 @@ const sectionLabel = k => ({
             ? null   /* access status (incl. "applying, be patient") is consolidated into the card's top banner, scrolled into view on Save */
             : (Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> ${T("All settings saved")}</span>` : null)}
           <span class="grow"></span>
-          <button class="btn btn-ghost" onClick=${leaveSettings}>${T("Back")}</button>
+          ${/* Back leaves Settings for where the operator came from, on a phone as on a desktop (operator, 2026-10-29: it went to
+                the list of sections, wherever Settings was opened from); the list is the sticky "Panel settings" line above */""}
+          <button class="btn btn-ghost btn-dismiss" onClick=${leaveSettings}>${T("Back")}</button>
+          ${/* a phone in a section: the list of sections from the foot too, as the sticky line above opens it (operator) */""}
+          ${isMobile() && section ? html`<button class="btn btn-ghost m-setmenu" onClick=${() => { setSection(null); window.scrollTo(0, 0); }}>${T("Open menu")}</button>` : null}
           ${section === "access"
             ? html`<button class="btn btn-primary" disabled=${accessRef.current.busy || !accessRef.current.dirty} title=${!accessRef.current.dirty ? T("No changes to save") : ""} onClick=${() => accessRef.current.run()}>${accessRef.current.busy ? T("Saving…") : T("Save")}</button>`
             : html`<button class="btn btn-primary" disabled=${!!secErr() || !!exitErr() || !anyDirty} title=${secErr() || exitErr() || (!anyDirty ? T("No changes to save") : "")} onClick=${confirmSave}>${T("Save")}</button>`}</div>
@@ -3501,7 +3687,7 @@ function ReachEveryoneSheet() {
   const rows = ql ? all.filter(r => (Store.nodeName(r.node) + " " + r.iface).toLowerCase().includes(ql)) : all;
   const pg = Math.min(page, Math.max(1, Math.ceil(rows.length / LIST_PAGE)));
   return html`<${Sheet} title=${T("Interfaces set to “Everyone on this node”")} width=${560} noGuard=${true}
-    foot=${html`<span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
+    foot=${html`<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button>`}>
     <div class="hint">${T("Any device on the node can open connections to devices on these interfaces. Open one to change its level.")}</div>
     ${all.length > LIST_PAGE ? html`<input class="reachev-filter" value=${q} data-enter="self" placeholder=${T("Filter by node or interface…")}
       aria-label=${T("Filter by node or interface…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
@@ -3623,7 +3809,7 @@ export function CustomListSheet({ list, onSave, onClose }) {
   const save = () => { if (err) return; onSave({ ...(list || { _rid: newRid() }),
     title: title.trim() || "Untitled list",   // i18n-keys: the STORED default — roster data, read back by the nodes
     targets: badges.map(b => b.raw).join(", ") }); onClose(); };
-  const foot = html`<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? T("Save") : T("Add")}</button>`;
+  const foot = html`<span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${onClose}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? T("Save") : T("Add")}</button>`;
   return html`<${Sheet} title=${list ? T("Edit list") : T("New list")} width=${640} onClose=${onClose} foot=${foot}>
     <div class="field"><label>${T("Title")}</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. Streaming")}/></div>
     <div class="field"><label>${T("Addresses, domains and patterns")}</label>
@@ -3683,7 +3869,7 @@ const newExitId = () => Array.from(crypto.getRandomValues(new Uint8Array(4)))
    key — so the panel relays ciphertext and never holds the plaintext it is escrowing. */
 function ExitEscrow({ node, ex, stored, live, goSection, escrowOn }) {
   const [busy, setBusy] = useState(false);
-  if ((ex.producer || "adopted") !== "imported" || ex.provider === "profile") return null;
+  if ((ex.producer || "adopted") !== "imported" || exitProv(ex) !== "warp") return null;
   const blob = (stored || {}).key_blob || null;
   const nodeHasKey = !!(live || {}).public_key;
   // ⚠️ NOTHING IS SAID ABOUT ESCROW ITSELF ANY MORE. It is ON by default and its switch lives on the
@@ -3848,7 +4034,7 @@ function ExitUsedBy({ node, id }) {
  *  correct, a name the NODE reported is that box's own device and editing it would repoint the exit at
  *  something else. `discovered` is looked up by the caller from the name as it is TYPED, so entering a name
  *  the node already reports turns "Auto" into "Auto (10.66.0.2)" under the operator's hands. */
-function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onSubmit, onCancel, hint, addrs, isNic, gw }) {
+function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onSubmit, onCancel, hint, addrs, isNic, gw, noAct }) {
   const key = e => { if (e.key === "Enter") { e.preventDefault(); onSubmit(); }
                      if (e.key === "Escape") onCancel(); };
   const fld = (cls, label, ctl) => html`<span class=${"exname-f " + cls}>
@@ -3876,24 +4062,23 @@ function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onS
       onInput=${e => onChange({ gw: e.target.value })} onKeyDown=${key}/>`) : null}
     ${/* The actions go to the right, where the thing pressed last belongs — and on the CONTROLS' line, not
           the labels'. */""}
-    <span class="exname-act">
+    ${noAct ? null : html`<span class="exname-act">
       <button class="btn btn-mini" onClick=${onSubmit}>${submitLabel}</button>
       <button class="btn btn-mini ghost" onClick=${onCancel}>${T("val|Cancel")}</button>
-    </span>
+    </span>`}
     ${hint ? html`<div class="hint exname-hint">${hint}</div>` : null}
   </div>`;
 }
 
 function ExitManageSheet({ node, seed, onSaved, onClose }) {
-  // ── THE ROW MODEL. Four kinds, and every capability in the grid is a function of which one it is:
-  //      warp/profile   the panel MADE it. Renamable and switchable here; never created or deleted here,
+  // ── THE ROW MODEL. Three kinds, and every capability in the grid is a function of which one it is:
+  //      imported       the panel MADE it (WARP, a pasted or dial-in profile, a kind a newer panel knows). Renamable and switchable here; never created or deleted here,
   //                     because it carries a licence key and a whole pasted config that belong on the WARP
   //                     screen with room to edit them. Its extra fields ride along untouched — see `_src`.
   //      found          the node reports the device. Nothing to delete: it runs whatever the panel thinks.
   //      custom         a name the operator typed that the node has never reported. The only deletable kind.
-  const kindOf = (x, isCand) => (x.producer || "adopted") === "imported"
-    ? (x.provider === "profile" ? "profile" : "warp")
-    : (isCand ? "found" : "custom");
+  const kindOf = (x, isCand) => (x.producer || "adopted") === "imported" ? "imported" : (isCand ? "found" : "custom");
+  const isImp = r => r._kind === "imported";
   const isCand = n => !!candOf(node, n);
   const [rows, setRows] = useState(() => {
     const recs = (seed || []).map(x => ({ ...x, _src: x, _kind: kindOf(x, isCand(x.device)) }));
@@ -3963,16 +4148,19 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
       // Deleting commits ONLY the deletion — every survivor goes as it was saved.
       await commit(next.map(r => ({ ...(r._src || r), id: r.id })), "d" + i, next); },
   });
-  const addRow = () => {
-    const d = String(nv.device || "").trim();
+  // The phone's sheet hands its own fields; the inline form (desktop) reads its state — called with NO argument there, not as
+  // the Add button's onClick, which would hand it the click event (F1)
+  const addRow = v => {
+    const r = v || nv;
+    const d = String(r.device || "").trim();
     if (!d) return;
     dirtyRef.current = true;
-    setRows(rs => [...rs, { id: newExitId(), label: String(nv.title || "").trim(), device: d,
+    setRows(rs => [...rs, { id: newExitId(), label: String(r.title || "").trim(), device: d,
                             enabled: true, killswitch: false, producer: "adopted",
-                            egress_ip: String(nv.egress_ip || "").trim(),
+                            egress_ip: String(r.egress_ip || "").trim(),
                             // …and the typed gateway, for the same reason `addDevice` carries it: the form
                             // asks for it, and a row built without it is refused by the server.
-                            gw: String(nv.gw || "").trim(),
+                            gw: String(r.gw || "").trim(),
                             _kind: isCand(d) ? "found" : "custom", _dd: true, _added: true }]);
     setAdding(false); setNv({});
   };
@@ -3991,7 +4179,14 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                      onCancel: onClose || closeModal, cancelLabel: T("Close"),
                      action: anyDirty ? (busy === "all" ? T("Saving…") : T("Save changes")) : null,
                      onAction: saveAll, disabled: !!busy })}>
-    <p class="hint" style="margin:0 0 16px">${Trich("Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.", { v1: node.name })}</p>
+    <p class="hint" style="margin:0 0 16px">${Trich("Every way *{v1}* can leave that isn't its own address. WARP accounts, pasted profiles and dial-in exits are created under Settings → WARP & exits; the devices below the line are this node's own, or names you add here.", { v1: node.name })}</p>
+    ${isMobile() ? html`<button class="btn btn-primary m-addtop" onClick=${() => pushModal(html`<${AddExitDeviceSheet} onAdd=${addRow}
+        fields=${(v, set, submit) => html`<${ExitFields} value=${v} onChange=${p => set(x => ({ ...x, ...p }))}
+          discovered=${candAddr(node, v.device)} addrs=${cardAddrs(node, v.device)}
+          isNic=${isCardName(node, v.device)} gw=${cardGateway(node, v.device)} devEditable=${true} noAct=${true}
+          onSubmit=${submit} onCancel=${closeModal}
+          hint=${T("A device this node hasn't reported. Add it if you know it is there — nothing is checked until the node next syncs.")}/>`}/>`)}>
+      <${Ic} i="plus"/> ${T("Add an interface by name")}</button>` : null}
     <div class="exgrid g8x">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
       <div class="exg-h">${T("Device")}</div>
@@ -4012,7 +4207,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
         // right. One lookup, used by both the badge and the health.
         const src = (node.exits || []).find(x => String(x.id) === String(r.id)) || null;
         const [cls, lbl, kind] = (r._added && !r._src) ? TYPE.unsaved
-          : (r._kind === "warp" || r._kind === "profile")
+          : isImp(r)
             ? exitBadge(r, (src || {}).live)
             : (TYPE[r._kind] || TYPE.custom);
         const why = (r._src || {}).why_not || "";
@@ -4058,7 +4253,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                              the CLIENT subnet's address, so packets leave carrying 10.x, leak the internal
                              subnet upstream and are dropped there while the device still reads up. That is
                              why this row keeps a marker: Auto here is a choice, but not a safe default. */""}
-          <div class="exg-c">${(r._kind === "warp" || r._kind === "profile")
+          <div class="exg-c" data-lbl=${T("Leaves as")}>${isImp(r)
             ? (() => {
                 const ins = exitInsideAddr(r, ((node.exits || []).find(x => String(x.id) === String(r.id)) || {}).live);
                 return ins ? html`<span class="mono faint" title=${T("The tunnel's own address — traffic leaves as this.")}>${ins}</span>`
@@ -4075,16 +4270,16 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                   ${risky ? html`<span class="exg-warn" title=${why}><${Ic} i="warn"/></span>` : null}
                 </span>`;
               })()}</div>
-          <div class="exg-c"><${ExitUsedBy} node=${node} id=${r.id}/></div>
+          <div class="exg-c" data-lbl=${T("Used by")}><${ExitUsedBy} node=${node} id=${r.id}/></div>
           ${/* ⚠️ BOTH SWITCHES SAY WHAT THEY DO. These two are the only controls on this screen that change
                 what happens to traffic and to an account, they are deliberately NOT in the editor sheet
                 ("one click in the grid"), and both shipped with no explanation at all — while the latency
                 number beside them carried two sentences of hover. `Active` is the switch that once destroyed
                 the account it claimed to be pausing; that it now keeps it is exactly the fact an operator
                 needs before flipping it. `Switch` already takes a `title`; it was simply never passed. */""}
-          <div class="exg-c c"><${Switch} on=${!!r.killswitch} title=${KS_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Kill-switch")}><${Switch} on=${!!r.killswitch} title=${KS_TITLE()}
             onChange=${v => put(i, { killswitch: v, _df: true })}/></div>
-          <div class="exg-c c"><${Switch} on=${!off} title=${ACTIVE_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Active")}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
             onChange=${v => put(i, { enabled: v, _df: true })}/></div>
           <div class="exg-c exg-act">
             ${r._kind === "custom"
@@ -4095,11 +4290,11 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
       })}
     </div>
     ${!rows.length ? html`<p class="hint">${T("This node reports no devices that could be an exit, and nothing has been added by hand.")}</p>` : null}
-    ${adding
+    ${isMobile() ? null : adding
       ? html`<${ExitFields} value=${nv} onChange=${p => setNv(x => ({ ...x, ...p }))}
           discovered=${candAddr(node, nv.device)} addrs=${cardAddrs(node, nv.device)}
           isNic=${isCardName(node, nv.device)} gw=${cardGateway(node, nv.device)} devEditable=${true}
-          submitLabel=${T("val|Add")} onSubmit=${addRow} onCancel=${() => { setAdding(false); setNv({}); }}
+          submitLabel=${T("val|Add")} onSubmit=${() => addRow()} onCancel=${() => { setAdding(false); setNv({}); }}
           hint=${T("A device this node hasn't reported. Add it if you know it is there — nothing is checked until the node next syncs.")}/>`
       : html`<button class="btn btn-ghost btn-mini" style="margin-top:14px" onClick=${() => setAdding(true)}>
           <${Ic} i="plus"/> ${T("Add an interface by name")}</button>`}
@@ -4111,6 +4306,9 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
 function profileText(ex) {
   const p = ex.profile || {};
   if (!p.address) return "";
+  // ⚠️ A DIAL-IN PROFILE IS A SERVER CONFIG, rendered as one: ListenPort, no Endpoint, no keepalive. Printed with today's
+  // `Endpoint = ` line, the first edit of a dial-in exit sent an empty Endpoint back and the save refused it.
+  const din = !!p.listen_port && !p.endpoint;      // exitIsDialin's own test, inline: the box is only ever a profile's
   return ["[Interface]",
           "PrivateKey = " + (Store.exitKeyKeep || "(unchanged)"),
           // ⚠️ STRIP BEFORE APPENDING. `parse_wg_profile` stores the bare address (the node's own conf
@@ -4118,6 +4316,7 @@ function profileText(ex) {
           // prefix, and "10.9.0.44/32/32" is not a config anyone can save.
           "Address = " + String(p.address).split("/")[0] + "/32",
           "MTU = " + (p.mtu || 1280),
+          ...(din ? ["ListenPort = " + p.listen_port] : []),
           // ⚠️ THE OBFUSCATION, or this box lies about what is stored — and then destroys it. An AmneziaWG
           // exit's parameters were kept by the parser and written by the node, and rendered back HERE as a
           // plain WireGuard config. Two consequences, the second much worse than the first: the operator
@@ -4132,8 +4331,8 @@ function profileText(ex) {
           // the operator can leave alone (the stored one is kept) or overwrite (the new one is used).
           ...(p.psk ? ["PresharedKey = " + (Store.exitPskKeep || "(unchanged)")] : []),
           "AllowedIPs = 0.0.0.0/0",
-          "Endpoint = " + (p.endpoint || ""),
-          ...(p.keepalive ? ["PersistentKeepalive = " + p.keepalive] : [])].join("\n") + "\n";
+          ...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),
+          ...(p.keepalive && !din ? ["PersistentKeepalive = " + p.keepalive] : [])].join("\n") + "\n";
 }
 
 /** ── EDIT ONE EXIT ──────────────────────────────────────────────────────────────────────────────────────
@@ -4148,7 +4347,10 @@ function profileText(ex) {
 const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).address)
   || (((ex || {}).profile || {}).address) || "").split("/")[0].trim();
 
-const exitDefaultTitle = ex => (ex && ex.provider === "profile") ? T("Custom exit") : T("WARP exit");
+// A dial-in exit with no title is named by its port, so two untitled ones never read alike in a sheet or a note.
+const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex)
+    ? (exitIsDialin(ex) ? T("Dial-in exit :{v1}", { v1: ex.profile.listen_port }) : T("Dial-in exit")) : T("Custom exit"))
+  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex) === "socks5" ? T("SOCKS5 exit") : exitProv(ex);
 
 /** The badge for an imported exit: [class, label]. A WARP account with a licence on it is WARP+ — the
  *  operator paid for it and the whole point of the row is knowing which ones did. Taken from the LICENCE
@@ -4169,13 +4371,407 @@ const badgeLabel = lbl => String(lbl).endsWith("+")
 // falls back to the WireGuard colour, which is what every row looked like before. An AmneziaWG 3.1 profile (the stored
 // one holds a HeaderProtectionKey — awgDict3 — and the node builds exactly what it is sent) wears the 3.1 interface colour
 // (--awg3) and says so on hover, as a 3.1 interface's badges do (tip3).
-const exitBadge = (ex, live) => (ex || {}).provider === "profile"
+// A kind this panel does not know wears the plain WireGuard pair and its own name, never WARP's.
+const exitBadgeOf = (ex, live) => exitProv(ex) === "profile"
   ? ((live || {}).awg && awgDict3(((ex || {}).profile || {}).awg)
       ? ["exawg exawg3", T("val|Custom"), T("AmneziaWG 3.1")]   // i18n-keys: the first of each pair is a CSS class
       : [(live || {}).awg ? "exawg" : "exwg", T("val|Custom")])
+  : exitProv(ex) === "socks5" ? ["exsocks", T("val|SOCKS5")]   // i18n-keys: the first is a CSS class — a userspace path, the relay's violet
+  : exitProv(ex) !== "warp" ? ["exwg", exitProv(ex)]
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];
+// …and a dial-in profile reads "Dial-in", in the colours of what it is.
+const exitBadge = (ex, live) => {
+  const b = exitBadgeOf(ex, live);
+  return exitIsDialin(ex) || (ex || {}).dialin ? [b[0], T("val|Dial-in"), ...b.slice(2)] : b;   // `dialin`: a new one, not saved yet
+};
+
+/* ── DIAL-IN: GENERATE AND THE ROUTER'S CONFIG (docs/LISTEN-EXIT-PLAN.md §2.1, §2.3, §2.4a) ────────────────────────────────
+   The browser makes both keypairs and the PSK; the panel gets the node's private key, the router's PUBLIC key and the PSK,
+   allocates the port and the address, and stores the node side. The router's config is then rendered here from what the
+   panel STORED (so it carries exactly the port, address and AmneziaWG set the node writes) plus the router's private key.
+   That key is kept as a peer's is (S9c): encrypted here into the config store, in the node's bucket, when the store is on —
+   and the row's QR button rebuilds the config from the stored profile each time, so it follows a later port change. With
+   the store off (or the vault left locked) it is shown once, and Regenerate is the way to a new one. */
+
+/** What changed on a saved dial-in exit that the router has to follow ("port 51820 → 51821"), by exit id — a view note,
+ *  not stored (§2.4a): it marks THAT row's QR button and heads its router config, until the config is shown again (or
+ *  regenerated) or a reload. On the row, not under the list: each exit has its own router config. */
+const DIALIN_NOTE = {};
+
+/** The host the router dials — the one a turn link's client dials: the node's ingress address, else its first public one. */
+const nodeDialHost = node => turnDialFallback((node || {}).id);
+
+/** The router's side of a dial-in exit: a client config to the node, built by the client configs' own builder (buildConf)
+ *  — its address the other half of the pair, its AllowedIPs the node's /32, keepalive 25 (the router keeps its NAT open). */
+export function routerConf(host, prof, routerPriv, nodePub, psk) {
+  const h = /:/.test(host) && !/^\[/.test(host) ? "[" + host + "]" : host;   // a bare IPv6 literal; one already bracketed stays
+  // The router is the other half of the node's /31 (every generated exit is an aligned pair, node .0 / router .1; a re-pasted
+  // odd address pairs downwards): the node's address is then on the router's own link, so Keenetic's `ip nat WireguardN`
+  // covers it and no router needs a route for it. As a /32 Keenetic forwarded nothing (live, 2026-10-22).
+  const o = String(prof.address || "").split("."), ra = o.length === 4 ? [o[0], o[1], o[2], Number(o[3]) ^ 1].join(".") + "/31" : prof.address + "/32";
+  return buildConf({ privkey: routerPriv, address: ra, mtu: prof.mtu || 1280,
+                     awg_params: prof.awg, server_pubkey: nodePub, psk, allowed: prof.address + "/32",
+                     endpoint: h + ":" + prof.listen_port, keepalive: 25 });
+}
+// a title in a QR's zoom card is written into HTML; the router's config is named by what it is, never by free text
+const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
+
+// The router the "On the router" steps are written for — a view choice that outlives the sheet, not a setting.
+const ROUTER_VIEW = { kind: "keenetic" };
+const ROUTER_KINDS = [["keenetic", "Keenetic"], ["openwrt", "OpenWrt"], ["other", ""]];   // product names, the same in every language
+// A command block with its Copy under it (the `.netsnip` of the networks section).
+const cmdBlock = text => html`<div class="netsnip"><pre class="mono nixblock">${text}</pre>
+  <button type="button" class="btn btn-ghost btn-mini" onClick=${() => copy(text, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>`;
+/** Each router's own steps, numbered — they are a sequence. The commands carry the real addresses; Keenetic's interface is
+ *  found by the description its import gives it (the file's name, `swg-<id>`). */
+export function routerSteps(kind, ex, conf) {
+  const addr = (ex.profile || {}).address || "", tag = "swg-" + ex.id, awg = Object.keys((ex.profile || {}).awg || {}).length > 0;
+  // the commands as the router takes them — not prose, never translated
+  const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
+        KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
+        // the tunnel's forwards go through a chain of its own, so its rules apply in the order shown, and they reach the
+        // internet interface only: never a private range (a one-NIC box's LAN is behind that same interface), nothing else
+        // on the box (a tailnet, a second NIC); nor the box itself (INPUT). Pasting it again changes nothing: the chain is
+        // declared in one iptables-restore transaction, which empties and refills it at once — no moment with the jump in
+        // and the chain empty (backlog D review F4) — and every other rule is added only when `-C` does not find it
+        // (s9d-f8-lan F7), each spelled out whole: a rule held in a variable is one word to zsh (review F3)
+        LX_MASQ = `UPLINK=eth0\nsysctl -w net.ipv4.ip_forward=1\niptables-restore --noflush <<EOF\n*filter\n:${tag}-fwd - [0:0]\n`
+          + `-A ${tag}-fwd -d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
+          + `-A ${tag}-fwd -o $UPLINK -j ACCEPT\n-A ${tag}-fwd -j DROP\nCOMMIT\nEOF\n`
+          + `iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd\n`
+          + `iptables -C FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
+          + `iptables -C INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP 2>/dev/null || iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\n`
+          + `iptables -t nat -C POSTROUTING -s ${addr} -o $UPLINK -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${addr} -o $UPLINK -j MASQUERADE`;
+  if (kind === "keenetic") return [
+    html`${T("Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}`,
+    html`${Trich("Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:", { v1: tag })}
+      ${cmdBlock(KN_NAT)}`,
+    html`${T("If this router's own internet goes through a VPN — swg or another — keep this tunnel on your provider, with a connection policy that uses only the provider's connection:")}
+      ${cmdBlock(KN_POLICY)}`,
+  ];
+  if (kind === "openwrt") return [
+    html`${awg
+      ? T("Network → Interfaces → Add new interface, protocol AmneziaWG (the amneziawg packages), then load this config into it. Leave “Route Allowed IPs” off.")
+      : T("Network → Interfaces → Add new interface, protocol WireGuard VPN, then “Load configuration…” with this config. Leave “Route Allowed IPs” off.")}`,
+    html`${T("Firewall: put the interface in a zone that may forward to wan — wan masquerades by default, so the node's traffic leaves as the router.")}`,
+    html`${Trich("If wan is not this router's default route (its own internet goes through a VPN), send traffic from `{v1}` out by wan with policy-based routing (pbr).", { v1: addr })}`,
+  ];
+  return [
+    html`${Trich("Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.", awg
+      ? { v1: "amnezia/amneziawg", v2: tag, v3: "awg-quick" } : { v1: "wireguard", v2: tag, v3: "wg-quick" })}`,
+    html`${T("Let the node's traffic out to the internet only, masqueraded — not into your local networks, nor to this machine itself. Set UPLINK to your internet interface:")}
+      ${cmdBlock(LX_MASQ)}`,
+    html`${T("If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.")}`,
+  ];
+}
+
+/** The router's config. Not kept, it is shown once, and `noSwipe` keeps a swipe from closing it and losing the key (MOBILE-PLAN
+ *  hook 2). The config is shown whole: no scroll either way — its font is sized to the box by its longest line (JetBrains
+ *  Mono is 0.6 em a character), and a line still too long at the floor wraps. Download and Copy sit under the QR. */
+function RouterConfSheet({ node, ex, conf, kept: kept0, onRegen, changed }) {
+  useStore();   // an unlock in this tab flushes a queued keep and emits: the sheet says what became of it (s9d F11, s9c F60)
+  const ks = kept0 === EXIT_KEEP_LOCKED ? exitKeepState(node.id, ex.id) : undefined;
+  const kept = kept0 !== EXIT_KEEP_LOCKED ? kept0 : ks === null ? true : ks === "queued" ? EXIT_KEEP_LOCKED : ks;
+  const name = ex.label || exitDefaultTitle(ex);
+  const port = (ex.profile || {}).listen_port;
+  const [kind, setKind] = useState(ROUTER_VIEW.kind);
+  const longest = Math.max(20, ...String(conf).split("\n").map(l => l.length));
+  // Not kept: Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done
+  // closes. Regenerate's confirm opens over the sheet, so its Cancel comes back to it. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
+  const keep = useRef(kept !== true);
+  if (kept === true) keep.current = false;      // kept after it opened: it closes like any other
+  const took = () => { keep.current = false; };
+  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${720} noSwipe=${kept !== true} dirtyRef=${keep}
+    foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
+                     left: onRegen ? html`<button class="btn btn-ghost" onClick=${onRegen}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
+    ${changed ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("The router config changed — {v1}. Import this one on the router again.", { v1: changed })}</span></div>` : null}
+    ${kept === true
+      ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
+      : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${
+          kept === false ? T("Not kept — keeping encrypted client configs is off (Settings → Client configs). Download or copy it now; once closed, only Regenerate makes a new one.")
+          : kept === EXIT_KEEP_LOCKED ? T("Not kept yet — the encryption key is locked. Unlock it in this tab before you reload and it is kept; otherwise download or copy it now.")
+          : T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.") + (typeof kept === "string" ? " " + T("Not kept with your client configs: {v1}.", { v1: kept }) : "")}</span></div>`}
+    ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${kept === true
+      ? T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then open it again from the exit's row.")
+      : T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
+    ${node.kind === "docker" && node.net_mode === "bridge" ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + port + ":" + port + '/udp"' })}</span></div>` : null}
+    <div class="rconf">
+      <div class="rconf-fit"><pre class="mono rconf-text" style=${"--rconf-cols:" + longest}>${conf}</pre></div>
+      <div class="rconf-side">
+        <${QR} conf=${conf} label=${qrSafe(name)} px=${220}/>
+        <div class="rconf-acts">
+          <button class="btn btn-ghost btn-mini" onClick=${() => { took(); downloadConf(conf, "swg-" + ex.id); }}><${Ic} i="download"/> ${T("Download .conf")}</button>
+          <button class="btn btn-ghost btn-mini" onClick=${() => { took(); copy(conf, T("Router config copied")); }}><${Ic} i="copy"/> ${T("Copy")}</button>
+        </div>
+      </div>
+    </div>
+    <div class="seclabel" style="margin-top:16px">${T("On the router")}</div>
+    <div class="segrow rkind" role="radiogroup" aria-label=${T("On the router")}>${ROUTER_KINDS.map(([k, l]) => html`<button type="button" role="radio" aria-checked=${kind === k} class=${"seg" + (kind === k ? " on" : "")}
+      onClick=${() => { ROUTER_VIEW.kind = k; setKind(k); }}>${l || T("Other router")}</button>`)}</div>
+    <ol class="rsteps">
+      ${routerSteps(kind, ex, conf).map(st => html`<li>${st}</li>`)}
+      <li>${T("If this node itself is behind NAT, forward UDP {v1} to it.", { v1: port })}</li>
+      <li>${T("The exit's row turns green about a minute after traffic starts to flow — the node waits that long before it routes back through a tunnel that failed.")}</li>
+    </ol>
+  <//>`;
+}
+
+/* A dial-in exit's own parameters (S9e) — the port and the MTU beside the title, and under the protocol the accordion the mesh
+   and the interface defaults use: the AmneziaWG cells the protocol takes (plain WireGuard has none: no accordion, operator 10-23). Blank = drawn (the interface-defaults template,
+   then the generator: what the background text shows), "-" = no such line, a value = used. One block for both sheets: the
+   create sheet sends it to the panel's generator; the edit sheet writes it into "This node's end", which stays the one thing
+   saved. */
+const DIALIN_RANGE = "42821–42899";
+const REGEN_BUSY = { on: false };   // a Regenerate is being asked for (its unlock prompt is up) — module-level: the sheet re-renders
+const DIALIN_PORT_HINT = () => T("Blank: a free port of {v1} — on a node whose firewall is declared (NixOS), inside what it declares. Not 51820, the port every scanner tries first.", { v1: DIALIN_RANGE });
+// The interface-defaults template as a dial-in exit takes it — the server's _dialin_generate: a value no app reads (one
+// stored before template saves were checked) is drawn as a blank is, and for 3.1 so is an S under 12 or "-" (header
+// protection needs all four, at least 12)
+function dialinTpl(proto) {
+  const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {};
+  return Object.fromEntries(AWG_KEYS.map(k => { const t = String(tpl[k] ?? "").trim();
+    return [k, !awgFieldCheck(k, t).ok || (proto === "awg3" && /^S[1-4]$/.test(k) && !(/^[0-9]+$/.test(t) && +t >= 12)) ? "" : t]; }));
+}
+function dialinHints(proto) {     // a blank 2.0 cell: the template's value as the exit takes it, or what the generator does
+  const tpl = dialinTpl(proto), b = awgBlankHints();
+  return Object.fromEntries(AWG_KEYS.map(k => [k, tpl[k] === "-" ? T("val|none") : tpl[k] || b[k]]));
+}
+// A drawn S4 fitted to the MTU as the panel fits it (mesh_s4_room / mesh_s4_draw): a full-size packet stays inside 1500
+// bytes; never under `floor` (12 on 3.1). A value that already fits, or one that is not a number, is left as it is.
+const DIN_WIRE = 60;   // twin of the panel's MESH_WIRE_OVERHEAD (tests/spa_dialin_selftest.mjs holds them equal)
+function dialinS4(s4, mtu, floor) {
+  // the MTU read as the panel reads it: digits only — "1420x" is not a number there, so it is none here (review F6)
+  const m = /^[0-9]+$/.test(String(mtu ?? "").trim()) ? +String(mtu).trim() : NaN, room = Number.isFinite(m) ? Math.max(0, 1500 - DIN_WIRE - m) : null;
+  if (room === null || !/^[0-9]+$/.test(String(s4)) || +s4 <= room) return String(s4);
+  const lo = Math.max(floor, Math.min(15, room)), hi = Math.max(lo, room);
+  return String(lo + Math.floor(Math.random() * (hi - lo + 1)));
+}
+// which protocol a stored set is — the server's own reading: a HeaderProtectionKey is 3.1 (awgDict3), any 2.0 key is 2.0
+const dialinProto = awg => awgDict3(awg) ? "awg3" : AWG_KEYS.some(k => String((awg || {})[k] ?? "").trim() !== "") ? "awg2" : "wg";
+// what a blank cell becomes, as the server draws it on create: the template's value as the exit takes it ("-": no such
+// line), else the 2.0 generator, an S4 not typed fitted to the MTU — and for the 3.1 cells the value they show (the 3.1
+// defaults)
+function dialinDraw(proto, awg, fresh, mtu) {     // `fresh`: S1–S4 and H1–H4 drawn anew too (the edit sheet's Generate)
+  const g = genAwg(), h3 = mesh3Hints(false), out = { ...(awg || {}) }, tpl = dialinTpl(proto);
+  const typedS4 = String(out.S4 ?? "").trim() !== "" && !fresh;
+  for (const k of AWG_KEYS) {
+    if (String(out[k] ?? "").trim() === "") out[k] = tpl[k] || String(g[k]);
+    else if (fresh && /^[SH][1-4]$/.test(k) && String(out[k]).trim() !== "-") out[k] = String(g[k]);
+  }
+  if (!typedS4 && String(out.S4).trim() !== "-") out.S4 = dialinS4(out.S4, mtu || 1280, proto === "awg3" ? 12 : 0);
+  if (proto === "awg3") for (const k of AWG3_EDIT_COLS.flat())
+    if (String(out[k] ?? "").trim() === "" && String(h3[k] ?? "").trim()) out[k] = h3[k] === T("val|none") ? "-" : String(h3[k]);
+  return out;
+}
+function DialinParams({ proto, awg, onAwg, edit, mtu }) {
+  const [open, setOpen] = useState(false);
+  // "(auto)" while no cell of the protocol SHOWN holds anything (a 3.1 cell typed before a switch to 2.0 is not shown)
+  const a = awg || {}, isSet = [...AWG_KEYS, ...(proto === "awg3" ? AWG3_EDIT_COLS.flat() : [])].some(k => String(a[k] ?? "").trim() !== "");
+  if (proto === "wg") return null;
+  return html`<div class="dinparams"><button type="button" class="advtoggle" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)}>
+      <span class="advcaret">${open ? "▾" : "▸"}</span> ${T("Parameters")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
+    ${open ? html`<div class="field dinparams-body">
+      <${AwgGrid} value=${a} onChange=${onAwg} placeholders=${dialinHints(proto)}
+        omit=${T("Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.")}/>
+      ${proto === "awg3" ? html`<div style="margin-top:14px"><${Awg3Grid} value=${a} onKey=${(k, x) => onAwg({ ...a, [k]: x })} placeholders=${mesh3Hints(false)}
+        hpk=${a.HeaderProtectionKey ? T("val|set") : T("val|generated")} rt=${T("val|on")}
+        hpkTip=${T("Drawn for this exit; the router's config carries the same key.")} rtTip=${T("On for every AmneziaWG 3.1 exit.")}/></div>` : null}
+      <div class="dinparams-acts"><button type="button" class="btn btn-mini" onClick=${() => onAwg(dialinDraw(proto, a, edit, mtu))}
+          title=${edit ? T("S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.") : null}>
+          <${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet && !edit ? html`<button type="button" class="btn btn-mini"
+          onClick=${() => onAwg({})}>${T("Clear (auto)")}</button>` : null}</div>
+    </div>` : null}</div>`;
+}
+// "This node's end" as fields: a line of its [Interface] read, written (a value), or taken out ("-" or blank). The
+// [Interface] section wherever it stands (a paste may put [Peer] first), else what comes before any section; a key's LAST
+// line, as the parser reads it.
+function confIfSpan(s) {
+  const m = /^[ \t]*\[Interface\][^\n]*(?:\n|$)/mi.exec(s), from = m ? m.index + m[0].length : 0, nx = /^[ \t]*\[/m.exec(s.slice(from));
+  return [from, nx ? from + nx.index : s.length];
+}
+const confIfRe = k => new RegExp("^[ \\t]*" + k + "[ \\t]*=[ \\t]*(.*)(?:\\n|$)", "gmi");
+const confIfLine = (txt, k) => {
+  const s = String(txt), [a, b] = confIfSpan(s), all = [...s.slice(a, b).matchAll(confIfRe(k))];
+  return all.length ? all[all.length - 1][1].replace(/\r$/, "") : null;
+};
+function confIfSet(txt, k, v) {
+  // a trailing space is kept: typing "<r 32>" passes through "<r " (review F9)
+  const s = String(txt), [a, b] = confIfSpan(s), sec = s.slice(a, b), val = String(v ?? "").replace(/^[ \t]+/, "");
+  const keep = !["", "-"].includes(val.trim()), line = k + " = " + val + "\n", hits = [...sec.matchAll(confIfRe(k))];
+  let out = "", at = 0;                     // the last line rewritten in place, any earlier copy taken out
+  hits.forEach((h, i) => { out += sec.slice(at, h.index) + (keep && i === hits.length - 1 ? line : ""); at = h.index + h[0].length; });
+  out += sec.slice(at);
+  if (keep && !hits.length) { const body = out.replace(/\n*$/, ""); out = (body ? body + "\n" : "") + line + out.slice(body.length).replace(/^\n/, ""); }
+  return s.slice(0, a) + out + s.slice(b);
+}
+
+/** Generate a dial-in exit: a title, the port and the protocol, the parameters under it; the keys are made on Create. The
+ *  paste is one click away. */
+function DialinGenSheet({ node, onCreate, onPaste }) {
+  const [label, setLabel] = useState("");
+  const no31 = node.awg31_no ? srvText(node.awg31_no) : "";
+  const [proto, setProto] = useState("wg");
+  const [port, setPort] = useState(""), [mtu, setMtu] = useState(""), [awg, setAwg] = useState({});
+  const [busy, setBusy] = useState(false), [msg, setMsg] = useState("");
+  const go = async () => {
+    setBusy(true); setMsg("");
+    let r;
+    // only what was typed: a blank is the panel's to draw, and the cells of a protocol not chosen are not sent
+    const keys = proto === "wg" ? [] : [...AWG_KEYS, ...(proto === "awg3" ? AWG3_EDIT_COLS.flat() : [])];
+    const typed = { listen_port: port.trim(), mtu: mtu.trim(),
+                    awg: Object.fromEntries(keys.filter(k => String(awg[k] ?? "").trim() !== "").map(k => [k, String(awg[k]).trim()])) };
+    try { r = await onCreate(label.trim(), proto, typed); } catch (e) { r = String((e && e.message) || e); }   // e.g. no X25519 in this browser
+    setBusy(false);
+    if (r !== true) setMsg(typeof r === "string" ? r : T("Couldn't save"));
+  };
+  const opts = [["wg", T("val|WireGuard"), ""], ["awg2", T("AmneziaWG 2.0"), ""], ["awg3", T("AmneziaWG 3.1"), no31]];
+  return html`<${Sheet} title=${T("Dial-in exit")} width=${600}
+    foot=${footRow({ left: msg ? html`<span class="err">${msg}</span>` : null, onCancel: closeModal,
+                     action: busy ? T("Creating…") : T("Create"), onAction: go, disabled: busy })}>
+    <p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}
+      ${" "}${T("The panel makes both sides; you import the router's config on the router.")}</p>
+    <div class="row2 dinrow"><div class="field"><label>${T("Title")}</label>
+      <input value=${label} placeholder=${T("Dial-in exit")} maxlength="40" onInput=${e => setLabel(e.target.value)}/></div>
+      <div class="field dinport"><label>${T("Port")}</label>
+        <input inputmode="numeric" value=${port} placeholder=${T("val|Auto")} title=${DIALIN_PORT_HINT()} onInput=${e => setPort(e.target.value)}/></div>
+      <div class="field dinmtu"><label>${T("MTU")}</label>
+        <input inputmode="numeric" value=${mtu} placeholder="1280" onInput=${e => setMtu(e.target.value)}/></div></div>
+    <div class="hint dinport-hint">${DIALIN_PORT_HINT()}</div>
+    <div class="field awggen"><label>${T("Protocol")}</label>
+      <div class="dpsw awgsw" role="radiogroup" aria-label=${T("Protocol")}>${opts.map(([k, l, no]) => html`<button type="button" role="radio" key=${k}
+        aria-checked=${proto === k} class=${(proto === k ? "on" : "") + (k === "awg3" ? " sw-awg3" : "")} disabled=${proto !== k && !!no}
+        title=${proto !== k && no ? no : null} onClick=${() => setProto(k)}>${l}</button>`)}</div>
+      <div class="hint">${no31 ? T("AmneziaWG 3.1: {v1}", { v1: no31 }) + (/[.!?…]$/.test(no31) ? " " : ". ") : ""}${T("The router must be able to import it — check what its firmware supports.")}</div></div>
+    <${DialinParams} proto=${proto} awg=${awg} onAwg=${setAwg} mtu=${mtu.trim()}/>
+    <p class="hint" style="margin:14px 0 0">${T("Already have the router's config?")}${" "}
+      <button type="button" class="linkbtn" onClick=${() => onPaste(label.trim())}>${T("Paste the server config instead")}</button></p>
+  <//>`;
+}
+
+/* ── A SOCKS5 EXIT (docs/SOCKS5-EXIT-PLAN.md §6.9) ──────────────────────────────────────────────────────────────────────────
+   One paste field for the proxy, the forms proxy dashboards actually show, and a password field that is write-only: the
+   panel never sends a stored password back, so an existing exit shows it as "unchanged" and keeps it unless one is typed.
+   Test runs the same check the node runs at bring-up — FROM THE NODE, before or without a save — which is what it adds over
+   "save and look at the row": checking a new password on an exit people already depend on. */
+
+/** The address a stored SOCKS exit shows in its paste field — never its password (the panel does not have it to show). */
+export const socksText = ex => { const s = (ex || {}).socks || {};
+  if (!s.host) return "";
+  // a login that holds ':' '@' or '%' is written as a URL, percent-encoded — the one form the panel decodes — so it reads back
+  // as the same user (review F42)
+  return s.user && /[:@%]/.test(s.user) ? "socks5://" + encodeURIComponent(s.user) + "@" + s.host + ":" + s.port
+    : (s.user ? s.user + "@" : "") + s.host + ":" + s.port; };
+/** The address a proxy sees this node dial from, as far as the panel knows: its first PUBLIC IPv4 (a private one is what NAT
+ *  hides — telling the operator to allow-list it would never work, review F31), else none. */
+export const nodePublicIp = node => ((node || {}).ips || []).find(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)
+  && !/^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip)) || "";
+
+/** What a proxy check found, in words — the node's codes (`_socks_check`), one sentence each. */
+export const socksWhy = (code, node) => ({
+  unreachable: T("The proxy can't be reached from this node."),
+  refused: T("The proxy refused the connection — is the port right?"),
+  timeout: T("The proxy didn't answer in time."),
+  not_socks5: T("That address doesn't speak SOCKS5."),
+  auth_required: T("The proxy wants a login, and none is set."),
+  auth_failed: T("The proxy refused the login — check the user and password."),
+  not_allowed: T("The proxy refused this node's address. Some providers make you allow-list the server's IP: {v1}.",
+                 { v1: nodePublicIp(node) || T("this node's public address") }),
+  connect_failed: T("The proxy logged us in but couldn't reach the internet."),
+  expired: T("The node didn't answer the test in time — is it online?"),
+})[code] || "";
+
+/** One proxy check, as lines: [tone, text]. Shared by the Test result and the stored exit's last check. */
+export const socksSays = (r, node) => {
+  if (!r) return [];
+  if (r.why) return [["bad", socksWhy(r.why, node) || r.why]];
+  const out = [["ok", r.egress_ip
+    ? (r.loc ? T("Logged in. Sites see {v1} ({v2}).", { v1: r.egress_ip, v2: r.loc }) : T("Logged in. Sites see {v1}.", { v1: r.egress_ip }))
+    : T("Logged in.")]];
+  if (r.udp === true) out.push(["ok", T("UDP is carried — calls and games work through this exit.")]);
+  else if (r.udp === false) out.push(["warn", T("UDP is not carried — calls and games won't work through this exit. Other traffic is fine: QUIC falls back to TCP at once.")]);
+  return out;
+};
+
+/** Password managers read a text field followed by a password field as a login form and offer to fill or invent an
+ *  "email" for the first one (the title). These fields are no login: each manager's own opt-out, on every field of it. */
+const NOT_A_LOGIN = { autocomplete: "off", "data-1p-ignore": "", "data-lpignore": "true", "data-bwignore": "",
+                      "data-protonpass-ignore": "", "data-form-type": "other" };
+/** The notes' open/closed state, kept outside the sheet so a poll's re-render does not close them (the SPA's view pattern). */
+const S5X_VIEW = { notes: false };
+
+function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirtyRef }) {
+  const st = (ex && ex.socks) || {};
+  const live = (((node.exits || []).find(x => String(x.id) === String(ex.id)) || {}).live) || {};
+  const [test, setTest] = useState(null);
+  const [tmsg, setTmsg] = useState("");
+  const [, bump] = useState(0);
+  const pending = !!test && test.state === "pending";
+  useEffect(() => {                              // the answer rides a sync or two; the panel gives up on it at 90 s
+    if (!pending) return;
+    let ok = true, n = 0;
+    const h = setInterval(async () => {
+      if (++n > 70) { clearInterval(h); setTest(null); setTmsg(T("The node didn't answer the test in time — is it online?")); return; }
+      try {
+        const r = await api.exitTest({ node: node.id, id: test.id });
+        if (ok && r && r.ok) setTest(r.data);
+        else if (ok && r && r.code === "not_found") {   // the panel restarted, or dropped it: say so, never spin (review F19)
+          clearInterval(h); setTest(null); setTmsg(T("The panel no longer has that test — run it again."));
+        }
+      } catch (e) { /* the next tick asks again */ }
+    }, 1500);
+    return () => { ok = false; clearInterval(h); };
+  }, [pending, test && test.id]);
+  const run = async () => {
+    setTmsg(""); setTest(null);
+    try {
+      const r = await api.exitTest({ node: node.id, exit_id: isNew ? "" : ex.id, socks_text: sTxt.trim(),
+                                     socks_pass: sPass || (st.has_pass ? Store.exitPassKeep : "") });
+      if (r && r.ok) return setTest(r.data);
+      setTmsg(r && r.code === "busy" ? T("A test is already running on this node — try again in a moment.")
+            : r && r.code === "offline" ? T("This node isn't reporting, so it can't run the test.")
+            : srvText(r) || T("Couldn't start the test."));
+    } catch (e) { setTmsg(T("Couldn't start the test.")); }
+  };
+  const canTest = !pending && (sTxt.trim() || !isNew);
+  const key = e => { if (e.key === "Enter") { e.preventDefault(); if (canTest) run(); } };
+  // The answer in the Networks test's own marks (`.netprobe`): a dot and a sentence per line — green for what works, the
+  // test's failure tone for what does not, grey for a caveat (no UDP) — so it reads like every other test run from a node.
+  const says = test && !pending ? socksSays(test.result, node) : [];
+  const last = !test && !isNew ? socksSays(live.check, node) : [];
+  const line = ([tone, t]) => { const d = tone === "ok" ? "on" : tone === "warn" ? "note" : "blocked";
+    return html`<div class=${"netgw t-" + d}><span class=${"condot " + d}></span><span>${t}</span></div>`; };
+  return html`<div class="s5x">
+    <div class="field"><label>${T("Proxy address")}</label>
+      <input class="mono" value=${sTxt} spellcheck="false" data-enter="self" ...${NOT_A_LOGIN}
+        placeholder=${T("host:port:user:password")}
+        onInput=${e => { dirtyRef.current = true; setSTxt(e.target.value); }} onKeyDown=${key}/>
+      <div class="hint">${T("As your provider shows it: host:port:user:password, user:password@host:port or socks5://user:password@host:port. SOCKS5 only.")}</div></div>
+    <div class="field"><label>${T("Password")}</label>
+      <div class="s5x-row">
+        <input type="password" value=${sPass} ...${NOT_A_LOGIN} autocomplete="new-password" data-enter="self" onKeyDown=${key}
+          placeholder=${st.has_pass ? T("unchanged") : T("none, or in the address above")}
+          onInput=${e => { dirtyRef.current = true; setSPass(e.target.value); }}/>
+        <button type="button" class="btn btn-ghost s5x-go" disabled=${!canTest} onClick=${run}>
+          <${Ic} i="refresh"/> ${pending ? T("testing…") : T("Test from the node")}</button>
+      </div></div>
+    <div class="netprobe s5x-test">
+      ${pending ? html`<div class="netgw"><span class="condot"></span><span>${T("Waiting for {node} to ask the proxy and report back — a few seconds.", { node: node.name })}</span></div>` : null}
+      ${tmsg ? line(["bad", tmsg]) : null}
+      ${says.map(line)}
+      ${!says.length && last.length ? html`<div class="netprobe-h">${T("Last check by the node:")}</div>` : null}
+      ${!says.length ? last.map(line) : null}
+    </div>
+    <${Disclosure} title=${T("How names and UDP work through this exit")} open=${S5X_VIEW.notes}
+      onToggle=${() => { S5X_VIEW.notes = !S5X_VIEW.notes; bump(x => x + 1); }}>
+      <p class="hint">${T("Names are looked up by the proxy, not here: clients on this exit get stand-in addresses (198.19.x.x) that the proxy turns back into the name — so sites see a location that matches the exit. An app that keeps a stand-in address longer than a second can fail to connect once, after the exit restarts.")}</p>
+      <p class="hint">${T("A DNS server set for an interface that leaves by this exit is not used — the proxy resolves.")}</p>
+      <p class="hint">${T("A residential proxy may change its exit IP between checks — that is the provider, not a fault.")}</p>
+      ${node.kind === "docker" ? html`<p class="hint">${T("This is a Docker node: the SOCKS5 tunnel has no CPU cap of its own — the container's limit is its cap.")}</p>` : null}
+    <//>
+  </div>`;
+}
 
 function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }) {
   const [v, setV] = useState(() => ({ ...ex, profile_text: "" }));
@@ -4186,12 +4782,31 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const dirtyRef = useRef(false);
-  const isProf = v.provider === "profile";
+  const isProf = exitProv(v) === "profile", isWarp = exitProv(v) === "warp", isSocks = exitProv(v) === "socks5";
+  const [sTxt, setSTxt] = useState(() => socksText(ex));
+  const [sTxt0] = useState(() => socksText(ex));
+  const [sPass, setSPass] = useState("");
+  // a dial-in exit — a new one (the draft says so) or a stored one (its profile does) — dials nothing: no "Connect from"
+  const isDialin = !!v.dialin || exitIsDialin(ex);
   const set = patch => { dirtyRef.current = true; setV(x => ({ ...x, ...patch })); };
+  // A dial-in exit's port, MTU and AmneziaWG cells (S9e), read from "This node's end" and written back into it — the text
+  // stays the one thing saved. An absent line reads "-"; a cell the operator clears is drawn on Save, as on create.
+  const [dinBlank, setDinBlank] = useState({});
+  const dinProto = isDialin ? dialinProto((ex.profile || {}).awg) : "wg";
+  const dinKeys = dinProto === "wg" ? [] : [...AWG_KEYS, ...(dinProto === "awg3" ? AWG3_EDIT_COLS.flat() : [])];
+  const dinAwg = Object.fromEntries(dinKeys.map(k => [k, dinBlank[k] ? "" : (confIfLine(txt, k) ?? "-")]));
+  const dinPort0 = String((ex.profile || {}).listen_port || "");
+  const dinLine = (k, val) => {
+    dirtyRef.current = true;
+    if (dinKeys.includes(k)) setDinBlank(b => ({ ...b, [k]: String(val ?? "").trim() === "" }));   // a cleared cell is drawn on Save
+    setTxt(t => confIfSet(t, k, val));
+  };
+  const dinAwgSet = d => { for (const k of dinKeys) if (String(d[k] ?? "") !== String(dinAwg[k] ?? "")) dinLine(k, d[k]); };
   const stored = (node.exits || []).find(x => String(x.id) === String(ex.id)) || {};
   // The three things this sheet can edit, plus the config box. A NEW exit is always dirty: there is nothing
   // to compare against and the operator has to be able to press Save.
-  const dirty = isNew || txt !== txt0
+  const dirty = isNew || txt !== txt0 || Object.values(dinBlank).some(Boolean)   // a "-" cleared changes no line yet (F12)
+    || (isSocks && (sTxt !== sTxt0 || !!sPass))
     || ["label", "dial_src", "licence"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""));
   const save = async () => {
     setBusy(true); setMsg("");
@@ -4200,7 +4815,20 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     // A NEW profile has nothing stored to fall back on, so an empty box is refused here rather than
     // stored as an imported exit with no profile — which the node cannot bring up.
     if (isProf && isNew && !txt.trim()) { setBusy(false); return setMsg(T("Paste the profile before saving.")); }
-    const body = { ...v, ...(isProf && txt !== profileText(ex) ? { profile_text: txt } : { profile_text: "" }) };
+    if (isSocks && isNew && !sTxt.trim()) { setBusy(false); return setMsg(T("Paste the proxy's address before saving.")); }
+    // a dial-in exit's cleared cells are drawn now, a cleared MTU is 1280 and a cleared port is the one it has (S9e)
+    let out = txt;
+    if (isDialin && !isNew) {
+      if (confIfLine(out, "MTU") === null) out = confIfSet(out, "MTU", "1280");
+      const drawn = dialinDraw(dinProto, dinAwg, false, confIfLine(out, "MTU"));
+      for (const k of dinKeys) if (dinBlank[k]) out = confIfSet(out, k, drawn[k]);
+      if (confIfLine(out, "ListenPort") === null && dinPort0) out = confIfSet(out, "ListenPort", dinPort0);
+    }
+    const body = { ...v, ...(isProf && out !== profileText(ex) ? { profile_text: out } : { profile_text: "" }),
+                   ...(isDialin || isSocks ? { dial_src: "" } : {}),
+                   // the proxy: the paste only when it changed, the password only when one was typed (else "keep")
+                   ...(isSocks ? { socks_text: sTxt !== sTxt0 ? sTxt.trim() : "",
+                                   socks_pass: sPass || (((ex || {}).socks || {}).has_pass ? Store.exitPassKeep : "") } : {}) };
     const ok = await onSave(body);
     setBusy(false);
     if (ok !== true) return setMsg(typeof ok === "string" ? ok : T("Couldn't save"));
@@ -4231,19 +4859,37 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
                      title: !busy && !dirty ? T("No changes to save") : "" })}>
     ${/* DECISION 7 — which of the node's own addresses dials the exit. Imported only: an adopted device
           dials on its own and there is nothing for us to pin. */""}
-    <div class="row2">
+    ${isDialin ? html`<p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}</p>` : null}
+    <div class=${isDialin ? (isNew ? "" : "row2 dinrow") : "row2"}>
       <div class="field"><label>${T("Title")}</label>
-        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40"
+        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40" ...${NOT_A_LOGIN}
           onInput=${e => set({ label: e.target.value })}/></div>
-      <div class="field"><label>${T("Connect from")}</label>
-        <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>
+      ${isDialin && !isNew ? html`<div class="field dinport"><label>${T("Port")}</label>
+        <input inputmode="numeric" value=${confIfLine(txt, "ListenPort") ?? ""} placeholder=${dinPort0}
+          onInput=${e => dinLine("ListenPort", e.target.value)}/></div>
+        <div class="field dinmtu"><label>${T("MTU")}</label>
+          <input inputmode="numeric" value=${confIfLine(txt, "MTU") ?? ""} placeholder="1280"
+            onInput=${e => dinLine("MTU", e.target.value)}/></div>` : null}
+      ${isDialin || isSocks ? null : html`<div class="field"><label>${T("Connect from")}</label>
+        <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
+    ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet} mtu=${confIfLine(txt, "MTU") || ""}
+      awg=${dinProto === "awg3" ? { ...dinAwg, HeaderProtectionKey: confIfLine(txt, "HeaderProtectionKey") || "" } : dinAwg}/>` : null}
     ${isProf
-      ? html`<div class="field"><label>${T("Configuration")}</label>
+      ? html`<div class="field"><label>${isDialin ? T("This node's end") : T("Configuration")}</label>
           <textarea class="exprof" rows="11" spellcheck="false" value=${txt}
-            placeholder=${T("Paste the [Interface] / [Peer] profile here")}
-            onInput=${e => { dirtyRef.current = true; setTxt(e.target.value); }}/>
-          <div class="hint">${T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div></div>`
+            placeholder=${isDialin ? T("Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint")
+                                   : T("Paste the [Interface] / [Peer] profile here")}
+            onInput=${e => { dirtyRef.current = true; setDinBlank({}); setTxt(e.target.value); }}/>
+          <div class="hint">${isDialin
+            ? T("This node's end of the tunnel: it listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line stands for this node's own key, which the panel keeps and never shows: leave it and the key is kept, replace it and the new one is used. The router has its own key — its config opens from the QR button on the exit's row.")
+            : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
+          ${isDialin && node.kind === "docker" && node.net_mode === "bridge"
+            ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: ((q => 'ports: "' + q + ":" + q + '/udp"')((/^\s*ListenPort\s*=\s*(\d+)/mi.exec(txt) || [])[1] || (ex.profile || {}).listen_port || "PORT")) })}</span></div>`
+            : null}</div>`
+      : isSocks ? html`<${SocksExitFields} node=${node} ex=${ex} isNew=${isNew} sTxt=${sTxt} setSTxt=${setSTxt}
+          sPass=${sPass} setSPass=${setSPass} dirtyRef=${dirtyRef}/>`
+      : !isWarp ? html`<p class="hint">${T("This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.")}</p>`
       : html`<div class="field"><label>${T("WARP+ licence key")}</label>
           <input value=${v.licence || ""} spellcheck="false" autocomplete="off"
             placeholder=${T("WARP+ licence key — optional")}
@@ -4278,14 +4924,113 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   const stored = id => (node.exits || []).find(o => String(o.id) === String(id)) || {};
   const write = xs => (saveExits ? saveExits([...xs, ...all.filter(x => !isW(x))]) : Promise.resolve(false));
   useEffect(() => { if (onBlock) onBlock(""); }, []);
+  const fresh = id => (((Store.nodes || []).find(n => n.id === node.id) || {}).exits || []).find(x => String(x.id) === String(id)) || null;
+  // Generate (a new exit, `proto` set) and Regenerate (a stored one, `proto` null): the keys are made HERE, the panel keeps
+  // the node's private key, and the router's config is rendered from what it stored.
+  // The router's key is kept only by a browser holding the encryption key, so it is asked for BEFORE the keys exist — the
+  // peers' prompt. Skipped, the exit is still made (or regenerated); its config is then shown once, unless the key is
+  // unlocked in this tab before a reload (exitKeepRouter holds it until then). Asked before Regenerate's confirm, never
+  // inside it: a sheet pushed from a confirm's onConfirm leaves the confirm spinning when the action then fails.
+  const askKeep = isNew => ensureVaultUnlocked({ title: T("Unlock to keep the router config"),
+    reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again."),
+    consequence: isNew ? T("the exit is created and works, but its router config is shown once only — unless you unlock the key in this tab before you reload.")
+                       : T("both sides still get new keys, but the router's new config is shown once only — unless you unlock the key in this tab before you reload.") });
+  const generate = async (rec, proto, typed) => {
+    if (proto) await askKeep(true);
+    const nk = await genKeys(), rk = await genKeys(), psk = genPSK();
+    const body = { ...rec, profile_text: "", dial_src: "", dialin_gen: { proto, private_key: nk.priv, peer_key: rk.pub, psk, ...(typed || {}) } };
+    const isNew = !exits.some(x => String(x.id) === String(rec.id));
+    const r = await write(isNew ? [...exits, body] : exits.map(x => (String(x.id) === String(rec.id) ? { ...x, ...body } : x)));
+    // The stored profile THIS save made — its peer is the router key just sent. A poll built before the save landed can
+    // still answer with the old one (or none), and rendering from that would hand the router a config that never works.
+    let st = r === true ? fresh(rec.id) : null;
+    for (let i = 0; r === true && i < 3 && !(st && st.profile && st.profile.peer_key === rk.pub); i++) {
+      await new Promise(ok => setTimeout(ok, 700)); await Store.poll(); st = fresh(rec.id);
+    }
+    if (r !== true) return T("Couldn't save");
+    // Kept against the record, which the panel checks itself — so a poll that never caught up still leaves the config readable.
+    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);
+    // Saved either way: { info } is not a failure, and is never shown as one (s9c F51)
+    if (!st || !st.profile || st.profile.peer_key !== rk.pub)
+      return kept === true ? { info: T("Saved, but the panel did not return the exit — reload, and the QR button on its row shows the router config.") }
+                           : { info: T("Saved, but the panel did not return the exit — reload and regenerate.") };
+    delete DIALIN_NOTE[rec.id];
+    closeModal();
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${kept} onRegen=${() => regen(st)}
+      conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
+    return true;
+  };
+  // `fromSheet`: the confirm sits over the router sheet it was opened from. Saved without the new config to show, that sheet
+  // holds keys that no longer work — it is closed with the confirm, not left open under the toast (s9c F55).
+  const regenNow = async (ex, fromSheet) => {   // a confirm sheet drops what onConfirm returns: a failure is said here, not lost
+    let r;
+    try { r = await generate({ ...ex }, null); } catch (e) { r = String((e && e.message) || e); }
+    if (r === true) return;
+    if (r && r.info) { if (fromSheet) closeModals(2); return toast(r.info); }
+    toast(typeof r === "string" ? r : T("Couldn't save"), "err");
+  };
+  const REGEN_BODY = () => T("Both sides get new keys. The router stops connecting until it imports the new config.");
+  // one at a time: a second click while the unlock prompt is up stacked a second confirm, and two Regenerates (s9c F59/F61)
+  const regen = async ex => {
+    if (REGEN_BUSY.on) return;
+    REGEN_BUSY.on = true;
+    try { await askKeep(false); } finally { REGEN_BUSY.on = false; }
+    openConfirm({ title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"), body: REGEN_BODY(), onConfirm: () => regenNow(ex, true) });
+  };
+  // The row's QR button: the kept router key, and the config rebuilt from the profile the panel stores NOW.
+  const showRouter = async ex => {
+    const ask = () => ensureVaultUnlocked({ always: true, title: T("Unlock to show the router config"),
+      reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key."),
+      consequence: T("the router config is not shown.") });
+    // the store on: asked first, as a peer's QR asks (a Regenerate from "none kept" then keeps the new key)
+    if (Store.storeMode === "encrypted" && !(await ask())) return;
+    let st = fresh(ex.id);
+    let r = exitIsDialin(st) ? await exitRouterKey(node.id, ex.id) : null;
+    if (r === EXIT_LOCKED) {                    // the store switched off since: what it kept is still there, and still opens
+      if (!(await ask())) return;
+      r = await exitRouterKey(node.id, ex.id);
+    }
+    // The key is the record's (the panel serves only that); this tab's profile may predate another tab's Regenerate, and
+    // the new key with the old PSK never handshakes.
+    if (r && r.k && r.pub !== st.profile.peer_key) { await Store.poll(); st = fresh(ex.id); }
+    if (r === CONF_UNREACHABLE || r === EXIT_LOCKED || (r && r.k && !(exitIsDialin(st) && r.pub === st.profile.peer_key))) return toast(T("Couldn't reach the panel just now, so the router config could not be read. It has not been lost — try again in a moment."), "err");
+    if (!r || r === CONF_SEALED_OLD) return openConfirm({ title: T("No router config is kept for this exit"),
+      body: (Store.storeMode !== "encrypted"
+        ? T("Keeping encrypted client configs is off, so the router's private key was shown once and not kept.")
+        : r === CONF_SEALED_OLD
+        ? T("It was kept under a previous encryption key, which this vault cannot open.")
+        : T("It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.")) + " " + REGEN_BODY(),
+      confirmLabel: T("Regenerate"), onConfirm: () => regenNow(ex) });
+    const changed = DIALIN_NOTE[ex.id];
+    delete DIALIN_NOTE[ex.id];
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} onRegen=${() => regen(st)} changed=${changed}
+      conf=${routerConf(nodeDialHost(node), st.profile, r.k, r.n, st.profile.psk)}/>`);
+  };
   const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew}
     escrowOn=${escrowOn} goSection=${goSection}
     onSave=${async body => {
       const next = isNew ? [...exits, { ...ex, ...body }]
                          : exits.map(x => (String(x.id) === String(ex.id) ? { ...x, ...body } : x));
+      const before = (ex.profile && ex.profile.listen_port && !ex.profile.endpoint) ? ex.profile : null;
       const r = await write(next);
+      // What the router has to follow (§2.4a): marked on the exit's row until its router config is opened or regenerated, never stored.
+      const after = r === true && before ? (fresh(ex.id) || {}).profile : null;
+      if (after && after.listen_port && !after.endpoint) {      // still dial-in: a paste that made it dial-out has no router
+        const ch = [];
+        if (before.listen_port !== after.listen_port) ch.push(T("port {v1} → {v2}", { v1: before.listen_port, v2: after.listen_port }));
+        if (before.address !== after.address) ch.push(T("address {v1} → {v2}", { v1: before.address, v2: after.address }));
+        if (JSON.stringify(before.awg || {}) !== JSON.stringify(after.awg || {})) ch.push(T("the AmneziaWG parameters"));
+        if ((before.psk || "") !== (after.psk || "")) ch.push(T("the preshared key"));
+        if (body.profile_text && !String(body.profile_text).includes(Store.exitKeyKeep || "(unchanged)")) ch.push(T("this node's key"));
+        if (ch.length) DIALIN_NOTE[ex.id] = ch.join(", ");
+      }
       return r === true ? true : T("Couldn't save");
     }}/>`);
+  const openDialin = rec => openModal(html`<${DialinGenSheet} node=${node}
+    onCreate=${async (label, proto, typed) => { const r = await generate({ ...rec, label }, proto, typed);
+      if (r && r.info) { closeModal(); toast(r.info); return true; }    // created: said as what it is, not as an error (s9c F51)
+      return r; }}
+    onPaste=${label => { closeModal(); openEdit({ ...rec, label }, true); }}/>`);
   const add = p2 => {
     const rec = { id: newExitId(), label: "", enabled: true, killswitch: false, device: "", ...p2 };
     // ⚠️ A CUSTOM CONFIG IS WRITTEN ONLY ONCE IT EXISTS. Creating the record first and opening the editor
@@ -4293,14 +5038,26 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     // imported profile with no profile, which the node cannot bring up and the grid shows as permanently
     // unhealthy. So the sheet opens on an UNSAVED record and the save is what appends it. A WARP account
     // is the opposite — there is nothing to type, so it is written straight away and starts registering.
-    if (p2.provider === "profile") return openEdit(rec, true);
+    if (p2.dialin) return openDialin(rec);
+    if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);
     write([...exits, rec]);
   };
+  // the four ways to add one: the desktop's row of buttons, a phone's sheet (ExitKindSheet), the same records
+  const exitKinds = [
+    [T("Register with WARP"), { producer: "imported", provider: "warp", licence: "" }, T("A free Cloudflare account, registered for this node")],
+    [T("Paste a custom config"), { producer: "imported", provider: "profile", profile_text: "" }, T("A WireGuard or AmneziaWG profile from anywhere else")],
+    [T("Add a dial-in exit"), { producer: "imported", provider: "profile", profile_text: "", dialin: true }, T("An upstream that connects to this node, such as a router behind NAT")],
+    [T("Add a SOCKS5 proxy"), { producer: "imported", provider: "socks5", socks_text: "", socks_pass: "" }, T("A SOCKS5 proxy's address and login")],
+  ];
   const del = ex => openConfirm({
     title: T("Remove this exit?"), confirmLabel: T("Remove"), danger: true,
-    body: ex.provider === "profile"
+    body: exitProv(ex) === "profile"
       ? T("{v1} is removed from this node and its tunnel comes down. The profile and its key are deleted from the panel — you would have to paste it again.", { v1: ex.label || ex.device })
-      : T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device }),
+      : exitProv(ex) === "warp"
+      ? T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device })
+      : exitProv(ex) === "socks5"
+      ? T("{v1} is removed from this node and its tunnel to the proxy comes down. The proxy's address and password are deleted from the panel.", { v1: ex.label || ex.device })
+      : T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device }),
     onConfirm: () => write(exits.filter(x => String(x.id) !== String(ex.id))),
   });
   // Health, from what the node reports about the exit it was told to create. Four states, same vocabulary
@@ -4320,7 +5077,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           config. Said here, where the operator decides, rather than nowhere. */""}
     ${/* The node's name is in the section header two lines up, and where devices live is a fact about a
           different screen. What is left is the one thing the screen has to say. */""}
-    <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts and WireGuard profiles from anywhere else. Websites see the exit rather than this node.")}</p>
+    ${isMobile() ? html`<button class="btn btn-primary m-addtop" onClick=${() => openModal(html`<${ExitKindSheet} kinds=${exitKinds} onPick=${add}/>`)}><${Ic} i="plus"/> ${T("Add an exit")}</button>` : null}
+    <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts, WireGuard profiles from anywhere else, SOCKS5 proxies, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.")}</p>
     ${exits.length ? html`<div class="exgrid g8">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
       <div class="exg-h">${T("Device")}</div>
@@ -4329,7 +5087,6 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       <div class="exg-h c">${T("Latency")}</div>
       <div class="exg-h c">${T("Kill-switch")}</div>
       <div class="exg-h c">${T("Active")}</div>
-      <div class="exg-h"></div>
       <div class="exg-h"></div></div>
       ${exits.map(ex => {
         const l = stored(ex.id).live || {};
@@ -4344,8 +5101,12 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
             ${dot(ex)}<span class="mono exg-dev">${ex.device || "—"}</span></div>
           <div class="exg-c clk" onClick=${() => openEdit(ex)}>
             ${(() => { const [bc, bl, bk] = exitBadge(ex, l); return html`<span class=${"exg-t " + bc} title=${bk || ""}>${bl}</span>`; })()}</div>
-          <div class="exg-c clk mono" onClick=${() => openEdit(ex)}>
-            ${(l.trace || {}).ip || html`<span class="faint">—</span>`}</div>
+          <div class="exg-c clk mono" onClick=${() => openEdit(ex)}
+            title=${exitProv(ex) === "socks5" ? (l.udp_ok === true ? T("UDP is carried — calls and games work through this exit.")
+              : l.udp_ok === false ? T("UDP is not carried — calls and games won't work through this exit. Other traffic is fine: QUIC falls back to TCP at once.")
+              : T("UDP: not checked yet")) : ""}>
+            ${(l.trace || {}).ip || html`<span class="faint">—</span>`}${exitProv(ex) === "socks5" && (l.trace || {}).loc
+              ? html` <span class="faint">${l.trace.loc}</span>` : null}</div>
           ${/* ⚠️ THE HOP TO THE EXIT'S OWN SERVER, not a request made through it. This first showed the time
                 of a full HTTPS request to cloudflare.com via the tunnel, which for a Moscow exit one hop
                 away read 179 ms — because ~169 ms of that is what a TLS handshake to Cloudflare costs from
@@ -4353,41 +5114,79 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 varies is not a latency column. The through-tunnel figure is still measured and lives in the
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
-          <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
-            title=${/* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
-                     the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
-                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows. */""}${l.up && l.ping_ms === null
+          <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}>
+            ${/* The hover is the panel's own bubble, not a native title (operator, 10-23). An up exit whose ping came back
+                     null: no reply reached this node — most often a firewalled VPS that drops ICMP, and the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
+                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows.
+                     S9e: no ping to be had (no reply, or a dial-in exit with no server) — the trace's TCP handshake through the tunnel
+                     stands in, marked ~ and said in the hover: one round trip to Cloudflare's nearest server, a little over the exit
+                     alone. Only for a pasted WireGuard/AmneziaWG exit (custom or dial-in): a WARP exit's handshake ends at
+                     Cloudflare's edge (~2 ms) and an adopted TUN exit's netstack answers it on the node itself. */""}
+            ${(() => { const tcp = exitProv(ex) === "profile" && !Number.isFinite(l.ping_ms) && Number.isFinite((l.trace || {}).tcp_ms);
+              const why = tcp
+              ? (exitIsDialin(ex)
+                ? T("Measured through the tunnel: one round trip from this node through the router to Cloudflare's nearest server. The router dials this node, so there is no server of its own to ping.")
+                : T("The exit's server answers no ping, so this is measured through the tunnel: one round trip from this node through the exit to Cloudflare's nearest server — a little more than the exit alone."))
+              : exitIsDialin(ex)
+              ? T("Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.")
+              : l.up && l.ping_ms === null
               ? (Number.isFinite((l.trace || {}).rtt_ms)
                 ? T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
                 : T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured."))
               : Number.isFinite((l.trace || {}).rtt_ms)
               ? T("Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
-              : T("Round trip from this node to the exit's own server.")}>
-            ${Number.isFinite(l.ping_ms)
+              : T("Round trip from this node to the exit's own server.");
+              const v = Number.isFinite(l.ping_ms)
               ? T("{v1} ms", { v1: l.ping_ms })
-              : html`<span class="faint">—</span>`}</div>
-          <div class="exg-c c" onClick=${stop}><${Switch} on=${!!ex.killswitch} title=${KS_TITLE()}
+              : tcp
+              ? T("~{v1} ms", { v1: Math.round(l.trace.tcp_ms * 10) / 10 })
+              : html`<span class="faint">—</span>`;
+              return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`; })()}</div>
+          <div class="exg-c c" data-lbl=${T("Kill-switch")} onClick=${stop}><${Switch} on=${!!ex.killswitch} title=${KS_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, killswitch: x } : y)))}/></div>
-          <div class="exg-c c" onClick=${stop}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Active")} onClick=${stop}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, enabled: x } : y)))}/></div>
           <div class="exg-c exg-act" onClick=${stop}>
-            <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button></div>
-          <div class="exg-c exg-act" onClick=${stop}>
+            ${exitIsDialin(stored(ex.id)) ? html`<button class=${"exg-qr" + (DIALIN_NOTE[ex.id] ? " chg" : "")} onClick=${() => showRouter(ex)}
+              title=${DIALIN_NOTE[ex.id] ? T("The router config changed — {v1}. Import it on the router again.", { v1: DIALIN_NOTE[ex.id] }) : T("Router config")}><${Ic} i="qr"/></button>` : null}
+            <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button>
             <button class="exg-rm" title=${T("Remove")} onClick=${() => del(ex)}><${Ic} i="trash"/></button></div>
         </div>`;
       })}
     </div>`
-      : html`<p class="hint" style="margin:0 0 12px">${T("No WARP exits on this node yet. Register a free Cloudflare account, or paste a WireGuard profile from somewhere else.")}</p>`}
+      : null}
+    ${exits.length ? null
+      : html`<p class="hint" style="margin:0 0 12px">${T("No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, add a SOCKS5 proxy, or add a dial-in exit for an upstream that connects to this node.")}</p>`}
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the
           choice is what the operator is actually deciding, and "Register" has to be one click for the path
           that needs no input at all. wgcf is never named — it is plumbing. */""}
-    <div class="exadd" style="margin-top:14px">
-      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "warp", licence: "" })}>
-        <${Ic} i="plus"/> ${T("Register with WARP")}</button>
-      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "profile", profile_text: "" })}>
-        <${Ic} i="plus"/> ${T("Paste a custom config")}</button>
-    </div>
+    ${isMobile() ? null : html`<div class="exadd" style="margin-top:14px">
+      ${exitKinds.map(([label, rec]) => html`<button class="btn btn-ghost btn-mini" onClick=${() => add(rec)}>
+        <${Ic} i="plus"/> ${label}</button>`)}
+    </div>`}
   </div>`;
+}
+// A phone adds a device to a node's ways out in a sheet of its own, opened from the top of the list (operator, 2026-10-29): the
+// fields of the desktop's inline row, Cancel and Add on the footer's bottom line. `fields` draws them (they need the node's facts).
+function AddExitDeviceSheet({ onAdd, fields }) {
+  const [v, setV] = useState({});
+  const ok = !!String(v.device || "").trim();
+  // once: Enter in its field reaches both the field's own submit and the Sheet's Enter (the footer's Add) — a second closeModal
+  // popped the parent Ways out sheet past its unsaved-changes guard (F3)
+  const sent = useRef(false);
+  const submit = () => { if (!ok || sent.current) return; sent.current = true; onAdd(v); closeModal(); };
+  return html`<${Sheet} title=${T("Add an interface by name")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${!ok} onClick=${submit}>${T("val|Add")}</button>`}>
+    ${fields(v, setV, submit)}
+  <//>`;
+}
+// A phone adds an exit from the top of the section, not after the last card (operator, 2026-10-29): one button, and a sheet
+// that asks which kind — the same four the desktop's row of buttons offers.
+function ExitKindSheet({ kinds, onPick }) {
+  return html`<${Sheet} title=${T("Add an exit")} foot=${html`<button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>`}>
+    <div class="m-pick">${kinds.map(([label, rec, about]) => html`<button type="button" class="m-pick-row" onClick=${() => { closeModal(); onPick(rec); }}>
+      <span class="m-pick-ic"><${Ic} i="plus"/></span><span class="m-pick-main"><b>${label}</b><span>${about}</span></span></button>`)}</div>
+  <//>`;
 }
 
 export function NodeIngressForm({ node, vals, set }) {
@@ -4512,32 +5311,18 @@ const P2P_OPTS = () => [
   { value: "block", label: T("Block everywhere") },
   { value: "direct", label: T("Allow, only out this server's own address") },
   { value: "iface", label: T("Each interface decides") }];
-const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
-// Route (P3): the picker's value names the target — "dev:<exit id>" (one of this node's exits) or "exit:<node id>" (another
-// node over the mesh) — and the stored record is {action:"dev", exit_id} / {action:"exit", node}, the routing rule's shape.
-const p2pVal = p => !p || !p.action ? "" : p.action === "dev" ? "dev:" + p.exit_id : p.action === "exit" ? "exit:" + p.node : p.action;
-const p2pRec = val => val.startsWith("dev:") ? { action: "dev", exit_id: val.slice(4) }
-  : val.startsWith("exit:") ? { action: "exit", node: val.slice(5) } : { action: val };
-const p2pNodeName = id => ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
+// Route (P3): the values, the record, the target rows and their hints are routing.js's (`p2pVal` … `p2pTargetHints`), shared
+// with each interface's own Torrents / P2P (IFACE-P2P-PICK §5).
 // The policy in force is not run on a node whose build has none (1.8.8 under this panel): it is behind the panel and reports
 // no policy, where a current node reports every one but "each interface decides" (swg-noded _ensure_p2p) — q189 LC24 L4-a.
 export const p2pNotRunHere = (node, rec) => !!node && !!rec && !node.p2p_node && !!node.outdated && node.p2p_eff !== "iface" && rec.action === node.p2p_eff;
-const p2pTarget = (p, exits, node) => {
-  if (p.action === "exit") return p2pNodeName(p.node);
-  if (p.action !== "dev") return "";
-  const x = (exits || []).find(e => String(e.id) === String(p.exit_id));
-  // the exits' own namer — but an exit no longer in the list is named by its id: `exitLabel` of a bare id reads "Custom"
-  return x ? exitLabel(x, node) : String(p.exit_id || "");
-};
-const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
-  ? T("via {v1}", { v1: p2pTarget(p, exits, node) }) : (P2P_SHORT()[p.action] || "");
 // What each policy does, said as measured (q189 V-FEAT-B F-2): a torrent program running ON the server is caught only by an
 // unencrypted handshake — an encrypted one (MSE) meets no signature, and local traffic has no fan-out flag by design, so it
 // got through (8 peers, 2.3 MB in 60 s, no counter moved); so did µTP on a flow already past its 4th packet.
 export const P2P_HINT = () => ({
   block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web browsing and video calls are not affected."),
   direct: T("Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route."),
-  iface: T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked."),
+  iface: T("Each interface's own Torrents / P2P choice applies — block, allow, or route. Traffic other nodes send out through this server, and programs running on it, are not checked."),
   routed: v1 => T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.", { v1 }) });
 
 export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManage, saveExits }) {
@@ -4861,26 +5646,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       const curRec = (v.p2p && v.p2p.action) ? v.p2p : { action: node.p2p_eff || "block" };
       const cur = p2pVal(curRec), routed = curRec.action === "dev" || curRec.action === "exit";
       const pn = node.p2p_node;
-      // The exits are the ROUTING PICKERS' OWN LIST (`exitOptionGroups`): a switched-off exit and a WARP account that is not
-      // ready are refused with their own reason, health is read from the stored record (the draft carries none), and every
-      // exit is named as it is everywhere else. A copy of that list had missed the not-ready case (code review, 2026-10-03).
-      // Choosing a row that cannot carry anything says why instead (`refuse`) — only for what is structurally impossible:
-      // a node with no mesh link. A node that is not reporting is a passing state judged in this browser, so it is a
-      // warning on the chosen target below, never a refusal.
-      const linked = new Set((node.mesh_peers || []).filter(m => m && m.iface).map(m => m.peer));
-      const viaNode = (Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id,
-        label: T("Route through node {v1}", { v1: n.name }),
-        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));
-      const opts = [...P2P_OPTS(),
-        ...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })
-          .map(g => ({ ...g, items: g.items.map(it => ({ ...it, label: T("Route through {v1}", { v1: it.label }) })) })),
-        ...(viaNode.length ? [{ group: T("Through another node"), items: viaNode }] : [])];
-      // A node that drops P2P other nodes send it: Block, or a route of its own (it routes only its own clients' P2P).
-      const tgt = curRec.action === "exit" ? (Store.nodes || []).find(n => n.id === curRec.node) : null;
-      const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
-      // `nodeStatusOf`: recon's verdict where this browser has judged the node, the SERVER'S where it has not — so a node
-      // that has never reported ("dangling") warns too, and nothing is guessed before the first status pass.
-      const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";
+      const opts = [...P2P_OPTS(), ...p2pTargetOpts(node, exits)];   // the route rows and their refusals: routing.js's, shared
       return html`<div class="field">
         <${Disclosure} title=${T("Filters & abuse")} sumCls="on" open=${p2pOpen} onToggle=${() => setP2pOpen(o => !o)}
           summary=${p2pNotRunHere(node, curRec) ? T("Torrents / P2P: {v1} — not in force on this node until it is updated", { v1: p2pLabel(curRec, exits, node) })
@@ -4888,15 +5654,30 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           <div class="field"><label>${T("Torrents / P2P")}</label>
             <${Dropdown} value=${cur} onChange=${a => set({ p2p: p2pRec(a) })} options=${opts}/>
             <div class="hint">${routed ? P2P_HINT().routed(p2pTarget(curRec, exits, node)) : P2P_HINT()[cur]}</div>
-            ${!(v.p2p && v.p2p.action) ? html`<div class="hint">${T("Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.")}</div>` : null}
-            ${tgtStale ? html`<div class="hint warnish">${T("{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.", { v1: tgt.name })}</div>` : null}
-            ${tgtDrops ? html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>` : null}
+            ${!(v.p2p && v.p2p.action) ? html`<div class="hint">${T("Chosen automatically: this is the default. An interface's own Torrents / P2P choice counts only when you pick “Each interface decides”.")}</div>` : null}
+            ${p2pTargetHints(curRec, node, exits)}
             ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.")}</div>` : null}
           </div>
+          ${(() => { const fleet = ((Store.panelSettings || {}).p2p_portok || P2P_PORTOK_DEFAULT).join(", "), own = v.p2p_portok != null;
+            return html`<div class="field"><label>${T("Ports the torrent filter never cuts")}</label>
+              <${Dropdown} value=${own ? "own" : "fleet"} onChange=${a => set({ p2p_portok: a === "own" ? (v.p2p_portok ?? fleet) : null })}
+                options=${[{ value: "fleet", label: T("The fleet's list") }, { value: "own", label: T("This node's own list") }]}/>
+              ${own ? html`<input class="mono" style="margin-top:6px" value=${v.p2p_portok} spellcheck="false" autocomplete="off" onInput=${e => set({ p2p_portok: e.target.value })}/>
+                      <${PortokHints} text=${v.p2p_portok}/>`
+                : html`<div class="hint">${fleet} — ${T("set in Settings → Geo data providers → Blocking.")}</div>`}</div>`; })()}
         <//></div>`; })()}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
   </div>`;
+}
+
+// What a never-cut ports list cannot take, and the cost of a wide one (S11c) — under both inputs.
+function PortokHints({ text }) {
+  const r = portokRead(text);
+  return html`${r.bad.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Not a port or a port range (1-65535): {v1}", { v1: r.bad.slice(0, 5).join(", ") })}</div>` : null}
+    ${r.tooMany ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Too many entries — at most {v1}.", { v1: PORTS_MAX_TOKENS })}</div>` : null}
+    ${!r.bad.length && !r.tooMany && !r.list.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Keep at least one port, or reset the list to its defaults.")}</div>` : null}
+    ${r.ports > PORTOK_WIDE ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Ports on the list: {v1} — encrypted torrents get through on them.", { v1: fmtNum(r.ports) })}</div>` : null}`;
 }
 
 // Account form as a modal (opened from the header user icon).
@@ -4983,7 +5764,7 @@ export function TwoFactorCard({ enabled, disabled, onChange }) {
             <input autofocus value=${code} onInput=${e => setCode(e.target.value)} inputmode="text" autocomplete="one-time-code" placeholder="123 456"/></div>
           <div class="btnrow" style="margin-top:8px">
             <button class="btn btn-primary" disabled=${busy || code.trim().length < 6} onClick=${doEnable}>${busy ? T("Verifying…") : T("Verify & enable")}</button>
-            <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
+            <button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
           </div>
         </div>
       </div>
@@ -5002,7 +5783,7 @@ export function TwoFactorCard({ enabled, disabled, onChange }) {
       <div class="field"><label>${T("Authentication code (or recovery code)")}</label><input value=${disCode} onInput=${e => setDisCode(e.target.value)} autocomplete="one-time-code" placeholder="123 456"/></div>
       <div class="btnrow" style="margin-top:8px">
         <button class="btn btn-danger" disabled=${busy || !disPw || !disCode.trim()} onClick=${doDisable}>${busy ? T("Disabling…") : T("Disable two-factor")}</button>
-        <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
+        <button class="btn btn-ghost btn-dismiss" disabled=${busy} onClick=${reset}>${T("Cancel")}</button>
       </div>
     ` : null}
   <//>`;

@@ -15,6 +15,8 @@ network of its own.
       drop-in → not; no namespaces on this system → nothing asked
   [2] _log_ns_move: outside the window nothing; inside one restart of exactly the unmoved units, once per window (a
       failed restart waits for the next window); nothing unmoved → no restart; a continuous schedule is a daily window
+      — on a fixed clock (local noon today): the window is the gate's input, never the wall clock it runs at (a run that
+      crossed 00:00–00:15 used to wait that window out, and went RED when a suite's own timeout came first)
   [3] the window arrives with the panel's settings (apply_panel_settings → _LOG_NS_MOVE["sched"])
   [4] host_sh on a docker node: --network none, still nsenter -n into PID 1
 
@@ -64,12 +66,22 @@ NOW = time.time()
 # A unit's start is told by systemd's MONOTONIC clock, which starts at boot: a unit "started a day ago" cannot exist on a
 # machine up less than a day — the fixture would hand _log_ns_unmoved a negative stamp, which it rightly skips (a gate
 # that was red on any box up < 24 h, CI runners included). Both sides read one clock shifted by 10^7 s instead.
+# The update window ([2]) is read the same way: _in_quiet_window takes datetime.now(), _log_ns_move the day from
+# time.strftime. Both are pinned to one fixed local noon, so a window that opened 10 minutes ago never lies in yesterday.
+NOON = datetime.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+class _Noon(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOON
 class _Clock:
     def __getattr__(self, k):
         return getattr(time, k)
     @staticmethod
     def monotonic():
         return time.monotonic() + 1e7
+    @staticmethod
+    def strftime(fmt, t=None):
+        return NOON.strftime(fmt) if t is None else time.strftime(fmt, t)
 N.time = _Clock()
 def dropin(fam, age_s):
     p = os.path.join(UD, fam + ".d", N.LOG_NS_DROPIN)
@@ -113,12 +125,9 @@ check("[1] a system without journald namespaces: nothing listed, nothing asked",
 N.log_ns_ok = lambda: True
 
 print("[2] _log_ns_move")
-_n = datetime.datetime.now()
-if _n.hour * 60 + _n.minute < 15:                    # a window that opened before midnight is not one noded can express
-    print("  (00:00–00:15: the in-window checks need a window opened today — waiting it out)")
-    time.sleep((15 - _n.minute) * 60 - _n.second + 1)
+datetime.datetime = _Noon                           # _in_quiet_window imports datetime and reads datetime.datetime.now()
 def hhmm(delta_min):
-    t = datetime.datetime.now() + datetime.timedelta(minutes=delta_min)
+    t = NOON + datetime.timedelta(minutes=delta_min)
     return "%02d:%02d" % (t.hour, t.minute)
 def move(sched):
     CALLS.clear(); N._LOG_NS_MOVE["at"] = 0.0; N._LOG_NS_MOVE["sched"] = sched

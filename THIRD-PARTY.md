@@ -24,12 +24,12 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | Server | Upstream | Licence | Pinned commit | Our patch + recipe | Release |
 |---|---|---|---|---|---|
 | WDTT (original) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`forks/wdtt/`](forks/wdtt/) | `wdtt-amurcanov-1.2.4-3` |
-| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | **GPL-3.0** ‡ | `ef697994` (v1.5.0 ‡) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.0-3` |
-| WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `b3935b94` (v18) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-18-2` |
-| qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
+| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | **GPL-3.0** ‡ | `ef697994` (v1.5.0 ‡) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.0-4` |
+| WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `d450e132` (v20) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-20-1` |
+| qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `a296c57e` (v1.4.4) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.4-2` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
-| csqtt 2.5 | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.1-2` ¶ |
-| csqtt Android app 2.5 (our build of amurcanov's app) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) `app/` | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | in the release: `csqtt-app-2.5.1.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.1` ¶ |
+| csqtt 2.5 | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) (amurcanov's csqtt 2.5) | **PolyForm Noncommercial 1.0.0** | `001caa4` | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.3` ¶ |
+| csqtt Android app 2.5 (our build of amurcanov's app) | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) `app/` | **PolyForm Noncommercial 1.0.0** | `001caa4` | in the release: `csqtt-app-2.5.3.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.3` ¶ |
 | csqtt Android app 2.1.9 (amurcanov's APKs, unmodified) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (a mirror: his signed APKs, digests checked) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (userspace AmneziaWG datapath — bare-metal nodes' fallback) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
@@ -55,11 +55,17 @@ the release by that source; the earlier `1.5.40` releases were built from the sa
 by him with his support ended. The server carries the swg-panel integration and the downlink half of a speed fix (a
 small-UDP pin that held bulk QUIC traffic on one relay stream); the app carries the uplink half, its own app ID
 (`net.sanityprotocol.csqtt`) and our signature. The server's release holds its exact source archive, from which both
-binaries rebuild bit for bit (its recipe and patch are also in `forks/csqtt/2.5/`). The app is the one row whose recipe
-is not in this repository: its release holds the patch against `d02da9b`, `Dockerfile.android` and `build-apk.sh`.
+binaries rebuild bit for bit (the patch is in that release; `forks/csqtt/build.sh` builds it with
+`CSQTT_PIN=d02da9b…` and `CSQTT_PATCH=` that patch, as `forks/csqtt/2.5/build.sh` did before 2.5.3). The 2.5.1 app's recipe is not in
+this repository: its release holds the patch against `d02da9b`, `Dockerfile.android` and `build-apk.sh`.
 `csqtt-app-2.1.9` mirrors his 2.1.9 app for 2.1 servers, so subscription pages do not depend on his repository. The
 earlier `csqtt-2.5.0` build (his pre-release source; a GitHub release 2026-10-16…20, never in a panel release) was
-withdrawn.
+withdrawn. **csqtt 2.5.3**, the 2.5 server the panel runs since 1.8.11, is amurcanov's 2.5 server as the community
+repository Afteroid/csqttr carries it at `001caa4` (its `main`, with the swg-panel integration merged) plus our version
+label — `forks/csqtt/2.5/csqtt-swgpanel-2.5.3.patch`, built by `forks/csqtt/2.5/build.sh`; its release holds the source
+archive. 2.5.1-2 stays on offer for a rollback. The Android app subscription pages hand out for 2.5 is `csqtt-app-2.5.3`,
+built the same way on `001caa4` (its branch: SanityProtocol/csqttr `release-2.5.3`); its release holds the patch
+against `001caa4`, `Dockerfile.android` and `build-apk.sh`.
 
 ### Source for the GPL binaries
 

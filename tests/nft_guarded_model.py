@@ -474,12 +474,22 @@ class SmartModel:
                 ops.append(("len_gt", int(tk[i + 3]))); i += 4
             elif at("meta", "mark", "&") and tk[i + 4:i + 5] in (["=="], ["!="]):   # `meta mark & 0x0000ffff == 0x00009998`
                 ops.append(("mark_mask_eq", self._num(tk[i + 3]), self._num(tk[i + 5]), tk[i + 4] == "!=")); i += 6
-            elif at("meta", "l4proto", "tcp"):
-                ops.append(("l4any", "tcp")); i += 3
+            elif at("meta", "l4proto", "{"):                            # a port rule's `meta l4proto { tcp, udp }` (B.4)
+                j = tk.index("}", i)
+                ops.append(("l4in", {x.strip(",") for x in tk[i + 3:j] if x.strip(",")})); i = j + 1
+            elif tk[i:i + 2] == ["meta", "l4proto"] and i + 2 < len(tk) and tk[i + 2] in ("tcp", "udp"):
+                ops.append(("l4any", tk[i + 2])); i += 3
             elif at("fib", "daddr", "type", "!=", "local"):             # the relay's input chain: not the node's own address
                 ops.append(("local", True)); i += 5
             elif at("fib", "daddr", "type", "local"):
                 ops.append(("local", False)); i += 4
+            elif at("th", "dport", "{"):                                # a port rule's set of ports and ranges (B.4)
+                j = tk.index("}", i)
+                sp = [tuple(int(x) for x in (t.strip(",").split("-") * 2)[:2]) for t in tk[i + 3:j] if t.strip(",")]
+                ops.append(("thspans", sp)); i = j + 1
+            elif at("th", "dport") and "-" in tk[i + 2]:                # …one range, written bare
+                a, b = (int(x) for x in tk[i + 2].split("-"))
+                ops.append(("thspans", [(a, b)])); i += 3
             elif at("th", "dport"):                                     # after `meta l4proto tcp`
                 ops.append(("thport", int(tk[i + 2]))); i += 3
             elif at("socket", "transparent", "1"):                      # a packet of a connection a transparent socket holds
@@ -514,6 +524,12 @@ class SmartModel:
                 raise NftError("syntax error in rule %r at %r" % (text, " ".join(tk[i:i + 3])))
         if any(o[0] in ("verdict", "jump") for o in ops[:-1]):
             raise NftError("syntax error: a verdict must end the rule %r" % text)
+        # `tcp dport` beside an L4 match that allows another protocol: nft refuses the rule, and with it the whole batch —
+        # "conflicting protocols specified: udp vs. tcp" (measured, nft 1.0.9 and 1.1.3; `meta l4proto tcp` beside it is fine)
+        l4 = [{o[1]} if o[0] == "l4any" else o[1] for o in ops if o[0] in ("l4any", "l4in")]
+        for o in ops:
+            if o[0] == "l4" and any(c != {o[1]} for c in l4):
+                raise NftError("conflicting protocols specified: %s vs. %s (%r)" % ("/".join(sorted(l4[0])), o[1], text))
         return ops
 
     @staticmethod
@@ -733,6 +749,10 @@ class SmartModel:
                     ok = bool(pkt.get("local")) != o[1]
                 elif k == "thport":
                     ok = pkt["dport"] == o[1]
+                elif k == "l4in":
+                    ok = pkt["proto"] in o[1]
+                elif k == "thspans":
+                    ok = any(a <= pkt["dport"] <= b for a, b in o[1])
                 elif k == "socket_t":
                     ok = bool(pkt.get("sock"))
                 elif k == "ctmark_ne":

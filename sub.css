@@ -183,8 +183,9 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-tag-sep { color: var(--muted); opacity: .8; }
 .scell-tag-by { color: var(--muted); font-weight: 600; letter-spacing: .4px; text-transform: none; opacity: .85; }
 /* plain/slow marker beside the role — warning-orange turtle (VK throttles unobfuscated transports) */
-.scell-slow { display: inline-flex; align-items: center; margin-left: -4px; color: #f97316; line-height: 0; }
-.scell-slow svg { width: 1.3em; height: 1.3em; display: block; }
+.scell-slow, .scell-p2p { display: inline-flex; align-items: center; margin-left: -4px; line-height: 0; }   /* badge-row icons */
+.scell-slow { color: #f97316; }
+.scell-slow svg, .scell-p2p svg { width: 1.3em; height: 1.3em; display: block; }   /* one size for every badge-row icon */
 /* AXIS-3: "Get the app" install link under the fork badge — subtle secondary affordance (brand on hover) */
 .scell-getapp { max-width: 100%; }
 .scell-getapp-a { color: var(--muted); font-size: 12.5px; font-weight: 700; text-decoration: none; white-space: nowrap; transition: color .15s; }
@@ -437,10 +438,28 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-vkwarn-t { font-size: clamp(12px, 3.4vw, 13.5px); font-weight: 700; }
 .scell-vkwarn-d { margin-top: 0; font-size: clamp(11.5px, 3.3vw, 13px); font-weight: 500; }
 /* RAW-IP availability note — informational, not a warning: the peer's link works as-is, this is an optional
-   faster mode they can switch on by hand. Muted, so it never competes with the vk-missing warning above it. */
+   faster mode they can switch on by hand. Muted, so it never competes with the vk-missing warning above it (it goes inside
+   that warning's block when there is one, else into the header, whose own gap spaces it). */
 .scell-raw { max-width: 96%; margin: 6px auto 0; text-align: center; line-height: 1.2; color: var(--muted, #8aa0b4); }
 .scell-raw-t { font-size: clamp(11.5px, 3.2vw, 12.5px); font-weight: 700; color: #F0913C; }
 .scell-raw-d { margin-top: 1px; font-size: clamp(10.5px, 3vw, 11.5px); font-weight: 500; }
+.scell-node > .scell-raw { margin-top: 0; }
+
+/* A marker in the badge row that explains itself in a bubble: the torrent magnet (torrents may leave by this deployment, and
+   the client setting for full speed — brand-coloured, news) and the plain-mode turtle (orange, the warning). */
+.scell-mark { appearance: none; border: 0; background: none; padding: 2px; margin: -2px -4px -2px -6px; cursor: pointer;   /* the icon where the span's was */
+  display: inline-flex; align-items: center; line-height: 0; border-radius: 6px; font: inherit; }
+.scell-mark:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.scell-p2p { color: var(--brand); }
+.note-bubble { position: fixed; z-index: 70; max-width: min(300px, calc(100vw - 24px)); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 40px rgba(0, 0, 0, .42);
+  color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; overflow: auto;
+  overscroll-behavior: contain; }   /* a fling past the end of a long note stays in it: chained to the page, the scroll closed the bubble */
+/* the torrent port bubble: the number the user types is the one large thing; the speed hint sits under a rule */
+.note-port { display: flex; align-items: baseline; gap: 10px; }
+.note-port b { font-size: 22px; font-weight: 700; color: var(--brand); font-variant-numeric: tabular-nums; user-select: all; }
+.note-port-d { margin: 4px 0 0; }
+.note-port-hint { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--line); color: var(--ink-2); }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }

@@ -65,7 +65,7 @@ try:
         print("the panel never came up"); sys.exit(1)
     rev = [0]
     def save_pool(pool):
-        code, r = call("POST", "/api/vk-pool", {"pool": pool, "rev": rev[0]})
+        code, r = call("POST", "/api/vk-pool", {"pool": pool, "rev": rev[0], "pool_v": 2})
         assert code == 200, r
         rev[0] = r["data"]["rev"]
         return r["data"]["pool"]

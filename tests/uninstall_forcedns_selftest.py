@@ -148,7 +148,7 @@ check("[1] no swg-smartdns / swg-smartdns-net rule left — the kept interface's
 check("[1] …the kept interfaces' own NAT and an operator's rule untouched, and the sweep still only armed (not run)",
       OPS in rules["nat"] and "-A POSTROUTING -s 10.71.1.0/24 -o ens3 -j MASQUERADE" in rules["nat"]
       and "SWEEP_ARMED=true" in out and any("swg-egress" in r for r in rules["nat"]), out[-600:])
-check("[1] …and it says so", "removed Force-DNS's redirect" in out, out[-600:])
+check("[1] …and it says so", "removed the DNS redirects to the node's own resolvers — Force DNS's" in out, out[-600:])
 
 print("\n[2] the Docker node removed")
 box = world("docker-kept", docker=True)
