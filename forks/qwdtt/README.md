@@ -38,7 +38,8 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
 - Tests: upstream ships no Go tests of its own. Ours (`swgpanel_raw_test.go`) pass on `1.4.3-4`, `1.4.4-1` and `1.4.4-2`, the
   downlink race test 20 times in a row. Upstream's `go_client` does not build its tests at v1.4.3 or v1.4.4 (`go.sum` lacks
   entries); our patch does not touch the client. The RAW store-write fix (`1.4.4-2`) has no Go test — it needs a full
-  connection harness — so re-run `.campaign/rigs/qwdtt-raw-writes.sh` on every rebase: a known device must write 0.
+  connection harness — so check it on a rig on every rebase: count the renames onto `passwords.json` (strace) per RAW session
+  start. A new device writes once; a known device's new session, and the same password from another device, write 0.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
   ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus

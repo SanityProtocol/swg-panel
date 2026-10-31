@@ -33,15 +33,15 @@ device on awg0 + awg1, one on awg0) and boris (one on awg0).
   [16] the Live grid's Endpoint, phone and desktop: a csqtt or WDTT device online says "turn-proxy" in its server's fork
        colour with the "Connected via <fork>" bubble (the csqtt line named, 2.1 when none is reported); a ready one is dimmed
        and names its server with no claim it ever connected; one still being created shows the dash; an unreported server
-       is "a turn-proxy"; a typeless target on a WDTT interface counts as WDTT; an AWG device still prints its address and
-       a relayed WG one keeps "Last connected via"; ready with no address (never reported) and an explicitly AWG-typed
+       is "a turn-proxy"; a typeless target takes reconcile's WG path; an AWG device still prints its address and
+       a relayed WG one keeps "Last connected via"; ready with no server entry (not shipped yet) and an explicitly AWG-typed
        target on a wdtt-named interface show what they did before; online, the status badge is the fork-coloured turn
        badge, but a pinned action failure still shows over it
 
 Run: python3 tests/mobile_ui_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>  serves a copy of the SPA with one hook undone and expects RED:
                        nodetect | desktopsite | noswipe | swipeguard | swipefield | swipesecret | footorder | gate |
-                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | kwready | kwverb | kwerr | kwtyped | kwip | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
+                       drill | nodemore | roleword | titletap | tagtap | bubdrag | bubtap | backclose | backguard | tfsearch | donetake | rotkeyed | rotpartial | rotnone | rotrekey | rotdot | rotunpub | rotlong | rotwait | rotspin | kwep | kwbadge | kwready | kwverb | kwerr | kwtyped | kwip | kwxfer | grpedit | tiptap | tipfetch | tiplive | rowswipe | tabpad | autofocus | nativefocus | settingsback | tapguard | dots | dotstap
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -74,9 +74,10 @@ PERTURBS = {
     "rotwait": ("js/peer-actions.js", "        await Store.poll();\n        if (why.length) return toast(", "        if (kr && kr.published) await kr.published;\n        await Store.poll();\n        if (why.length) return toast("),
     "kwbadge": ("js/ui.js", "  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;", "  const kv = null;"),
     "kwerr": ("js/ui.js", "  const kv = t.online && !t.viaTurn && !re ? keylessVia(t) : null;", "  const kv = t.online && !t.viaTurn ? keylessVia(t) : null;"),
-    "kwtyped": ("js/ui.js", "  const k = t.type || targetType(t);", "  const k = targetType(t);"),
-    "kwip": ("js/ui.js", " || (t.status === \"ready\" && !!t.ip)) ? kv : null;", " || t.status === \"ready\") ? kv : null;"),
-    "kwready": ("js/ui.js", "ks = kv && (t.status === \"online\" || (t.status === \"ready\" && !!t.ip)) ? kv : null;", "ks = kv;"),
+    "kwtyped": ("js/ui.js", "  const k = t.type;\n", "  const k = targetType(t);\n"),
+    "kwip": ("js/ui.js", " || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", " || t.status === \"ready\") ? kv : null;"),
+    "kwxfer": ("js/ui.js", " || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", " || (t.status === \"ready\" && !!t.ip)) ? kv : null;"),
+    "kwready": ("js/ui.js", "ks = kv && (t.status === \"online\" || (t.status === \"ready\" && !!t.kwXfer)) ? kv : null;", "ks = kv;"),
     "kwverb": ("js/ui.js", "const verb = t.online ? T(\"Connected via\") : ks ? \"\" : T(\"Last connected via\");", "const verb = t.online ? T(\"Connected via\") : T(\"Last connected via\");"),
     "kwep": ("js/ui.js", "  if (t.via === \"turn\" || ks) {", "  if (t.via === \"turn\") {"),
     "rotspin": ("js/peer-actions.js", "        if (!(kr && kr.ok)) delete Store.rotating[p.id];", "        if (!hasKeyed || why.length) delete Store.rotating[p.id];"),
@@ -583,7 +584,7 @@ try:
                         " const nid = %s; S.Store.stats[nid] = Object.assign({}, S.Store.stats[nid], {csqtt: [{iface: 'csqk0', fork: 'csqtt', line: '2.5'}, {iface: 'csqk1', fork: 'csqtt'}],"
                         "   wdtt: [{iface: 'wdtk0', fork: 'qwdtt'}]});"
                         " const rows = [{type: 'csqtt', node: nid, iface: 'csqk0', online: true, status: 'online'}, {type: 'wdtt', node: nid, iface: 'wdtk0', online: true, status: 'online'},"
-                        "               {type: 'wdtt', node: nid, iface: 'wdtk0', online: false, status: 'ready', ip: '10.66.0.5'}, {type: 'awg', node: nid, iface: 'awg0', online: true, status: 'online', observed: {endpoint: '203.0.113.7:51820'}},"
+                        "               {type: 'wdtt', node: nid, iface: 'wdtk0', online: false, status: 'ready', ip: '', kwXfer: {rx_speed: 0, tx_speed: 0, rx_bytes: 0, tx_bytes: 0}}, {type: 'awg', node: nid, iface: 'awg0', online: true, status: 'online', observed: {endpoint: '203.0.113.7:51820'}},"
                         "               {type: 'csqtt', node: nid, iface: 'csqk0', online: false, status: 'creating'}, {type: 'csqtt', node: nid, iface: 'csqk1', online: true, status: 'online'},"
                         "               {type: 'wdtt', node: nid, iface: 'wdtk9', online: true, status: 'online'}, {node: nid, iface: 'wdtk0', online: true, status: 'online'},"
                         "               {type: 'awg', node: nid, iface: 'awg0', online: false, status: 'ready', via: 'turn', viaTurn: 'vk-turn-proxy-wingsv-56000', observed: {endpoint: '127.0.0.1:40000'}},"
@@ -600,13 +601,13 @@ try:
             check("[16] %s: …and its bubble names the server it came through, with the line" % where, "Connected via" in csq["bub"] and (st["csql"] + " 2.5") in csq["bub"], csq)
             check("[16] %s: a WDTT device online says turn-proxy, in its fork's colour, named in the bubble" % where,
                   wd["text"] == "turn-proxy" and wd["color"] == st["qw"] and "Connected via" in wd["bub"] and st["qwl"] in wd["bub"], [wd, st["qw"], st["qwl"]])
-            check("[16] %s: ready (idle or never connected): dimmed, its server named, no claim it ever connected (F1)" % where,
+            check("[16] %s: ready, the server holds the password, no device bound yet: dimmed, its server named, no claim it ever connected (F1, F23)" % where,
                   wdready["text"] == "turn-proxy" and wdready["off"] and st["qwl"] in wdready["bub"] and "onnected" not in wdready["bub"], wdready)
             check("[16] %s: still being created: no path to name, the dash (F1)" % where, creating["text"] == "—" and not creating["bub"], creating)
             check("[16] %s: a csqtt server that reports no line is on the default one (F11)" % where, (st["csql"] + " 2.1") in csqdef["bub"], csqdef)
             check("[16] %s: a server its node does not report: turn-proxy through 'a turn-proxy' (F11)" % where, unrep["text"] == "turn-proxy" and "a turn-proxy" in unrep["bub"], unrep)
-            check("[16] %s: a target with no type on a WDTT interface is read as WDTT, as its tag is (F6)" % where, untyped["text"] == "turn-proxy" and st["qwl"] in untyped["bub"], untyped)
-            check("[16] %s: ready, but the server never reported it (no address): the dash (F14)" % where, unreported["text"] == "—" and not unreported["bub"], unreported)
+            check("[16] %s: a target with no type is read as reconcile reads it, a WG row: no keyless cell (F25)" % where, untyped["text"] == "—" and not untyped["bub"], untyped)
+            check("[16] %s: ready, but the server reports no entry for the password (not shipped yet): the dash (F14)" % where, unreported["text"] == "—" and not unreported["bub"], unreported)
             check("[16] %s: an explicitly AWG-typed target is never keyless, whatever its interface's name (F15)" % where, typedwg["text"] == "203.0.113.9" and not typedwg["bub"], typedwg)
             check("[16] %s: control — an AWG device still prints its address" % where, awg["text"] == "203.0.113.7" and not awg["bub"], awg)
             check("[16] %s: control — a WG peer that came through a turn-proxy, now offline, says Last connected via" % where,

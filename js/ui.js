@@ -1282,13 +1282,13 @@ export function connDot(r) {
 // carries wg meaning other widgets read), so it printed "—". It gets the same cell here, named after the server that
 // carries it: the fork of that interface as its node reports it (matched by iface, as reconcile matches it), and the line
 // for csqtt, as the interface card's badge. Only what the server's own report says: ONLINE is traffic now ("Connected
-// via"); READY with an address is a password the server reported holding, idle or never used — dimmed, the server named
-// with no claim of a past connection (a keyless deployment has no last endpoint to remember). Ready with no address (the
-// server never reported it), creating, dangling or unknown name no path: "—".
-// The kind is the target's own type, as reconcile reads it; only a target with none is classified like its tag (an
-// explicit wg/awg type is never keyless, and a plain WG row pays one compare).
+// via"); READY with the server's entry for the password (kwXfer, set exactly when the server reports holding it, bound to a
+// device or not) is idle or never used — dimmed, the server named with no claim of a past connection (a keyless deployment has
+// no last endpoint to remember). Ready with no entry (not shipped yet), creating, dangling or unknown name no path: "—".
+// The kind is the target's own type, exactly as reconcile reads it: a target with none takes reconcile's WG path, and so
+// does its cell (a plain WG row pays one compare).
 function keylessVia(t) {
-  const k = t.type || targetType(t);
+  const k = t.type;
   if (k !== "csqtt" && k !== "wdtt") return null;
   const r = ((Store.stats[t.node] || {})[k] || []).find(x => x && x.iface === t.iface);
   const fork = r ? (r.fork || (k === "csqtt" ? "csqtt" : "amurcanov")) : null, line = r && k === "csqtt" ? (r.line || CSQTT_DEFAULT_LINE) : "";
@@ -1296,7 +1296,7 @@ function keylessVia(t) {
 }
 export function endpointCell(t) {
   const obs = t.observed;
-  const kv = keylessVia(t), ks = kv && (t.status === "online" || (t.status === "ready" && !!t.ip)) ? kv : null;
+  const kv = keylessVia(t), ks = kv && (t.status === "online" || (t.status === "ready" && !!t.kwXfer)) ? kv : null;
   if (t.via === "turn" || ks) {
     const tf = ks ? ks.fork : t.viaTurn ? turnFork(t.viaTurn) : null, tn = ks ? ks.label : tf ? forkLabel(tf) : null;
     const tc = tf ? turnColor(tf) : "var(--dim)";
