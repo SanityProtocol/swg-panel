@@ -14,13 +14,16 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [2] the same with WDTT, and no logout: a reload and two opens
   [3] an interface the node stopped reporting takes nothing from the peer's other deployment
   [4] one failed read of the escrow leaves no mark: after a reload the config is back
-  [5] the banner still tells the truth: a peer with nothing stored shows it, and leaves it the moment the key reaches the panel
+  [5] the banner still tells the truth: a peer with nothing stored shows it, offers no unlock on an open vault, and leaves it the
+      moment the key reaches the panel
   [6] a mark an older build left is dropped at load
   [7] the backfill's own note does not stop a lookup, and a lookup that finds the config clears it
   [8] Rotate on a mixed peer: Save stays off while the csqtt address is blank and when it comes back different — and a real
       address change on the WireGuard deployment still lights Save and saves
   [9] a locked vault: the sheet has the unlock, next to the warning that stays true. No mark; Enter in its password field unlocks,
-      the open sheet gets its config back, and the password was no edit of the peer
+      the open sheet gets its config back, and the password was no edit of the peer. That Enter is the unlock's alone: an edit
+      waiting on the sheet stays waiting, whichever password it was given
+  [10] where an unlock can't bring the config back the sheet offers none: no vault, store_configs off
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
@@ -35,6 +38,10 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-door     the sheet has no unlock                                                     → RED [9]
        --perturb-doorepoch  an unlock leaves the open sheet as it was                                 → RED [9]
        --perturb-nodirty  the password counts as an edit of the peer                                  → RED [9]
+       --perturb-enter    Enter in the password is the sheet's Enter too                              → RED [9]
+       --perturb-unlocked the unlock is offered on an open vault                                      → RED [5]
+       --perturb-novault  the unlock is offered with no vault                                         → RED [10]
+       --perturb-need     the unlock is offered with store_configs off                                → RED [10]
 """
 import base64, hashlib, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -51,7 +58,8 @@ _MISSW = 'const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, a
 _MK = '  const mk = pubkey + "|" + node + "|" + iface;\n  if (_configMissFresh(mk))'
 _READ = '  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);\n' + _MK
 _ADDR = 'const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v'
-_DOOR = '${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn">'
+_DOOR = '${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel} need=${Store.storeConfigs}/><div class="notice warn">'
+_GONE = "if (need === false || ready || subSKCached() || !exists) return null;"
 PERTURBS = {
     "orig": [("js/crypto.js", _MK, _READ), ("js/crypto.js", _MISS, _MISSW)],
     "write": [("js/crypto.js", _MISS, _MISSW)],
@@ -65,6 +73,11 @@ PERTURBS = {
     "doorepoch": [("js/peer-ui.js", 'try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }\n    catch (e) { toast((e && e.message) || T("That password didn’t unlock',
                    'try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); bus.emit(); }\n    catch (e) { toast((e && e.message) || T("That password didn’t unlock')],
     "nodirty": [("js/peer-ui.js", '<div class="unlockpanel" data-nodirty>', '<div class="unlockpanel">')],
+    "enter": [("js/ui.js", '[role=tab], [data-nodirty]")) return;', '[role=tab]")) return;')],
+    "unlocked": [("js/peer-ui.js", "useEffect(() => { if (subSKCached()) { setReady(true); return; }\n    let ok", "useEffect(() => { let ok"),
+                 ("js/peer-ui.js", _GONE, "if (need === false || !exists) return null;")],
+    "novault": [("js/peer-ui.js", _GONE, "if (need === false || ready || subSKCached() || exists === null) return null;")],
+    "need": [("js/sheets-crud.js", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>", "<${VaultUnlockPanel}/>")],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
 
@@ -262,6 +275,13 @@ try:
           return {banner: s.textContent.includes("private key isn't available"), door: !!s.querySelector('.unlockpanel'),
                   qr: bs.some(b => b.textContent.trim() === 'QR'),
                   gear: !!s.querySelector('.topt-gear'), save: !!sv && !sv.disabled}; })()""" % SHEET)
+    def settled():
+        # the unlock draws itself once the server has said a vault exists: before that, a sheet without it proves nothing
+        tab.ev("fetch('/api/sub/vault').then(() => new Promise(r => setTimeout(r, 250)))")
+        return sheet()
+    SAVE_ON = "(() => { const sv = [...%s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Save'); return !!sv && !sv.disabled; })()" % SHEET
+    def watch_toasts():
+        tab.ev("window.__toasts = []; new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => window.__toasts.push(n.textContent)))).observe(document.querySelector('#toasts'), {childList: true}); 1")
     def close_all():
         ev("ui", "M.closeAllModals(); return 1;")
     def open_edit(pid, stay=False):
@@ -362,8 +382,10 @@ try:
         kept = json.load(open(blobs_of(uid)))
         json.dump({k: v for k, v in kept.items() if k != pid}, open(blobs_of(uid), "w"))
         reload()
-        st = open_edit(pid)
-        check("[5] the banner says so, and there is no QR", bool(st) and st["banner"] and not st["qr"], st)
+        open_edit(pid, stay=True)
+        st = settled()
+        close_all()
+        check("[5] the banner says so, no QR, and no unlock on a vault that is open", bool(st) and st["banner"] and not st["qr"] and not st["door"], st)
         json.dump(kept, open(blobs_of(uid), "w"))      # another browser publishes the key, a later unlock does
         reload()
         st = open_edit(pid)
@@ -397,7 +419,7 @@ try:
         reload()
         st = open_edit(pid, stay=True)
         check("[8] Save is off on a sheet nobody touched", not st["save"], st)
-        tab.ev("window.__toasts = []; new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => window.__toasts.push(n.textContent)))).observe(document.querySelector('#toasts'), {childList: true}); 1")
+        watch_toasts()
         ROT = "[...%s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Rotate credentials')" % SHEET
         pk = roster()[pid]["pubkey"]
         tab.ev(ROT + ".click()")
@@ -418,7 +440,7 @@ try:
         check("[8] …and when it comes back different", bool(st) and not st["save"], st)
         ip0 = roster()[pid]["targets"][0]["ip"].split("/")[0]
         tab.ev("(() => { const i = [...%s.querySelectorAll('input')].find(x => x.value === %s); i.value = '10.8.0.77'; i.dispatchEvent(new Event('input', {bubbles: true})); })()" % (SHEET, json.dumps(ip0)))
-        until("(() => { const sv = [...%s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Save'); return !!sv && !sv.disabled; })()" % SHEET, 5, "Save after a real edit")
+        until(SAVE_ON, 5, "Save after a real edit")
         tab.ev("[...%s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Save').click()" % SHEET)
         until("window.__toasts.some(t => t.startsWith('Peer updated') || t.startsWith('Saved'))", 10, "the save's toast")
         toasts = tab.ev("window.__toasts")
@@ -429,24 +451,62 @@ try:
     print("\n[9] a locked vault")
     with guard("[9]"):
         uid, pid = new_peer("locked", ["awg1", "csqtt25"])
-        reload()
-        ev("store", "C.lockVault(); return 1;")
-        open_edit(pid, stay=True)
-        until("!!%s.querySelector('.unlockpanel')" % SHEET, 10, "the unlock on the sheet")
+        ENTER = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}
+        def locked_sheet():
+            reload()
+            ev("store", "C.lockVault(); return 1;")
+            open_edit(pid, stay=True)
+            until("!!%s.querySelector('.unlockpanel')" % SHEET, 10, "the unlock on the sheet")
+        def unlock(password):
+            tab.ev("(() => { const i = %s.querySelector('.unlockpanel input[type=password]'); i.focus(); i.select(); })()" % SHEET)
+            br.send("Input.insertText", {"text": password}, session=tab.s)
+            br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyDown", text="\r"), session=tab.s)
+            br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
+        locked_sheet()
         st = sheet()
         check("[9] the sheet has the unlock, next to the warning, and no QR yet", st["door"] and st["banner"] and not st["qr"], st)
         check("[9] no mark on the peer", not marked(pid))
-        tab.ev("%s.querySelector('.unlockpanel input[type=password]').focus()" % SHEET)
-        br.send("Input.insertText", {"text": PW}, session=tab.s)
-        ENTER = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}
-        br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyDown", text="\r"), session=tab.s)
-        br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
+        unlock(PW)
         until("!!%s.querySelector('.topt-gear')" % SHEET, 10, "the open sheet's config after the unlock")
         st = sheet()
         check("[9] Enter unlocks, and the open sheet has its config: no banner, the QR, the gear", good(st) and not st["door"], st)
         tab.ev("%s.querySelector('.sheet-head .x').click()" % SHEET)
         until("!document.querySelector('.overlay.show') || !!document.querySelector('.overlay.show .discard-msg')", 5, "the sheet closing")
         check("[9] the password was no edit: the sheet closes without asking", not tab.ev("!!document.querySelector('.overlay.show .discard-msg')"))
+        locked_sheet()
+        watch_toasts()
+        title = roster()[pid].get("title")
+        field(".overlay.show .sheet input[maxlength]", "typed, not saved")
+        until(SAVE_ON, 5, "Save after the edit")
+        unlock("not-the-password")
+        until("window.__toasts.some(t => t.includes('unlock the Encryption Vault'))", 15, "the refusal")
+        st = sheet()
+        check("[9] a wrong password is refused, and saves nothing: the sheet is open, the edit still waits", bool(st) and st["door"] and st["save"] and roster()[pid].get("title") == title, [st, tab.ev("window.__toasts")])
+        unlock(PW)
+        until("!!%s.querySelector('.topt-gear')" % SHEET, 15, "the config after the right password")
+        st = sheet()
+        check("[9] the right one unlocks, and saves nothing either", good(st) and st["save"] and roster()[pid].get("title") == title, [st, tab.ev("window.__toasts")])
+        close_all()
+
+    print("\n[10] where an unlock can't bring the config back")
+    with guard("[10]"):
+        VAULT = D + "/state/subs/vault.json"
+        uid, pid = new_peer("nodoor", ["awg1"])
+        reload()
+        ev("store", "C.lockVault(); return 1;")
+        os.rename(VAULT, VAULT + ".gone")
+        open_edit(pid, stay=True)
+        st = settled()
+        close_all()
+        os.rename(VAULT + ".gone", VAULT)
+        check("[10] no vault: the warning alone", bool(st) and st["banner"] and not st["door"], st)
+        must(call("POST", "/api/panel/settings", {"store_configs": "off"}), "store_configs off")
+        reload()
+        ev("store", "C.lockVault(); return 1;")
+        open_edit(pid, stay=True)
+        st = settled()
+        close_all()
+        check("[10] store_configs off: the warning alone", bool(st) and st["banner"] and not st["door"], st)
 except Done:
     pass
 finally:

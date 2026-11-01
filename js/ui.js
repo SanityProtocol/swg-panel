@@ -784,7 +784,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
-    // [data-nodirty]: a control that only chooses what the sheet SHOWS (a traffic window's dates) — nothing to save, nothing to lose
+    // [data-nodirty]: a control that only chooses what the sheet SHOWS (a traffic window's dates, the vault's unlock) — nothing to
+    // save, nothing to lose, and its Enter is its own (below)
     const onEdit = e => { if (!(e.target && e.target.closest && e.target.closest("[data-nodirty]"))) dirty.current = true; };
     root.addEventListener("input", onEdit, true);
     root.addEventListener("change", onEdit, true);
@@ -811,9 +812,11 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       // A focused button, link or switch IN THIS SHEET owns its Enter — the browser clicks IT. Taken for the sheet's primary,
       // Enter on Cancel or Remove saved or created instead (s9b F10). Its pickers' layers count as the sheet (portalled to
       // <body>, as `.ddpop` above). One behind the overlay (the phone keeps focus on the button that opened the sheet) is
-      // not the sheet's: its Enter stays the primary's, never a click behind the modal.
+      // not the sheet's: its Enter stays the primary's, never a click behind the modal. A [data-nodirty] control owns its Enter
+      // the same way: it is no part of what Save saves, and Enter in the vault's password saved the edit waiting on Edit peer,
+      // wrong password or right.
       if (e.key === "Enter" && e.target.closest && (root.contains(e.target) || e.target.closest(".uc-pop, .deppop, .osdd-menu, .osapp-menu, .catpick-pop"))
-          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;
+          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab], [data-nodirty]")) return;
       // A held Enter is one press: its repeats never reach the primary — on a phone the Enter that opened a confirmation
       // would otherwise, held a moment, confirm it unseen (verify F12). A textarea's repeated newlines stay its own.
       if (e.key === "Enter" && e.repeat && e.target.tagName !== "TEXTAREA") { e.preventDefault(); return; }
