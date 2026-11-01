@@ -163,7 +163,7 @@ export function VaultUnlockPanel({ need } = {}) {
     catch (e) { toast((e && e.message) || T("That password didn’t unlock the Encryption Vault."), "err"); }
     setBusy(false);
   };
-  return html`<div class="unlockpanel">
+  return html`<div class="unlockpanel" data-nodirty>
     <div class="unlockpanel-msg"><${Ic} i="key"/><span>${T("Unlock the Encryption Vault to see configs, QR codes and the subscription link.")}</span></div>
     ${/* ⚠️ A FORM OF ITS OWN, so a password manager looks for this password's username INSIDE it. Loose in a sheet, Chrome took
           the nearest text field before it — the user sheet's group search — and wrote the saved login there (measured: the

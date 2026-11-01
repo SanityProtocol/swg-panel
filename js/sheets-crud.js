@@ -31,7 +31,7 @@ import {
 } from "./peer-actions.js";
 import { searchMatch, usersView, revealUser, privateUnenforced, namedFew, privateOffOpens, clearUserFilters } from "./views.js";
 import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
-import { openPeerConfigs, ReachedByBody, openUserEdit, openGroup } from "./peer-ui.js";
+import { openPeerConfigs, ReachedByBody, openUserEdit, openGroup, VaultUnlockPanel } from "./peer-ui.js";
 import { TrafficBlock, goneDevices } from "./traffic-ui.js";
 import { trafficTotals, trafficModalView } from "./traffic.js";
 import { h, Fragment } from "preact";
@@ -1105,10 +1105,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
     </div>
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
-    ${(hasKeyed && loaded && !editable) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${(Store.storeMode === "encrypted" && !subSKCached())
-      // the QR card's own sentence: a locked vault is one unlock away, and "isn't available" reads as a key that is gone
-      ? T("The Encryption Vault is locked, so this peer's stored config can't be read. Unlock it to show the QR — the config has not been lost.")
-      : html`${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}`}</span></div>` : null}
+    ${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

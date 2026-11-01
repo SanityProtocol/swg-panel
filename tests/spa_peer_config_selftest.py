@@ -19,7 +19,8 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [7] the backfill's own note does not stop a lookup, and a lookup that finds the config clears it
   [8] Rotate on a mixed peer: Save stays off while the csqtt address is blank and when it comes back different — and a real
       address change on the WireGuard deployment still lights Save and saves
-  [9] a locked vault is called that, not a missing key: no mark, and an unlock brings the config back
+  [9] a locked vault: the sheet has the unlock, next to the warning that stays true. No mark; Enter in its password field unlocks,
+      the open sheet gets its config back, and the password was no edit of the peer
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
@@ -28,11 +29,12 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-read     a lookup reads the mark before it asks                                      → RED [7]
        --perturb-ver      the old marks are kept                                                      → RED [6]
        --perturb-hit      a lookup that finds the config leaves the note                              → RED [7]
-       --perturb-banner   the sheet never says the key is missing                                     → RED [4]
+       --perturb-banner   the sheet never says the key is missing, and has no unlock                  → RED [4]
        --perturb-addr     a csqtt deployment's read-back counts as an edit                            → RED [8]
        --perturb-addrall  no deployment's address counts as an edit                                   → RED [8]
-       --perturb-locked   a locked vault reads as a missing key                                       → RED [9]
-       --perturb-lockedall  a missing key reads as a locked vault                                     → RED [5]
+       --perturb-door     the sheet has no unlock                                                     → RED [9]
+       --perturb-doorepoch  an unlock leaves the open sheet as it was                                 → RED [9]
+       --perturb-nodirty  the password counts as an edit of the peer                                  → RED [9]
 """
 import base64, hashlib, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -49,18 +51,20 @@ _MISSW = 'const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, a
 _MK = '  const mk = pubkey + "|" + node + "|" + iface;\n  if (_configMissFresh(mk))'
 _READ = '  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);\n' + _MK
 _ADDR = 'const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v'
-_LOCK = '<span>${(Store.storeMode === "encrypted" && !subSKCached())'
+_DOOR = '${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn">'
 PERTURBS = {
     "orig": [("js/crypto.js", _MK, _READ), ("js/crypto.js", _MISS, _MISSW)],
     "write": [("js/crypto.js", _MISS, _MISSW)],
     "read": [("js/crypto.js", _MK, _READ)],
     "ver": [("js/crypto.js", 'const _NOCONF_V = "3";', 'const _NOCONF_V = "2";')],
     "hit": [("js/crypto.js", "const hit = () => { _configMiss.delete(mk); if (peer) subNoConfClear(peer.id); };", "const hit = () => { _configMiss.delete(mk); };")],
-    "banner": [("js/sheets-crud.js", '${(hasKeyed && loaded && !editable) ? html`<div class="notice warn">', '${false ? html`<div class="notice warn">')],
+    "banner": [("js/sheets-crud.js", _DOOR, '${false ? html`<div class="notice warn">')],
     "addr": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { const v")],
     "addrall": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { if (t) return false; const v")],
-    "locked": [("js/sheets-crud.js", _LOCK, "<span>${false")],
-    "lockedall": [("js/sheets-crud.js", _LOCK, "<span>${true")],
+    "door": [("js/sheets-crud.js", _DOOR, '${(hasKeyed && loaded && !editable) ? html`<div class="notice warn">')],
+    "doorepoch": [("js/peer-ui.js", 'try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }\n    catch (e) { toast((e && e.message) || T("That password didn’t unlock',
+                   'try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); bus.emit(); }\n    catch (e) { toast((e && e.message) || T("That password didn’t unlock')],
+    "nodirty": [("js/peer-ui.js", '<div class="unlockpanel" data-nodirty>', '<div class="unlockpanel">')],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
 
@@ -255,14 +259,14 @@ try:
     def sheet():
         return tab.ev("""(() => { const s = %s; if (!s) return null;
           const bs = [...s.querySelectorAll('button')], sv = bs.find(b => b.textContent.trim() === 'Save');
-          return {banner: s.textContent.includes("private key isn't available"), locked: s.textContent.includes("Encryption Vault is locked"),
+          return {banner: s.textContent.includes("private key isn't available"), door: !!s.querySelector('.unlockpanel'),
                   qr: bs.some(b => b.textContent.trim() === 'QR'),
                   gear: !!s.querySelector('.topt-gear'), save: !!sv && !sv.disabled}; })()""" % SHEET)
     def close_all():
         ev("ui", "M.closeAllModals(); return 1;")
     def open_edit(pid, stay=False):
         ev("sheets-crud", "M.openEditPeer(S.Store.peer(%s)); return 1;" % json.dumps(pid))
-        until("(() => { const s = %s; return !!s && (!!s.querySelector('.topt-gear') || /private key isn't available|Encryption Vault is locked/.test(s.textContent)); })()" % SHEET, 15, "the edit sheet's lookup")
+        until("(() => { const s = %s; return !!s && (!!s.querySelector('.topt-gear') || s.textContent.includes(\"private key isn't available\")); })()" % SHEET, 15, "the edit sheet's lookup")
         st = sheet()
         if not stay:
             close_all()
@@ -427,12 +431,22 @@ try:
         uid, pid = new_peer("locked", ["awg1", "csqtt25"])
         reload()
         ev("store", "C.lockVault(); return 1;")
-        st = open_edit(pid)
-        check("[9] the sheet says the vault is locked, not that the key is missing", bool(st) and st["locked"] and not st["banner"] and not st["qr"], st)
+        open_edit(pid, stay=True)
+        until("!!%s.querySelector('.unlockpanel')" % SHEET, 10, "the unlock on the sheet")
+        st = sheet()
+        check("[9] the sheet has the unlock, next to the warning, and no QR yet", st["door"] and st["banner"] and not st["qr"], st)
         check("[9] no mark on the peer", not marked(pid))
-        ev("store", "await C.subUnlock(%s); S.Store.configEpoch++; return 1;" % json.dumps(PW))
-        st = open_edit(pid)
-        check("[9] an unlock brings the config back", good(st), st)
+        tab.ev("%s.querySelector('.unlockpanel input[type=password]').focus()" % SHEET)
+        br.send("Input.insertText", {"text": PW}, session=tab.s)
+        ENTER = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}
+        br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyDown", text="\r"), session=tab.s)
+        br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
+        until("!!%s.querySelector('.topt-gear')" % SHEET, 10, "the open sheet's config after the unlock")
+        st = sheet()
+        check("[9] Enter unlocks, and the open sheet has its config: no banner, the QR, the gear", good(st) and not st["door"], st)
+        tab.ev("%s.querySelector('.sheet-head .x').click()" % SHEET)
+        until("!document.querySelector('.overlay.show') || !!document.querySelector('.overlay.show .discard-msg')", 5, "the sheet closing")
+        check("[9] the password was no edit: the sheet closes without asking", not tab.ev("!!document.querySelector('.overlay.show .discard-msg')"))
 except Done:
     pass
 finally:
