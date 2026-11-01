@@ -222,6 +222,9 @@ try:
         raise TimeoutError(what)
     def app_up():
         until("!!(window.__swgBooted && !window.__was && !document.body.classList.contains('loggedout') && document.querySelector('#view > .screen'))", 40, "the app")
+        # __swgBooted is set right after the first render, and App registers its modal renderer in an effect after the first paint: a
+        # sheet opened before that is on the stack and never drawn. Nothing to click yet, for a person; for this script, a timer.
+        tab.ev("new Promise(r => setTimeout(r, 250))")
         ev("store", "await S.Store.poll(); return 1;")
     def reload():
         tab.ev("window.__was = 1")               # the page being left: a boot flag read from it would be no boot at all
