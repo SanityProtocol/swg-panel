@@ -19,6 +19,7 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [7] the backfill's own note does not stop a lookup, and a lookup that finds the config clears it
   [8] Rotate on a mixed peer: Save stays off while the csqtt address is blank and when it comes back different — and a real
       address change on the WireGuard deployment still lights Save and saves
+  [9] a locked vault is called that, not a missing key: no mark, and an unlock brings the config back
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
@@ -30,6 +31,8 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-banner   the sheet never says the key is missing                                     → RED [4]
        --perturb-addr     a csqtt deployment's read-back counts as an edit                            → RED [8]
        --perturb-addrall  no deployment's address counts as an edit                                   → RED [8]
+       --perturb-locked   a locked vault reads as a missing key                                       → RED [9]
+       --perturb-lockedall  a missing key reads as a locked vault                                     → RED [5]
 """
 import base64, hashlib, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -46,6 +49,7 @@ _MISSW = 'const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, a
 _MK = '  const mk = pubkey + "|" + node + "|" + iface;\n  if (_configMissFresh(mk))'
 _READ = '  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);\n' + _MK
 _ADDR = 'const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v'
+_LOCK = '<span>${(Store.storeMode === "encrypted" && !subSKCached())'
 PERTURBS = {
     "orig": [("js/crypto.js", _MK, _READ), ("js/crypto.js", _MISS, _MISSW)],
     "write": [("js/crypto.js", _MISS, _MISSW)],
@@ -55,6 +59,8 @@ PERTURBS = {
     "banner": [("js/sheets-crud.js", '${(hasKeyed && loaded && !editable) ? html`<div class="notice warn">', '${false ? html`<div class="notice warn">')],
     "addr": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { const v")],
     "addrall": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { if (t) return false; const v")],
+    "locked": [("js/sheets-crud.js", _LOCK, "<span>${false")],
+    "lockedall": [("js/sheets-crud.js", _LOCK, "<span>${true")],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
 
@@ -222,8 +228,8 @@ try:
         raise TimeoutError(what)
     def app_up():
         until("!!(window.__swgBooted && !window.__was && !document.body.classList.contains('loggedout') && document.querySelector('#view > .screen'))", 40, "the app")
-        # __swgBooted is set right after the first render, and App registers its modal renderer in an effect after the first paint: a
-        # sheet opened before that is on the stack and never drawn. Nothing to click yet, for a person; for this script, a timer.
+        # __swgBooted is set right after the first render, and App registers its modal renderer in an effect after the first frame: a
+        # sheet opened in between is on the stack, not drawn. Measured 9 ms, 39 at 6x CPU: too short for a person, not for this script.
         tab.ev("new Promise(r => setTimeout(r, 250))")
         ev("store", "await S.Store.poll(); return 1;")
     def reload():
@@ -249,13 +255,14 @@ try:
     def sheet():
         return tab.ev("""(() => { const s = %s; if (!s) return null;
           const bs = [...s.querySelectorAll('button')], sv = bs.find(b => b.textContent.trim() === 'Save');
-          return {banner: s.textContent.includes("private key isn't available"), qr: bs.some(b => b.textContent.trim() === 'QR'),
+          return {banner: s.textContent.includes("private key isn't available"), locked: s.textContent.includes("Encryption Vault is locked"),
+                  qr: bs.some(b => b.textContent.trim() === 'QR'),
                   gear: !!s.querySelector('.topt-gear'), save: !!sv && !sv.disabled}; })()""" % SHEET)
     def close_all():
         ev("ui", "M.closeAllModals(); return 1;")
     def open_edit(pid, stay=False):
         ev("sheets-crud", "M.openEditPeer(S.Store.peer(%s)); return 1;" % json.dumps(pid))
-        until("(() => { const s = %s; return !!s && (!!s.querySelector('.topt-gear') || s.textContent.includes(\"private key isn't available\")); })()" % SHEET, 15, "the edit sheet's lookup")
+        until("(() => { const s = %s; return !!s && (!!s.querySelector('.topt-gear') || /private key isn't available|Encryption Vault is locked/.test(s.textContent)); })()" % SHEET, 15, "the edit sheet's lookup")
         st = sheet()
         if not stay:
             close_all()
@@ -413,6 +420,19 @@ try:
         toasts = tab.ev("window.__toasts")
         check("[8] a real address change saves, with no failure", any(t.startswith("Peer updated") for t in toasts) and not any("couldn't be persisted" in t for t in toasts), toasts)
         check("[8] …and is in the roster", roster()[pid]["targets"][0]["ip"].split("/")[0] == "10.8.0.77", roster()[pid]["targets"])
+        close_all()
+
+    print("\n[9] a locked vault")
+    with guard("[9]"):
+        uid, pid = new_peer("locked", ["awg1", "csqtt25"])
+        reload()
+        ev("store", "C.lockVault(); return 1;")
+        st = open_edit(pid)
+        check("[9] the sheet says the vault is locked, not that the key is missing", bool(st) and st["locked"] and not st["banner"] and not st["qr"], st)
+        check("[9] no mark on the peer", not marked(pid))
+        ev("store", "await C.subUnlock(%s); S.Store.configEpoch++; return 1;" % json.dumps(PW))
+        st = open_edit(pid)
+        check("[9] an unlock brings the config back", good(st), st)
 except Done:
     pass
 finally:
