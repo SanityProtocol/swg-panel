@@ -638,9 +638,10 @@ export async function subFlushPending() {
 // ⚠️ THE BACKFILL'S NOTE AND NOTHING ELSE. getConfig() used to read this map BEFORE it probed, so a wrong entry kept
 // the QR blank for ever, cleared only by a pubkey change, i.e. by re-issuing the peer: the one destructive act the
 // wrong message recommended. Wrong entries got in twice — a panel merely unreachable (until CONF_UNREACHABLE existed,
-// v2) and one deployment's miss written against the whole peer (v3) — so getConfig() no longer reads or writes it,
-// and each bump drops what the old code wrote. This is an optimisation cache, never truth — a peer that really has
-// no config is simply re-marked on its next backfill, once.
+// v2) and one deployment's miss written against the whole peer (v3) — so getConfig() neither reads it nor adds to it
+// (it only clears a note when it finds the config, since the backfill skips a noted peer), and each bump drops what
+// the old code wrote. This is an optimisation cache, never truth — a peer that really has no config is simply
+// re-marked on its next backfill, once.
 const _NOCONF_V = "3";
 try {
   if (localStorage.getItem("swg-sub-noconf-v") !== _NOCONF_V) {
@@ -1270,7 +1271,7 @@ export function effectiveClientParams(peer, target, meta) {
 }
 
 // "We could not ask" — distinct from "we asked and there is none". Returned by blobConfig and consumed by
-// getConfig, which must not record a miss (nor persist a no-config marker) for a peer it never reached.
+// getConfig, which must not record a miss for a peer it never reached.
 export const CONF_UNREACHABLE = Symbol("conf-unreachable");
 // The blob EXISTS and the panel served it — but the bucket key that opens it was sealed under a previous
 // encryption key, so it can never be decrypted. Distinct from UNREACHABLE (a transport failure, retry later)

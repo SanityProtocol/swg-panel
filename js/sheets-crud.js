@@ -893,7 +893,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         const k = tkey(t.node, t.iface); const cur = confs[k];
         const changed = ipChangedFor(t);
         const newIP = (ips[k] || "").trim().split("/")[0];
-        if (!cur) {                                  // no config to rebuild (or a keyless deployment) — IP can still move
+        if (!cur) {                                  // no config to rebuild — a keyed deployment's IP can still move (a keyless one's is never `changed`)
           if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP }); if (!r.ok) fails++; }
           continue;
         }
