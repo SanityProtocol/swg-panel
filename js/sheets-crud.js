@@ -834,7 +834,9 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   }, [peer.id, live && live.pubkey, Store.configEpoch]);   // LIVE pubkey / epoch change (e.g. after Rotate) re-reads the now-available config
 
   const editable = Object.keys(confs).length;
-  const ipChangedFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
+  // Never a csqtt / WDTT deployment: its server mints the address and the live one is the read-back, keyed by the access
+  // password — a Rotate blanks it until the next sync, which nobody edited, and the panel refuses an address there.
+  const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
   const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
   const anyIpBad = peer.targets.some(ipBadFor);
   const optsErr = Object.keys(topts).map(k => { const e = configErrors(topts[k]); const f = Object.keys(e)[0];

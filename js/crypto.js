@@ -635,13 +635,13 @@ export async function subFlushPending() {
 // them just re-floods the console with 404s on every heal pass / reload. Remember them keyed by PUBKEY, so a
 // rekey / re-issue (which changes the pubkey) transparently re-probes. Persisted so a reload doesn't repeat the
 // whole sweep — the whole point is to stop the recurring flood, not just the in-session repeat.
-// ⚠️ DISCARD MARKERS WRITTEN BEFORE THE UNREACHABLE FIX. Until CONF_UNREACHABLE existed, a panel that was
-// merely unreachable got recorded here as "this peer has no config" — and getConfig() consults this map
-// BEFORE it probes, so a poisoned entry keeps the QR blank for ever. The entry is cleared only by a pubkey
-// change, i.e. by re-issuing the peer: the one destructive act the wrong message recommended. So the fix is
-// incomplete without dropping what the old code already wrote. This is an optimisation cache, never truth —
-// a peer that really has no config is simply re-marked on its next probe, once.
-const _NOCONF_V = "2";
+// ⚠️ THE BACKFILL'S NOTE AND NOTHING ELSE. getConfig() used to read this map BEFORE it probed, so a wrong entry kept
+// the QR blank for ever, cleared only by a pubkey change, i.e. by re-issuing the peer: the one destructive act the
+// wrong message recommended. Wrong entries got in twice — a panel merely unreachable (until CONF_UNREACHABLE existed,
+// v2) and one deployment's miss written against the whole peer (v3) — so getConfig() no longer reads or writes it,
+// and each bump drops what the old code wrote. This is an optimisation cache, never truth — a peer that really has
+// no config is simply re-marked on its next backfill, once.
+const _NOCONF_V = "3";
 try {
   if (localStorage.getItem("swg-sub-noconf-v") !== _NOCONF_V) {
     localStorage.removeItem("swg-sub-noconf");
@@ -1411,15 +1411,13 @@ export function getConfig(pubkey, node, iface) {
   const s = Store.sessionConfigs[pubkey];
   if (s && s[tkey(node, iface)]) return Promise.resolve(rerenderConf(s[tkey(node, iface)], node, iface));
   const peer = (Store.recon.peers || []).find(p => p.pubkey === pubkey);
-  // A peer PROVEN to have no config server-side (while the vault was unlocked / store isn't encrypted) survives
-  // reloads via _subNoConf — skip the blob + config probes that would just 404 again on every card render. A
-  // rekey / re-issue changes the pubkey, so this self-invalidates. A LOCKED vault is not proof, so below we
-  // neither trust nor write _subNoConf while locked (the short-TTL _configMiss handles that transient case).
-  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);
   const mk = pubkey + "|" + node + "|" + iface;
   if (_configMissFresh(mk)) return Promise.resolve(null);   // known-empty this epoch → don't re-hammer the server
-  const definitive = Store.storeMode !== "encrypted" || subSKCached();   // a miss now means "no config", not "vault locked"
-  const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); if (peer && definitive) subNoConfSet(peer.id, pubkey); };
+  // ⚠️ A MISS IS ONE DEPLOYMENT'S, NOT THE PEER'S, so it stays here and never reaches _subNoConf. A csqtt / WDTT
+  // deployment has no config at all, an interface the node stopped reporting can't be built, a failed read of the
+  // escrow is no answer — and each of those marked the WHOLE peer: its WireGuard config stopped being asked for, blob
+  // and all, and the sheets said "private key isn't available" and "No stored config — re-issue" about a working key.
+  const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); };
   const hit = () => { _configMiss.delete(mk); if (peer) subNoConfClear(peer.id); };
   // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   return blobConfig(peer, node, iface).then(c => {
@@ -1428,9 +1426,8 @@ export function getConfig(pubkey, node, iface) {
       _confSealed.set(mk, Date.now());
       // …but a panel still migrating may hold this peer's config in plaintext too, and that one still opens (backlog C review F2)
       if (!(Store.configsPlaintext > 0)) return null;
-      // no copy either: asked once this epoch, not on every render (verify F8) — the in-memory miss only, never the persisted
-      // "no config" mark: after a reload the peer must still read sealed, not "No stored config — re-issue"
-      const sealedMiss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); return null; };
+      // no copy either: asked once this epoch, not on every render (verify F8)
+      const sealedMiss = () => { miss(); return null; };
       return api.config(pubkey, node, iface).then(r => {
         const conf = rerenderConf(r.ok ? r.data.config : null, node, iface);
         if (!conf) return sealedMiss();
