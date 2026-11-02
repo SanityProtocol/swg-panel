@@ -32,7 +32,7 @@ Hermetic: no nft, no root. Run: python3 tests/port_rules_node_selftest.py   (0 =
      p15 the L4 match before `ct state new`          p16 overlapping spans are not merged
      p17 a port entry covers nothing at render (an equal-ports claimer leaves the broader entry its shadow copy)
 """
-import atexit, hashlib, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import atexit, hashlib, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
 os.environ["SWG_NFT_CLI_ONLY"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -301,11 +301,15 @@ else:
     H = load(bp, "swgnoded_base")
     PLAIN = [dict({k: v for k, v in e.items() if k != "ports"}) for e in ENT] + [
         {"subnet": S, "category": "custom_y", "action": "block"}]
+    # The destination counters (catcount, catany) are 1.8.12 DP1's own shape — one subnet set and a sampling gate — and
+    # tests/datapath_budget_selftest.py holds them; ports never reach them, so they are set aside here on both sides.
+    _nocnt = lambda s: "\n".join(l for l in str(s).split("\n")
+                                 if not re.match(r"add rule inet swg_smart (catcount|catany) ", l))
     for label, pin, queue in MODES:
         out = []
         for mod in (N, H):
             K = fresh(mod)
-            sc = [npass(mod, K, PLAIN, pin, queue)["scripts"] for _ in range(2)]
+            sc = [[_nocnt(s) for s in npass(mod, K, PLAIN, pin, queue)["scripts"]] for _ in range(2)]
             sig = open(os.path.join(mod.GEO_DIR, ".smart-sig")).read() if os.path.exists(os.path.join(mod.GEO_DIR, ".smart-sig")) else ""
             out.append((json.dumps(sc), json.dumps([" ".join(c) for c in K.calls]), sig, json.dumps(mod._SNI_BLOCKS["v"], sort_keys=True)))
         check("%s: a plan without ports renders and signs byte-for-byte as the base node" % label, out[0] == out[1],
