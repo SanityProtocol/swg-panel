@@ -6310,7 +6310,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         for d in ("up", "dn"):                                  # UNCATEGORIZED bucket: client traffic matching no category set
             if count_cats and "c_uncat_" + d not in have_cnt:   # only meaningful when ≥1 category exists to be "un" of
                 run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, "c_uncat_" + d])
-        csig = hashlib.sha1((json.dumps(catw) + "|d4|q" + str(int(bool(queue)))).encode()).hexdigest()[:16]   # d4: + ct-mark uncat exclusion (Kernel-SNI double-count); catl_ learned counting; q: engine gate
+        # lttl: an ip_learning TTL flip flushes both chains in this same batch (the `catl_` swap above, which must free its
+        # sets first) — with the sig unmoved they stayed empty and the bars blank until the 30-minute reverify
+        csig = hashlib.sha1((json.dumps(catw) + "|d4|q" + str(int(bool(queue))) + ("|lttl:" + str(learn_ttl) if queue else "")).encode()).hexdigest()[:16]   # d4: + ct-mark uncat exclusion (Kernel-SNI double-count); catl_ learned counting; q: engine gate
         _csigf = os.path.join(GEO_DIR, ".catcount-sig")
         try:
             cstored = open(_csigf).read().strip()
