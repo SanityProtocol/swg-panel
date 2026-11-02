@@ -29190,8 +29190,21 @@ def api(method, path, qs, body, deps):
         if any(t["node"] == target["node"] and t["iface"] == target["iface"] for t in p["targets"]):
             return 409, {"ok": False, "error": "peer already has a target on that node/interface",
                          "code": "exists"}
+        # ⚠️ A PEER WITH NO KEY YET (every deployment csqtt / WDTT) GETS ONE WITH ITS FIRST WIREGUARD DEPLOYMENT, minted in the browser
+        # as a new peer's is, so the private half never reaches the panel; its csqtt / WDTT passwords are untouched. Refused, it had no
+        # way to get one: its Rotate is "Rotate link", passwords only. A key other than the one the peer has is refused, not dropped:
+        # a sheet opened before the first key would mint a second, and hand out a QR with a key no node has.
+        _key = {}
+        nk = (body.get("pubkey") or "").strip()
+        if nk and p.get("pubkey") and nk != p["pubkey"]:
+            return 409, {"ok": False, "error": "this peer has another key now — reopen it", "code": "key_changed"}
         if not is_keyless_kind(target["type"]) and not p.get("pubkey"):
-            return 400, {"ok": False, **perr("{v1} needs a client key — this peer has none (rotate its keys first)", v1=target["iface"]), "code": "bad_request"}
+            if not nk:
+                return 400, {"ok": False, **perr("{v1} needs a client key — this peer has none", v1=target["iface"]), "code": "bad_request"}
+            clash = find_peer_by_pubkey(roster, nk)
+            if clash and clash["id"] != pid:
+                return 409, {"ok": False, "error": "another peer already uses this key", "code": "exists"}
+            _key = {"pubkey": nk, "psk": body.get("psk") or gen_psk()}
         # ⚠️ A DEPLOYMENT NEVER TAKES A NETWORK AWAY FROM THE DEVICE CARRYING IT. The networks door refuses a new prefix that
         # overlaps one a node carries, but a device whose networks were saved while it lived elsewhere brings them along here,
         # and node_networks resolves an overlap by age (then id) — so an older or same-second device took the live network
@@ -29211,7 +29224,7 @@ def api(method, path, qs, body, deps):
                 return 409, {"ok": False, **perr("{v1} is already carried on this node by another device — deploying this one there would take it over",
                                                  v1=", ".join(r["prefix"] for r in _took)),
                              "code": "network_refused", "refusals": _took}
-        _add = {"targets": p["targets"] + [target]}
+        _add = {"targets": p["targets"] + [target], **_key}
         _add.update(mint_keyless_secrets([target], p))   # first wdtt/csqtt deployment on this peer → its password
         p2 = peer_set(roster, pid, _add, now())
         roster_save(roster_path, roster)

@@ -6679,8 +6679,8 @@ export const STR = {
   // A peer may hold a mix of kinds; these three replace the flat "that's a WDTT interface" refusal.
   "{v1} is a self-contained turn server — add its users from the peer sheet, not by adopting a WireGuard key":
     "{v1} — самодостаточный turn-сервер: его пользователей добавляют из карточки пира, а не принятием ключа WireGuard",
-  "{v1} needs a client key — this peer has none (rotate its keys first)":
-    "{v1} нужен клиентский ключ, а у этого пира его нет (сначала смените ему ключи)",
+  "{v1} needs a client key — this peer has none":
+    "{v1} нужен клиентский ключ, а у этого пира его нет",
   "{v1} assigns the client address on connect — it can't be set here":
     "{v1} выдаёт адрес клиенту при подключении — здесь его не задать",
   "nothing to change (send ip and/or overrides)": "нечего менять (передайте ip и/или overrides)",
