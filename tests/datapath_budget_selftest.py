@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Self-test — a packet pays only for the rules that can match it (docs/DATAPATH-PLAN.md §8 item 1). DP1: the statistics.
+"""Self-test — a packet pays only for the rules that can match it (docs/DATAPATH-PLAN.md §8 item 1). DP1: the statistics;
+DP2: dispatch by source.
 
 `catcount` and `catany` were written per SUBNET × category: every forwarded packet walked 8·S·C + 4·S rules (1,452 on
 msk-main, ~106 µs of a 157 µs packet). They now hold the subnets as one anonymous set and open with a sampling gate,
@@ -22,6 +23,13 @@ packets a second, lives only in the rule, and multiplies each DELTA a reader tak
   [7] iptables reconcile, SWG_INET and SWG_CATK: a 1.8.11 chain gets the gate by -I (pairs kept), a steered chain stands,
       a rebuild writes it first at the steered N, a chain with two gates or one astray is rebuilt; a refused gate (no
       xt_statistic) is asked again an hour later, not every pass
+  [8] DP2, prerouting (real `_ensure_smart_nft`, three engines): each subnet's rules in a chain of its own, `pa100000+i`,
+      a head set and one goto a subnet; a reply, an outer packet and transit read the same rules with 2 subnets and 10, a
+      client at most the gotos more; one subnet or overlapping ones: one chain; arrivals only: no dispatch; a block list's
+      drop counts into `c_bk`, read under "*"; a goto lost or a subnet's chain emptied from outside is rebuilt
+  [9] the same verdict, mark and connection mark as the node before dispatch (8b7059ec), packet by packet, three plans
+  [10] on one kernel: the update, a subnet with a row leaving, a row leaving, a subnet arriving, and the downgrade to the
+      node before dispatch with a row removed in the same window — no batch refused, nothing left of the dispatch
 
 Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own section (exit 0 when caught):
@@ -39,8 +47,16 @@ Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
      staleseen  build_snapshot leaves an earlier snapshot's gate reads for the steer             [7]
      cumscale   sample_inet multiplies the cumulative value instead of the delta                 [6]
      gatebytes  read_inet_bytes counts the gate's bytes as traffic                               [6]
+     flatpre    every rule stays in prerouting (a subnet loop in a base chain again)             [8] [9]
+     headless   a subnet left out of the head set (its Blocks and Exits skipped, no error)        [8] [9]
+     nogoto     a subnet's goto left out (the same, by another road)                              [8] [9]
+     rowjump    a row's jump in prerouting, ahead of its subnet's earlier rules                   [9]
+     gotodrift  the drift gate forgets the gotos (one lost from outside stays lost)               [8]
+     emptydrift the drift gate forgets the subnets' chains (one emptied from outside stays empty) [8]
+     bkreap     the reaper forgets `c_bk` (it is deleted under the rules that count into it)      [8]
+     bklate     `c_bk` is not made in the batch (a fresh table's first batch is refused)          [8]
 """
-import atexit, importlib.machinery, importlib.util, os, re, shutil, subprocess, sys, tempfile
+import atexit, importlib.machinery, importlib.util, ipaddress, os, re, shutil, subprocess, sys, tempfile
 os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -80,6 +96,16 @@ PLANTS = {
                  '        _INET["rate"] = {"up": max(0.0, (cur["up"] * (cur.get("g") or 1) - prev["up"]) / dt),'),
     "gatebytes": ("[6]", '        if c.group(2).startswith("__"):               # the sampling gate (D1): its bytes are the packets it skipped\n'
                          '            continue\n', ""),
+    "flatpre": ("[8] [9]", 'disp.get(a[2], "prerouting") if a[:2] == ("ip", "saddr") else "prerouting"', '"prerouting"'),
+    "headless": ("[8] [9]", '"{ " + ", ".join(_hs) + " }", "return")', '"{ " + ", ".join(_hs[1:] or _hs) + " }", "return")'),
+    "nogoto": ("[8] [9]", '                for S in subnets:\n                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S, "goto", disp[S])',
+               '                for S in subnets[1:]:\n                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S, "goto", disp[S])'),
+    "rowjump": ("[9]", 'bat.add("add", "rule", "inet", SMART_NFT_TABLE, disp[S],   # first match holds.',
+                'bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting",   # first match holds.'),
+    "gotodrift": ("[8]", 'set(re.findall(r"\\bgoto (pa\\d+)", _pre)) == want_disp and ', ''),
+    "emptydrift": ("[8]", ' and all(_cbody(c).strip() for c in sorted(_exp))', ''),
+    "bkreap": ("[8]", ' | ({"c_bk"} if bk else set())', ''),
+    "bklate": ("[8]", '            bat.add("add", "counter", "inet", SMART_NFT_TABLE, "c_bk")', '            pass'),
 }
 TMP = tempfile.mkdtemp(prefix="dp-budget-")
 atexit.register(shutil.rmtree, TMP, True)          # every exit, a plant's copy too
@@ -534,6 +560,256 @@ _bs = open(path, encoding="utf-8").read()
 _bs = _bs[_bs.index("\ndef build_snapshot("):]
 check("the steer acts only on this snapshot's reads: build_snapshot clears them before the first sampler",
       -1 < _bs.find("_GATE_SEEN.clear()") < _bs.find("sample_inet(node_cfg, now)"), _bs.find("_GATE_SEEN.clear()"))
+
+# ── [8] prerouting: dispatch by source (DP2) ────────────────────────────────────────────────────────────────────────────
+SECTION[0] = "[8]"
+print("\n[8] prerouting: a packet reads only its own subnet's rules")
+ENG = (("kernel / Force-DNS", False, False), ("Hybrid SNI", True, True), ("Kernel SNI", True, False))
+
+
+def plan8(ns, nc, first=0):
+    """ns subnets, the same list on each: an Exit per category but the last, a per-person row (a Direct and a Block), a
+    block list's Block (it counts into `c_bk`), an Exit for everything else. Each row's selection is bound to its own subnet,
+    as the panel binds it (who_plan_for_node)."""
+    subs = ["10.%d.0.0/24" % (8 + first + i) for i in range(ns)]
+    cats = ["custom_c%d" % j for j in range(nc - 1)] + ["blku_t"]
+    ents, srcs = [], {}
+    for i, s in enumerate(subs):
+        wid = "%012x" % (0xa00000000000 + first + i)
+        srcs[wid] = [["awg0", s.replace("0/24", "5/32")]]
+        ents += [{"subnet": s, "category": c, "action": "exit", "via_iface": "swg_h", "table": 7001} for c in cats[:-1]]
+        ents += [{"subnet": s, "category": cats[0], "action": "direct", "src": wid},
+                 {"subnet": s, "category": cats[1], "action": "block", "src": wid},
+                 {"subnet": s, "category": cats[-1], "action": "block"},
+                 {"subnet": s, "category": "all", "action": "exit", "via_iface": "swg_h", "table": 7002}]
+    return subs, cats, ents, srcs
+
+
+def mpass(M, K, ents, cats, pin, queue, **kw):
+    """One routing pass of module M on kernel K (the candidate, or the node before dispatch)."""
+    M.run = K
+    M._LOOP["n"] += 1
+    res = {"changed": 0, "errors": []}
+    n0 = len(K.scripts)
+    try:
+        M._ensure_smart_nft([dict(e) for e in ents], cats, res, pin=pin, queue=queue, reset_mark=(M.SNI_RESET_MARK if pin else 0), **kw)
+    except Exception as e:
+        res["errors"].append("raised %s: %s" % (type(e).__name__, e))
+    res["scripts"] = K.scripts[n0:]
+    return res
+
+
+def build8(M, ns, nc, pin, queue, first=0, geo="geo8"):
+    M.GEO_DIR = os.path.join(TMP, geo)
+    shutil.rmtree(M.GEO_DIR, ignore_errors=True)
+    os.makedirs(M.GEO_DIR)
+    open(os.path.join(M.GEO_DIR, ".automerge-migrated"), "w").write("1")
+    M._NUMGEN["ok"] = None
+    K = SmartKernel()
+    subs, cats, ents, srcs = plan8(ns, nc, first)
+    r = [mpass(M, K, ents, cats, pin, queue, srcs=srcs)]
+    for j, c in enumerate(cats):
+        K.load_set(T, M._smart_setname(c), ["198.51.%d.0/24" % j])
+    r += [mpass(M, K, ents, cats, pin, queue, srcs=srcs) for _ in range(2)]
+    return K, subs, cats, ents, srcs, r
+
+
+# a reply, the tunnel's own outer packet, transit, and a client's established and first packets — as the walk sees them
+PK8 = {"reply": dict(iif="eth0", saddr="198.51.1.7", daddr="10.9.0.5", ct="established", reply=True),
+       "outer": dict(iif="eth0", saddr="203.0.113.50", daddr="192.0.2.1", proto="udp", dport=51820, ct="established"),
+       "transit": dict(iif="swg_n", saddr="192.0.2.77", daddr="203.0.113.9", ct="established"),
+       "client, established": dict(iif="awg0", saddr="10.9.0.6", daddr="198.51.1.7", ct="established"),
+       "client, first packet": dict(iif="awg0", saddr="10.9.0.6", daddr="198.51.1.7", ct="new")}
+walk8 = lambda K, p: dict({"walked": 0}, **K.m.packet(T, p["iif"], p["saddr"], p["daddr"],     # an empty chain reads no rule
+                                                       **{k: v for k, v in p.items() if k not in ("iif", "saddr", "daddr")}))
+for label, pin, queue in ENG:
+    Ka, subs_a, _, _, _, ra = build8(N, 2, 3, pin, queue)
+    Kz, subs_z, _, _, _, rz = build8(N, 10, 3, pin, queue)
+    check("%s: three passes, 2 subnets and 10, no error, nothing refused" % label,
+          not any(x["errors"] for x in ra + rz) and not Ka.refused and not Kz.refused, ([x["errors"] for x in ra + rz], Ka.refused[:1], Kz.refused[:1]))
+    if T not in Kz.m.tables:
+        continue
+    pre_z = [r["text"] for r in Kz.m.tables[T]["chains"]["prerouting"]["rules"]]
+    check("%s: one chain a subnet, pa100000 + its place, and one goto to each" % label,
+          {c for c in Kz.m.tables[T]["chains"] if re.fullmatch(r"pa1\d{5}", c)} == {"pa%d" % (100000 + k) for k in range(10)}
+          and [t for t in pre_z if " goto " in t] == ["ip saddr %s goto pa%d" % (s, 100000 + k) for k, s in enumerate(sorted(subs_z))],
+          pre_z)
+    check("%s: no rule in prerouting names one subnet but its goto (every list is in its subnet's chain)" % label,
+          not [t for t in pre_z if re.search(r"ip saddr 10\.\d+\.0\.0/24 ", t) and " goto " not in t], pre_z)
+    check("%s: …and the head set is every subnet, collapsed, before the gotos" % label,
+          ("ip saddr != { %s } return" % ", ".join(N._collapse4(subs_z))) in pre_z
+          and pre_z.index("ip saddr != { %s } return" % ", ".join(N._collapse4(subs_z))) < min(i for i, t in enumerate(pre_z) if " goto " in t), pre_z)
+    check("%s: pass 3 over its own render rebuilds nothing (2 subnets and 10)" % label,
+          not ra[2]["scripts"] and not rz[2]["scripts"] and ra[2]["changed"] == rz[2]["changed"] == 0, (ra[2], rz[2]))
+    for k, p in PK8.items():
+        wa, wz = walk8(Ka, p)["walked"], walk8(Kz, p)["walked"]
+        if k.startswith("client"):
+            check("%s, %s: five times the subnets reads at most the 8 gotos more (%d, %d)" % (label, k, wa, wz), wa <= wz <= wa + 8, (wa, wz))
+        else:
+            check("%s, %s: the same rules with 2 subnets and with 10 (%d)" % (label, k, wa), wa == wz and wz <= 4, (wa, wz))
+    c0 = Kz.m.tables[T]["counters"].get("c_bk", -1)
+    v = walk8(Kz, dict(PK8["client, first packet"], daddr="198.51.2.7"))    # to the block list's destination
+    N.run, N._LOOP["n"] = Kz, N._LOOP["n"] + 1
+    _act = N._block_activity()
+    check("%s: a block list's drop counts into `c_bk`, reported as blocked under \"*\"" % label,
+          v["verdict"] == "drop" and Kz.m.tables[T]["counters"].get("c_bk") == c0 + 1 == (_act.get("*") or {}).get("blocked"),
+          (v, c0, Kz.m.tables[T]["counters"].get("c_bk"), _act))
+    w_last = walk8(Kz, dict(PK8["client, established"], saddr="10.17.0.6"))["walked"]
+    check("%s: a client of the last subnet reads the head, the gotos and its own list — not the nine others' (%d)" % (label, w_last),
+          w_last < 2 * walk8(Kz, PK8["client, established"])["walked"] + 10, w_last)
+    def _goto_gone(tb):                                       # → the subnet whose goto went (the last one written); a table
+        rl = tb["chains"]["prerouting"]["rules"]              # with none (every batch refused) says so in the checks
+        return rl.pop()["text"].split()[2] if rl else "10.8.0.0/24"
+
+    def _chain_gone(tb):                                      # → the subnet whose chain was emptied (pa100001)
+        tb["chains"].get("pa100001", {})["rules"] = []
+        return next((r["text"].split()[2] for r in tb["chains"]["prerouting"]["rules"] if r["text"].endswith("goto pa100001")), "10.8.0.0/24")
+    for what, cut in (("a goto lost from outside", _goto_gone), ("a subnet's chain emptied from outside", _chain_gone)):
+        Kd, _, cd, ed, sd, _ = build8(N, 3, 3, pin, queue)
+        src = cut(Kd.m.tables[T]).replace(".0/24", ".6")
+        lost = walk8(Kd, dict(PK8["client, first packet"], saddr=src, daddr="198.51.2.7"))["verdict"]
+        rd = mpass(N, Kd, ed, cd, pin, queue, srcs=sd)
+        check("%s: %s is rebuilt at the next routing pass — its block list drops again (%s)" % (label, what, src), lost == "accept"
+              and rd["scripts"] and not rd["errors"] and walk8(Kd, dict(PK8["client, first packet"], saddr=src, daddr="198.51.2.7"))["verdict"] == "drop",
+              (lost, rd["errors"], rd["scripts"][:1]))
+
+# one subnet, and overlapping ones: one chain, one goto, today's walk
+K1, _, _, _, _, r1 = build8(N, 1, 3, False, False)
+check("one subnet: one chain (pa100000), reached by one rule, no head", [r["text"] for r in K1.m.tables[T]["chains"]["prerouting"]["rules"]]
+      == ["ip saddr { 10.8.0.0/24 } goto pa100000"] and not any(x["errors"] for x in r1), K1.m.tables[T]["chains"]["prerouting"]["rules"])
+Ko = fresh()
+_, cats_o, ents_o, srcs_o = plan8(2, 3)
+ents_o += [dict(e, subnet="10.8.0.0/16") for e in ents_o if e["subnet"] == "10.8.0.0/24" and "src" not in e]   # an adopted leftover
+ro = [mpass(N, Ko, ents_o, cats_o, False, False, srcs=srcs_o) for _ in range(2)]
+pre_o = [r["text"] for r in Ko.m.tables[T]["chains"]["prerouting"]["rules"]]
+check("overlapping subnets share pa100000, every rule in it in the plan's order, one goto",
+      not any(x["errors"] for x in ro) and not Ko.refused and [t for t in pre_o if "goto" in t] == ["ip saddr { 10.8.0.0/16, 10.9.0.0/24 } goto pa100000"]
+      and not any(re.fullmatch(r"pa1\d{5}", c) and c != "pa100000" for c in Ko.m.tables[T]["chains"]), (pre_o, Ko.refused[:1]))
+K3b = fresh()
+r3b = [mpass(N, K3b, [], cats3, False, False, arrivals=arr) for _ in range(2)]
+check("an arrivals-only node: no dispatch chain, no head, no `{ }`, nothing refused",
+      not any(re.fullmatch(r"pa1\d{5}", c) for c in K3b.m.tables[T]["chains"]) and not K3b.refused
+      and not any(EMPTY.search(s) for s in K3b.scripts), (sorted(K3b.m.tables[T]["chains"]), K3b.refused[:1]))
+
+# ── [9] the same verdict as the node before dispatch ────────────────────────────────────────────────────────────────────
+SECTION[0] = "[9]"
+print("\n[9] every packet: the verdict, mark and connection mark of the node before dispatch")
+BASE = os.environ.get("SWG_DISPATCH_BASE") or "8b7059ec"       # origin/dev before DP2 (DP1 + N2): prerouting as 1.8.11 built it
+_rb = subprocess.run(["git", "-C", ROOT, "show", "%s:swg-noded" % BASE], capture_output=True, text=True)
+H = None
+if _rb.returncode:
+    check("the base node is readable (git show %s)" % BASE, False, _rb.stderr[:200])
+else:
+    _bp = os.path.join(TMP, "base-noded.py")
+    open(_bp, "w", encoding="utf-8").write(_rb.stdout)
+    _lb = importlib.machinery.SourceFileLoader("swgnoded_dispatch_base", _bp)
+    H = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgnoded_dispatch_base", _lb))
+    try:
+        _lb.exec_module(H)
+    except SystemExit:
+        pass
+
+
+def grid(subs, cats):
+    """Every source a plan can see (each subnet's chosen device and another, a stranger, a public address) to every
+    category's destination and one in none, new and established, TCP 443 and UDP 443 and 53."""
+    nets = [ipaddress.ip_network(s, strict=False) for s in subs]       # a wider subnet: one address outside the narrower too
+    srcs = [str(n.network_address + k) for n in nets for k in ((5, 6) if n.prefixlen >= 24 else (5, 6, 261))] + ["10.200.0.5", "198.51.0.9"]
+    dsts = ["198.51.%d.7" % j for j in range(len(cats))] + ["203.0.113.9"]
+    return [(iif, s, d, pr, pt, ct) for s in srcs for d in dsts for (pr, pt) in (("tcp", 443), ("udp", 443), ("udp", 53))
+            for ct in ("new", "established") for iif in ("awg0", "awg1")]
+
+
+def verdicts(K, g, ctmark=7001):
+    return [(lambda v: (v["verdict"], v["mark"], v["ctmark"]))(K.m.packet(T, iif, s, d, proto=pr, dport=pt, ct=ct, ctmark=ctmark))
+            for iif, s, d, pr, pt, ct in g]
+
+
+EQ = [("3 subnets, rows, a Block, Exits", plan8(3, 3)),
+      ("1 subnet", plan8(1, 4)),
+      ("overlapping subnets", (lambda p: (p[0] + ["10.8.0.0/16"], p[1],
+                                          p[2] + [dict(e, subnet="10.8.0.0/16") for e in p[2] if e["subnet"] == "10.8.0.0/24" and "src" not in e], p[3]))(plan8(2, 3)))]
+for label, pin, queue in ENG if H else ():
+    for name, (subs, cats, ents, srcs) in EQ:
+        out = []
+        for M in (N, H):
+            M.GEO_DIR = os.path.join(TMP, "geo9-" + ("c" if M is N else "b"))
+            shutil.rmtree(M.GEO_DIR, ignore_errors=True)
+            os.makedirs(M.GEO_DIR)
+            open(os.path.join(M.GEO_DIR, ".automerge-migrated"), "w").write("1")
+            M._NUMGEN["ok"] = None
+            K = SmartKernel()
+            r = [mpass(M, K, ents, cats, pin, queue, srcs=srcs)]
+            for j, c in enumerate(cats):
+                K.load_set(T, M._smart_setname(c), ["198.51.%d.0/24" % j])
+            r.append(mpass(M, K, ents, cats, pin, queue, srcs=srcs))
+            out.append((K, r))
+        g = grid(sorted({e["subnet"] for e in ents}), cats)
+        vc, vb = verdicts(out[0][0], g), verdicts(out[1][0], g)
+        diff = [(g[i], vb[i], vc[i]) for i in range(len(g)) if vc[i] != vb[i]]
+        check("%s, %s: %d packets, the same verdict, mark and connection mark as %s" % (label, name, len(g), BASE),
+              not diff and not any(x["errors"] for _, rr in out for x in rr) and vc.count(vc[0]) != len(vc), (diff[:3], [x["errors"] for _, rr in out for x in rr]))
+
+# ── [10] transitions, the update and the downgrade, on one kernel ───────────────────────────────────────────────────────
+SECTION[0] = "[10]"
+print("\n[10] transitions: a subnet with a row leaves, a row leaves, a subnet arrives; the update; the downgrade")
+for label, pin, queue in ENG:
+    G10 = os.path.join(TMP, "geo10")
+    shutil.rmtree(G10, ignore_errors=True)
+    os.makedirs(G10)
+    open(os.path.join(G10, ".automerge-migrated"), "w").write("1")
+    K = SmartKernel()
+    steps = []
+
+    def step(M, plan, what):
+        M.GEO_DIR = G10
+        M._NUMGEN["ok"] = None
+        subs, cats, ents, srcs = plan
+        r = [mpass(M, K, ents, cats, pin, queue, srcs=srcs)]
+        for j, c in enumerate(cats):
+            if M._smart_setname(c) in K.m.tables.get(T, {}).get("sets", {}):
+                K.load_set(T, M._smart_setname(c), ["198.51.%d.0/24" % j])
+        r += [mpass(M, K, ents, cats, pin, queue, srcs=srcs) for _ in range(2)]   # the 2nd builds the counting chains (sets filled)
+        ok = not any(x["errors"] for x in r) and not r[2]["scripts"]
+        g = grid(subs, cats)
+        steps.append((what, ok, [x["errors"] for x in r], verdicts(K, g), g))
+        return ok
+
+    p3, p2, prow = plan8(3, 3), plan8(2, 3), plan8(3, 3)
+    p2 = (p2[0], p2[1], p2[2], p2[3])                                           # the last subnet, with its row, left
+    prow = (prow[0], prow[1], [e for e in prow[2] if not (e["subnet"] == "10.9.0.0/24" and "src" in e)], prow[3])   # one row left
+    pnew = plan8(4, 3)                                                          # a subnet arrived
+    if H:
+        step(H, p3, "the node before dispatch")
+        step(N, p3, "the update: its render, rebuilt")
+    else:
+        step(N, p3, "first render")
+    step(N, p2, "a subnet with a row leaves")
+    step(N, prow, "a row leaves")
+    step(N, pnew, "a subnet arrives")
+    pdown = plan8(4, 3)
+    pdown = (pdown[0], pdown[1], [e for e in pdown[2] if not (e["subnet"] == "10.11.0.0/24" and "src" in e)], pdown[3])
+    if H:
+        step(H, pdown, "the downgrade, a row removed in the same window")
+    for what, ok, errs, _v, _g in steps:
+        check("%s: %s — no batch refused, and the next pass rebuilds nothing" % (label, what), ok and not K.refused, (errs, K.refused[:2]))
+    if H:
+        tb = K.m.tables[T]
+        check("%s: after the downgrade no dispatch chain is left, and no `c_bk`" % label,
+              not any(re.fullmatch(r"pa1\d{5}", c) for c in tb["chains"]) and "c_bk" not in tb["counters"], (sorted(tb["chains"]), sorted(tb["counters"])))
+        Kb = SmartKernel()                                                      # the same plan, built fresh by the node before
+        H.GEO_DIR = os.path.join(TMP, "geo10b")
+        shutil.rmtree(H.GEO_DIR, ignore_errors=True)
+        os.makedirs(H.GEO_DIR)
+        open(os.path.join(H.GEO_DIR, ".automerge-migrated"), "w").write("1")
+        for _ in range(3):
+            mpass(H, Kb, pdown[2], pdown[1], pin, queue, srcs=pdown[3])
+            for j, c in enumerate(pdown[1]):
+                if H._smart_setname(c) in Kb.m.tables.get(T, {}).get("sets", {}):
+                    Kb.load_set(T, H._smart_setname(c), ["198.51.%d.0/24" % j])
+        check("%s: …and the downgraded table decides every packet as one that node built itself" % label,
+              steps[-1][3] == verdicts(Kb, steps[-1][4]), next(((steps[-1][4][i], steps[-1][3][i]) for i in range(len(steps[-1][4]))
+                                                               if steps[-1][3][i] != verdicts(Kb, steps[-1][4])[i]), None))
 
 print()
 if PLANT:

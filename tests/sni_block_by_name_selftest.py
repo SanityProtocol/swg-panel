@@ -162,7 +162,7 @@ def npass(K, entries, queue=True, pin=True, name_cats=None):
 
 
 def rules(K, chain):
-    return [r["text"] for r in ((K.m.tables.get(T) or {}).get("chains", {}).get(chain) or {}).get("rules", [])]
+    return K.m.flat(T, chain)                                   # through the subnets' dispatch chains (DATAPATH D2)
 
 
 # ── swg-sni, fed from the files swg-noded wrote ──────────────────────────────────────────────────────────────────────────

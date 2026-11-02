@@ -30,8 +30,8 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 
      c  the learned-set TTL swap forgets the row chains (and the pin-mode Block chains)
      d  the signature gains a marker for everyone, `src` or not (every node's chain rebuilds on upgrade)
      e  the chain signature signs the set MEMBERS (a member change rebuilds the chain)
-     g1/g2/g3  one positional reader of the want-tuple left at four names (expect_pre · the emit loop · `_routed_cats`)
-     h  the drift gate forgets that a row emits prerouting rules (an all-Direct per-person chain emptied from outside stays empty)
+     g1/g2/g3  one positional reader of the want-tuple left at four names (the drift gate's `_exp` · the emit loop · `_routed_cats`)
+     h  the drift gate forgets that a row emits a rule (an all-Direct per-person row's chain emptied from outside stays empty)
      s1 a shadow rule loses its "not these devices" (Alice's own name, placed below the Block, is blocked for her)
      s2 the base chain emits no shadow rule (Bob walks past the everyone Block again)
      s3 a row chain emits no shadow rule (a per-person Block loses the host to another selection's name)
@@ -93,13 +93,13 @@ PLANTS = {
           '''("|lttl:" + str(learn_ttl) if queue else "") + "|s9|src").encode()).hexdigest()[:16]'''),
     "e": ('''    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) +''',
           '''    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) + json.dumps(want_src) +'''),
-    "g1": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
-           '''    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)'''),
+    "g1": ('''    _exp = {disp[w[0]] for w in want if w[2] in ("exit", "block") or len(w) > 4} | (want_disp if pin else set())''',
+           '''    _exp = {disp[S] for (S, _, a, _) in want if a in ("exit", "block")} | (want_disp if pin else set())'''),
     "g2": ('''            S, cat, act, T = w[:4]
             pm = pt_of.get(i, [])''', '''            S, cat, act, T = w
             pm = pt_of.get(i, [])'''),
-    "h": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
-          '''    expect_pre = pin or any(w[2] != "direct" for w in want)'''),
+    "h": ('''    _exp = {disp[w[0]] for w in want if w[2] in ("exit", "block") or len(w) > 4} | (want_disp if pin else set())''',
+          '''    _exp = {disp[w[0]] for w in want if w[2] in ("exit", "block")} | (want_disp if pin else set())'''),
     "s1": ('''                xm = [t for x in ex for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))]''',
            '''                xm = []'''),
     "s2": ('''            _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")''', '''            pass'''),
@@ -117,8 +117,8 @@ PLANTS = {
            '''                hit += [(c, rank("zone", lb[-1])) for c in of("zone", lb[-1])] + [(c, (2,)) for c in of("first", lb[0])]'''),
     "s9": ('''for c in [c1] + list(more) for x, p1 in aud.get(c, {}).get(w[0], ())''',
            '''for c in [c1] for x, p1 in aud.get(c, {}).get(w[0], ())'''),
-    "s10": ('''            if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:''',
-            '''            if "blku" not in ln or "drop" not in ln:'''),
+    "s10": ('''(["counter", "name", "c_bk"] if str(c2).startswith("blku") else [])''',     # its drops no longer count into c_bk
+            '''(["counter"] if str(c2).startswith("blku") else [])'''),
     "s11": ('''        if kd == "zone":
             return (3,)''', '''        if kd == "zone":
             return (1, -99)'''),
@@ -282,7 +282,7 @@ for label, pin, queue in MODES:
     tb = K.m.tables[T]
     check("%s: one chain per row — sr0 (two entries, one selection) and sr1" % label,
           {c for c in tb["chains"] if c.startswith("sr")} == {"sr0", "sr1"}, sorted(tb["chains"]))
-    jumps = [x["text"] for x in tb["chains"]["prerouting"]["rules"] if "jump" in x["text"]]
+    jumps = [x for x in K.m.flat(T, "prerouting") if "jump" in x]   # through the subnet's dispatch chain (DATAPATH D2)
     check("%s: ONE jump per row, keyed by the (device, address) set" % label,
           jumps == ["iifname . ip saddr @src_%s jump sr0" % W1, "iifname . ip saddr @src_%s jump sr1" % W2], jumps)
     check("%s: the source sets hold the resolved devices, bare" % label,
@@ -341,16 +341,18 @@ for label, pin, queue in MODES:
     check("%s: …its chosen device is routed (7001)" % label, v["mark"] == 7001, v)
     v = walk(K, "wg0", OTHER, "203.0.113.9")
     check("%s: …and a device it does not choose is left alone (no mark)" % label, v["mark"] == 0, v)
-K = fresh()
-for _ in range(3):
-    npass(K, DIRECT_ONLY, False, False)
-fill(K, DEST)
-if T in K.m.tables:
-    K.m.tables[T]["chains"]["prerouting"]["rules"] = []          # something outside the node emptied the chain
-rd = npass(K, DIRECT_ONLY, False, False)
-v = walk(K, "wg0", CHOSEN, "192.0.2.9")
-check("a chain holding only a per-person Direct row is rebuilt when emptied from outside (the drift gate sees rows)",
-      not rd["errors"] and "sr0" in v["via"], (rd["errors"], v))
+for what in ("its subnet's chain", "prerouting"):                # the row's jump sits in its subnet's chain (DATAPATH D2), reached
+    K = fresh()                                                   # by prerouting's goto: either emptied must be rebuilt
+    for _ in range(3):
+        npass(K, DIRECT_ONLY, False, False)
+    fill(K, DEST)
+    if T in K.m.tables:
+        hold = next((c for c, ch in K.m.tables[T]["chains"].items() if any("jump sr0" in r["text"] for r in ch["rules"])), "prerouting")
+        K.m.tables[T]["chains"][hold if what != "prerouting" else "prerouting"]["rules"] = []   # something outside the node emptied it
+    rd = npass(K, DIRECT_ONLY, False, False)
+    v = walk(K, "wg0", CHOSEN, "192.0.2.9")
+    check("a chain holding only a per-person Direct row is rebuilt when %s is emptied from outside (the drift gate sees rows)" % what,
+          not rd["errors"] and "sr0" in v["via"], (rd["errors"], v))
 
 # ── 2. the learned-set TTL swap with rows present (T2) ────────────────────────────────────────────────────────────────────
 print("\n[ip_learning TTL change on Hybrid SNI with rows]")

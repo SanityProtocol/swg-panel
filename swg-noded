@@ -5900,6 +5900,18 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # Category rules match a dest set; the "all" catch-all matches any dest but ONLY when still unmarked
     # (`meta mark 0x0`) and is emitted LAST, so specific categories win (first-match semantics).
     subnets = sorted({e["subnet"] for e in smart_e})
+    # ── DISPATCH BY SOURCE (docs/DATAPATH-PLAN.md D2) ── Every rule here but the restore and the arrivals' two opens `ip saddr
+    # S` (a row's jump names S's own devices, which the panel keeps inside S), so one subnet's rules can never match another's
+    # packets — yet every packet walked all of them, replies, outer packets and transit too: 235 rules on msk-main, ~17 µs of
+    # each. Each subnet's rules now sit in a chain of their own, in today's order and text, reached by one `goto` at the end
+    # of `prerouting`; a `return` there, or the end of that chain, ends the base chain as before. Overlapping subnets (an
+    # adopted leftover: the panel keeps them fleet-unique) all share one chain, in today's order — today's walk. Named
+    # `pa` + 100000…, never `sr`: an older noded takes every `pa\d+` for stale and flushes all of them before it deletes any,
+    # ahead of the rows, so a row a dispatch chain still jumps to is never deleted under it (the downgrade).
+    _nets = sorted(ipaddress.ip_network(x) for S in subnets for x in _collapse4([S]))
+    _one = len(_nets) != len(subnets) or any(a.overlaps(b) for a, b in zip(_nets, _nets[1:]))   # sorted: a neighbour shows it
+    disp = {S: "pa%d" % (100000 + (0 if _one else k)) for k, S in enumerate(subnets)}
+    want_disp = set(disp.values())
     # Ordered, first-match rules carrying a per-rule ACTION: exit=mark→mesh, direct=leave in-kernel (default route),
     # block=drop. Each specific rule ends in `return` so the FIRST match wins — a direct/block exception genuinely
     # overrides a later catch-all exit, and block is a real kill-switch (not a silent fall-through to direct). "all"
@@ -5928,6 +5940,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             else:
                 rows.append({"key": (w[0], w[4]), "start": i, "end": i + 1})
     want_sr = {"sr%d" % k for k in range(len(rows))}
+    bk = any(w[2] == "block" and str(w[1]).startswith("blku") for w in want)   # a block list's drops count into `c_bk` (D2)
     want_src = {_smart_srcsetname(r["key"][1]): _smart_src_members((srcs or {}).get(r["key"][1])) for r in rows}
     src_stamps = {}                                            # member signatures to hold only once the batch has landed
     for sn, mem in sorted(want_src.items()):                   # per-person source sets: created here, members replaced WHOLE in
@@ -6143,20 +6156,27 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     def _cbody(name):                                          # the rules inside one chain of our table (per-chain, so a full external flush is detected)
         m = re.search(r"chain " + name + r" \{(.*?)\n\s*\}", body, re.S)
         return m.group(1) if m else ""
-    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)   # exit/block rules, rows + pin (queue/restore) all emit `saddr` prerouting rules
-    pre_ok = (not expect_pre) or ("saddr" in _cbody("prerouting"))
+    # A chain emptied from outside is rebuilt at the next routing pass, not at the 30-minute reverify: every subnet's goto is
+    # there (one lost skips that subnet's Blocks and Exits with no error), and every subnet's chain that always holds a rule —
+    # an Exit or a Block, a row's jump, and in pin mode the QUIC drop each subnet gets — holds one (D2: what `prerouting` alone
+    # once held). Direct rules are not counted on: a plan of them may emit none.
+    _pre = _cbody("prerouting")
+    _exp = {disp[w[0]] for w in want if w[2] in ("exit", "block") or len(w) > 4} | (want_disp if pin else set())
+    pre_ok = set(re.findall(r"\bgoto (pa\d+)", _pre)) == want_disp and all(_cbody(c).strip() for c in sorted(_exp))
     rows_ok = ({c for c in _chs if re.fullmatch(r"sr\d+", c)} == want_sr        # the row chains, and the pin-mode Block
                and {c for c in _chs if re.fullmatch(r"pb\d+", c)} == want_pb   # chains (see pb_of) — the same scan
                # …and the arrivals' chain, its Block chains and the jump into it: a chain emptied or a jump flushed from
-               # outside rebuilds, as a row does
-               and ("sa" in _chs) == bool(arr) and {c for c in _chs if re.fullmatch(r"pa\d+", c)} == want_pa
-               and (not arr or ("@lg" in _cbody("prerouting") and bool(_cbody("sa").strip())))
+               # outside rebuilds, as a row does — and the subnets' dispatch chains (D2), which share the `pa` names
+               and ("sa" in _chs) == bool(arr) and {c for c in _chs if re.fullmatch(r"pa\d+", c)} == want_pa | want_disp
+               and (not arr or ("@lg" in _pre and bool(_cbody("sa").strip())))
                and ("svb" in _chs) == bool(svb_of) and (not svb_of or bool(_cbody("svb").strip())))
     fwd_ok = (((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
               and ((not blk_rst) or ("%#010x" % SNI_BLOCK_MARK) in _cbody("forward")))
     if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
+        if bk:                                                 # before the first rule counting into it, in this batch: a fresh
+            bat.add("add", "counter", "inet", SMART_NFT_TABLE, "c_bk")   # table's first pass makes no counter outside it (`if body:`)
         if queue:                                              # apply an ip_learning TTL change to the learned sets (an nft set's
             _ttlm = os.path.join(GEO_DIR, ".catl-ttl")         # default timeout is immutable live → destroy+recreate; chain just
             _prev = ""                                         # flushed above so catl_ is now unreferenced. Marker-gated: stable TTL never churns.
@@ -6188,17 +6208,20 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     bat.add("add", "set", "inet", SMART_NFT_TABLE, ln, "{ typeof ip daddr; flags timeout; timeout " + str(learn_ttl) + "s; }")
                 stamps.append((_ttlm, str(learn_ttl)))         # like the sigs: only once the swap has actually landed,
                 #                                                else a rejected batch would mark a TTL change done that never happened
-        def _add(*a):
-            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", *a)
+        def _add(*a):                                          # a rule that opens `ip saddr S` goes to S's own chain (D2)
+            bat.add("add", "rule", "inet", SMART_NFT_TABLE, disp.get(a[2], "prerouting") if a[:2] == ("ip", "saddr") else "prerouting", *a)
         # The arrivals' chain and its pin-mode Block chains, the same way the rows' are: emptied and refilled in this
         # transaction, and deleted when nothing is cascaded in any more — after prerouting's flush, so no jump names them — and
         # BEFORE the first prerouting rule, because the arrivals' jump is the second rule of the chain (a jump to a chain the
-        # batch has not made yet refuses the whole transaction).
+        # batch has not made yet refuses the whole transaction). The subnets' dispatch chains (D2) likewise, whatever `arr` is:
+        # each is written to from the first rule on, and one left among the gone would be deleted, then written to. Every one
+        # is emptied before any row is deleted below, since a subnet's chain holds its rows' jumps.
         _here_ax = sorted(c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sa|pa\d+", c))
-        for c in sorted({"sa"} | want_pa) if arr else ():
+        _want_ax = (({"sa"} | want_pa) if arr else set()) | want_disp
+        for c in sorted(_want_ax):
             bat.add("add", "chain", "inet", SMART_NFT_TABLE, c)
             bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)
-        _gone_ax = [c for c in _here_ax if not arr or (c != "sa" and c not in want_pa)]
+        _gone_ax = [c for c in _here_ax if c not in _want_ax]
         for c in _gone_ax:                                     # ALL flushed before ANY is deleted: `sa` jumps to `pa<i>`, and
             bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)   # deleting one a rule still names refuses the whole batch
         for c in _gone_ax:
@@ -6262,7 +6285,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                         emit(*xm, *_new, *pmi, "ip", "daddr", "@" + snm, fin)
                     elif a2 == "block" and not queue:          # Hybrid SNI: a shadow holds names only — swg-sni decides (D1)
                         emit(*xm, *pmi, "ip", "daddr", "@" + snm, *(["ip", "daddr", "!=", "@dnsok"] if sh in dns_blk else []),   # Force-DNS (D2)
-                             *(["jump", "pb%d" % i] if i in pb_of else (["counter"] if str(c2).startswith("blku") else []) + ["drop"]))
+                             *(["jump", "pb%d" % i] if i in pb_of else (["counter", "name", "c_bk"] if str(c2).startswith("blku") else []) + ["drop"]))
 
         for i, w in enumerate(want):
             S, cat, act, T = w[:4]
@@ -6270,7 +6293,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             if len(w) > 4:                                     # a per-person entry: its row's ONE jump, then its rules inside the row,
                 k = _row_of[i]                                 # each ending in `accept` — in a jumped chain that ends this table's
                 if rows[k]["start"] == i:                      # walk exactly as `return` does in the base chain (policy accept), so
-                    _add("iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(w[4]), "jump", "sr%d" % k)   # first match holds
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, disp[S],   # first match holds. The jump names no S: it is written
+                            "iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(w[4]), "jump", "sr%d" % k)   # to S's chain (D2)
                 for snm, xc in _rsets(cat, act):
                     _row = ("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % k)
                     if act == "exit":
@@ -6295,8 +6319,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 elif act == "direct":
                     _add("ip", "saddr", S, *_new, *pm, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
                 elif act == "block":
-                    if str(cat).startswith("blku"):    # content-block union → aggregate COUNTER (growing "blocked" metric); zero
-                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *xc, "counter", "drop")   # CPU (only ticks on dropped pkts)
+                    if str(cat).startswith("blku"):    # content-block union → the one named COUNTER c_bk (growing "blocked" metric,
+                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *xc, "counter", "name", "c_bk", "drop")   # read by name, D2); ticks only on drops
                     else:                                      # …or to its pin-mode chain (see pb_of)
                         _add("ip", "saddr", S, *pm, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
             _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")
@@ -6335,6 +6359,15 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 _add("ip", "saddr", S, *_sni_queue())
             if arr:                                             # …and an arrival's, beside them — the parity §3.6 promises
                 _add("iifname", "@lg", "ip", "saddr", "@ar", "ip", "daddr", "!=", "@cln", *_sni_queue())
+        if disp:                                                # THE DISPATCH (D2), last: after the arrivals' rules, which name no
+            _hs = _collapse4(subnets)                           # local subnet. Replies, outer packets and transit stop at one set
+            if len(want_disp) > 1:                              # lookup; a client packet reads one prefix a subnet to its chain
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", "!=", "{ " + ", ".join(_hs) + " }", "return")
+                for S in subnets:
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S, "goto", disp[S])
+            else:                                               # one chain: a single subnet, or overlapping ones. No `{ }` ever
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting",   # (a batch with one is refused whole): a list
+                        *(["ip", "saddr", "{ " + ", ".join(_hs) + " }"] if _hs else []), "goto", "pa100000")   # with none is no IPv4
         # IPv6 fail-closed: the marking above is IPv4-only, so a dual-stack client's v6 traffic would bypass smart
         # routing and leak out the entry node's WAN. DROP forwarded IPv6 on each smart interface (both directions).
         chains_now = re.findall(r"chain (\S+) {", body)
@@ -6504,7 +6537,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # Same shape and the same reason as the set reap directly above: individual calls, so a counter still
     # referenced by a chain fails on its own and is retried, instead of aborting the rebuild.
     wanted_cn = {"c_uncat_up", "c_uncat_dn"} | {_smart_countername(c) + "_" + d
-                                                for c in cats if c != "all" for d in ("up", "dn")}
+                                                for c in cats if c != "all" for d in ("up", "dn")} | ({"c_bk"} if bk else set())
     for cn in re.findall(r"counter (\S+) {", body):
         if cn.startswith("c_") and cn not in wanted_cn:
             if run(["nft", "delete", "counter", "inet", SMART_NFT_TABLE, cn]).returncode == 0:
@@ -14121,22 +14154,19 @@ def _block_activity():
             pk = re.search(r"counter packets (\d+)", ln)
             if sub and pk:
                 out.setdefault(sub.group(1), {})["mech"] = int(pk.group(1))
-    with contextlib.suppress(Exception):                          # blocked: cumulative packets dropped to a content-block set,
-        _bsw = {x[0] for c2, lst in ((_SHADOW["v"] or {}).get("by_target") or {}).items() if str(c2).startswith("blku") for x in lst}
-        # Read only where there is something to count: a table whose structure holds no Block set (and no Block list's shadow)
-        # has no line below to match — its rule counters were read every pass for nothing (CPU-PLAN B4).
-        _st = _smart_table()                                       # (a render that failed says nothing: read as before)
-        pre = (_nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"], structural=False).stdout or ""
-               if (_bsw or _st["rc"] != 0 or "blku" in _st["out"]) else "")   # summed per source subnet
-        for ln in pre.splitlines():                               # rule: ip saddr <sub> ip daddr @cat_blku_… counter packets N … drop
-            _m = re.search(r"@catl?_(sw_[0-9a-f]{10})\b", ln) if _bsw else None   # …or a block list's shadow (_smart_shadows)
-            if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:
-                continue
-            sub = re.search(r"ip saddr (" + IP + r")", ln)
-            pk = re.search(r"counter packets (\d+)", ln)
-            if sub and pk:                                        # cat_ AND catl_ (Hybrid) drop rules both count → sum per subnet
-                out.setdefault(sub.group(1), {})
-                out[sub.group(1)]["blocked"] = out[sub.group(1)].get("blocked", 0) + int(pk.group(1))
+    with contextlib.suppress(Exception):                          # blocked: cumulative packets dropped to a content-block set or a
+        # block list's shadow — every such rule counts into the one named counter `c_bk` (DATAPATH D2: the rules sit in each
+        # subnet's own chain, and listing a chain every pass for its anonymous counters cost ~12 ms). Node-wide, under "*",
+        # as the refusals by name below: the panel only sums `blocked` across keys. Read only where the table holds it
+        # (CPU-PLAN B4) — and where the render failed, which says nothing about it: asked over netlink all the same.
+        _st = _smart_table()
+        if _st["rc"] != 0 or "counter c_bk {" in _st["out"]:
+            nl = _nft_counters(SMART_NFT_TABLE)                   # one netlink dump (B5a); nft only when the render worked
+            if nl is None and _st["rc"] == 0:
+                cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", SMART_NFT_TABLE]).stdout or "{}")
+                nl = {o["counter"].get("name"): (int(o["counter"].get("packets", 0)), 0) for o in cj.get("nftables", []) if "counter" in o}
+            if nl and "c_bk" in nl:
+                out.setdefault("*", {})["blocked"] = out.get("*", {}).get("blocked", 0) + int(nl["c_bk"][0])
     with contextlib.suppress(Exception):                          # …and connections refused BY NAME (D1/D3): the one forward rule that
         fwd = _smart_forward()                                    # resets SNI_BLOCK_MARK. It has no
         for ln in fwd.splitlines():                               # source subnet (the mark says who was refused), so it is reported

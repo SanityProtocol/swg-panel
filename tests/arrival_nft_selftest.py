@@ -68,8 +68,8 @@ PLANTS = {
     "t35": ('''                            _sa(*gd, *_new, "ip", "daddr", "@" + snm, *mk, "accept")''',
             '''                            _sa(*gd, "ip", "daddr", "@" + snm, *mk, "accept")'''),
     "t2": ('''if re.fullmatch(r"sr\\d+|pb\\d+|sa|pa\\d+", c))):''', '''if re.fullmatch(r"sr\\d+|pb\\d+", c))):'''),
-    "reap": ('''        _gone_ax = [c for c in _here_ax if not arr or (c != "sa" and c not in want_pa)]''',
-             '''        _gone_ax = [c for c in _here_ax if arr and c != "sa" and c not in want_pa]'''),
+    "reap": ('''        _gone_ax = [c for c in _here_ax if c not in _want_ax]''',
+             '''        _gone_ax = [c for c in _here_ax if arr and c not in _want_ax]'''),
     "t34": ('''    for c in sorted({e["category"] for e in arr_r}):
         rules.append(["-A", CHAIN, *_asrc, "-m", "set", "--match-set", _xts_setname(c), "dst", "-j", "RETURN"])''', ''),   # arr_r: 498e465
     "kog": ('''        gd = ["!", "-i", e["via_iface"]]''', '''        gd = []'''),

@@ -303,8 +303,14 @@ else:
         {"subnet": S, "category": "custom_y", "action": "block"}]
     # The destination counters (catcount, catany) are 1.8.12 DP1's own shape — one subnet set and a sampling gate — and
     # tests/datapath_budget_selftest.py holds them; ports never reach them, so they are set aside here on both sides.
-    _nocnt = lambda s: "\n".join(l for l in str(s).split("\n")
-                                 if not re.match(r"add rule inet swg_smart (catcount|catany) ", l))
+    # The dispatch (DP2, D2) is 1.8.12's too: each subnet's rules in a chain of its own, reached from `prerouting` by a goto.
+    # Read back to the base node's shape — the chain's rules into `prerouting`, in the order they were written, its own lines
+    # set aside — so the rest still compares line for line, the signature included (the layout is not signed: D2's drift
+    # gate rebuilds a table without it).
+    _nocnt = lambda s: "\n".join(re.sub(r"^add rule inet swg_smart pa1\d{5} ", "add rule inet swg_smart prerouting ", l)
+                                 for l in str(s).split("\n")
+                                 if not re.match(r"add rule inet swg_smart (catcount|catany) |(add|flush) chain inet swg_smart pa1\d{5}$"
+                                                 r"|add rule inet swg_smart prerouting .*\bgoto pa1\d{5}$", l))
     for label, pin, queue in MODES:
         out = []
         for mod in (N, H):

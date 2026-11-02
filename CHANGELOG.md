@@ -19,6 +19,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   exact, as before. Per-person traffic, the traffic totals and Top talkers are not affected: they never came from these
   rules. Day, week and month views of a destination or an exit now count a quiet minute as zero, so a short burst no
   longer reads as if it had lasted the whole hour or day.
+- **Routing rules cost a packet a fraction of what they did.** A node with routing rules made every packet it forwarded
+  read the rules of every interface, even a reply from the internet that none of them could match: about 235 rules a
+  packet on a node with 11 client subnets. A packet now reads only the rules of the subnet it comes from, and a reply,
+  the tunnels' own packets and traffic passing through read one. What each rule decides is unchanged, and so is its
+  order.
 
 ## [1.8.11-beta] — 2026-11-01
 

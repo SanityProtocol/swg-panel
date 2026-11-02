@@ -121,7 +121,7 @@ def npass(K, entries, shadows=None, spare=True):
 
 
 def rules(K, chain="prerouting"):
-    return [r["text"] for r in ((K.m.tables.get(T) or {}).get("chains", {}).get(chain) or {}).get("rules", [])]
+    return K.m.flat(T, chain)                                   # through the subnets' dispatch chains (DATAPATH D2)
 
 
 def sets(K):
@@ -140,7 +140,8 @@ r = [npass(K, ENTRIES) for _ in range(3)]
 check("three passes, no error, nothing refused", not any(x["errors"] for x in r) and not K.refused, ([x["errors"] for x in r], K.refused[:2]))
 pre = rules(K)
 check("the union's drop spares `dnsok` (and still counts)",
-      any("@cat_blku_host_4fe45fc4b8fa ip daddr != @dnsok counter drop" in t for t in pre), [t for t in pre if "blku" in t])
+      any("@cat_blku_host_4fe45fc4b8fa ip daddr != @dnsok counter name c_bk drop" in t for t in pre),   # c_bk: DATAPATH D2
+      [t for t in pre if "blku" in t])
 check("the Block with both halves: the static half whole (`cat_` minus `catd_`) …",
       any("@cat_custom_dual ip daddr != @catd_custom_dual drop" in t for t in pre), [t for t in pre if "dual" in t])
 check("…and its names' half spares `dnsok`", any("@catd_custom_dual ip daddr != @dnsok drop" in t for t in pre), [t for t in pre if "dual" in t])

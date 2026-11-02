@@ -10,7 +10,7 @@ both (2026-10-10): the same answers as nft, one process instead of one a pass.
       not with the id; of a table that is not there, the absence is kept until the id moves.
   [3] Only nft's "No such file or directory" is absence: another error, a timeout, nft missing are never kept.
   [4] The callers: the turn capture reads its table and @ports once while the id holds and again after it moves, and
-      @peers (the datapath's) every pass; _block_activity reads a present chain every pass and an absent one once.
+      @peers (the datapath's) every pass; _block_activity reads an absent table's chain once (and lists no swg_smart chain).
   [5] A node with no smart table renders `swg_smart` once, not every pass, and reports the same thing.
 
 Run: python3 tests/nft_kept_selftest.py   (0 = pass)
@@ -168,8 +168,9 @@ CALLS.clear()
 for _ in range(3):
     N._LOOP["n"] += 1
     N._block_activity()
-check("[4] _block_activity: a present chain read every pass, an absent table's chain once",
-      n("nft list chain inet swg_smart prerouting") == 3 and n("nft list chain inet swg_relay inp") == 1, CALLS)
+check("[4] _block_activity: an absent table's chain read once — and no chain of swg_smart at all (its Block drops are one "
+      "named counter since DATAPATH D2, read by name: tests/smart_table_reuse_selftest.py [7])",
+      n("nft list chain inet swg_smart prerouting") == 0 and n("nft list chain inet swg_relay inp") == 1, CALLS)
 
 # ── [5] no smart table ────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] a node with no smart table")
