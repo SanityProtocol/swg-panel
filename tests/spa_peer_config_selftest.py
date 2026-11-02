@@ -23,7 +23,7 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [9] a locked vault: the sheet has the unlock, next to the warning that stays true. No mark; Enter in its password field unlocks,
       the open sheet gets its config back, and the password was no edit of the peer. That Enter is the unlock's alone: an edit
       waiting on the sheet stays waiting, whichever password it was given
-  [10] where an unlock can't bring the config back the sheet offers none: no vault, store_configs off
+  [10] the unlock follows the vault, not the setting: no vault, none; store_configs off, a config kept from before still opens
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
@@ -41,7 +41,7 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-enter    Enter in the password is the sheet's Enter too                              → RED [9]
        --perturb-unlocked the unlock is offered on an open vault                                      → RED [5]
        --perturb-novault  the unlock is offered with no vault                                         → RED [10]
-       --perturb-need     the unlock is offered with store_configs off                                → RED [10]
+       --perturb-need     the unlock is hidden with store_configs off                                 → RED [10]
 """
 import base64, hashlib, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -58,7 +58,7 @@ _MISSW = 'const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, a
 _MK = '  const mk = pubkey + "|" + node + "|" + iface;\n  if (_configMissFresh(mk))'
 _READ = '  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);\n' + _MK
 _ADDR = 'const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v'
-_DOOR = '${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel} need=${Store.storeConfigs}/><div class="notice warn">'
+_DOOR = '${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn">'
 _GONE = "if (need === false || ready || subSKCached() || !exists) return null;"
 PERTURBS = {
     "orig": [("js/crypto.js", _MK, _READ), ("js/crypto.js", _MISS, _MISSW)],
@@ -77,7 +77,7 @@ PERTURBS = {
     "unlocked": [("js/peer-ui.js", "useEffect(() => { if (subSKCached()) { setReady(true); return; }\n    let ok", "useEffect(() => { let ok"),
                  ("js/peer-ui.js", _GONE, "if (need === false || !exists) return null;")],
     "novault": [("js/peer-ui.js", _GONE, "if (need === false || ready || subSKCached() || exists === null) return null;")],
-    "need": [("js/sheets-crud.js", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>", "<${VaultUnlockPanel}/>")],
+    "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
 
@@ -282,6 +282,12 @@ try:
     SAVE_ON = "(() => { const sv = [...%s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Save'); return !!sv && !sv.disabled; })()" % SHEET
     def watch_toasts():
         tab.ev("window.__toasts = []; new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => window.__toasts.push(n.textContent)))).observe(document.querySelector('#toasts'), {childList: true}); 1")
+    ENTER = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}
+    def unlock(password):
+        tab.ev("(() => { const i = %s.querySelector('.unlockpanel input[type=password]'); i.focus(); i.select(); })()" % SHEET)
+        br.send("Input.insertText", {"text": password}, session=tab.s)
+        br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyDown", text="\r"), session=tab.s)
+        br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
     def close_all():
         ev("ui", "M.closeAllModals(); return 1;")
     def open_edit(pid, stay=False):
@@ -451,17 +457,11 @@ try:
     print("\n[9] a locked vault")
     with guard("[9]"):
         uid, pid = new_peer("locked", ["awg1", "csqtt25"])
-        ENTER = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}
         def locked_sheet():
             reload()
             ev("store", "C.lockVault(); return 1;")
             open_edit(pid, stay=True)
             until("!!%s.querySelector('.unlockpanel')" % SHEET, 10, "the unlock on the sheet")
-        def unlock(password):
-            tab.ev("(() => { const i = %s.querySelector('.unlockpanel input[type=password]'); i.focus(); i.select(); })()" % SHEET)
-            br.send("Input.insertText", {"text": password}, session=tab.s)
-            br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyDown", text="\r"), session=tab.s)
-            br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
         locked_sheet()
         st = sheet()
         check("[9] the sheet has the unlock, next to the warning, and no QR yet", st["door"] and st["banner"] and not st["qr"], st)
@@ -488,7 +488,7 @@ try:
         check("[9] the right one unlocks, and saves nothing either", good(st) and st["save"] and roster()[pid].get("title") == title, [st, tab.ev("window.__toasts")])
         close_all()
 
-    print("\n[10] where an unlock can't bring the config back")
+    print("\n[10] the unlock follows the vault, not the setting")
     with guard("[10]"):
         VAULT = D + "/state/subs/vault.json"
         uid, pid = new_peer("nodoor", ["awg1"])
@@ -505,8 +505,12 @@ try:
         ev("store", "C.lockVault(); return 1;")
         open_edit(pid, stay=True)
         st = settled()
+        check("[10] store_configs off, a config kept from before: the sheet has the unlock", bool(st) and st["banner"] and st["door"], st)
+        unlock(PW)
+        until("!!%s.querySelector('.topt-gear')" % SHEET, 15, "the kept config after the unlock")
+        st = sheet()
+        check("[10] …and the unlock brings it back", good(st) and not st["door"], st)
         close_all()
-        check("[10] store_configs off: the warning alone", bool(st) and st["banner"] and not st["door"], st)
 except Done:
     pass
 finally:
