@@ -90,8 +90,9 @@ PLANTS = {
     "live644": ('atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o640)',
                 'atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)'),
     # [10]: the quiet minute skipped again, as before 1.8.12
-    "quietcat": ("if (rup or rdn or (nid, cat) in clast_w) and", "if (rup or rdn) and"),
-    "quietexit": ("if (_xu or _xn or (nid, _xd) in xlast_w) and", "if (_xu or _xn) and"),
+    "quietcat": ("rup or rdn or (nid, cat) in clast_w or os.path.exists(cat_rrd_path(stats_dir, nid, cat))):", "rup or rdn):"),
+    "quietexit": ("_xu or _xn or (nid, _xd) in xlast_w or os.path.exists(exit_rrd_path(stats_dir, nid, _xd))):", "_xu or _xn):"),
+    "restartzero": ("or os.path.exists(cat_rrd_path(stats_dir, nid, cat))):", "):"),
 }
 TMP = tempfile.mkdtemp(prefix="snap-shape-")
 atexit.register(shutil.rmtree, TMP, True)          # every exit, an early one too
@@ -643,6 +644,16 @@ _xw = [(u, n) for f, u, n in _W10 if f.startswith("exitd-") and "tun0" in f]
 check("[10] a category that moved bytes: its ring gets the reading, then a 0 for each quiet minute", _cw == [(5000, 700), (0, 0), (0, 0)], _W10)
 check("[10] …an exit the same", _xw == [(5000, 700), (0, 0), (0, 0)], _W10)
 check("[10] a category and an exit that never moved a byte get no ring", not any("telegram" in f or "tun9" in f for f, _, _ in _W10), _W10)
+_d10 = _w9_fresh()                                     # a restarted panel: the throttle maps are empty, the ring file is there
+open(P.cat_rrd_path(_d10["stats_dir"], _Q9, "google"), "wb").close()
+_W10, P.hrrd_update = [], (lambda path, ts, M: _W10.append((os.path.basename(path), M[3], M[4])))
+try:
+    _s10 = copy.deepcopy(_BASE); _s10["cat_rate"] = {"google": {"up": 0, "dn": 0}}
+    P.Handler._node_sync_history(_Hdr(), _Q9, _nodes10.get(_Q9), _nodes10, _s10)
+finally:
+    P.hrrd_update = _hu10
+check("[10] after a panel restart a quiet category with a ring on disk still gets its 0", any(f.startswith("cat-") and "google" in f
+      and (u, n) == (0, 0) for f, u, n in _W10), _W10)
 
 print()
 if PERTURB:

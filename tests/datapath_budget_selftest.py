@@ -35,6 +35,8 @@ Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
      rebuild1   a rebuild writes the gate at N = 1 under a steered N                             [5]
      steady1    a reconcile rebuilds a chain whose gate is steered                               [7]
      refusecache  a refused iptables gate is asked again every pass                              [7]
+     timeoutno  an iptables timeout holds the gate off for an hour                               [7]
+     staleseen  build_snapshot leaves an earlier snapshot's gate reads for the steer             [7]
      cumscale   sample_inet multiplies the cumulative value instead of the delta                 [6]
      gatebytes  read_inet_bytes counts the gate's bytes as traffic                               [6]
 """
@@ -72,6 +74,8 @@ PLANTS = {
     "rebuild1": ("[5]", '"catcount", *_nft_gate_args(_STEER.get("n", 1)))', '"catcount", *_nft_gate_args(1))'),
     "steady1": ("[7]", "    if same and gates == 1 and _ipt_gate_n(text):", "    if same and gates == 1 and _ipt_gate_n(text) == 1:"),
     "refusecache": ("[7]", "    if t is not None and time.monotonic() - t < 3600:\n        return", "    if False:\n        return"),
+    "timeoutno": ("[7]", "    if r.returncode == 124:                         # a timeout is no answer", "    if False:                         # a timeout is no answer"),
+    "staleseen": ("[7]", "    _GATE_SEEN.clear()                          # only what THIS snapshot", "    pass                          # only what THIS snapshot"),
     "cumscale": ("[6]", '        _INET["rate"] = {"up": max(0.0, (cur["up"] - prev["up"]) * k),',
                  '        _INET["rate"] = {"up": max(0.0, (cur["up"] * (cur.get("g") or 1) - prev["up"]) / dt),'),
     "gatebytes": ("[6]", '        if c.group(2).startswith("__"):               # the sampling gate (D1): its bytes are the packets it skipped\n'
@@ -519,6 +523,17 @@ CH["calls"].clear()
 N.reconcile_inet_chain(CFG)
 check("…and asked again an hour later", len([c for c in CH["calls"] if "statistic" in c]) == 1, CH["calls"][-2:])
 CH["nostat"] = False
+N._IPT_GATE_NO.clear()
+_r7 = N.run
+N.run = lambda a, input_text=None, **kw: CP(a, 124, "", "") if "statistic" in [str(x) for x in a] else _r7(a, input_text=input_text, **kw)
+CH["SWG_INET"] = [list(p) for p in pairs]
+N.reconcile_inet_chain(CFG)
+check("an iptables that times out is no answer: not held off for an hour", "SWG_INET" not in N._IPT_GATE_NO, N._IPT_GATE_NO)
+N.run = _r7
+_bs = open(path, encoding="utf-8").read()
+_bs = _bs[_bs.index("\ndef build_snapshot("):]
+check("the steer acts only on this snapshot's reads: build_snapshot clears them before the first sampler",
+      -1 < _bs.find("_GATE_SEEN.clear()") < _bs.find("sample_inet(node_cfg, now)"), _bs.find("_GATE_SEEN.clear()"))
 
 print()
 if PLANT:

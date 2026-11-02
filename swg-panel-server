@@ -34263,8 +34263,10 @@ class Handler(BaseHTTPRequestHandler):
                 rup = max(0, int(v.get("up") or 0)); rdn = max(0, int(v.get("dn") or 0))
                 # lazy: only categories moving bytes get a ring — but once one has, a quiet minute is written as 0. A ranged
                 # bucket averages the minutes written: skipping the zeros read a burst (or a sampled rate, 0 or 1 packet in N
-                # a 5 s window since node D1) as if it had lasted the whole bucket.
-                if (rup or rdn or (nid, cat) in clast_w) and now_i - clast_w.get((nid, cat), 0) >= MESH_THROTTLE_S:
+                # a 5 s window since node D1) as if it had lasted the whole bucket. "Has a ring" is the file, not this
+                # process's memory: a restarted panel keeps writing the zeros (a stat, at most once a sync, for a quiet one).
+                if now_i - clast_w.get((nid, cat), 0) >= MESH_THROTTLE_S and (
+                        rup or rdn or (nid, cat) in clast_w or os.path.exists(cat_rrd_path(stats_dir, nid, cat))):
                     cM = [0] * HRRD_NM; cM[3] = rup; cM[4] = rdn                             # up→rx slot, dn→tx slot
                     with contextlib.suppress(Exception):
                         hrrd_update(cat_rrd_path(stats_dir, nid, cat), now_i, cM)
@@ -34286,7 +34288,8 @@ class Handler(BaseHTTPRequestHandler):
             # already settled, and the kind that rots: the guard stays right while the sanitiser changes.
             for _xd, _xv in (snap.get("exit_rate") or {}).items():
                 _xu = int(_xv.get("up") or 0); _xn = int(_xv.get("down") or 0)
-                if (_xu or _xn or (nid, _xd) in xlast_w) and now_i - xlast_w.get((nid, _xd), 0) >= MESH_THROTTLE_S:   # a quiet minute is 0, as above
+                if now_i - xlast_w.get((nid, _xd), 0) >= MESH_THROTTLE_S and (   # a quiet minute is 0, as above
+                        _xu or _xn or (nid, _xd) in xlast_w or os.path.exists(exit_rrd_path(stats_dir, nid, _xd))):
                     _xM = [0] * HRRD_NM; _xM[3] = _xu; _xM[4] = _xn                  # up→rx slot, down→tx slot
                     with contextlib.suppress(Exception):
                         hrrd_update(exit_rrd_path(stats_dir, nid, _xd), now_i, _xM)

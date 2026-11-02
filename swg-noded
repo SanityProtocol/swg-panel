@@ -6338,7 +6338,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         # ~106 µs of a 157 µs packet. The subnets are ONE anonymous set now (8·C + 4 rules; the counters were never per
         # subnet, so no number moves), and each chain opens with a sampling gate, `numgen random mod N != 0 return`:
         # N = 1 below ~1000 packets/s (exact, as before), above it a power of two steered by _stats_steer, and the
-        # readers multiply each DELTA by the N they read off the gate. A rebuild writes the gate at N = 1.
+        # readers multiply each DELTA by the N they read off the gate. A rebuild writes the gate at the steered N.
         subnets = _collapse4(e["subnet"] for e in smart_e)        # every client subnet under smart routing (incl catch-all)
         # In Hybrid-SNI a category's dsts can live ONLY in its learned set (catl_) with an empty geoip set (cat_),
         # so also count any ROUTED category when queueing — else swg-sni-learned traffic falls through to c_uncat.
@@ -15614,6 +15614,8 @@ def _ipt_gate_put(chain, op):
     if r.returncode == 0:
         _IPT_GATE_NO.pop(chain, None)
         return
+    if r.returncode == 124:                         # a timeout is no answer: asked again on the next reconcile
+        return
     if t is None:
         log(LOG_WARNING, "stats: iptables refused the sampling gate of %s (no xt_statistic?) — it counts every packet: %s",
             chain, (r.stderr or "").strip()[:200])
@@ -18982,6 +18984,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap["csqtt_candidates"] = csqtt_candidates()           # FOREIGN csqtt servers on the box → panel adoption candidates (report-only, untouched)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
+    _GATE_SEEN.clear()                          # only what THIS snapshot's samplers read: one that raised leaves nothing for the steer
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
     snap["exit_rate"] = sample_exit()           # …and that same internet split per EXIT DEVICE (§5.3, decisions 13/14). Straight after: it reads what that call refreshed
     snap["cat_rate"] = sample_cats()            # LIVE per-category throughput {cat:{up,dn}} B/s (latest push, delta of the nft counters)

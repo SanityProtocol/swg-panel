@@ -58,9 +58,10 @@ class R:
 
 
 class Iptables:
-    """Just enough of iptables to hold rules: -N/-F/-A on one chain, -S to render, -S -v (and iptables-save -c) to
-    render with counters — `-S -v` as iptables-nft prints it, the `-c <pkts> <bytes>` pair last. Byte counts come from
-    `self.bytes[comment]`, so a test can put traffic on one rule and see where it surfaces."""
+    """Just enough of iptables to hold rules: -N/-F/-A/-I/-R on one chain, -S to render, -S -v (and iptables-save -c) to
+    render with counters — `-S -v` as iptables-nft prints it, the `-c <pkts> <bytes>` pair after the matches and before
+    a `-j` target (the sampling gate's RETURN). Byte counts come from `self.bytes[comment]`, so a test can put traffic
+    on one rule and see where it surfaces."""
 
     def __init__(self):
         self.exists = False
@@ -78,6 +79,13 @@ class Iptables:
         for i, a in enumerate(argv):
             out.append('"%s"' % a if i and argv[i - 1] == "--comment" else a)
         return "-A " + CHAIN + " " + " ".join(out)
+
+    def _render_v(self, argv):
+        cnt = "-c %d %d" % self.bytes.get(self._comment(argv), (0, 0))
+        if "-j" in argv:                                     # iptables-nft: `… -c <pkts> <bytes> -j RETURN`
+            j = argv.index("-j")
+            return self._render(argv[:j]) + " " + cnt + " " + " ".join(argv[j:])
+        return self._render(argv) + " " + cnt
 
     def run(self, cmd, **kw):
         c = list(cmd)
@@ -104,11 +112,16 @@ class Iptables:
             if "-v" in c:
                 if not self.exists:
                     return R(1)
-                return R(0, "-N %s\n" % CHAIN + "".join("%s -c %d %d\n" % ((self._render(a),) + self.bytes.get(self._comment(a), (0, 0)))
-                                                        for a in self.rules))
+                return R(0, "-N %s\n" % CHAIN + "".join(self._render_v(a) + "\n" for a in self.rules))
             return R(0, "\n".join(self._render(a) for a in self.rules))
         if "-I" in c:
-            self.jumped = True; return R(0)
+            if c[c.index("-I") + 1] == "FORWARD":
+                self.jumped = True; return R(0)
+            i = c.index("-I")
+            self.rules.insert(int(c[i + 2]) - 1, c[i + 3:]); return R(0)
+        if "-R" in c:
+            i = c.index("-R")
+            self.rules[int(c[i + 2]) - 1] = c[i + 3:]; return R(0)
         if "-F" in c:
             self.rules = []; self.flushes += 1; return R(0)
         if "-A" in c:
@@ -153,6 +166,23 @@ inout = lambda a: (a[a.index("-i") + 1], a[a.index("-o") + 1]) if "-i" in a and 
 check("up rule is iface -> exit device", inout(rule("swg-inet-up:wg1@tun-lab0")) == ("wg1", "tun-lab0"))
 check("dn rule is exit device -> iface", inout(rule("swg-inet-dn:wg1@tun-lab0")) == ("tun-lab0", "wg1"))
 check("counting only — no target", not any("-j" in a for a in pairs()))
+if not PERTURB and not P_READER:                    # the D1 gate through this fake (its -I / -R / `-c … -j` order are iptables-nft's)
+    _gate, _pr, _fl = IPT.rules[0], [list(a) for a in pairs()], IPT.flushes
+    IPT.rules = [list(a) for a in _pr]                # as 1.8.11 left it: pairs, no gate
+    N._IPT_GATE_NO.clear()
+    N.reconcile_inet_chain(NODE_CFG, {"tun-lab0"})
+    check("a 1.8.11 chain: the gate inserted on top by -I, the pairs kept (no flush)",
+          IPT.flushes == _fl and pairs() == _pr and Iptables._comment(IPT.rules[0]) == "swg-inet-up:__gate", IPT.rules[:1])
+    IPT.bytes = {"swg-inet-up:wg1": (3, 300), "swg-inet-up:__gate": (900, 90000)}
+    N.run(["iptables", "-t", TABLE, "-R", CHAIN, "1"] + N._ipt_gate_args("swg-inet-up:__gate", 64))
+    _g = N.read_inet_bytes()
+    check("…the steer's -R 1 takes; the reader takes N = 64 off it with the counters before -j, and not the gate's bytes",
+          _g and _g.get("g") == 64 and _g["up"] == 300 and pairs() == _pr, _g)
+    IPT.bytes = {}
+    N.reconcile_inet_chain(NODE_CFG, {"tun-lab0"})
+    check("…and a steered gate stands at the next reconcile", IPT.flushes == _fl and N._ipt_gate_n("\n".join(
+        IPT._render(a) for a in IPT.rules)) == 64, IPT.rules[:1])
+    IPT.rules = [_gate] + [list(a) for a in _pr]
 
 print("\n[2] devices that must NOT get a second pair")
 IPT.rules = []; IPT.exists = False
