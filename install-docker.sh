@@ -1328,6 +1328,10 @@ PYHOST
     [ "$TURN_SOCK_BUF_CHANGED" = 1 ] && ok "UDP socket-buffer caps raised on the host for turn-family listeners (/etc/sysctl.d/99-swg-turn.conf)"
     [ "$TURN_SOCK_BUF_LOW" = 1 ] && warn "UDP socket-buffer caps could not be raised on this host (net.core.{r,w}mem_max) — csqtt handshakes may fail under load"
   fi
+  if $DRYRUN; then echo "    [skip] raise the host's conntrack table (/etc/sysctl.d/99-swg-conntrack.conf + modules-load.d)"
+  else conntrack_size_host
+    [ "$CT_SIZE_CHANGED" = 1 ] && ok "conntrack table raised on the host (/etc/sysctl.d/99-swg-conntrack.conf)"
+  fi
 
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   # Approach B: turn-proxies are managed from the PANEL (they run as sibling swg-turn-* containers). No prompt —

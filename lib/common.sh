@@ -3127,6 +3127,37 @@ net.core.$k = $want"; done
   done
   return 0
 }
+conntrack_size_host(){   # a Docker node's conntrack table, raised and persisted on the HOST → 0; CT_SIZE_CHANGED=1 when it rose
+  # A full table refuses NEW connections for every user on the node. swg-noded raises it itself on bare metal (SCALE-PLAN
+  # N2, conntrack_size); a container cannot — /proc/sys is read-only there and the table is the host's. Sized as noded
+  # does: 65,536 entries a GB of RAM, buckets a quarter, only ever raised (a higher value set now is left alone, and so is
+  # its drop-in). ⚠️ The module goes in modules-load.d too: without it loaded at boot systemd-sysctl drops the
+  # net.netfilter.* keys silently. Never fails: both callers run set -e.
+  local f=/etc/sysctl.d/99-swg-conntrack.conf m=/etc/modules-load.d/swg-conntrack.conf kb want cur bk bw body
+  CT_SIZE_CHANGED=0
+  kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)" || kb=""
+  case "$kb" in ''|*[!0-9]*) return 0;; esac
+  want=$(( 65536 * ((kb + 1048575) / 1048576) ))
+  modprobe nf_conntrack >/dev/null 2>&1 || true
+  cur="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)" || cur=""
+  case "$cur" in ''|*[!0-9]*) return 0;; esac             # no conntrack here: nothing to size, nothing to persist
+  [ "$cur" -gt "$want" ] && want="$cur"                   # never lower: the drop-in holds the larger value
+  bw=$(( want / 4 )); bk="$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null)" || bk=""
+  case "$bk" in ''|*[!0-9]*) ;; *) [ "$bk" -gt "$bw" ] && bw="$bk";; esac
+  body="# swg-panel: conntrack table for this Docker node (a container cannot size it). Written by install-docker.sh / update.sh.
+net.netfilter.nf_conntrack_buckets = $bw
+net.netfilter.nf_conntrack_max = $want"
+  if [ "$(cat "$f" 2>/dev/null)" != "$body" ]; then
+    { mkdir -p /etc/sysctl.d && printf '%s\n' "$body" > "$f.tmp" && mv -f "$f.tmp" "$f"; } 2>/dev/null || rm -f "$f.tmp" 2>/dev/null || true
+  fi
+  [ "$(cat "$m" 2>/dev/null)" = nf_conntrack ] || { mkdir -p /etc/modules-load.d && echo nf_conntrack > "$m"; } 2>/dev/null || true
+  if [ "$cur" -lt "$want" ]; then
+    sysctl -q -w "net.netfilter.nf_conntrack_buckets=$bw" >/dev/null 2>&1 || true
+    sysctl -q -w "net.netfilter.nf_conntrack_max=$want" >/dev/null 2>&1 || true
+    [ "$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)" -ge "$want" ] && CT_SIZE_CHANGED=1
+  fi
+  return 0
+}
 
 # Docker hosts: their timer units start a oneshot every 10 s (swg-netctl-docker) and 30 s (swg-update), and systemd's
 # Starting/Finished lines about them were most of a box's journal (P0 T1). There is no swg-netctl here to follow the

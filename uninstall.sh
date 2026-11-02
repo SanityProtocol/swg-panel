@@ -1388,6 +1388,7 @@ rm_node_netobjects(){
   # 99-swg-forward.conf is the BARE installer's name; install-docker.sh writes 99-swg-node.conf instead, so the
   # docker drop-in was never removed. Both are ours and both are unconditionally rewritten by a re-install.
   rmrf /etc/sysctl.d/99-swg-forward.conf /etc/sysctl.d/99-swg-node.conf /etc/sysctl.d/99-swg-turn.conf   # + swg-noded's turn socket caps (DEB-2)
+  rmrf /etc/sysctl.d/99-swg-conntrack.conf /etc/modules-load.d/swg-conntrack.conf   # a Docker node's conntrack size (SCALE-PLAN N2)
   # …and the value they set stays LIVE until a reboot: route_localnet=1 (Force-DNS's DNAT to the node's own resolver — those
   # files, and swg-noded at run time) lets hosts on this box's network reach its 127.0.0.1 services (1.8.8 deferred #3e).
   # Turned off, unless a sysctl file that is not swg's still asks for it.

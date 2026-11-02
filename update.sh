@@ -2066,6 +2066,8 @@ if ! $NODE_ONLY && docker_stack_live; then
       turn_sock_buf_host   # the turn-family listeners' socket-buffer caps: the container cannot raise them either
       [ "$TURN_SOCK_BUF_CHANGED" = 1 ] && note "UDP socket-buffer caps raised on the host for turn-family listeners (99-swg-turn.conf; servers pick them up on their next restart)"
       [ "$TURN_SOCK_BUF_LOW" = 1 ] && note "UDP socket-buffer caps could not be raised on this host (net.core.{r,w}mem_max) — csqtt handshakes may fail under load"
+      conntrack_size_host  # the conntrack table: the container cannot size it (bare metal: swg-noded does)
+      [ "$CT_SIZE_CHANGED" = 1 ] && note "conntrack table raised on the host (99-swg-conntrack.conf)"
     fi ;;
   esac
   # migrate existing docker panels: the panel matches a master's co-located node by the HOST hostname, which it

@@ -5981,6 +5981,7 @@ export const STR = {
   "CPU {v1}%": "CPU {v1}%",
   "1 {v1} saturated{v2}": "1 {v1} под нагрузкой{v2}",
   "All {v1} saturated{v2}": "Все {v1} под нагрузкой{v2}",
+  "connection table {v1}%": "таблица соединений {v1}%",
   "{v1} of {v2} {v3} saturated{v4}": "{v1} из {v2} {v3} под нагрузкой{v4}",
   " · load {v1}": " · нагрузка {v1}",
   " · iowait {v1}%": " · ждёт диск {v1}%",

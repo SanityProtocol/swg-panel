@@ -1113,6 +1113,13 @@ export function healthAlerts(health) {
   for (const d of (health && health.disk || [])) if (d.total && d.used / d.total > 0.9) out.push({ sev: "hot", msg: "disk " + d.mount + " " + Math.round(d.used / d.total * 100) + "%" });
   const m = health && health.mem;
   if (m && m.total && m.used / m.total > 0.9) out.push({ sev: "hot", msg: "memory " + Math.round(m.used / m.total * 100) + "%" });
+  // conntrack's table (node 1.8.12, SCALE-PLAN N2): full, it refuses NEW connections for every user on the node at once.
+  // The node raises it from RAM; this is how the operator learns a provider image or another sysctl file held it down.
+  const ct = health && health.ct;
+  if (Array.isArray(ct) && typeof ct[0] === "number" && typeof ct[1] === "number" && ct[1] > 0 && ct[0] / ct[1] >= 0.8) {
+    const p = Math.round(ct[0] / ct[1] * 100);
+    out.push({ sev: p >= 95 ? "hot" : "warn", msg: T("connection table {v1}%", { v1: p }) });
+  }
   const ncpu = (health && health.ncpu) || 1;
   if (health && typeof health.cpu_pct === "number") {
     // Saturation is described per-CPU, counted from the node's per-vCPU list — never inferred from

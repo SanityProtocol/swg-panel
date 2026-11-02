@@ -1223,7 +1223,57 @@ def collect_health(proc_root="/proc", mounts=None, statvfs=os.statvfs):
             disks.append(disk_usage(m, statvfs))
     if disks:
         h["disk"] = disks
+    with contextlib.suppress(Exception):
+        h["ct"] = [int(open(os.path.join(proc_root, "sys/net/netfilter/nf_conntrack_" + k)).read()) for k in ("count", "max")]
     return h
+
+
+# ── conntrack's table (docs/SCALE-PLAN.md N2) ──────────────────────────────────────────────────────────────────────────────
+# Every NATed or tracked flow holds an entry, and a full table refuses NEW connections — every user on the node at once. The
+# kernel sizes it from RAM at boot, small: 8,192 on msk-main's 1 GB. A faster datapath (DATAPATH DP1/DP2) reaches it sooner.
+# Raised here, never lowered: CT_PER_GB entries a GB of RAM (~20 MB a GB when full, allocated only as used), the hash
+# buckets a quarter of that. Timeouts are left alone (SCALE-PLAN Q7). No file is written: this runs on every start, and
+# nf_conntrack is loaded by then (the node's own NAT and ct rules); until the first pass the kernel's size holds, as before.
+# A container cannot (its /proc/sys is read-only, the table is the host's): install-docker.sh / update.sh raise it there.
+# The node reports count / max in its health (above); the node page warns from 80 %.
+CT_PER_GB = 65536
+_CT = {"want": None, "tried": None}     # tried: (want, when) of a raise that did not take — tried again an hour later
+
+
+def conntrack_size(proc_root="/proc"):
+    if NODE_KIND == "docker":
+        return
+    p = os.path.join(proc_root, "sys/net/netfilter/nf_conntrack_")
+    try:
+        cur = int(open(p + "max").read())
+    except (OSError, ValueError):
+        return                                          # not loaded yet: the next pass
+    if _CT["want"] is None:
+        kb = int(re.search(r"MemTotal:\s+(\d+)", open(os.path.join(proc_root, "meminfo")).read()).group(1))
+        _CT["want"] = CT_PER_GB * max(1, -(-kb // 1048576))
+    want, tried = _CT["want"], _CT["tried"]
+    if cur >= want or (tried and time.monotonic() - tried[1] < 3600):
+        return
+    try:                                                # first: a table resized before its hash would chain long
+        if int(open(p + "buckets").read()) < want // 4:
+            with open(p + "buckets", "w") as f:
+                f.write(str(want // 4))
+    except (OSError, ValueError):
+        pass                                            # older kernels: read-only here, the module's hashsize at boot
+    try:
+        with open(p + "max", "w") as f:
+            f.write(str(want))
+        new = int(open(p + "max").read())
+    except (OSError, ValueError):
+        new = cur
+    if new >= want:
+        _CT["tried"] = None
+        log(LOG_INFO, "conntrack: table raised %d -> %d entries (%d GB of RAM)", cur, new, want // CT_PER_GB)
+    else:
+        if not _CT["tried"]:
+            log(LOG_WARNING, "conntrack: the table holds %d entries and could not be raised to %d (read-only /proc/sys?) — "
+                "a full table refuses new connections", cur, want)
+        _CT["tried"] = (want, time.monotonic())
 
 
 # ───────────────────────── io ─────────────────────────
@@ -26406,6 +26456,8 @@ def main():
         _cap_serverlogs()                           # docker: bound each supervised server's log, panel or no panel
         with contextlib.suppress(Exception):
             _log_follow(node_cfg)                   # the level to the children and the units' drop-ins (only on change)
+        with contextlib.suppress(Exception):
+            conntrack_size()                        # raise only; one file read a pass once it holds (SCALE-PLAN N2)
         _relay_plan, _relay_sync_ok = None, False   # the relay watchdog runs below whatever happens in between
         if t0 - last_verify_t >= VERIFY_EVERY_S:    # periodic drift heal: force the next routing pass to re-assert
             _force_reverify(); last_route_sig = None   # (drop sig-markers + un-gate the routing reconcile this cycle)

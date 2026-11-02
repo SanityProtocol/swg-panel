@@ -7,6 +7,10 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Changed
 
+- **A busy node no longer runs out of room for connections.** Every connection through a node takes a place in the
+  kernel's connection table, and a full table refuses new connections for every user at once. The kernel makes it small:
+  8,192 places on a 1 GB server. The node now raises it to 65,536 places for each GB of RAM, and never lowers a larger
+  value you set; on a Docker node the installer and the update do it on the host. The node page warns from 80 % full.
 - **Traffic statistics no longer slow a busy node down.** Top destinations, the internet lane and Traffic by exit were
   counted by firewall rules that every forwarded packet read, one copy for each client subnet and category: up to 1,450
   rules a packet on a node with 11 subnets, most of the CPU a packet cost. They are one rule per category now, and above
