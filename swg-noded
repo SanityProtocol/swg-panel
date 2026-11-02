@@ -6153,9 +6153,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         stored = ""
     _chs = re.findall(r"chain (\S+) {", body)                 # the table's chain names, read ONCE for the checks below
     chain_present = "prerouting" in _chs
-    def _cbody(name):                                          # the rules inside one chain of our table (per-chain, so a full external flush is detected)
-        m = re.search(r"chain " + name + r" \{(.*?)\n\s*\}", body, re.S)
-        return m.group(1) if m else ""
+    _cb = dict(re.findall(r"chain (\S+) \{(.*?)\n\s*\}", body, re.S))   # every chain's rules in ONE scan of the render: the
+    def _cbody(name):                                          # drift checks below read one chain a subnet (D2), and the render
+        return _cb.get(name, "")                               # holds every set's elements (per-chain, so a full external flush is detected)
     # A chain emptied from outside is rebuilt at the next routing pass, not at the 30-minute reverify: every subnet's goto is
     # there (one lost skips that subnet's Blocks and Exits with no error), and every subnet's chain that always holds a rule —
     # an Exit or a Block, a row's jump, and in pin mode the QUIC drop each subnet gets — holds one (D2: what `prerouting` alone
@@ -6208,8 +6208,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     bat.add("add", "set", "inet", SMART_NFT_TABLE, ln, "{ typeof ip daddr; flags timeout; timeout " + str(learn_ttl) + "s; }")
                 stamps.append((_ttlm, str(learn_ttl)))         # like the sigs: only once the swap has actually landed,
                 #                                                else a rejected batch would mark a TTL change done that never happened
-        def _add(*a):                                          # a rule that opens `ip saddr S` goes to S's own chain (D2)
-            bat.add("add", "rule", "inet", SMART_NFT_TABLE, disp.get(a[2], "prerouting") if a[:2] == ("ip", "saddr") else "prerouting", *a)
+        def _add(*a):                                          # a rule that matches `ip saddr S` goes to S's own chain (D2), wherever
+            _s = next((a[k + 2] for k in range(len(a) - 2) if a[k:k + 2] == ("ip", "saddr") and a[k + 2] in disp), None)   # in the rule
+            bat.add("add", "rule", "inet", SMART_NFT_TABLE, disp[_s] if _s else "prerouting", *a)
         # The arrivals' chain and its pin-mode Block chains, the same way the rows' are: emptied and refilled in this
         # transaction, and deleted when nothing is cascaded in any more — after prerouting's flush, so no jump names them — and
         # BEFORE the first prerouting rule, because the arrivals' jump is the second rule of the chain (a jump to a chain the
@@ -14102,9 +14103,11 @@ def _sni_pump(out):
 
 
 def _block_activity():
-    """Per-subnet blocking ACTIVITY, harvested from EXISTING datapath state — NO new counters, no per-packet cost:
+    """Per-subnet blocking ACTIVITY, harvested from EXISTING datapath state — no per-packet cost:
       torrent = swg_p2p's classified flows (signatures + fan-out flags), node-wide under "*" (the panel sums keys)
       scan    = the port-scan meter's live element count (hosts currently rate-limited for scanning/flooding)
+      blocked = packets dropped to a block list (`c_bk`, one named counter on the drop rules: DATAPATH D2) and connections
+                refused by name — node-wide under "*"
     Reach (distinct blocked destinations) is already in smart_status.sets (the cat_blku_* set element counts), so it
     needs nothing here. Best-effort — any read that fails just omits that signal (never raises). Returns {subnet:{…}}."""
     out = {}
@@ -14158,12 +14161,14 @@ def _block_activity():
         # block list's shadow — every such rule counts into the one named counter `c_bk` (DATAPATH D2: the rules sit in each
         # subnet's own chain, and listing a chain every pass for its anonymous counters cost ~12 ms). Node-wide, under "*",
         # as the refusals by name below: the panel only sums `blocked` across keys. Read only where the table holds it
-        # (CPU-PLAN B4) — and where the render failed, which says nothing about it: asked over netlink all the same.
+        # (CPU-PLAN B4) — and where the render failed, which says nothing about it: read with nft then, as before 1.8.12, so
+        # a missing reading never makes the panel's next rate a counter's whole life; a table that is not there is read
+        # once a generation (_nft_kept), not dumped every pass.
         _st = _smart_table()
         if _st["rc"] != 0 or "counter c_bk {" in _st["out"]:
-            nl = _nft_counters(SMART_NFT_TABLE)                   # one netlink dump (B5a); nft only when the render worked
-            if nl is None and _st["rc"] == 0:
-                cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", SMART_NFT_TABLE]).stdout or "{}")
+            nl = _nft_counters(SMART_NFT_TABLE) if _st["rc"] == 0 else None   # one netlink dump (B5a) where the render worked
+            if nl is None:
+                cj = json.loads(_nft_kept(["nft", "-j", "list", "counters", "table", "inet", SMART_NFT_TABLE], structural=False).stdout or "{}")
                 nl = {o["counter"].get("name"): (int(o["counter"].get("packets", 0)), 0) for o in cj.get("nftables", []) if "counter" in o}
             if nl and "c_bk" in nl:
                 out.setdefault("*", {})["blocked"] = out.get("*", {}).get("blocked", 0) + int(nl["c_bk"][0])
@@ -14301,7 +14306,7 @@ def smart_status():
     return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts, a src_ set holds devices: neither is a destination
             "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}|lg|ar|cln|catd_\S+|dnsok", k)}, "rules": rules,
             "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} the raw counters — 1 packet in N since D1, so NO volume (nothing reads it; cat_rate is the figure)
-            "block": _block_activity(),                    # {subnet:{torrent,scan}} blocking activity from existing state (reach is in `sets`)
+            "block": _block_activity(),                    # {subnet:{scan,mech}, "*":{torrent,blocked}} blocking activity (reach is in `sets`)
             "blk_domains": _blk_domains_read()}            # {host:count} blocked-domain top-K (SNI mode) → panel buckets into categories
 
 

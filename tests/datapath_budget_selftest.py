@@ -27,7 +27,7 @@ packets a second, lives only in the rule, and multiplies each DELTA a reader tak
       a head set and one goto a subnet; a reply, an outer packet and transit read the same rules with 2 subnets and 10, a
       client at most the gotos more; one subnet or overlapping ones: one chain; arrivals only: no dispatch; a block list's
       drop counts into `c_bk`, read under "*"; a goto lost or a subnet's chain emptied from outside is rebuilt
-  [9] the same verdict, mark and connection mark as the node before dispatch (8b7059ec), packet by packet, three plans
+  [9] the same verdict, mark and connection mark as the node before dispatch (1.8.11, 7fbf2cfc), packet by packet, three plans
   [10] on one kernel: the update, a subnet with a row leaving, a row leaving, a subnet arriving, and the downgrade to the
       node before dispatch with a row removed in the same window — no batch refused, nothing left of the dispatch
 
@@ -96,7 +96,7 @@ PLANTS = {
                  '        _INET["rate"] = {"up": max(0.0, (cur["up"] * (cur.get("g") or 1) - prev["up"]) / dt),'),
     "gatebytes": ("[6]", '        if c.group(2).startswith("__"):               # the sampling gate (D1): its bytes are the packets it skipped\n'
                          '            continue\n', ""),
-    "flatpre": ("[8] [9]", 'disp.get(a[2], "prerouting") if a[:2] == ("ip", "saddr") else "prerouting"', '"prerouting"'),
+    "flatpre": ("[8] [9]", 'disp[_s] if _s else "prerouting", *a)', '"prerouting", *a)'),
     "headless": ("[8] [9]", '"{ " + ", ".join(_hs) + " }", "return")', '"{ " + ", ".join(_hs[1:] or _hs) + " }", "return")'),
     "nogoto": ("[8] [9]", '                for S in subnets:\n                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S, "goto", disp[S])',
                '                for S in subnets[1:]:\n                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S, "goto", disp[S])'),
@@ -604,7 +604,7 @@ def build8(M, ns, nc, pin, queue, first=0, geo="geo8"):
     shutil.rmtree(M.GEO_DIR, ignore_errors=True)
     os.makedirs(M.GEO_DIR)
     open(os.path.join(M.GEO_DIR, ".automerge-migrated"), "w").write("1")
-    M._NUMGEN["ok"] = None
+    getattr(M, "_NUMGEN", {})["ok"] = None                   # 1.8.11 (the base) has no numgen probe
     K = SmartKernel()
     subs, cats, ents, srcs = plan8(ns, nc, first)
     r = [mpass(M, K, ents, cats, pin, queue, srcs=srcs)]
@@ -636,6 +636,11 @@ for label, pin, queue in ENG:
           pre_z)
     check("%s: no rule in prerouting names one subnet but its goto (every list is in its subnet's chain)" % label,
           not [t for t in pre_z if re.search(r"ip saddr 10\.\d+\.0\.0/24 ", t) and " goto " not in t], pre_z)
+    _of = {s: "pa%d" % (100000 + k) for k, s in enumerate(sorted(subs_z))}
+    stray = [(c, r["text"]) for c, ch in Kz.m.tables[T]["chains"].items() if c == "prerouting" or not ch["hook"]   # what prerouting
+             for r in ch["rules"] for s in subs_z                                                                    # reaches (DP2b: the rest)
+             if re.search(r"\bip saddr %s " % re.escape(s), r["text"]) and c != _of[s] and not (c == "prerouting" and " goto " in r["text"])]
+    check("%s: every prerouting rule matching a subnet's source, wherever in the rule, sits in that subnet's chain" % label, not stray, stray[:3])
     check("%s: …and the head set is every subnet, collapsed, before the gotos" % label,
           ("ip saddr != { %s } return" % ", ".join(N._collapse4(subs_z))) in pre_z
           and pre_z.index("ip saddr != { %s } return" % ", ".join(N._collapse4(subs_z))) < min(i for i, t in enumerate(pre_z) if " goto " in t), pre_z)
@@ -694,7 +699,7 @@ check("an arrivals-only node: no dispatch chain, no head, no `{ }`, nothing refu
 # ── [9] the same verdict as the node before dispatch ────────────────────────────────────────────────────────────────────
 SECTION[0] = "[9]"
 print("\n[9] every packet: the verdict, mark and connection mark of the node before dispatch")
-BASE = os.environ.get("SWG_DISPATCH_BASE") or "8b7059ec"       # origin/dev before DP2 (DP1 + N2): prerouting as 1.8.11 built it
+BASE = os.environ.get("SWG_DISPATCH_BASE") or "7fbf2cfc"       # 1.8.11-beta on main (a release commit outlives dev's resets)
 _rb = subprocess.run(["git", "-C", ROOT, "show", "%s:swg-noded" % BASE], capture_output=True, text=True)
 H = None
 if _rb.returncode:
@@ -737,7 +742,7 @@ for label, pin, queue in ENG if H else ():
             shutil.rmtree(M.GEO_DIR, ignore_errors=True)
             os.makedirs(M.GEO_DIR)
             open(os.path.join(M.GEO_DIR, ".automerge-migrated"), "w").write("1")
-            M._NUMGEN["ok"] = None
+            getattr(M, "_NUMGEN", {})["ok"] = None                   # 1.8.11 (the base) has no numgen probe
             K = SmartKernel()
             r = [mpass(M, K, ents, cats, pin, queue, srcs=srcs)]
             for j, c in enumerate(cats):
@@ -763,7 +768,7 @@ for label, pin, queue in ENG:
 
     def step(M, plan, what):
         M.GEO_DIR = G10
-        M._NUMGEN["ok"] = None
+        getattr(M, "_NUMGEN", {})["ok"] = None                   # 1.8.11 (the base) has no numgen probe
         subs, cats, ents, srcs = plan
         r = [mpass(M, K, ents, cats, pin, queue, srcs=srcs)]
         for j, c in enumerate(cats):
@@ -775,8 +780,10 @@ for label, pin, queue in ENG:
         steps.append((what, ok, [x["errors"] for x in r], verdicts(K, g), g))
         return ok
 
-    p3, p2, prow = plan8(3, 3), plan8(2, 3), plan8(3, 3)
-    p2 = (p2[0], p2[1], p2[2], p2[3])                                           # the last subnet, with its row, left
+    p3, prow = plan8(3, 3), plan8(3, 3)
+    gone = p3[0][-1]                                                            # the last subnet, with its row, leaves
+    p2 = ([s for s in p3[0] if s != gone], p3[1], [e for e in p3[2] if e["subnet"] != gone], p3[3])
+    assert any("src" in e for e in p3[2] if e["subnet"] == gone) and gone not in {e["subnet"] for e in p2[2]}
     prow = (prow[0], prow[1], [e for e in prow[2] if not (e["subnet"] == "10.9.0.0/24" and "src" in e)], prow[3])   # one row left
     pnew = plan8(4, 3)                                                          # a subnet arrived
     if H:

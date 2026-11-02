@@ -19,8 +19,8 @@ id — except the per-category byte counters, read over netlink (B5a), and the S
       chain's counter every pass even while the render is kept; that chain is read ONCE a pass for both its readers.
   [7] What is read for its counters is read only where the table's structure has something to count: the Block counter
       `c_bk` (DATAPATH D2: every Block-list drop counts into it, read by name — no chain listed), `forward` with a `reject`
-      rule — else no read, the same report. A render that failed (a timeout, an nft error) says nothing about either: the
-      counter is asked over netlink and `forward` is read, as before (code review).
+      rule — else no read, the same report. A render that failed (a timeout, an nft error) says nothing about either: both
+      are read with nft, as before (code review; DP2a review F1).
 
 Run: python3 tests/smart_table_reuse_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -284,8 +284,10 @@ N._MECH_ON["subs"] = 1
 N._LOOP["n"] += 1
 CALLS.clear(); NLREADS.clear()
 s7 = N.smart_status()
-check("[7] a render that failed says nothing about either: the Block counter is asked over netlink and `forward` read, as before",
-      len(NLREADS) == 1 and _blk(s7) == 3 and "nft list chain inet swg_smart forward" in CALLS, (NLREADS, s7.get("block"), CALLS))
+check("[7] a render that failed says nothing about either: the Block counter and `forward` are read with nft, as before "
+      "(a missing reading would make the panel's next rate the counter's whole life)",
+      "nft -j list counters table inet swg_smart" in CALLS and _blk(s7) == 4 and "nft list chain inet swg_smart forward" in CALLS,
+      (NLREADS, s7.get("block"), CALLS))
 K["render_rc"], N._MECH_ON["subs"] = None, _mech
 
 import shutil

@@ -80,6 +80,9 @@ def fake_run(args, input_text=None, timeout=20, env=None):
         if args[1:5] == ["flush", "set", "inet", N.TURN_CAP_TABLE]:
             K["ports"] = []
         return subprocess.CompletedProcess(args, 0, "", "")
+    if args[:4] == ["nft", "-j", "list", "counters"]:            # the named counters as JSON (`nft -j list counters table inet <t>`)
+        return subprocess.CompletedProcess(args, 0, '{"nftables": []}', "") if args[6] in K["tables"] else \
+            subprocess.CompletedProcess(args, 1, "", ENOENT)
     if args[:2] == ["nft", "list"]:
         table = args[4]
         if table not in K["tables"]:
@@ -176,12 +179,17 @@ check("[4] _block_activity: an absent table's chain read once — and no chain o
 print("\n[5] a node with no smart table")
 K["tables"].discard("swg_smart"); K["gen"] += 1
 N._dnsmasq_running, N._route_localnet_ok, N._blk_domains_read = (lambda: False), (lambda: True), (lambda: {})
+NLD = []
+N._nft_counters = lambda t: NLD.append(t)                     # a netlink counter dump (None: as if it could not read)
+N._MECH_ON["subs"] = 1                                        # the free tier is on: smart_status reports blocking with no table
 CALLS.clear()
 outs = []
 for _ in range(3):
     N._LOOP["n"] += 1
     outs.append(N.smart_status())
 check("[5] `swg_smart` rendered once over three passes", n("nft list table inet swg_smart") == 1, CALLS)
+check("[5] …and its Block counter (DATAPATH D2): no netlink dump of a table that is not there, its nft read once (kept as absent)",
+      not NLD and n("nft -j list counters table inet swg_smart") <= 1, (NLD, CALLS))
 check("[5] …and the same report every pass (no table: active false, no sets)", outs[0] == outs[1] == outs[2]
       and outs[0]["active"] is False and outs[0]["sets"] == {}, outs)
 
