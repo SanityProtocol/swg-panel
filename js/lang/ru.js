@@ -5364,8 +5364,8 @@ export const STR = {
   "creating peer…": "создаём пира…",
   "A target has an invalid address.": "У одного из назначений неверный адрес.",
   "Apply these changes?": "Применить изменения?",
-  "This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.":
-    "Приватного ключа пира здесь нет, поэтому новые назначения получат тот же ключ и PSK, но свежий QR или конфиг не собрать. Нужен файл — перевыпустите пира со сменой ключей.",
+  "This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated.":
+    "Приватного ключа пира здесь нет, поэтому новые назначения получат тот же ключ и PSK, но свежий QR или конфиг не собрать.",
   "store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.":
     "store_configs выключен, приватный ключ клиента не хранится — новые назначения получат тот же ключ и PSK, но показать свежий QR не выйдет.",
   "Each address must be a valid IPv4.": "Каждый адрес должен быть верным IPv4.",

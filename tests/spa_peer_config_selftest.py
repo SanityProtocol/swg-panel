@@ -23,7 +23,9 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [9] a locked vault: the sheet has the unlock, next to the warning that stays true. No mark; Enter in its password field unlocks,
       the open sheet gets its config back, and the password was no edit of the peer. That Enter is the unlock's alone: an edit
       waiting on the sheet stays waiting, whichever password it was given
-  [10] the unlock follows the vault, not the setting: no vault, none; store_configs off, a config kept from before still opens
+  [10] adding a target on a locked vault: a keyless target draws no warning, one with a key draws no advice to rotate; it saves with
+       the same key, the QR card says locked, and the unlock gives the new target its config
+  [11] the unlock follows the vault, not the setting: no vault, none; store_configs off, a config kept from before still opens
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
@@ -40,8 +42,10 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-nodirty  the password counts as an edit of the peer                                  → RED [9]
        --perturb-enter    Enter in the password is the sheet's Enter too                              → RED [9]
        --perturb-unlocked the unlock is offered on an open vault                                      → RED [5]
-       --perturb-novault  the unlock is offered with no vault                                         → RED [10]
-       --perturb-need     the unlock is hidden with store_configs off                                 → RED [10]
+       --perturb-advice   the Targets sheet tells the operator to rotate                              → RED [10]
+       --perturb-keyless  a keyless target draws the warning                                          → RED [10]
+       --perturb-novault  the unlock is offered with no vault                                         → RED [11]
+       --perturb-need     the unlock is hidden with store_configs off                                 → RED [11]
 """
 import base64, hashlib, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -77,6 +81,8 @@ PERTURBS = {
     "unlocked": [("js/peer-ui.js", "useEffect(() => { if (subSKCached()) { setReady(true); return; }\n    let ok", "useEffect(() => { let ok"),
                  ("js/peer-ui.js", _GONE, "if (need === false || !exists) return null;")],
     "novault": [("js/peer-ui.js", _GONE, "if (need === false || ready || subSKCached() || exists === null) return null;")],
+    "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
+    "keyless": [("js/sheets-crud.js", "${added.some(needsIp) && !srcConf ?", "${added.length && !srcConf ?")],
     "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
@@ -303,17 +309,21 @@ try:
         return pid in json.loads(tab.ev("localStorage.getItem('swg-sub-noconf') || '{}'"))
     def stored(pid):
         return bool((must(call("GET", "/api/sub/blob?peer_id=" + pid), "blob").get("data") or {}).get("sec"))
+    def tick(ifn):
+        tab.ev("[...document.querySelectorAll('.overlay.show .targetopt')].find(r => r.querySelector('.tp').textContent.trim() === %s).querySelector('.topt-main').click()" % json.dumps(ifn))
+    def addresses_in():
+        until("(() => { const f = [...document.querySelectorAll('.overlay.show input.topt-ip')]; return f.length && f.every(i => i.value); })()", 10, "an address")
+        # The row shows the address one effect before the sheet holds it (a click in between reads "Invalid address"), and Preact
+        # flushes effects within 100 ms: a timer set here, on the page's own event loop, fires after that one.
+        tab.ev("new Promise(r => setTimeout(r, 250))")
     def new_peer(name, ifaces):
         """Through the New peer sheet: the browser mints the key and publishes it, as it does for an operator."""
         uid = must(call("POST", "/api/users/create", {"name": name}), "user")["data"]["id"]
         ev("sheets-crud", "await S.Store.poll(); M.openCreatePeer({user_id: %s}); return 1;" % json.dumps(uid))
         until("!!document.querySelector('.overlay.show .targetopt')", 15, "the target rows")
         for ifn in ifaces:
-            tab.ev("[...document.querySelectorAll('.overlay.show .targetopt')].find(r => r.querySelector('.tp').textContent.trim() === %s).querySelector('.topt-main').click()" % json.dumps(ifn))
-        until("(() => { const f = [...document.querySelectorAll('.overlay.show input.topt-ip')]; return f.length && f.every(i => i.value); })()", 10, "an address")
-        # The row shows the address one effect before the sheet holds it (a click in between reads "Invalid address"), and Preact
-        # flushes effects within 100 ms: a timer set here, on the page's own event loop, fires after that one.
-        tab.ev("new Promise(r => setTimeout(r, 250))")
+            tick(ifn)
+        addresses_in()
         tab.ev("[...document.querySelectorAll('.overlay.show button')].find(b => b.textContent.trim() === 'Create peer').click()")
         pid = None
         for _ in range(150):
@@ -488,8 +498,42 @@ try:
         check("[9] the right one unlocks, and saves nothing either", good(st) and st["save"] and roster()[pid].get("title") == title, [st, tab.ev("window.__toasts")])
         close_all()
 
-    print("\n[10] the unlock follows the vault, not the setting")
+    print("\n[10] adding a target on a locked vault")
     with guard("[10]"):
+        uid, pid = new_peer("targets", ["awg1"])
+        pk = roster()[pid]["pubkey"]
+        reload()
+        ev("store", "C.lockVault(); return 1;")
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt')", 15, "the target rows")
+        tab.ev("new Promise(r => setTimeout(r, 250))")   # a row clicked before the picker's seed effect is overwritten by it
+        ACT = "%s.querySelector('.sheet-foot .btn-primary')" % SHEET
+        WARN = "([...%s.querySelectorAll('.notice.warn')].map(n => n.textContent).find(t => t.includes('private key')) || '')" % SHEET
+        tick("csqtt25")
+        until("!%s.disabled" % ACT, 5, "the keyless row ticked")
+        tab.ev("new Promise(r => setTimeout(r, 250))")
+        check("[10] a keyless target has no key to miss: no warning", not tab.ev(WARN), tab.ev(WARN))
+        tick("awg2")
+        until(WARN, 5, "the warning")
+        addresses_in()
+        w = tab.ev(WARN)
+        check("[10] a target with a key: the warning, with no advice to rotate", "otate" not in w and "e-issue" not in w, w)
+        watch_toasts()
+        tab.ev(ACT + ".click()")
+        until("window.__toasts.some(t => t.startsWith('Peer targets updated'))", 10, "the save")
+        p = roster()[pid]
+        check("[10] it saves on a locked vault: the targets, the same key", p["pubkey"] == pk and {t["iface"] for t in p["targets"]} == {"awg1", "awg2", "csqtt25"}, p["targets"])
+        ev("peer-ui", "M.openPeerConfigs(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("(() => { const s = %s; return !!s && !!s.querySelector('.unlockpanel'); })()" % SHEET, 10, "the QR sheet's unlock")
+        check("[10] the QR card says locked, not re-issue", tab.ev("(s => s.includes('The Encryption Vault is locked') && !s.includes('No stored config'))(%s.textContent)" % SHEET))
+        unlock(PW)
+        until("!%s.querySelector('.unlockpanel')" % SHEET, 10, "the QR sheet after the unlock")
+        check("[10] the unlock gives the new target its config, and nothing was rotated",
+              ev("store", "return !!(await C.getConfig(%s, %s, 'awg2'));" % (json.dumps(pk), json.dumps(NID))) and roster()[pid]["pubkey"] == pk)
+        close_all()
+
+    print("\n[11] the unlock follows the vault, not the setting")
+    with guard("[11]"):
         VAULT = D + "/state/subs/vault.json"
         uid, pid = new_peer("nodoor", ["awg1"])
         reload()
@@ -499,17 +543,17 @@ try:
         st = settled()
         close_all()
         os.rename(VAULT + ".gone", VAULT)
-        check("[10] no vault: the warning alone", bool(st) and st["banner"] and not st["door"], st)
+        check("[11] no vault: the warning alone", bool(st) and st["banner"] and not st["door"], st)
         must(call("POST", "/api/panel/settings", {"store_configs": "off"}), "store_configs off")
         reload()
         ev("store", "C.lockVault(); return 1;")
         open_edit(pid, stay=True)
         st = settled()
-        check("[10] store_configs off, a config kept from before: the sheet has the unlock", bool(st) and st["banner"] and st["door"], st)
+        check("[11] store_configs off, a config kept from before: the sheet has the unlock", bool(st) and st["banner"] and st["door"], st)
         unlock(PW)
         until("!!%s.querySelector('.topt-gear')" % SHEET, 15, "the kept config after the unlock")
         st = sheet()
-        check("[10] …and the unlock brings it back", good(st) and not st["door"], st)
+        check("[11] …and the unlock brings it back", good(st) and not st["door"], st)
         close_all()
 except Done:
     pass
