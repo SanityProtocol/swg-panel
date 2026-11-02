@@ -5680,26 +5680,40 @@ def _smart_table():
 # ── sampled statistics (docs/DATAPATH-PLAN.md D1) ──────────────────────────────────────────────────────────────────────
 # The counting chains (`catcount`, `catany`, SWG_INET, SWG_CATK) open with a gate that lets 1 packet in N through to the
 # counters. N LIVES ONLY IN THE RULE: each reader takes it from the text it already reads, and multiplies the DELTA by it —
-# never the cumulative value, which is what the next sample subtracts. No gate reads as N = 1.
-_NFT_GATE = ("numgen", "random", "mod", "1", "!=", "0", "return")     # as a rebuild writes it: N = 1
+# never the cumulative value, which is what the next sample subtracts. No gate reads as N = 1. A reader whose gate's N is not
+# the one its previous reading was taken at takes a baseline (the delta across a step is counted at two N): a step by the
+# steer, a rebuild, a restart, all alike, with nothing to reset from outside.
 _NUMGEN = {"ok": None}
+_GATE_SEEN = {}     # chain → the gate's N as a sampler read it in THIS snapshot; _stats_steer takes it and writes only there
+
+
+def _nft_gate_args(n):
+    return ("numgen", "random", "mod", str(int(n)), "!=", "0", "return")
+
+
+def _nft_gate(out, chain):
+    """(N, handle) of the gate when it is the FIRST rule of `chain` in an `nft [-a] list` text, else (None, None); the handle
+    only from `-a`. The line after the chain's header is its hook line: these two chains are always base chains."""
+    i = out.find("chain %s {" % chain)
+    m = re.match(r"chain \S+ \{[^\n]*\n[^\n]*\n\s*numgen random mod (\d+) != 0 return(?: # handle (\d+))?[ \t]*(?:\n|$)",
+                 out[i:i + 400]) if i >= 0 else None
+    return (int(m.group(1)), m.group(2)) if m else (None, None)
 
 
 def _numgen_ok():
     """Whether this kernel and nft take `numgen random`. Asked once, with `nft -c` on a table of its own: a refused rule in
-    the smart batch would take the whole batch with it. Refused → no gate: exact counting, slower, working."""
+    the smart batch would take the whole batch with it. Refused → no gate: exact counting, slower, working. A timeout is no
+    answer and is asked again on the next pass."""
     if _NUMGEN["ok"] is None:
-        _NUMGEN["ok"] = run(["nft", "-c", "-f", "-"], input_text="add table inet swg_probe\nadd chain inet swg_probe c\n"
-                                                                 "add rule inet swg_probe c " + " ".join(_NFT_GATE) + "\n").returncode == 0
+        r = run(["nft", "-c", "-f", "-"], input_text="add table inet swg_probe\nadd chain inet swg_probe c\n"
+                                                     "add rule inet swg_probe c " + " ".join(_nft_gate_args(1)) + "\n")
+        if r.returncode == 124:
+            return False
+        _NUMGEN["ok"] = r.returncode == 0
+        if not _NUMGEN["ok"]:
+            log(LOG_WARNING, "stats: nft refused `numgen` (%s) — Top destinations count every packet, as before 1.8.12",
+                ((r.stderr or "").strip().splitlines() or ["no reason given"])[-1][:200])
     return _NUMGEN["ok"]
-
-
-def _nft_gate_n(out, chain):
-    """N of the gate when it is the FIRST rule of `chain` in an `nft list` text, else None. The line after the chain's
-    header is its hook line: these two chains are always base chains."""
-    i = out.find("chain %s {" % chain)
-    m = re.match(r"chain \S+ \{[^\n]*\n[^\n]*\n\s*numgen random mod (\d+) != 0 return\b", out[i:i + 400]) if i >= 0 else None
-    return int(m.group(1)) if m else None
 
 
 # ── one nft transaction per rebuild ─────────────────────────────────────────────────────────────────────────
@@ -6355,9 +6369,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "catcount",
                      "{ type filter hook forward priority mangle; policy accept; }"])
             bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "catcount")
-            if gate:
-                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", *_NFT_GATE)
-            S = "{ " + ", ".join(subnets) + " }"                # collapsed: an interval set refuses a prefix inside another
+            if gate:                                            # at the steered N: the readers see no step in a rebuild
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", *_nft_gate_args(_STEER.get("n", 1)))
+            S = "{ " + ", ".join(subnets) + " }"                # collapsed: one interval per range (nft would merge an overlap; the model refuses one)
             for c in count_cats:                                # no `return` → a byte counts in EVERY category it matches
                 snm, cn = _smart_setname(c), _smart_countername(c)
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "name", cn + "_up")
@@ -6376,7 +6390,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                      "{ type filter hook forward priority mangle; policy accept; }"])
             bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "catany")
             if gate:
-                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", *_NFT_GATE)
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", *_nft_gate_args(_STEER.get("n", 1)))
             for c in count_cats:
                 snm = _smart_setname(c)
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + snm, "return")
@@ -14204,12 +14218,12 @@ def smart_status():
     # the rules live in `forward`, read fresh every pass — the table's render may be an earlier pass's (_smart_table)
     return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts, a src_ set holds devices: neither is a destination
             "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}|lg|ar|cln|catd_\S+|dnsok", k)}, "rules": rules,
-            "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} cumulative destination stats
+            "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} the raw counters — 1 packet in N since D1, so NO volume (nothing reads it; cat_rate is the figure)
             "block": _block_activity(),                    # {subnet:{torrent,scan}} blocking activity from existing state (reach is in `sets`)
             "blk_domains": _blk_domains_read()}            # {host:count} blocked-domain top-K (SNI mode) → panel buckets into categories
 
 
-_CATS = {"t": 0.0, "cum": {}, "rate": {}}   # + "g": {chain: gate N or None} as this sample read it, for _stats_steer
+_CATS = {"t": 0.0, "cum": {}, "rate": {}, "g": None}   # g: (catcount's N, catany's N) the cumulative values were read at
 
 
 def sample_cats():
@@ -14223,10 +14237,12 @@ def sample_cats():
     cum = t["bytes"]
     now = time.time()
     # each chain's gate (D1), from the same render: `c_uncat_*` count in catany, every other category in catcount
-    _CATS["g"] = {c: _nft_gate_n(t["out"], c) for c in ("catcount", "catany")}
-    ncc, nca = _CATS["g"]["catcount"] or 1, _CATS["g"]["catany"] or 1
-    prev, pt = _CATS["cum"], _CATS["t"]
-    if prev and now > pt:
+    gs = {c: _nft_gate(t["out"], c)[0] for c in ("catcount", "catany")}
+    _GATE_SEEN.update((c, n) for c, n in gs.items() if n)
+    ncc, nca = gs["catcount"] or 1, gs["catany"] or 1
+    prev, pt, pg = _CATS["cum"], _CATS["t"], _CATS["g"]
+    _CATS["g"] = (ncc, nca)
+    if prev and now > pt and pg == (ncc, nca):           # a step in N since the last read → a baseline, the rate holds
         dt = now - pt
         r = {}
         for cat, v in cum.items():
@@ -14239,7 +14255,7 @@ def sample_cats():
         _CATS["rate"] = r
     _CATS["cum"] = cum
     _CATS["t"] = now
-    return dict(_CATS["rate"])
+    return {c: dict(v) for c, v in _CATS["rate"].items()}   # inner dicts too: build_snapshot merges Kernel SNI's into them
 
 
 # ───────────────────────── internet egress volume (measured, not estimated) ─────────────────────────
@@ -15580,8 +15596,39 @@ def _ipt_gate_n(text):
     for ln in text.splitlines():
         if ln.startswith("-A "):
             m = re.search(r"--probability ([0-9]+(?:\.[0-9]*)?)", ln) if ":__gate" in ln else None
-            return max(1, min(STEER_N_MAX, int(round(1 / max(1e-6, 1 - float(m.group(1))))))) if m else None
+            return max(1, int(round(1 / max(1e-6, 1 - float(m.group(1)))))) if m else None
     return None
+
+
+_IPT_GATE_NO = {}   # chain → when iptables last refused its gate (no xt_statistic): asked again an hour later, said once
+
+
+def _ipt_gate_put(chain, op):
+    """Write an iptables counting chain's gate at the steered N: `-I … 1` over a chain whose pairs must keep their counts,
+    `-A` first into a flushed one. A refusal leaves the chain counting every packet, exact, and is not retried every pass."""
+    t = _IPT_GATE_NO.get(chain)
+    if t is not None and time.monotonic() - t < 3600:
+        return
+    tbl, tag = _IPT_GATE[chain]
+    r = run(["iptables", "-t", tbl, op, chain] + (["1"] if op == "-I" else []) + _ipt_gate_args(tag, _STEER.get("n", 1)))
+    if r.returncode == 0:
+        _IPT_GATE_NO.pop(chain, None)
+        return
+    if t is None:
+        log(LOG_WARNING, "stats: iptables refused the sampling gate of %s (no xt_statistic?) — it counts every packet: %s",
+            chain, (r.stderr or "").strip()[:200])
+    _IPT_GATE_NO[chain] = time.monotonic()
+
+
+def _ipt_gate_keep(chain, same, gates, text):
+    """The gate half of a reconcile whose pairs are `same` as wanted: True → the chain stands (a 1.8.11 chain gets its gate by
+    -I, the pairs keep their counts); False → flush and rebuild (a gate astray or doubled, or the pairs changed)."""
+    if same and gates == 1 and _ipt_gate_n(text):
+        return True
+    if same and not gates:
+        _ipt_gate_put(chain, "-I")
+        return True
+    return False
 
 
 def reconcile_inet_chain(node_cfg, exit_devs=()):
@@ -15650,13 +15697,10 @@ def reconcile_inet_chain(node_cfg, exit_devs=()):
     for ifn in managed:
         for dev, tag in outs:
             wantsig.add(("swg-inet-up", ifn + tag, ifn, dev)); wantsig.add(("swg-inet-dn", ifn + tag, dev, ifn))
-    if cursig == wantsig and not gates:                     # a chain from a build without the gate: inserted at the top,
-        run(["iptables", "-t", T, "-I", SWG_INET_CHAIN, "1"] + _ipt_gate_args("swg-inet-up:__gate", 1))   # so the pairs keep their counts
-        return
-    if cursig == wantsig and gates == 1 and _ipt_gate_n("\n".join(cur)):
+    if _ipt_gate_keep(SWG_INET_CHAIN, cursig == wantsig, gates, "\n".join(cur)):
         return                                              # unchanged → leave the counters accumulating
     run(["iptables", "-t", T, "-F", SWG_INET_CHAIN])          # iface set / WAN / exit set changed (or a gate astray) → rebuild
-    run(["iptables", "-t", T, "-A", SWG_INET_CHAIN] + _ipt_gate_args("swg-inet-up:__gate", 1))   # the gate first, at N = 1
+    _ipt_gate_put(SWG_INET_CHAIN, "-A")                       # the gate first, at the steered N
     for ifn in managed:
         for dev, tag in outs:
             run(["iptables", "-t", T, "-A", SWG_INET_CHAIN, "-i", ifn, "-o", dev,
@@ -15724,11 +15768,13 @@ def sample_inet(node_cfg, now):
     cur = read_inet_bytes()
     if cur is None:                                    # no iptables (some containers) → leave last known
         return _INET["rate"]
-    prev, pt = _INET["cum"], _INET["t"]
-    _INET["g"] = cur.get("g")                          # for _stats_steer, which acts only on a gate read in this same snapshot
-    if prev is not None and now > pt:                  # counter reset (iface flap) → clamp the negative delta to 0
+    prev, pt, g = _INET["cum"], _INET["t"], cur.get("g") or 1
+    if cur.get("g"):
+        _GATE_SEEN[SWG_INET_CHAIN] = g                 # for _stats_steer, which writes only a gate read in this same snapshot
+    # counter reset (iface flap) → clamp the negative delta to 0; a step in N since the last read → a baseline, the rate holds
+    if prev is not None and now > pt and (prev.get("g") or 1) == g:
         dt = now - pt
-        k = (cur.get("g") or 1) / dt                  # the delta × the gate's N (D1); the cumulative values stay as counted
+        k = g / dt                                     # the delta × the gate's N (D1); the cumulative values stay as counted
         _INET["rate"] = {"up": max(0.0, (cur["up"] - prev["up"]) * k),
                          "down": max(0.0, (cur["down"] - prev["down"]) * k)}
         # Per device, keyed off what the chain reports NOW, so an exit that went away stops being reported
@@ -15796,13 +15842,10 @@ def reconcile_catk_chain(cats):
     cur = run(["iptables", "-t", T, "-S", SWG_CATK_CHAIN]).stdout or ""
     names = [m.group(1) for m in re.finditer(r'--comment "?swg-catk-(?:up|dn):([^"\s]+)', cur)]   # `-S` quotes the comment
     cursig, gates = set(c for c in names if not c.startswith("__")), sum(c.startswith("__") for c in names)   # `__`: the gate (D1)
-    if cursig == set(want) and not gates:                   # a chain from a build without the gate: inserted, counts kept
-        run(["iptables", "-t", T, "-I", SWG_CATK_CHAIN, "1"] + _ipt_gate_args("swg-catk-up:__gate", 1))
-        return
-    if cursig == set(want) and gates == 1 and _ipt_gate_n(cur):
+    if _ipt_gate_keep(SWG_CATK_CHAIN, cursig == set(want), gates, cur):
         return                                              # unchanged → leave the counters accumulating
     run(["iptables", "-t", T, "-F", SWG_CATK_CHAIN])
-    run(["iptables", "-t", T, "-A", SWG_CATK_CHAIN] + _ipt_gate_args("swg-catk-up:__gate", 1))   # the gate first, at N = 1
+    _ipt_gate_put(SWG_CATK_CHAIN, "-A")                       # the gate first, at the steered N
     for c in want:
         sn = _xts_setname(c)
         run(["iptables", "-t", T, "-A", SWG_CATK_CHAIN, "-m", "set", "--match-set", sn, "dst",
@@ -15832,10 +15875,13 @@ def sample_catk():
     for m in re.finditer(r'--comment "?swg-catk-(up|dn):([^"\s]+)"?.* -c \d+ (\d+)', r.stdout or ""):
         if not m.group(2).startswith("__"):                 # the sampling gate (D1) is no category
             cum.setdefault(m.group(2), {"up": 0, "dn": 0})[m.group(1)] += int(m.group(3))
-    _CATK["g"] = _ipt_gate_n(r.stdout or "")                # for _stats_steer
-    prev, pt = _CATK["cum"], _CATK["t"]
-    if prev is not None and now > pt:                       # counter reset (rebuild) → clamp negative delta to 0
-        k = (_CATK["g"] or 1) / (now - pt)                  # the delta × the gate's N (D1)
+    g0 = _ipt_gate_n(r.stdout or "")
+    if g0:
+        _GATE_SEEN[SWG_CATK_CHAIN] = g0                     # for _stats_steer
+    prev, pt, pg, g = _CATK["cum"], _CATK["t"], _CATK.get("g"), g0 or 1
+    _CATK["g"] = g
+    if prev is not None and now > pt and pg == g:           # counter reset (rebuild) → clamp negative delta to 0; a step → baseline
+        k = g / (now - pt)                                  # the delta × the gate's N (D1)
         _CATK["rate"] = {c: {"up": max(0.0, v["up"] - (prev.get(c) or {}).get("up", 0)) * k,
                              "dn": max(0.0, v["dn"] - (prev.get(c) or {}).get("dn", 0)) * k}
                          for c, v in cum.items()}
@@ -15844,84 +15890,68 @@ def sample_catk():
 
 
 # ── steering the sampling gates' N (docs/DATAPATH-PLAN.md D1) ──────────────────────────────────────────────────────────
-# N = 1 up to STEER_EXACT_PPS forwarded packets a second (~10 Mbit: every counter exact, as before); above it the next power
-# of two ≥ pps / STEER_SAMPLES, up to STEER_N_MAX — about 1 % of a core for the counting chains whatever the traffic, and
-# estimates that are unbiased (±14 % at an 8 % share in 5 s, ±4 % over a minute). Raised at once; lowered only after
+# N = 1 up to STEER_EXACT_PPS forwarded packets a second (every counter exact, as before); above it the next power of two
+# ≥ pps / STEER_SAMPLES, up to STEER_N_MAX — about 1 % of a core for the counting chains whatever the traffic, and estimates
+# that are unbiased (±14 % at an 8 % share in 5 s, ±4 % over a minute). Raised at once; lowered only after
 # STEER_LOW_SAMPLES samples in a row at a quarter of N or less, so it cannot flap.
 STEER_EXACT_PPS = 1000
 STEER_SAMPLES = 250
 STEER_N_MAX = 1024
 STEER_LOW_SAMPLES = 12
-_STEER = {"pps": 0}
+_STEER = {}
+_IPT_GATE = {SWG_INET_CHAIN: (SWG_INET_TABLE, "swg-inet-up:__gate"), SWG_CATK_CHAIN: ("mangle", "swg-catk-up:__gate")}
 
 
-def _stats_rebase():
-    """The next read of each statistic is a baseline and its rate holds for one sample: the delta across a step in N would
-    be counted at one N and multiplied by another (1 s of exact bytes before a step from 1 to 256 reads ×52)."""
-    _INET["cum"] = None
-    _CATK["cum"] = None
-    _CATS["cum"] = {}
-
-
-def _dev_packets(dev):
-    """rx + tx packets of one device from /proc/net/dev — no rule, no spawn. 0 for a device that is not there."""
+def _forwarded_packets():
+    """IPv4 packets this box has forwarded since boot (/proc/net/snmp Ip: ForwDatagrams) — no spawn. They are what the four
+    counting chains see, and counted as they see them: a GRO-merged packet is one, a packet the node serves itself is none.
+    None where it cannot be read."""
     try:
-        with open("/proc/net/dev") as f:
-            for ln in f:
-                name, sep, rest = ln.partition(":")
-                if sep and name.strip() == dev:
-                    p = rest.split()
-                    return int(p[1]) + int(p[9])
+        with open("/proc/net/snmp") as f:
+            head, vals = [ln.split() for ln in f if ln.startswith("Ip:")][:2]
+        return int(vals[head.index("ForwDatagrams")])
     except (OSError, ValueError, IndexError):
-        pass
-    return 0
+        return None
 
 
-def _stats_steer(wan):
-    """Steer the gates' N from forwarded packets/s ≈ the WAN's rx + tx packets/s ÷ 2. Called once a snapshot, after all three
-    samplers, so a step lands between two of their reads; every step calls _stats_rebase(). Each sampler hands over the gate
-    it read in THIS snapshot (popped here, so a stale read is never written over): an iptables chain is rewritten with
-    `-R <chain> 1` only where its first rule was the gate — no gate means the chain is not built yet or the module refused,
-    and `-R 1` would overwrite a counting rule — and an nft chain's gate is replaced by handle, read live, only where the
-    chain's first rule is still the gate. A chain whose N differs is rewritten on every sample until it holds, so a failed
-    step retries by itself."""
-    gi, gk, gc = _INET.pop("g", None), _CATK.pop("g", None), _CATS.pop("g", None) or {}
-    now = time.time()
-    pk, prev, pt = (_dev_packets(wan) if wan else 0), _STEER.get("pk"), _STEER.get("t", 0.0)
+def _stats_steer():
+    """Steer the gates' N from forwarded packets/s. Called once a snapshot, after all three samplers. Each sampler hands
+    over the gate it read in THIS snapshot (_GATE_SEEN, taken here, so a stale read is never written over): an iptables
+    chain is rewritten with `-R <chain> 1` only where its first rule was the gate — `-R 1` over a chain with none would
+    overwrite a counting rule — and an nft chain's gate is replaced by handle, read live, only where the chain's first rule
+    is still the gate. A chain whose N differs is rewritten when next read, so a failed step retries by itself. The readers
+    see the step in the rule and take a baseline; nothing here resets them."""
+    seen = dict(_GATE_SEEN)
+    _GATE_SEEN.clear()
+    if "n" not in _STEER:                                   # a restart: start from the gates the last process left
+        _STEER["n"] = max(seen.values(), default=1)
+    now, pk = time.time(), _forwarded_packets()
+    prev, pt = _STEER.get("pk"), _STEER.get("t", 0.0)
     _STEER.update(pk=pk, t=now)
-    if prev is None or now <= pt:                           # the first sample has no rate to steer by
+    if pk is None or prev is None or now <= pt:             # the first sample has no rate to steer by
         return
-    _STEER["pps"] = pps = max(0, pk - prev) / 2.0 / (now - pt)
+    pps = max(0, pk - prev) / (now - pt)
     want = 1
     while pps > STEER_EXACT_PPS and want < pps / STEER_SAMPLES and want < STEER_N_MAX:
         want *= 2
-    n = _STEER.get("n", 1)
-    if want > n:
-        n, _STEER["low"] = want, 0
-    elif want * 4 <= n:
-        _STEER["low"] = _STEER.get("low", 0) + 1
-        if _STEER["low"] >= STEER_LOW_SAMPLES:
-            n, _STEER["low"] = want, 0
-    else:
-        _STEER["low"] = 0
-    if n != _STEER.get("n", 1):
+    n = _STEER["n"]
+    low = _STEER.get("low", 0) + 1 if want * 4 <= n else 0
+    if want > n or low >= STEER_LOW_SAMPLES:
+        n, low = want, 0
+    if n != _STEER["n"]:
         log(LOG_DEBUG, "stats: sampling 1 packet in %d (%.0f forwarded packets/s)", n, pps)
-    _STEER["n"] = n
-    moved = False
-    for chain, g, tag in ((SWG_INET_CHAIN, gi, "swg-inet-up:__gate"), (SWG_CATK_CHAIN, gk, "swg-catk-up:__gate")):
-        if g and g != n:
-            moved |= run(["iptables", "-t", "mangle", "-R", chain, "1"] + _ipt_gate_args(tag, n)).returncode == 0
+    _STEER.update(n=n, low=low)
+    for chain, (tbl, tag) in _IPT_GATE.items():
+        if seen.get(chain, n) != n:
+            run(["iptables", "-t", tbl, "-R", chain, "1"] + _ipt_gate_args(tag, n))
     rep = []
     for chain in ("catcount", "catany"):
-        if gc.get(chain) and gc[chain] != n:
-            m = re.search(r"chain " + chain + r" \{[^\n]*\n\s*type [^\n]*\n\s*numgen random mod \d+ != 0 return # handle (\d+)\n",
-                          run(["nft", "-a", "list", "chain", "inet", SMART_NFT_TABLE, chain]).stdout or "")
-            if m:
-                rep.append("replace rule inet %s %s handle %s numgen random mod %d != 0 return" % (SMART_NFT_TABLE, chain, m.group(1), n))
+        if seen.get(chain, n) != n:
+            h = _nft_gate(run(["nft", "-a", "list", "chain", "inet", SMART_NFT_TABLE, chain]).stdout or "", chain)[1]
+            if h:
+                rep.append("replace rule inet %s %s handle %s %s" % (SMART_NFT_TABLE, chain, h, " ".join(_nft_gate_args(n))))
     if rep:
-        moved |= run(["nft", "-f", "-"], input_text="\n".join(rep) + "\n").returncode == 0
-    if moved:
-        _stats_rebase()
+        run(["nft", "-f", "-"], input_text="\n".join(rep) + "\n")
 
 
 def _awg_record(name):
@@ -18959,7 +18989,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         _b = snap["cat_rate"].setdefault(_c, {"up": 0.0, "dn": 0.0})
         _b["up"] = _b.get("up", 0.0) + _v["up"]; _b["dn"] = _b.get("dn", 0.0) + _v["dn"]
     try:                                        # after all three samplers (D1): a display figure must never stop a sync
-        _stats_steer(snap.get("wan_iface"))
+        _stats_steer()
     except Exception as e:
         log(LOG_WARNING, "stats: steering the sampling gates failed: %s", e)
     return snap

@@ -13,7 +13,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   about 10 Mbit a node counts a sample of the packets and scales it up, so **above about 10 Mbit these three figures are
   estimates** (within a few percent over a minute, a little rougher in a single 5-second reading); below it they are
   exact, as before. Per-person traffic, the traffic totals and Top talkers are not affected: they never came from these
-  rules.
+  rules. Day, week and month views of a destination or an exit now count a quiet minute as zero, so a short burst no
+  longer reads as if it had lasted the whole hour or day.
 
 ## [1.8.11-beta] — 2026-11-01
 

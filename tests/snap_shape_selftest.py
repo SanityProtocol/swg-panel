@@ -89,6 +89,9 @@ PLANTS = {
     "tmpsweep": ('                        os.unlink(_p)\n', '                        pass\n'),
     "live644": ('atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o640)',
                 'atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)'),
+    # [10]: the quiet minute skipped again, as before 1.8.12
+    "quietcat": ("if (rup or rdn or (nid, cat) in clast_w) and", "if (rup or rdn) and"),
+    "quietexit": ("if (_xu or _xn or (nid, _xd) in xlast_w) and", "if (_xu or _xn) and"),
 }
 TMP = tempfile.mkdtemp(prefix="snap-shape-")
 atexit.register(shutil.rmtree, TMP, True)          # every exit, an early one too
@@ -616,6 +619,30 @@ try:
               not bad[(fld, tname)], bad[(fld, tname)])
 finally:
     P.log = _log_was
+
+print("\n[10] the category and exit rings: a quiet minute is written as 0 once the ring exists (node D1 sampling)")
+# A ranged bucket averages the minutes written. Skipping the zeros read a burst — or a sampled rate, 0 or a 1-in-N packet
+# in a 5 s window since node 1.8.12 D1 — as if it had lasted the whole bucket (review F1: Day volume ×5.6 at N = 256).
+_d10 = _w9_fresh()
+_W10, _hu10 = [], P.hrrd_update
+P.hrrd_update = lambda path, ts, M: _W10.append((os.path.basename(path), M[3], M[4]))
+try:
+    _nodes10 = P.nodes_load(_d10["nodes_path"])
+    for _rate in ({"up": 5000, "dn": 700}, {"up": 0, "dn": 0}, {"up": 0, "dn": 0}):
+        _s10 = copy.deepcopy(_BASE)
+        _s10["cat_rate"] = {"google": dict(_rate), "telegram": {"up": 0, "dn": 0}}
+        _s10["exit_rate"] = {"tun0": {"up": _rate["up"], "down": _rate["dn"]}, "tun9": {"up": 0, "down": 0}}
+        P.Handler._node_sync_history(_Hdr(), _Q9, _nodes10.get(_Q9), _nodes10, _s10)
+        for _k in ("_cat_last_w", "_exit_last_w"):          # the next sync a minute later (the writers throttle to one a minute)
+            for _kk in list(_d10.get(_k, {})):
+                _d10[_k][_kk] -= 61
+finally:
+    P.hrrd_update = _hu10
+_cw = [(u, n) for f, u, n in _W10 if f.startswith("cat-") and "google" in f]
+_xw = [(u, n) for f, u, n in _W10 if f.startswith("exitd-") and "tun0" in f]
+check("[10] a category that moved bytes: its ring gets the reading, then a 0 for each quiet minute", _cw == [(5000, 700), (0, 0), (0, 0)], _W10)
+check("[10] …an exit the same", _xw == [(5000, 700), (0, 0), (0, 0)], _W10)
+check("[10] a category and an exit that never moved a byte get no ring", not any("telegram" in f or "tun9" in f for f, _, _ in _W10), _W10)
 
 print()
 if PERTURB:

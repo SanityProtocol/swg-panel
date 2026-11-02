@@ -59,8 +59,8 @@ def check(name, cond, detail=""):
 PLANTS = {
     "cln": ('''            _add("iifname", "@lg", "ip", "saddr", "@ar", "ip", "daddr", "!=", "@cln", "jump", "sa")''',
             '''            _add("iifname", "@lg", "ip", "saddr", "@ar", "jump", "sa")'''),
-    "cc": ('''        subnets = sorted({e["subnet"] for e in smart_e})           # every client subnet under smart routing (incl catch-all)''',
-           '''        subnets = sorted({e["subnet"] for e in smart_e} | set((arr or {}).get("subnets") or ()))'''),
+    "cc": ('''        subnets = _collapse4(e["subnet"] for e in smart_e)        # every client subnet under smart routing (incl catch-all)''',
+           '''        subnets = _collapse4([e["subnet"] for e in smart_e] + list((arr or {}).get("subnets") or ()))'''),
     "og": ('''                gd = ["iifname", "!=", '"%s"' % g] if a == "exit" and g else []   # the ORIGIN GUARD (see aw)''',
            '''                gd = []'''),
     "lg": ('''    _arr = ({"subnets": arr_subs, "entries": arr_e, "legs": list(_relay_links(node_cfg)),''',
