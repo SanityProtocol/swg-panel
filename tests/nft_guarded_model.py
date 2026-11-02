@@ -456,7 +456,8 @@ class SmartModel:
                     raise NftError("syntax error, unexpected '}' in %r" % text)            # `{ }`: the whole batch is refused
                 spans = [_span(x) for x in els]
                 if any(a <= d and c <= b for k, (a, b) in enumerate(spans) for (c, d) in spans[k + 1:]):
-                    raise NftError("conflicting intervals specified in %r" % text)        # an interval set refuses an overlap
+                    raise NftError("conflicting intervals specified in %r" % text)        # stricter than nft 1.0.9, which merges an
+                    #                                     overlap (measured); older nft refuses one (T14), so the node collapses first
                 ops.append(("nets", fld, spans, neg)); i = j + 1
             elif at("numgen", "random", "mod") and tk[i + 4:i + 6] == ["!=", "0"] and int(tk[i + 3]) >= 1:
                 ops.append(("numgen", int(tk[i + 3]))); i += 6                # the sampling gate: true for all but 1 packet in N
