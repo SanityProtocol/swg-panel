@@ -605,9 +605,9 @@ export function AddTargetSheet({ peer, back, child }) {
       : html`<${Fragment}>
         ${/* ⚠️ NO ADVICE TO ROTATE HERE. A locked vault, a failed read, an interface gone and a key really lost all reach this line
               with no config, and rotating breaks a working client in every one but the last. Saving loses nothing (the peer's
-              blob covers a new target), and the QR card tells those states apart and says what each needs. A keyless target
-              has no key or QR to miss. */""}
-        ${added.some(needsIp) && !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
+              blob covers a new target), and the next step is the QR card's: it tells a locked vault, a failed read and a
+              sealed config apart. A keyless target has no key or QR to miss. */""}
+        ${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
             ? T("This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated.")
             : T("store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.")}</span></div>` : null}
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>

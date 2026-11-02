@@ -82,7 +82,7 @@ PERTURBS = {
                  ("js/peer-ui.js", _GONE, "if (need === false || !exists) return null;")],
     "novault": [("js/peer-ui.js", _GONE, "if (need === false || ready || subSKCached() || exists === null) return null;")],
     "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
-    "keyless": [("js/sheets-crud.js", "${added.some(needsIp) && !srcConf ?", "${added.length && !srcConf ?")],
+    "keyless": [("js/sheets-crud.js", "${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf ?", "${added.length && !srcConf ?")],
     "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
@@ -505,13 +505,12 @@ try:
         reload()
         ev("store", "C.lockVault(); return 1;")
         ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
-        until("!!document.querySelector('.overlay.show .targetopt')", 15, "the target rows")
-        tab.ev("new Promise(r => setTimeout(r, 250))")   # a row clicked before the picker's seed effect is overwritten by it
+        # the picker seeds the deployed targets in an effect, over any row clicked before it: the deployed row picked is that seed
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
         ACT = "%s.querySelector('.sheet-foot .btn-primary')" % SHEET
         WARN = "([...%s.querySelectorAll('.notice.warn')].map(n => n.textContent).find(t => t.includes('private key')) || '')" % SHEET
         tick("csqtt25")
-        until("!%s.disabled" % ACT, 5, "the keyless row ticked")
-        tab.ev("new Promise(r => setTimeout(r, 250))")
+        until("!%s.disabled" % ACT, 5, "the keyless row ticked")   # Save lit and the warning are one render: no wait after this
         check("[10] a keyless target has no key to miss: no warning", not tab.ev(WARN), tab.ev(WARN))
         tick("awg2")
         until(WARN, 5, "the warning")
@@ -521,6 +520,8 @@ try:
         watch_toasts()
         tab.ev(ACT + ".click()")
         until("window.__toasts.some(t => t.startsWith('Peer targets updated'))", 10, "the save")
+        # it closes itself after its refresh, which takes a while under load, and a sheet opened before that is the one it closes
+        until("!document.querySelector('.overlay.show')", 15, "the Targets sheet closing itself")
         p = roster()[pid]
         check("[10] it saves on a locked vault: the targets, the same key", p["pubkey"] == pk and {t["iface"] for t in p["targets"]} == {"awg1", "awg2", "csqtt25"}, p["targets"])
         ev("peer-ui", "M.openPeerConfigs(S.Store.peer(%s)); return 1;" % json.dumps(pid))
