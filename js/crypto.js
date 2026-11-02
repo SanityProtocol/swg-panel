@@ -1326,11 +1326,15 @@ export async function blobConfig(peer, node, iface) {
     // answer as an unwrap that fails above — not "no stored config", which recommends re-issuing as if nothing were there
     try { secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec))); } catch (_) { return CONF_SEALED_OLD; }
     if (!secret || !secret.k) return null;
-    const eff = effectiveClientParams(peer, t, meta);
-    return buildConf({ privkey: secret.k, address: (t.ip || "").split("/")[0] + "/32",
-      dns: eff.dns, mtu: eff.mtu, awg_params: meta.awg_params, server_pubkey: meta.public_key,
-      psk: secret.p || peer.psk, endpoint: meta.endpoint, allowed: eff.allowed, keepalive: eff.keepalive });
+    return clientConf(peer, t, meta, secret.k, secret.p || peer.psk);
   } catch (_) { return null; }
+}
+// A deployment's client config from the peer's key, built one way: a first key's QR on the Targets sheet is then the QR this key
+// rebuilds later from the store, field for field.
+export function clientConf(peer, t, meta, privkey, psk) {
+  const eff = effectiveClientParams(peer, t, meta);
+  return buildConf({ privkey, address: (t.ip || "").split("/")[0] + "/32", dns: eff.dns, mtu: eff.mtu, awg_params: meta.awg_params,
+    server_pubkey: meta.public_key, psk, endpoint: meta.endpoint, allowed: eff.allowed, keepalive: eff.keepalive });
 }
 
 // A dial-in exit's ROUTER key is kept in the same store (1.8.11 S9c), in its node's bucket (SUB_EXIT_PFX on the server):

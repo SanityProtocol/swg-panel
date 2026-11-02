@@ -13,7 +13,7 @@ address is the read-back keyed by its password, which a Rotate blanks.
       QR and its gear, twice over, and no mark is left
   [2] the same with WDTT, and no logout: a reload and two opens
   [3] an interface the node stopped reporting takes nothing from the peer's other deployment; its own QR card says so, not
-      re-issue, and has its QR again the moment the interface is back
+      re-issue, and on the sheet left open has its QR again the moment the interface is back
   [4] one failed read of the escrow leaves no mark, and the QR card says the panel couldn't be reached, not re-issue; the QR is
       back once the read works, and after a reload
   [5] the banner still tells the truth: a peer with nothing stored shows it, offers no unlock on an open vault, and leaves it the
@@ -28,7 +28,9 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [10] adding a target on a locked vault: a keyless target draws no warning, one with a key draws no advice to rotate; it saves with
        the same key, the QR card says locked, and the unlock gives the new target its config
   [11] a peer with no key (csqtt only) adds WireGuard: no warning, and on Save it gets a key and a PSK, its csqtt password as it
-       was; the key is kept encrypted, the QR is there at once and after a reload with the same key; a second key is refused
+       was; the key is kept encrypted, the QR is there at once and after a reload with the same key; a second key is refused.
+       A refused deployment says why, a retry after one sends the key it minted again, and a key another tab gave first is refused
+       with "reopen it"
   [12] the unlock follows the vault, not the setting: no vault, none; store_configs off, a config kept from before still opens
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
@@ -49,12 +51,15 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-unread   a failed read of the records reads as nothing kept                          → RED [4]
        --perturb-gonecard the QR card of a gone interface says re-issue                               → RED [3]
        --perturb-gonemiss a gone interface is remembered as a miss                                    → RED [3]
+       --perturb-gonedeps an open card never looks again when its interface comes back                → RED [3]
        --perturb-advice   the Targets sheet tells the operator to rotate                              → RED [10]
        --perturb-keyless  a keyless target draws the warning                                          → RED [10]
        --perturb-firstkey the panel refuses a keyless peer its first key (served from a copy of it)   → RED [11]
        --perturb-keyguard the panel takes a second key for a peer quietly                             → RED [11]
        --perturb-freshwarn the sheet warns of a missing key that Save is about to make                → RED [11]
        --perturb-freshkeep the new key is never kept                                                  → RED [11]
+       --perturb-addwhy   a refused deployment is a bare "(add)"                                      → RED [11]
+       --perturb-freshref a retry mints a second key                                                  → RED [11]
        --perturb-novault  the unlock is offered with no vault                                         → RED [12]
        --perturb-need     the unlock is hidden with store_configs off                                 → RED [12]
 """
@@ -95,6 +100,9 @@ PERTURBS = {
     "unread": [("js/crypto.js", "if (users === SUB_USERS_UNREAD) return CONF_UNREACHABLE;", "if (false) return CONF_UNREACHABLE;")],
     "gonecard": [("js/peer-ui.js", ': !Store.ifaceMeta(t.node, t.iface) ? T("The node no longer reports interface', ': false ? T("The node no longer reports interface')],
     "gonemiss": [("js/crypto.js", "  if (!Store.ifaceMeta(node, iface)) return Promise.resolve(null);\n  if (_configMissFresh(mk))", "  if (_configMissFresh(mk))")],
+    "gonedeps": [("js/peer-ui.js", ", Store.configEpoch, !!Store.ifaceMeta(t.node, t.iface)]);", ", Store.configEpoch]);")],
+    "addwhy": [("js/sheets-crud.js", ': srvText(r) ? " — " + srvText(r) : ""));', ': ""));')],
+    "freshref": [("js/sheets-crud.js", "    const fresh = freshKey.current || (", "    const fresh = (")],
     "firstkey": [("swg-panel-server", '            _key = {"pubkey": nk, "psk": body.get("psk") or gen_psk()}', '            return 400, {"ok": False, "error": "planted", "code": "bad_request"}')],
     "keyguard": [("swg-panel-server", 'if nk and p.get("pubkey") and nk != p["pubkey"]:', "if False:")],
     "freshwarn": [("js/sheets-crud.js", "&& !srcConf && (Store.peer(peer.id) || peer).pubkey ? html`", "&& !srcConf ? html`")],
@@ -319,14 +327,21 @@ try:
         br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
     def close_all():
         ev("ui", "M.closeAllModals(); return 1;")
-    def qr_cards(pid):
-        """The peer's QR sheet: each WireGuard deployment's card by interface, "QR" or what it says instead."""
+    def qr_open(pid):
         ev("peer-ui", "M.openPeerConfigs(S.Store.peer(%s)); return 1;" % json.dumps(pid))
         until("(() => { const s = %s; return !!s && !!s.querySelector('.deploy') && ![...s.querySelectorAll('.qr-none')].some(n => n.textContent.includes('loading')); })()" % SHEET, 15, "the QR cards")
-        out = tab.ev("""(() => Object.fromEntries([...%s.querySelectorAll('.deploy')].map(d => [(d.querySelector('.deploy-head .tg, .tg') || {}).textContent.trim(),
+    def qr_read():
+        """The open QR sheet: each WireGuard deployment's card by interface, "QR" or what it says instead."""
+        return tab.ev("""(() => Object.fromEntries([...%s.querySelectorAll('.deploy')].map(d => [(d.querySelector('.deploy-head .tg, .tg') || {}).textContent.trim(),
             d.querySelector('.qr-none') ? d.querySelector('.qr-none').textContent : 'QR'])))()""" % SHEET)
+    def qr_cards(pid):
+        qr_open(pid)
+        out = qr_read()
         close_all()
         return out
+    def formmsg_done():
+        until("(() => { const m = document.querySelector('.overlay.show .formmsg'); return !!m && !m.textContent.includes('applying'); })()", 20, "the save's message")
+        return tab.ev("document.querySelector('.overlay.show .formmsg').textContent")
     def open_edit(pid, stay=False):
         ev("sheets-crud", "M.openEditPeer(S.Store.peer(%s)); return 1;" % json.dumps(pid))
         until("(() => { const s = %s; return !!s && (!!s.querySelector('.topt-gear') || s.textContent.includes(\"private key isn't available\")); })()" % SHEET, 15, "the edit sheet's lookup")
@@ -410,12 +425,17 @@ try:
         check("[3] no mark on the peer", not marked(pid))
         st = open_edit(pid)
         check("[3] …on the next open as well", good(st), st)
-        c = qr_cards(pid)
+        qr_open(pid)
+        c = qr_read()
         check("[3] the gone one's QR card says the node no longer reports it, not re-issue", "no longer reports" in c.get("awg2", "") and c.get("awg1") == "QR", c)
         GONE.discard("awg2")
         until("(async () => { const S = await %s('store'); await S.Store.poll(); return !!S.Store.ifaceMeta(%s, 'awg2'); })()" % (MOD, json.dumps(NID)), 15, "awg2 back")
-        c = qr_cards(pid)
-        check("[3] back, and reopened at once: its QR", c.get("awg2") == "QR", c)
+        end = time.time() + 10                     # the card the sheet left open looks again by itself
+        while time.time() < end and qr_read().get("awg2") != "QR":
+            time.sleep(0.3)
+        c = qr_read()
+        close_all()
+        check("[3] back, on the sheet left open: its QR", c.get("awg2") == "QR", c)
 
     print("\n[4] one failed read of the escrow")
     with guard("[4]"):
@@ -604,6 +624,39 @@ try:
         st, o = call("POST", "/api/peers/add-target", {"peer_id": pid, "target": {"node": NID, "iface": "awg1", "ip": "10.8.0.99"},
                                                        "pubkey": base64.b64encode(os.urandom(32)).decode()})
         check("[11] a second key for it is refused, not dropped", st == 409 and o.get("code") == "key_changed", [st, o])
+        uid, pid = new_peer("keyless2", ["csqtt25"], kept=False)
+        reload()
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg1"); tick("awg2")
+        addresses_in()
+        # the panel refuses awg2 once, after awg1 gave the peer its key
+        tab.ev("""(() => { const f = window.fetch; window.__fetch = f; let once = true;
+          window.fetch = (u, o, ...a) => { if (once && String(u.url || u).includes('/api/peers/add-target') && o && String(o.body).includes('"awg2"')) { once = false;
+            return Promise.resolve(new Response(JSON.stringify({ok: false, error: "planted refusal", code: "bad_request"}), {status: 400, headers: {"Content-Type": "application/json"}})); }
+            return f(u, o, ...a); }; })()""")
+        tab.ev(ACT + ".click()")
+        m = formmsg_done()
+        tab.ev("window.fetch = window.__fetch; 1")
+        k1 = roster()[pid].get("pubkey")
+        check("[11] a refused deployment says why", "planted refusal" in m, m)
+        tab.ev(ACT + ".click()")
+        formmsg_done()
+        p = roster()[pid]
+        check("[11] the retry sends the key it minted again: both deployments, one key", bool(k1) and p.get("pubkey") == k1 and {t["iface"] for t in p["targets"]} == {"csqtt25", "awg1", "awg2"}, p.get("targets"))
+        close_all()
+        uid, pid = new_peer("keyless3", ["csqtt25"], kept=False)
+        reload()
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg2")
+        addresses_in()
+        must(call("POST", "/api/peers/add-target", {"peer_id": pid, "target": {"node": NID, "iface": "awg1", "ip": "10.8.0.97"},   # another tab, first
+                                                    "pubkey": base64.b64encode(os.urandom(32)).decode()}), "the other tab's add")
+        tab.ev(ACT + ".click()")
+        m = formmsg_done()
+        check("[11] a key another tab gave it first: refused, and the sheet says to reopen", "another key now" in m, m)
+        close_all()
 
     print("\n[12] the unlock follows the vault, not the setting")
     with guard("[12]"):

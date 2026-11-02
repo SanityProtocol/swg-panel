@@ -1587,7 +1587,7 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
   const peer = Store.recon.peers.find(p => p.id === peerProp.id) || peerProp;   // LIVE peer → its current pubkey; the modal's prop is frozen at open, so a rotation (new key) would otherwise keep the QR gone
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); ensurePeerBlob(peer, c); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
+  useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); ensurePeerBlob(peer, c); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch, !!Store.ifaceMeta(t.node, t.iface)]);   // the interface back → look again
   // live target (status / observed) from the store, falling back to the passed-in snapshot
   const ft = (Store.recon.peers.find(p => p.id === peer.id) || {}).targets;
   const lt = (ft && ft.find(d => d.node === t.node && d.iface === t.iface)) || t;

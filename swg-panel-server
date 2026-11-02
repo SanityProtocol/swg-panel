@@ -29197,7 +29197,7 @@ def api(method, path, qs, body, deps):
         _key = {}
         nk = (body.get("pubkey") or "").strip()
         if nk and p.get("pubkey") and nk != p["pubkey"]:
-            return 409, {"ok": False, "error": "this peer has another key now — reopen it", "code": "key_changed"}
+            return 409, {"ok": False, **perr("this peer has another key now — reopen it"), "code": "key_changed"}
         if not is_keyless_kind(target["type"]) and not p.get("pubkey"):
             if not nk:
                 return 400, {"ok": False, **perr("{v1} needs a client key — this peer has none", v1=target["iface"]), "code": "bad_request"}

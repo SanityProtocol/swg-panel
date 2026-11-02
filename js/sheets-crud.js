@@ -19,7 +19,7 @@ import { targetType, routerCapable, iTypeOf, kindOf, nodeStale, wdttOn, suggestI
 import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
-  genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, effectiveClientParams, QR, qrDataURL,
+  genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, clientConf, QR, qrDataURL,
   subFeatureOn, subPublishOrPrompt, ensureVaultUnlocked, subSKCached, VaultPromptSheet, ensurePeerBlob,
   SubAutoNote, anySessionConf, subAutoGenIfEnabled, subReconcileUser,
 } from "./crypto.js";
@@ -483,6 +483,7 @@ export function AddTargetSheet({ peer, back, child }) {
   // source config (holds the client's private key) so NEW targets can rebuild a QR: session first,
   // then the panel's stored copy when store_configs is on. Any target's config carries the same key.
   const [srcConf, setSrcConf] = useState(() => anySessionConf(peer.pubkey));
+  const freshKey = useRef(null);   // a first key minted here: a retry after a partial failure sends it again, never a second
   const [confLoaded, setConfLoaded] = useState(() => !!anySessionConf(peer.pubkey) || !Store.storeConfigs);
   useEffect(() => {
     if (srcConf || !Store.storeConfigs) { setConfLoaded(true); return; }
@@ -519,9 +520,10 @@ export function AddTargetSheet({ peer, back, child }) {
     const fails = [];
     // A peer with no key yet (every deployment csqtt / WDTT) gets one with its first WireGuard deployment, minted here as a new
     // peer's is; its csqtt / WDTT links stay as they are. The live peer decides: this sheet's copy may predate that first key.
-    const fresh = !(Store.peer(peer.id) || peer).pubkey && added.some(c => !isSelfContainedKind(kindFor(c)))
-      ? { keys: await genKeys(), psk: genPSK() } : null;
-    const pk = fresh ? fresh.keys.pub : peer.pubkey;
+    const fresh = freshKey.current || (!(Store.peer(peer.id) || peer).pubkey && added.some(c => !isSelfContainedKind(kindFor(c)))
+      ? { keys: await genKeys(), psk: genPSK() } : null);
+    freshKey.current = fresh;
+    const pk = fresh ? fresh.keys.pub : peer.pubkey;   // srcConf's own key otherwise: never one config filed under another key
     let freshKept = false;
     for (const t of added) {
       const kind = kindFor(t);
@@ -541,14 +543,13 @@ export function AddTargetSheet({ peer, back, child }) {
       const target = { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" };
       const ov = o ? configOverrides(o, info) : {};
       if (Object.keys(ov).length) target.overrides = ov;
-      if (fresh) { const eff = effectiveClientParams(peer, target, info);   // what the kept key builds later, so this QR is that one
-        conf = buildConf({ privkey: fresh.keys.priv, address: ipClean + "/32", dns: eff.dns, mtu: eff.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: fresh.psk, endpoint: info.endpoint, allowed: eff.allowed, keepalive: eff.keepalive }); }
+      if (fresh) conf = clientConf(peer, target, info, fresh.keys.priv, fresh.psk);   // the QR the kept key rebuilds later
       // Same key as the existing deployments → the peer's blob already covers it; no plaintext to the server.
       const r = await api.peerAddTarget({ peer_id: peer.id, target, ...(fresh ? { pubkey: fresh.keys.pub, psk: fresh.psk } : {}) });
       if (r.ok) { if (conf) (Store.sessionConfigs[pk] = Store.sessionConfigs[pk] || {})[tkey(t.node, t.iface)] = conf; if (fresh) freshKept = true; }
       // a refused deployment says WHY — "(add)" alone left the operator guessing which of this device's networks was in the way
       else fails.push(Store.nodeName(t.node) + "/" + T("{v1} (add)", { v1: t.iface })
-        + ((r.refusals || []).length ? " — " + r.refusals.map(x => netWhy(x, Store.nodeName(x.node))).join(" ") : ""));
+        + ((r.refusals || []).length ? " — " + r.refusals.map(x => netWhy(x, Store.nodeName(x.node))).join(" ") : srvText(r) ? " — " + srvText(r) : ""));
     }
     // kept as a new peer's key is. A locked vault asks first, in a sheet over this one that closes before this one does.
     if (freshKept) await subPublishOrPrompt(peer.user_id || null, peer.id, fresh.keys.priv, fresh.psk);
@@ -617,7 +618,7 @@ export function AddTargetSheet({ peer, back, child }) {
               with no config, and rotating breaks a working client in every one but the last. Saving loses nothing (the peer's
               blob covers a new target), and the next step is the QR card's: it tells a locked vault, a failed read and a
               sealed config apart. A keyless target has no key or QR to miss, and a peer with no key yet gets one on Save. */""}
-        ${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf && (Store.peer(peer.id) || peer).pubkey ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
+        ${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf && !freshKey.current && (Store.peer(peer.id) || peer).pubkey ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
             ? T("This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated.")
             : T("store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.")}</span></div>` : null}
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>
