@@ -531,13 +531,15 @@ class SmartModel:
                 ops.append(("verdict", tk[i])); i += 1
             elif at("jump"):
                 ops.append(("jump", tk[i + 1])); i += 2
+            elif at("goto"):                                            # a jump with no way back: the target's return ends the caller
+                ops.append(("goto", tk[i + 1])); i += 2
             elif at("queue", "num") and tk[i + 3:i + 4] == ["bypass"]:
                 ops.append(("verdict", "queue")); i += 4
             elif at("reject", "with", "tcp", "reset"):
                 ops.append(("verdict", "reject")); i += 4
             else:
                 raise NftError("syntax error in rule %r at %r" % (text, " ".join(tk[i:i + 3])))
-        if any(o[0] in ("verdict", "jump") for o in ops[:-1]):
+        if any(o[0] in ("verdict", "jump", "goto") for o in ops[:-1]):
             raise NftError("syntax error: a verdict must end the rule %r" % text)
         # `tcp dport` beside an L4 match that allows another protocol: nft refuses the rule, and with it the whole batch —
         # "conflicting protocols specified: udp vs. tcp" (measured, nft 1.0.9 and 1.1.3; `meta l4proto tcp` beside it is fine)
@@ -557,7 +559,7 @@ class SmartModel:
                         out.add(("sets", o[1]))
                     elif o[0] == "set":
                         out.add(("sets", o[2]))
-                    elif o[0] == "jump":
+                    elif o[0] in ("jump", "goto"):
                         out.add(("chains", o[1]))
                     elif o[0] == "counter" and o[1]:
                         out.add(("counters", o[1]))
@@ -689,6 +691,15 @@ class SmartModel:
             out.append("\t}")
         return "\n".join(out + ["}"]) + "\n"
 
+    def flat(self, table, chain):
+        """A chain's rule texts with each `goto` followed into place. Since the dispatch (docs/DATAPATH-PLAN.md D2) a subnet's
+        rules sit in a chain of their own, `pa100000+i`, reached from `prerouting` by one goto: a reader asking what a rule
+        IS there reads through it. Order within a subnet is the node's; subnets follow their gotos."""
+        out = []
+        for r in ((self.tables.get(table) or {}).get("chains", {}).get(chain) or {}).get("rules", []):
+            out += self.flat(table, r["ops"][-1][1]) if r["ops"] and r["ops"][-1][0] == "goto" else [r["text"]]
+        return out
+
     # ── packets ──────────────────────────────────────────────────────────────────────────────────────────────────────────
     def packet(self, table, iif, saddr, daddr, proto="tcp", dport=443, ct="new", ctmark=0, reply=False, ctpackets=1,
                ctorig=None, length=517, replybytes=60, replypkts=1):
@@ -805,8 +816,8 @@ class SmartModel:
                         r["pk"] = r.get("pk", 0) + 1                  # an anonymous counter, listed as `counter packets N bytes M`
                 elif k == "verdict":
                     verdict = o[1]
-                elif k == "jump":
-                    verdict = ("jump", o[1])
+                elif k in ("jump", "goto"):
+                    verdict = (k, o[1])
                 if not ok:
                     break
             if not ok:
@@ -815,8 +826,8 @@ class SmartModel:
                 return None
             if isinstance(verdict, tuple):
                 sub = self._walk(t, verdict[1], pkt, st, depth + 1)
-                if sub:
-                    return sub
+                if sub or verdict[0] == "goto":            # measured on 5.15–7.0 (DATAPATH §7): a return in, or the end of, a
+                    return sub                              # chain reached by goto returns past the chain that went there
                 continue
             if verdict:
                 return verdict
@@ -847,6 +858,12 @@ class SmartKernel:
                 return CP(args, 0, self.m.render(args[4]), "")
             if args[1] == "-a" and args[2:4] == ["list", "chain"]:   # the render always carries `# handle N`, as `-a` prints it
                 args = args[:1] + args[2:]
+            if args[1:4] == ["-j", "list", "counters"]:          # `nft -j list counters table inet <t>`: the named counters, as JSON
+                if args[6] not in self.m.tables:
+                    return CP(args, 1, "", "Error: No such file or directory")
+                return CP(args, 0, json.dumps({"nftables": [{"metainfo": {}}] + [
+                    {"counter": {"family": "inet", "name": k, "table": args[6], "packets": v, "bytes": v * 60}}
+                    for k, v in sorted(self.m.tables[args[6]]["counters"].items())]}), "")
             if args[1:3] == ["list", "chain"]:                   # one chain, as `nft list chain inet <t> <c>` prints it
                 if args[4] not in self.m.tables or args[5] not in self.m.tables[args[4]]["chains"]:
                     return CP(args, 1, "", "Error: No such file or directory")
