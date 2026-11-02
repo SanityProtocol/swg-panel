@@ -4966,6 +4966,8 @@ export const STR = {
   "Show link": "Ссылка",
   "Couldn't reach the panel just now, so this peer's stored config could not be read. It has not been lost — try again in a moment.":
     "Сейчас не удалось связаться с панелью, поэтому сохранённый конфиг этого пира прочитать не вышло. Он не потерян — попробуйте ещё раз через минуту.",
+  "The node no longer reports interface {iface}, so this config can't be built.":
+    "Нода больше не сообщает об интерфейсе {iface}, поэтому этот конфиг не собрать.",
   "No stored config — re-issue this peer to enable its QR & download.":
     "Конфиг не сохранён — перевыпустите пира, чтобы включить QR и загрузку.",
   "Config shown right after creation, or enable store_configs to keep it.":

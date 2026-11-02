@@ -12,10 +12,12 @@ address is the read-back keyed by its password, which a Rotate blanks.
   [1] the report: a peer on awg1 + csqtt25 made in the New peer sheet, Edit, log out, sign in — Edit still has the config, its
       QR and its gear, twice over, and no mark is left
   [2] the same with WDTT, and no logout: a reload and two opens
-  [3] an interface the node stopped reporting takes nothing from the peer's other deployment
-  [4] one failed read of the escrow leaves no mark: after a reload the config is back
+  [3] an interface the node stopped reporting takes nothing from the peer's other deployment; its own QR card says so, not
+      re-issue, and has its QR again the moment the interface is back
+  [4] one failed read of the escrow leaves no mark, and the QR card says the panel couldn't be reached, not re-issue; the QR is
+      back once the read works, and after a reload
   [5] the banner still tells the truth: a peer with nothing stored shows it, offers no unlock on an open vault, and leaves it the
-      moment the key reaches the panel
+      moment the key reaches the panel; its QR card says re-issue, the one case here where that is the answer
   [6] a mark an older build left is dropped at load
   [7] the backfill's own note does not stop a lookup, and a lookup that finds the config clears it
   [8] Rotate on a mixed peer: Save stays off while the csqtt address is blank and when it comes back different — and a real
@@ -42,6 +44,9 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-nodirty  the password counts as an edit of the peer                                  → RED [9]
        --perturb-enter    Enter in the password is the sheet's Enter too                              → RED [9]
        --perturb-unlocked the unlock is offered on an open vault                                      → RED [5]
+       --perturb-unread   a failed read of the records reads as nothing kept                          → RED [4]
+       --perturb-gonecard the QR card of a gone interface says re-issue                               → RED [3]
+       --perturb-gonemiss a gone interface is remembered as a miss                                    → RED [3]
        --perturb-advice   the Targets sheet tells the operator to rotate                              → RED [10]
        --perturb-keyless  a keyless target draws the warning                                          → RED [10]
        --perturb-novault  the unlock is offered with no vault                                         → RED [11]
@@ -81,6 +86,9 @@ PERTURBS = {
     "unlocked": [("js/peer-ui.js", "useEffect(() => { if (subSKCached()) { setReady(true); return; }\n    let ok", "useEffect(() => { let ok"),
                  ("js/peer-ui.js", _GONE, "if (need === false || !exists) return null;")],
     "novault": [("js/peer-ui.js", _GONE, "if (need === false || ready || subSKCached() || exists === null) return null;")],
+    "unread": [("js/crypto.js", "if (users === SUB_USERS_UNREAD) return CONF_UNREACHABLE;", "if (false) return CONF_UNREACHABLE;")],
+    "gonecard": [("js/peer-ui.js", ': !Store.ifaceMeta(t.node, t.iface) ? T("The node no longer reports interface', ': false ? T("The node no longer reports interface')],
+    "gonemiss": [("js/crypto.js", "  if (!Store.ifaceMeta(node, iface)) return Promise.resolve(null);\n  if (_configMissFresh(mk))", "  if (_configMissFresh(mk))")],
     "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
     "keyless": [("js/sheets-crud.js", "${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf ?", "${added.length && !srcConf ?")],
     "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
@@ -296,6 +304,14 @@ try:
         br.send("Input.dispatchKeyEvent", dict(ENTER, type="keyUp"), session=tab.s)
     def close_all():
         ev("ui", "M.closeAllModals(); return 1;")
+    def qr_cards(pid):
+        """The peer's QR sheet: each WireGuard deployment's card by interface, "QR" or what it says instead."""
+        ev("peer-ui", "M.openPeerConfigs(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("(() => { const s = %s; return !!s && !!s.querySelector('.deploy') && ![...s.querySelectorAll('.qr-none')].some(n => n.textContent.includes('loading')); })()" % SHEET, 15, "the QR cards")
+        out = tab.ev("""(() => Object.fromEntries([...%s.querySelectorAll('.deploy')].map(d => [(d.querySelector('.deploy-head .tg, .tg') || {}).textContent.trim(),
+            d.querySelector('.qr-none') ? d.querySelector('.qr-none').textContent : 'QR'])))()""" % SHEET)
+        close_all()
+        return out
     def open_edit(pid, stay=False):
         ev("sheets-crud", "M.openEditPeer(S.Store.peer(%s)); return 1;" % json.dumps(pid))
         until("(() => { const s = %s; return !!s && (!!s.querySelector('.topt-gear') || s.textContent.includes(\"private key isn't available\")); })()" % SHEET, 15, "the edit sheet's lookup")
@@ -377,7 +393,12 @@ try:
         check("[3] no mark on the peer", not marked(pid))
         st = open_edit(pid)
         check("[3] …on the next open as well", good(st), st)
+        c = qr_cards(pid)
+        check("[3] the gone one's QR card says the node no longer reports it, not re-issue", "no longer reports" in c.get("awg2", "") and c.get("awg1") == "QR", c)
         GONE.discard("awg2")
+        until("(async () => { const S = await %s('store'); await S.Store.poll(); return !!S.Store.ifaceMeta(%s, 'awg2'); })()" % (MOD, json.dumps(NID)), 15, "awg2 back")
+        c = qr_cards(pid)
+        check("[3] back, and reopened at once: its QR", c.get("awg2") == "QR", c)
 
     print("\n[4] one failed read of the escrow")
     with guard("[4]"):
@@ -386,8 +407,13 @@ try:
         ev("store", "C.subUsersForget(); return 1;")   # its 4 s cache would answer instead
         tab.ev("(() => { const f = window.fetch; window.__fetch = f; window.fetch = (u, ...a) => String(u.url || u).includes('/api/sub/users') ? Promise.reject(new Error('blip')) : f(u, ...a); })()")
         open_edit(pid)
+        c = qr_cards(pid)
         tab.ev("window.fetch = window.__fetch; 1")
         check("[4] it leaves no mark on the peer", not marked(pid))
+        check("[4] the QR card says the panel couldn't be reached, not re-issue", "Couldn't reach the panel" in c.get("awg1", ""), c)
+        tab.ev("new Promise(r => setTimeout(r, 4200))")   # the records' 4 s cache holds the failed read, and the card says so till then
+        c = qr_cards(pid)
+        check("[4] once the read works, the QR is back, with no reload", c.get("awg1") == "QR", c)
         reload()
         st = open_edit(pid)
         check("[4] after a reload the config is back", good(st), st)
@@ -402,6 +428,8 @@ try:
         st = settled()
         close_all()
         check("[5] the banner says so, no QR, and no unlock on a vault that is open", bool(st) and st["banner"] and not st["qr"] and not st["door"], st)
+        c = qr_cards(pid)
+        check("[5] its QR card says re-issue: here that is the answer", "No stored config" in c.get("awg1", ""), c)
         json.dump(kept, open(blobs_of(uid), "w"))      # another browser publishes the key, a later unlock does
         reload()
         st = open_edit(pid)

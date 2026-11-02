@@ -554,11 +554,14 @@ export async function subEncryptPeer(uid, pid, privkey, psk, unlockKey) {
 // Is the subscriptions feature switched on for this panel?
 export function subFeatureOn() { return !!(((Store.panelSettings || {}).subscriptions || {}).enabled); }
 // The per-user subscription records (enabled + the SK-wrapped escrow), briefly cached.
+// A read that failed answers this: empty, so every caller reads "no record" as before, and its own object, so blobConfig can tell
+// "couldn't ask" from "no record" — it said "No stored config — re-issue" about an intact key while the panel was unreachable.
+const SUB_USERS_UNREAD = Object.freeze({});
 let _subUsersCache = { at: 0, map: null };
 export async function subUsersMap(force) {
   if (!force && _subUsersCache.map && Date.now() - _subUsersCache.at < 4000) return _subUsersCache.map;
-  try { const r = await api.subUsers(); _subUsersCache = { at: Date.now(), map: (r && r.ok && r.data && r.data.users) || {} }; }
-  catch (_) { _subUsersCache = { at: Date.now(), map: {} }; }
+  try { const r = await api.subUsers(); _subUsersCache = { at: Date.now(), map: r && r.ok && r.data ? (r.data.users || {}) : SUB_USERS_UNREAD }; }
+  catch (_) { _subUsersCache = { at: Date.now(), map: SUB_USERS_UNREAD }; }
   return _subUsersCache.map;
 }
 export function subUsersForget() { _subUsersCache = { at: 0, map: null }; }
@@ -1304,7 +1307,9 @@ export async function blobConfig(peer, node, iface) {
     if (!r.data || !r.data.sec) return null;
     sec = r.data.sec;
     const buid = r.data.user_id || peer.user_id || SUB_ORPHAN;   // decrypt with the key of the bucket the blob is IN
-    const rec = (await subUsersMap())[buid];
+    const users = await subUsersMap();
+    if (users === SUB_USERS_UNREAD) return CONF_UNREACHABLE;      // the records couldn't be read either: no answer, as above
+    const rec = users[buid];
     if (!rec || !rec.unlock_by_sk) return null;
     // NOT inside the transport catch. Unwrapping is a CRYPTO step, and folding its failure into
     // CONF_UNREACHABLE told the operator "couldn't reach the panel — try again in a minute" about a blob the
@@ -1413,6 +1418,9 @@ export function getConfig(pubkey, node, iface) {
   if (s && s[tkey(node, iface)]) return Promise.resolve(rerenderConf(s[tkey(node, iface)], node, iface));
   const peer = (Store.recon.peers || []).find(p => p.pubkey === pubkey);
   const mk = pubkey + "|" + node + "|" + iface;
+  // An interface its node no longer reports leaves nothing to build a config from, which says nothing about the key: no lookup and
+  // no miss. A miss outlived the interface's return by 30 s, and the card said "No stored config — re-issue" right after a Restore.
+  if (!Store.ifaceMeta(node, iface)) return Promise.resolve(null);
   if (_configMissFresh(mk)) return Promise.resolve(null);   // known-empty this epoch → don't re-hammer the server
   // ⚠️ A MISS IS ONE DEPLOYMENT'S, NOT THE PEER'S, so it stays here and never reaches _subNoConf. A csqtt / WDTT
   // deployment has no config at all, an interface the node stopped reporting can't be built, a failed read of the

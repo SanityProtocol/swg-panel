@@ -1610,6 +1610,8 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
         : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? T("loading…")
+            // First, as nothing below can help before the interface is back: not an unlock, not a re-issue (getConfig never asks)
+            : !Store.ifaceMeta(t.node, t.iface) ? T("The node no longer reports interface {iface}, so this config can't be built.", { iface: t.iface })
             // ⚠️ Say which of the two it is. "No stored config — re-issue this peer" is a claim about what
             // is ON DISK, and it was being printed whenever the panel merely could not be reached — telling
             // an operator their config was gone, and recommending the one action that would actually destroy it.
