@@ -19,6 +19,9 @@ msk-main's 1 GB), and a faster datapath (DATAPATH DP1/DP2) reaches it sooner.
 Run: python3 tests/conntrack_size_selftest.py   (0 = pass)
   --plant <x>  one defect, RED expected (exit 0 when caught):
      everypass   a raise that did not take is tried on every pass                       [1]
+     staletried  a raise fixed by hand leaves the next fall unsaid                         [1]
+     silentlow   the host helper says nothing when its raise does not take              [3]
+     bucketsdrift  the drop-in persists buckets other than the running ones              [3]
      docker      a container writes its read-only /proc/sys                             [1]
      lower       the host helper writes the RAM size over a larger operator value        [3]
      nomodload   the host helper writes no modules-load.d                               [3]
@@ -30,10 +33,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {
-    "everypass": ("[1]", 'if cur >= want or (tried and time.monotonic() - tried[1] < 3600):', "if cur >= want:"),
+    "everypass": ("[1]", "    if tried is not None and time.monotonic() - tried < 3600:\n        return", "    if False:\n        return"),
+    "staletried": ("[1]", '        _CT["tried"] = None                             # held, by us or by hand', '        pass                             # held, by us or by hand'),
+    "silentlow": ("[3]", "; else CT_SIZE_LOW=1; fi", "; fi"),
+    "bucketsdrift": ("[3]", '    want="$cur"; case "$bk" in', '    want="$cur"; case "" in'),
     "docker": ("[1]", '    if NODE_KIND == "docker":\n        return\n    p = os.path.join(proc_root, "sys/net/netfilter/nf_conntrack_")',
                '    p = os.path.join(proc_root, "sys/net/netfilter/nf_conntrack_")'),
-    "lower": ("[3]", '  [ "$cur" -gt "$want" ] && want="$cur"                   # never lower', '  :                   # never lower'),
+    "lower": ("[3]", '  if [ "$cur" -ge "$want" ]; then                         # never lower', '  if false; then                         # never lower'),
     "nomodload": ("[3]", '  [ "$(cat "$m" 2>/dev/null)" = nf_conntrack ] || { mkdir -p /etc/modules-load.d && echo nf_conntrack > "$m"; } 2>/dev/null || true\n', ""),
     "alert90": ("[5]", "ct[1] > 0 && ct[0] / ct[1] >= 0.8)", "ct[1] > 0 && ct[0] / ct[1] >= 0.9)"),
 }
@@ -109,22 +115,48 @@ proc(mx=8192, bk=100000)
 N.conntrack_size(P)
 check("an operator's larger buckets are never lowered when the max is raised", (rd("max"), rd("buckets")) == (65536, 100000),
       (rd("max"), rd("buckets")))
-if os.geteuid() != 0:                                          # root writes a 0444 file anyway: this half needs a user
-    proc()
-    os.chmod(os.path.join(NF, "nf_conntrack_max"), 0o444)
-    N.conntrack_size(P)
-    for _ in range(10):
-        NOW[0] += 5
-        N.conntrack_size(P)
-    check("a raise that does not take: said once, not tried again within the hour", rd("max") == 8192
-          and len([s for s in SAID if "could not be raised" in s]) == 1 and N._CT["tried"], SAID)
-    os.chmod(os.path.join(NF, "nf_conntrack_max"), 0o644)
+RO, WRITES, _open = [True], [], open                           # a read-only /proc/sys, as root sees one too: the write refused
+
+
+def _ro_open(f, mode="r", *a, **kw):
+    if "w" in mode and str(f).endswith("nf_conntrack_max"):
+        WRITES.append(f)
+        if RO[0]:
+            raise PermissionError(13, "Read-only file system")
+    return _open(f, mode, *a, **kw)
+
+
+N.open = _ro_open
+proc()
+N.conntrack_size(P)
+for _ in range(10):
     NOW[0] += 5
     N.conntrack_size(P)
-    check("…still not within the hour, writable or not", rd("max") == 8192, rd("max"))
-    NOW[0] += 3600
-    N.conntrack_size(P)
-    check("…an hour later it is tried again, and takes", rd("max") == 65536 and N._CT["tried"] is None, (rd("max"), N._CT))
+check("a raise that does not take: said once, tried once in the hour (not every pass)", rd("max") == 8192 and len(WRITES) == 1
+      and len([s for s in SAID if "could not be raised" in s]) == 1 and N._CT["tried"] is not None, (len(WRITES), SAID))
+RO[0] = False
+NOW[0] += 5
+N.conntrack_size(P)
+check("…still not within the hour, writable or not", rd("max") == 8192, rd("max"))
+NOW[0] += 3600
+N.conntrack_size(P)
+check("…an hour later it is tried again, and takes", rd("max") == 65536 and N._CT["tried"] is None, (rd("max"), N._CT))
+proc()
+RO[0] = True
+N.conntrack_size(P)
+open(os.path.join(NF, "nf_conntrack_max"), "w").write("65536\n")   # the operator raises it by hand
+NOW[0] += 5
+N.conntrack_size(P)
+open(os.path.join(NF, "nf_conntrack_max"), "w").write("8192\n")    # …and something lowers it again later
+NOW[0] += 5
+SAID.clear()
+N.conntrack_size(P)
+check("a raise fixed by hand, then lowered again: tried at once and said again", len([s for s in SAID if "could not be raised" in s]) == 1,
+      (SAID, N._CT))
+RO[0] = False
+proc(mem_kb=0)
+N.conntrack_size(P)
+check("a MemTotal of 0 (an odd /proc): sized as 1 GB, never 0", rd("max") == 65536, rd("max"))
 proc(loaded=False)
 N.conntrack_size(P)
 check("conntrack not loaded: nothing written, nothing said", not os.path.exists(os.path.join(NF, "nf_conntrack_max")) and not SAID, SAID)
@@ -165,7 +197,7 @@ def host(**kw):
 
 
 def again():
-    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fn + '\nif false; then :; else conntrack_size_host; fi\necho "CHANGED=$CT_SIZE_CHANGED"'],
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fn + '\nif false; then :; else conntrack_size_host; fi\necho "LOW=$CT_SIZE_LOW CHANGED=$CT_SIZE_CHANGED"'],
                        capture_output=True, text=True, env=dict(os.environ, PATH=BIN + ":" + os.environ["PATH"]))
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
@@ -184,6 +216,14 @@ check("an operator's larger values are never lowered, in the drop-in either", r[
       and "nf_conntrack_max = 500000" in drop() and "nf_conntrack_buckets = 200000" in drop(), (r, drop()))
 r = host(loaded=False)
 check("no conntrack on the host: no drop-in, no claim, no failure", r[0] == 0 and r[1].endswith("CHANGED=0") and not drop(), r)
+r = host(mx=500000, bk=8192)
+check("a larger max with small buckets: the drop-in persists what runs (500,000 / 8,192) — a reboot changes nothing",
+      "nf_conntrack_max = 500000" in drop() and "nf_conntrack_buckets = 8192" in drop() and rd("buckets") == 8192, drop())
+r = host(mem_kb=0)
+check("a MemTotal of 0: sized as 1 GB, as noded does", "nf_conntrack_max = 65536" in drop() and rd("max") == 65536, (r, drop()))
+open(os.path.join(BIN, "sysctl"), "w").write("#!/bin/sh\nexit 1\n")      # a raise that does not take
+r = host()
+check("a raise that does not take is said (LOW), never claimed", r[0] == 0 and "CHANGED=0" in r[1] and "LOW=1" in r[1] and rd("max") == 8192, r)
 
 # ── [4] the call sites ──────────────────────────────────────────────────────────────────────────────────────────────────
 SECTION[0] = "[4]"
@@ -194,6 +234,7 @@ check("noded: every pass, before the snapshot", -1 < _loop.find("conntrack_size(
 idk = open(os.path.join(ROOT, "install-docker.sh"), encoding="utf-8").read()
 upd = open(os.path.join(ROOT, "update.sh"), encoding="utf-8").read()
 uni = open(os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
+check("install-docker.sh and update.sh say when it could not be raised", idk.count('"$CT_SIZE_LOW" = 1') == 1 and upd.count('"$CT_SIZE_LOW" = 1') == 1)
 check("install-docker.sh sizes the host (beside the socket-buffer caps, the node step)", "else conntrack_size_host" in idk
       and idk.index("else conntrack_size_host") - idk.index("else turn_sock_buf_host") in range(1, 800))
 _up = upd[upd.index("      turn_sock_buf_host"):]

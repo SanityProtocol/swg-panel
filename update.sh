@@ -2068,6 +2068,7 @@ if ! $NODE_ONLY && docker_stack_live; then
       [ "$TURN_SOCK_BUF_LOW" = 1 ] && note "UDP socket-buffer caps could not be raised on this host (net.core.{r,w}mem_max) — csqtt handshakes may fail under load"
       conntrack_size_host  # the conntrack table: the container cannot size it (bare metal: swg-noded does)
       [ "$CT_SIZE_CHANGED" = 1 ] && note "conntrack table raised on the host (99-swg-conntrack.conf)"
+      [ "$CT_SIZE_LOW" = 1 ] && note "the conntrack table could not be raised on this host (net.netfilter.nf_conntrack_max) — a full table refuses new connections"
     fi ;;
   esac
   # migrate existing docker panels: the panel matches a master's co-located node by the HOST hostname, which it

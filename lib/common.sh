@@ -3127,23 +3127,26 @@ net.core.$k = $want"; done
   done
   return 0
 }
-conntrack_size_host(){   # a Docker node's conntrack table, raised and persisted on the HOST → 0; CT_SIZE_CHANGED=1 when it rose
+conntrack_size_host(){   # a Docker node's conntrack table, raised and persisted on the HOST → 0; CT_SIZE_CHANGED=1 when it rose,
+  # CT_SIZE_LOW=1 when a raise did not take (read back — say so, never "raised")
   # A full table refuses NEW connections for every user on the node. swg-noded raises it itself on bare metal (SCALE-PLAN
   # N2, conntrack_size); a container cannot — /proc/sys is read-only there and the table is the host's. Sized as noded
   # does: 65,536 entries a GB of RAM, buckets a quarter, only ever raised (a higher value set now is left alone, and so is
   # its drop-in). ⚠️ The module goes in modules-load.d too: without it loaded at boot systemd-sysctl drops the
   # net.netfilter.* keys silently. Never fails: both callers run set -e.
   local f=/etc/sysctl.d/99-swg-conntrack.conf m=/etc/modules-load.d/swg-conntrack.conf kb want cur bk bw body
-  CT_SIZE_CHANGED=0
+  CT_SIZE_CHANGED=0; CT_SIZE_LOW=0
   kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)" || kb=""
   case "$kb" in ''|*[!0-9]*) return 0;; esac
-  want=$(( 65536 * ((kb + 1048575) / 1048576) ))
+  want=$(( 65536 * ((kb + 1048575) / 1048576) )); [ "$want" -ge 65536 ] || want=65536   # as noded: at least 1 GB's
   modprobe nf_conntrack >/dev/null 2>&1 || true
   cur="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)" || cur=""
   case "$cur" in ''|*[!0-9]*) return 0;; esac             # no conntrack here: nothing to size, nothing to persist
-  [ "$cur" -gt "$want" ] && want="$cur"                   # never lower: the drop-in holds the larger value
   bw=$(( want / 4 )); bk="$(cat /proc/sys/net/netfilter/nf_conntrack_buckets 2>/dev/null)" || bk=""
   case "$bk" in ''|*[!0-9]*) ;; *) [ "$bk" -gt "$bw" ] && bw="$bk";; esac
+  if [ "$cur" -ge "$want" ]; then                         # never lower, and persist what runs: the drop-in holds the live
+    want="$cur"; case "$bk" in ''|*[!0-9]*) ;; *) bw="$bk";; esac   # values, so a reboot changes nothing
+  fi
   body="# swg-panel: conntrack table for this Docker node (a container cannot size it). Written by install-docker.sh / update.sh.
 net.netfilter.nf_conntrack_buckets = $bw
 net.netfilter.nf_conntrack_max = $want"
@@ -3154,7 +3157,7 @@ net.netfilter.nf_conntrack_max = $want"
   if [ "$cur" -lt "$want" ]; then
     sysctl -q -w "net.netfilter.nf_conntrack_buckets=$bw" >/dev/null 2>&1 || true
     sysctl -q -w "net.netfilter.nf_conntrack_max=$want" >/dev/null 2>&1 || true
-    [ "$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)" -ge "$want" ] && CT_SIZE_CHANGED=1
+    if [ "$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)" -ge "$want" ]; then CT_SIZE_CHANGED=1; else CT_SIZE_LOW=1; fi
   fi
   return 0
 }

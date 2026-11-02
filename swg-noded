@@ -1237,7 +1237,7 @@ def collect_health(proc_root="/proc", mounts=None, statvfs=os.statvfs):
 # A container cannot (its /proc/sys is read-only, the table is the host's): install-docker.sh / update.sh raise it there.
 # The node reports count / max in its health (above); the node page warns from 80 %.
 CT_PER_GB = 65536
-_CT = {"want": None, "tried": None}     # tried: (want, when) of a raise that did not take — tried again an hour later
+_CT = {"want": None, "tried": None}     # tried: when a raise did not take — tried again an hour later
 
 
 def conntrack_size(proc_root="/proc"):
@@ -1249,10 +1249,12 @@ def conntrack_size(proc_root="/proc"):
     except (OSError, ValueError):
         return                                          # not loaded yet: the next pass
     if _CT["want"] is None:
-        kb = int(re.search(r"MemTotal:\s+(\d+)", open(os.path.join(proc_root, "meminfo")).read()).group(1))
-        _CT["want"] = CT_PER_GB * max(1, -(-kb // 1048576))
+        _CT["want"] = CT_PER_GB * max(1, -(-read_meminfo(proc_root)["total"] // (1 << 30)))
     want, tried = _CT["want"], _CT["tried"]
-    if cur >= want or (tried and time.monotonic() - tried[1] < 3600):
+    if cur >= want:
+        _CT["tried"] = None                             # held, by us or by hand: a later fall is said again
+        return
+    if tried is not None and time.monotonic() - tried < 3600:
         return
     try:                                                # first: a table resized before its hash would chain long
         if int(open(p + "buckets").read()) < want // 4:
@@ -1270,10 +1272,10 @@ def conntrack_size(proc_root="/proc"):
         _CT["tried"] = None
         log(LOG_INFO, "conntrack: table raised %d -> %d entries (%d GB of RAM)", cur, new, want // CT_PER_GB)
     else:
-        if not _CT["tried"]:
+        if tried is None:
             log(LOG_WARNING, "conntrack: the table holds %d entries and could not be raised to %d (read-only /proc/sys?) — "
                 "a full table refuses new connections", cur, want)
-        _CT["tried"] = (want, time.monotonic())
+        _CT["tried"] = time.monotonic()
 
 
 # ───────────────────────── io ─────────────────────────

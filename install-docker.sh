@@ -1331,6 +1331,7 @@ PYHOST
   if $DRYRUN; then echo "    [skip] raise the host's conntrack table (/etc/sysctl.d/99-swg-conntrack.conf + modules-load.d)"
   else conntrack_size_host
     [ "$CT_SIZE_CHANGED" = 1 ] && ok "conntrack table raised on the host (/etc/sysctl.d/99-swg-conntrack.conf)"
+    [ "$CT_SIZE_LOW" = 1 ] && warn "the conntrack table could not be raised on this host (net.netfilter.nf_conntrack_max) — a full table refuses new connections"
   fi
 
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
