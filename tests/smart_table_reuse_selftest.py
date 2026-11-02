@@ -31,6 +31,7 @@ Run: python3 tests/smart_table_reuse_selftest.py   (0 = pass)
      preall          the Block counter is read with no `c_bk` in the table
      fwdall          `forward` is read with no `reject` rule in the table
      failedpre       a failed render skips the Block counter (the blocked counts 1.8.8 reported are lost)
+     failednl        a failed render skips netlink for it (the nft that just failed is asked instead)
      failedfwd       a failed render skips `forward`
 """
 import importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, threading
@@ -60,6 +61,8 @@ PLANTS = {
         return ""'''),
     "failedpre": ('''        if _st["rc"] != 0 or "counter c_bk {" in _st["out"]:''', '''        if "counter c_bk {" in _st["out"]:'''),
     "failedfwd": ('''    if _t["rc"] == 0 and "reject" not in _t["out"]:''', '''    if "reject" not in _t["out"]:'''),
+    "failednl": ('''            nl = None if _st["absent"] else _nft_counters(SMART_NFT_TABLE)''',
+                 '''            nl = None if _st["rc"] != 0 else _nft_counters(SMART_NFT_TABLE)'''),
     "resetstable": ('''    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\\d+)", _smart_forward()))''',
                     '''    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\\d+)", t["out"]))'''),
 }
@@ -284,10 +287,16 @@ N._MECH_ON["subs"] = 1
 N._LOOP["n"] += 1
 CALLS.clear(); NLREADS.clear()
 s7 = N.smart_status()
-check("[7] a render that failed says nothing about either: the Block counter and `forward` are read with nft, as before "
-      "(a missing reading would make the panel's next rate the counter's whole life)",
-      "nft -j list counters table inet swg_smart" in CALLS and _blk(s7) == 4 and "nft list chain inet swg_smart forward" in CALLS,
+check("[7] a render that failed says nothing about either: the Block counter is read over netlink, which does not go "
+      "through the nft that failed, and `forward` with nft, as before", len(NLREADS) == 1 and _blk(s7) == 3
+      and "nft -j list counters table inet swg_smart" not in CALLS and "nft list chain inet swg_smart forward" in CALLS,
       (NLREADS, s7.get("block"), CALLS))
+K["nl"], K["gen"] = None, [K["gen"][0] + 1]
+N._LOOP["n"] += 1
+CALLS.clear(); NLREADS.clear()
+s7 = N.smart_status()
+check("[7] …and where netlink cannot either: with nft (a missing reading would make the panel's next rate the counter's "
+      "whole life)", "nft -j list counters table inet swg_smart" in CALLS and _blk(s7) == 4, (NLREADS, s7.get("block"), CALLS))
 K["render_rc"], N._MECH_ON["subs"] = None, _mech
 
 import shutil

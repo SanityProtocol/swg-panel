@@ -5658,7 +5658,8 @@ def _smart_shadowed(domains, pats, shw):
 
 
 _LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
-_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}, "gen": None, "cnames": []}
+_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}, "gen": None, "cnames": [],
+                "absent": False}       # absent: the last render's answer was "no such table" (a failed render is not one)
 
 
 def _smart_live(out):
@@ -5726,6 +5727,7 @@ def _smart_table():
         keep = gen is not None and ((r.returncode == 0 and not _smart_live(out)) or _nft_absent(r))
         _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames, bytes=cbytes,
                             gen=gen if keep else None, cnames=cnames)
+        _SMART_TABLE["absent"] = _nft_absent(r)
     return _SMART_TABLE
 
 
@@ -14161,12 +14163,12 @@ def _block_activity():
         # block list's shadow — every such rule counts into the one named counter `c_bk` (DATAPATH D2: the rules sit in each
         # subnet's own chain, and listing a chain every pass for its anonymous counters cost ~12 ms). Node-wide, under "*",
         # as the refusals by name below: the panel only sums `blocked` across keys. Read only where the table holds it
-        # (CPU-PLAN B4) — and where the render failed, which says nothing about it: read with nft then, as before 1.8.12, so
-        # a missing reading never makes the panel's next rate a counter's whole life; a table that is not there is read
-        # once a generation (_nft_kept), not dumped every pass.
+        # (CPU-PLAN B4) — and where the render failed, which says nothing about it: over netlink, which does not go through the
+        # nft that just failed, else with nft, as before 1.8.12 — a missing reading would make the panel's next rate the
+        # counter's whole life. A table that is not there is never dumped: read with nft once a generation (_nft_kept).
         _st = _smart_table()
         if _st["rc"] != 0 or "counter c_bk {" in _st["out"]:
-            nl = _nft_counters(SMART_NFT_TABLE) if _st["rc"] == 0 else None   # one netlink dump (B5a) where the render worked
+            nl = None if _st["absent"] else _nft_counters(SMART_NFT_TABLE)   # one netlink dump (B5a)
             if nl is None:
                 cj = json.loads(_nft_kept(["nft", "-j", "list", "counters", "table", "inet", SMART_NFT_TABLE], structural=False).stdout or "{}")
                 nl = {o["counter"].get("name"): (int(o["counter"].get("packets", 0)), 0) for o in cj.get("nftables", []) if "counter" in o}

@@ -18,6 +18,7 @@ Run: python3 tests/nft_kept_selftest.py   (0 = pass)
      keepcounters   a telemetry read of a present table is kept
      anyerror       any rc 1 is taken for absence
      peerskept      the turn capture's @peers is kept like @ports
+     absentnl       an absent smart table's Block counter is dumped over netlink every pass
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, threading
 
@@ -35,6 +36,8 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
+    "absentnl": ("""            nl = None if _st["absent"] else _nft_counters(SMART_NFT_TABLE)""",
+                 """            nl = _nft_counters(SMART_NFT_TABLE)"""),
     "keepcounters": ("""    if gen is not None and ((structural and r.returncode == 0) or _nft_absent(r)):""",
                      """    if gen is not None and (r.returncode == 0 or _nft_absent(r)):"""),
     "anyerror": ("""    return r.returncode == 1 and "No such file or directory" in (r.stderr or "")""", """    return r.returncode == 1"""),
@@ -189,7 +192,7 @@ for _ in range(3):
     outs.append(N.smart_status())
 check("[5] `swg_smart` rendered once over three passes", n("nft list table inet swg_smart") == 1, CALLS)
 check("[5] …and its Block counter (DATAPATH D2): no netlink dump of a table that is not there, its nft read once (kept as absent)",
-      not NLD and n("nft -j list counters table inet swg_smart") <= 1, (NLD, CALLS))
+      not NLD and n("nft -j list counters table inet swg_smart") == 1, (NLD, CALLS))
 check("[5] …and the same report every pass (no table: active false, no sets)", outs[0] == outs[1] == outs[2]
       and outs[0]["active"] is False and outs[0]["sets"] == {}, outs)
 
