@@ -130,7 +130,9 @@ elif PERTURB:
     # cannot raise, so a red run here is a CAUGHT bug and never a broken stub.
     N.reconcile_inet_chain = lambda cfg, exit_devs=(): _build(cfg)
 
-sigs = lambda: sorted(Iptables._comment(a) for a in IPT.rules)
+# The pairs are every rule but the sampling gate (docs/DATAPATH-PLAN.md D1), which heads the chain and counts nothing.
+pairs = lambda: [a for a in IPT.rules if not Iptables._comment(a).endswith(":__gate")]
+sigs = lambda: sorted(Iptables._comment(a) for a in pairs())
 pair = lambda ifn, tag: {"swg-inet-up:" + ifn + tag, "swg-inet-dn:" + ifn + tag}
 
 
@@ -140,19 +142,22 @@ N.reconcile_inet_chain(NODE_CFG, {"tun-lab0"})
 have = set(sigs())
 check("WAN pair still built, untagged", pair("wg1", "") | pair("awg2", "") <= have)
 check("exit device gets its own pair", pair("wg1", "@tun-lab0") | pair("awg2", "@tun-lab0") <= have, have)
-check("exactly 2 ifaces x 2 devices x 2 directions", len(IPT.rules) == 8, len(IPT.rules))
+check("exactly 2 ifaces x 2 devices x 2 directions", len(pairs()) == 8, len(pairs()))
+check("the sampling gate heads the chain, at N = 1, and is the only rule with a target",
+      bool(IPT.rules) and Iptables._comment(IPT.rules[0]) == "swg-inet-up:__gate" and "0.00000000000" in IPT.rules[0]
+      and len(IPT.rules) == len(pairs()) + 1, IPT.rules[:1])
 # `.get`-shaped, not `[0]`: with the builder backed out these rules do not exist, and a gate that RAISES
 # there reports the same non-zero exit whether it caught the bug or simply fell over.
 rule = lambda cm: next((a for a in IPT.rules if Iptables._comment(a) == cm), [])
 inout = lambda a: (a[a.index("-i") + 1], a[a.index("-o") + 1]) if "-i" in a and "-o" in a else ()
 check("up rule is iface -> exit device", inout(rule("swg-inet-up:wg1@tun-lab0")) == ("wg1", "tun-lab0"))
 check("dn rule is exit device -> iface", inout(rule("swg-inet-dn:wg1@tun-lab0")) == ("tun-lab0", "wg1"))
-check("counting only — no target", not any("-j" in a for a in IPT.rules))
+check("counting only — no target", not any("-j" in a for a in pairs()))
 
 print("\n[2] devices that must NOT get a second pair")
 IPT.rules = []; IPT.exists = False
 N.reconcile_inet_chain(NODE_CFG, {WAN, "wg1", "", None, "  "})
-check("the WAN is not duplicated (it would double-count itself)", len(IPT.rules) == 4, sigs())
+check("the WAN is not duplicated (it would double-count itself)", len(pairs()) == 4, sigs())
 check("a MANAGED iface named as an exit gets no pair", not any("@wg1" in s for s in sigs()), sigs())
 check("blank / None exit devices are dropped", not any("@" in s for s in sigs()), sigs())
 
@@ -164,9 +169,9 @@ f0 = IPT.flushes
 N.reconcile_inet_chain(NODE_CFG, {"tun-lab0"})
 check("same exit set -> no flush, counters keep accruing", IPT.flushes == f0, IPT.flushes - f0)
 N.reconcile_inet_chain(NODE_CFG, {"tun-lab0", "tun-lab1"})
-check("a NEW exit rebuilds (the signature covers exits)", IPT.flushes == f0 + 1 and len(IPT.rules) == 12, len(IPT.rules))
+check("a NEW exit rebuilds (the signature covers exits)", IPT.flushes == f0 + 1 and len(pairs()) == 12, len(pairs()))
 N.reconcile_inet_chain(NODE_CFG, set())
-check("the last exit going away rebuilds back to WAN-only", len(IPT.rules) == 4, sigs())
+check("the last exit going away rebuilds back to WAN-only", len(pairs()) == 4, sigs())
 
 # ── 4. the reader, over the chain the builder just wrote ─────────────────────────────────────────────
 print("\n[4] read_inet_bytes — one chain, two readings of it")

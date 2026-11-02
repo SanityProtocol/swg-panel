@@ -447,6 +447,19 @@ class SmartModel:
                 neg = tk[i + 1] == "!="
                 ops.append(("iif" if tk[i] == "iifname" else "oif", (tk[i + 2] if neg else tk[i + 1]).strip('"'), neg))
                 i += 3 if neg else 2
+            elif (at("ip", "saddr") or at("ip", "daddr")) and "{" in tk[i + 2:i + 4]:   # an anonymous set: `ip saddr { a, b }`
+                fld = tk[i + 1][0]
+                neg = tk[i + 2] == "!="
+                j = tk.index("}", i)
+                els = [x.strip(",") for x in tk[i + (4 if neg else 3):j] if x.strip(",")]
+                if not els:
+                    raise NftError("syntax error, unexpected '}' in %r" % text)            # `{ }`: the whole batch is refused
+                spans = [_span(x) for x in els]
+                if any(a <= d and c <= b for k, (a, b) in enumerate(spans) for (c, d) in spans[k + 1:]):
+                    raise NftError("conflicting intervals specified in %r" % text)        # an interval set refuses an overlap
+                ops.append(("nets", fld, spans, neg)); i = j + 1
+            elif at("numgen", "random", "mod") and tk[i + 4:i + 6] == ["!=", "0"] and int(tk[i + 3]) >= 1:
+                ops.append(("numgen", int(tk[i + 3]))); i += 6                # the sampling gate: true for all but 1 packet in N
             elif at("ip", "saddr") or at("ip", "daddr"):
                 fld = tk[i + 1][0]
                 neg = tk[i + 2] == "!="
@@ -608,6 +621,15 @@ class SmartModel:
             t["chains"][m.group(2)]["rules"].append({"text": m.group(3), "ops": self._rule(m.group(3)), "handle": self.handle})
             self._check_refs(t)
             return
+        m = re.fullmatch(r"replace rule inet (%s) (%s) handle (\d+) (.*)" % (NAME, NAME), line)
+        if m:                                                    # in place, the handle kept (measured, nft 1.0.9); no such handle refuses
+            t = self._t(work, m.group(1))
+            r = [r for r in (t["chains"].get(m.group(2)) or {}).get("rules", []) if r["handle"] == int(m.group(3))]
+            if not r:
+                raise NftError("Could not process rule: No such file or directory (handle %s)" % m.group(3))
+            r[0].update(text=m.group(4), ops=self._rule(m.group(4)))
+            self._check_refs(t)
+            return
         m = re.fullmatch(r"delete (chain|set|counter) inet (%s) (%s)" % (NAME, NAME), line)
         if m:
             t, kind, name = self._t(work, m.group(2)), m.group(1) + "s", m.group(3)
@@ -685,15 +707,17 @@ class SmartModel:
         v = self._walk(t, base[0], pkt, st, 0) if base else None
         return dict(st, verdict=v or "accept")
 
-    def chain_walk(self, table, chain, iif, saddr, daddr, mark=0, ctmark=0, proto="tcp", dport=443, ct="established", sock=False, local=False):
-        """→ {verdict, mark, ctmark, via}: one packet through a NAMED base chain (the post-queue `svb`, the `forward` chain),
-        entering with `mark` — what swg-sni's verdict put on it."""
+    def chain_walk(self, table, chain, iif, saddr, daddr, mark=0, ctmark=0, proto="tcp", dport=443, ct="established", sock=False, local=False,
+                   rnd=0):
+        """→ {verdict, mark, ctmark, via, walked}: one packet through a NAMED base chain (the post-queue `svb`, the `forward`
+        chain, `catcount`), entering with `mark` — what swg-sni's verdict put on it. `rnd` is `numgen random`'s draw: 0 passes
+        every sampling gate, anything else is a packet the gate skips where N divides it not."""
         t = self.tables.get(table)
-        st = {"mark": mark, "ctmark": ctmark, "via": []}
+        st = {"mark": mark, "ctmark": ctmark, "via": [], "walked": 0}
         if t is None or chain not in t["chains"]:
             return dict(st, verdict="accept")
         pkt = {"iif": iif, "s": _ip(saddr), "d": _ip(daddr), "proto": proto, "dport": dport, "ct": ct, "dir": "original",
-               "ctpk": 4, "ctopk": 3, "len": 517, "ctrb": 60, "ctra": 60, "sock": sock, "local": local}
+               "ctpk": 4, "ctopk": 3, "len": 517, "ctrb": 60, "ctra": 60, "sock": sock, "local": local, "rnd": rnd}
         v = self._walk(t, chain, pkt, st, 0)
         return dict(st, verdict=v or "accept")
 
@@ -709,9 +733,14 @@ class SmartModel:
         st["via"].append(chain)
         for r in t["chains"][chain]["rules"]:
             ok, verdict = True, None
+            st["walked"] = st.get("walked", 0) + 1                   # rules this packet read (the datapath budget)
             for o in r["ops"]:
                 k = o[0]
-                if k == "concat_src":
+                if k == "nets":
+                    ok = any(a <= pkt[o[1]] <= b for a, b in o[2]) != o[3]
+                elif k == "numgen":
+                    ok = pkt.get("rnd", 0) % o[1] != 0                    # `rnd` stands for the draw: 0 is the sampled packet
+                elif k == "concat_src":
                     ok = self._in(t, o[1], pkt["s"], pkt["iif"]) != (len(o) > 2 and o[2])
                 elif k == "iif":
                     ok = (pkt["iif"] == o[1]) != o[2]
@@ -814,6 +843,8 @@ class SmartKernel:
                 if args[4] not in self.m.tables:
                     return CP(args, 1, "", "Error: No such file or directory")
                 return CP(args, 0, self.m.render(args[4]), "")
+            if args[1] == "-a" and args[2:4] == ["list", "chain"]:   # the render always carries `# handle N`, as `-a` prints it
+                args = args[:1] + args[2:]
             if args[1:3] == ["list", "chain"]:                   # one chain, as `nft list chain inet <t> <c>` prints it
                 if args[4] not in self.m.tables or args[5] not in self.m.tables[args[4]]["chains"]:
                     return CP(args, 1, "", "Error: No such file or directory")

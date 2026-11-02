@@ -3,6 +3,18 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [Unreleased]
+
+### Changed
+
+- **Traffic statistics no longer slow a busy node down.** Top destinations, the internet lane and Traffic by exit were
+  counted by firewall rules that every forwarded packet read, one copy for each client subnet and category: up to 1,450
+  rules a packet on a node with 11 subnets, most of the CPU a packet cost. They are one rule per category now, and above
+  about 10 Mbit a node counts a sample of the packets and scales it up, so **above about 10 Mbit these three figures are
+  estimates** (within a few percent over a minute, a little rougher in a single 5-second reading); below it they are
+  exact, as before. Per-person traffic, the traffic totals and Top talkers are not affected: they never came from these
+  rules.
+
 ## [1.8.11-beta] — 2026-11-01
 
 ### Added
