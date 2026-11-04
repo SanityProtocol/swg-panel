@@ -25,6 +25,13 @@ earlier releases predate the changelog — see the git history. · Русски�
   the tunnels' own packets and traffic passing through read one. What each rule decides is unchanged, and so is its
   order.
 
+### Fixed
+
+- **The Protection card no longer shows a burst of torrents every time a node restarts.** A node's first report after a
+  restart arrives before it has read its torrent guard, and the panel took the missing count for zero: the next report's
+  lifetime count then read as one 5-second burst, hundreds of thousands of torrents an hour on the card at every restart
+  of the node's service. The panel now keeps the last count until the node reports it again, for nodes of any version.
+
 ## [1.8.11-beta] — 2026-11-01
 
 ### Added

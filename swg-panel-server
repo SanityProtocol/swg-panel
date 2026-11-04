@@ -23141,6 +23141,34 @@ def iface_rrd_path(stats_dir, nid, ifn):   # per-(node,interface) throughput rin
     return os.path.join(stats_dir, "iface-" + nid + "-" + re.sub(r"[^A-Za-z0-9_.-]", "_", str(ifn)) + ".rrd")
 def block_rrd_path(stats_dir, nid):   # per-node blocking-activity ring — REUSES: rx slot = torrents/hr (mean), pon = scan sources (peak), ptot = blocked dsts reached (peak)
     return os.path.join(stats_dir, "block-" + nid + ".rrd")
+
+
+def _blk_rates(prev, blk, now):
+    """A node's blocking counters → per-hour rates: ({torrent, blocked, mech: rate}, what to keep for its next report).
+    `blk` is the report's smartroute.block ({key: {torrent, blocked, mech, …}}, each field summed across keys); `prev` is
+    what the last call kept for this node ({field: (value, epoch)}) or None. A rate is the field's rise since ITS OWN last
+    reading over the time since then; 0 for a first reading, a counter that went back (reset) or a clock that did (both
+    start over), and for a second report in the same second (its rise waits for the next one).
+    NOT REPORTED IS NOT 0: a field no key carries reads 0 this time and keeps its last reading. noded sends its first
+    report after a start before its first P2P pass, so `torrent` is missing from it; read as 0, the next report's lifetime
+    count was one interval's rise — hundreds of thousands an hour on the Protection card at every noded start, every
+    version (msk-main, 2026-11-04)."""
+    prev = prev if isinstance(prev, dict) else {}          # an older build's tuple (in memory, never on disk): start over
+    rates, keep = {}, {}
+    for f in ("torrent", "blocked", "mech"):
+        p = prev.get(f)
+        if not any(isinstance(v, dict) and f in v for v in (blk or {}).values()):
+            rates[f] = 0
+            if p:
+                keep[f] = p
+            continue
+        cur = sum(int(v.get(f) or 0) for v in blk.values() if isinstance(v, dict))
+        if p and now == p[1]:
+            rates[f], keep[f] = 0, p
+            continue
+        rates[f] = int(max(0, cur - p[0]) * 3600 / (now - p[1])) if p and now > p[1] else 0
+        keep[f] = (cur, now)
+    return rates, keep
 def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,last,by:[svc]}}} — the VK relays that reach each proxy
     return os.path.join(os.path.dirname((deps or {}).get("nodes_path") or ".") or ".", "turn-ips.json")
 
@@ -34306,22 +34334,16 @@ class Handler(BaseHTTPRequestHandler):
             _reach = sum(int(c or 0) for nm, c in (_sr.get("sets") or {}).items()
                          if str(nm).startswith("cat_blku_") or str(nm).startswith("catl_blku_"))
             if _blk or _reach:                                    # node is doing blocking → keep its line continuous
-                _torc = sum(int((v or {}).get("torrent") or 0) for v in _blk.values())
                 _scan = sum(int((v or {}).get("scan") or 0) for v in _blk.values())
-                _blkd = sum(int((v or {}).get("blocked") or 0) for v in _blk.values())   # cumulative pkts dropped to content-block sets
-                # Packets the FREE port rules dropped (SMTP / QUIC / the torrent port-hint). Until the node grew a
+                # torrent, blocked (packets dropped to content-block sets) and mech are cumulative → per-interval RATES
+                # (mean-consolidatable), reset-safe, a field the report does not carry kept as it was (_blk_rates). mech is
+                # the packets the FREE port rules dropped (SMTP / QUIC / the torrent port-hint). Until the node grew a
                 # counter on those rules this was unobservable: SMTP blocking had no signal at all, and on a node
                 # without xt_string the port-hint dropped silently while "Torrents caught" — which only counts the
                 # SIGNATURE chain — sat at 0, reading exactly like nobody torrenting.
-                _mechc = sum(int((v or {}).get("mech") or 0) for v in _blk.values())
-                _bl = Handler.deps.setdefault("_blk_last", {}); _pt = _bl.get(nid); _trate = _brate = _mrate = 0
-                if _pt and now_i > _pt[-1]:                       # torrents + blocked + mech are cumulative → per-interval RATE (mean-consolidatable), reset-safe
-                    _dt = now_i - _pt[-1]
-                    _trate = int(max(0, _torc - _pt[0]) * 3600 / _dt)      # torrents/HOUR
-                    _brate = int(max(0, _blkd - (_pt[1] if len(_pt) >= 3 else _blkd)) * 3600 / _dt)   # blocked/HOUR (len<3 = pre-upgrade tuple → 0 this once)
-                    _mrate = int(max(0, _mechc - (_pt[2] if len(_pt) >= 4 else _mechc)) * 3600 / _dt)  # mech/HOUR (len<4 = pre-upgrade tuple → 0 this once)
-                _bl[nid] = (_torc, _blkd, _mechc, now_i)
-                bM = [0] * HRRD_NM; bM[3] = min(_trate, HRRD_U32); bM[4] = min(_brate, HRRD_U32); bM[5] = min(_mrate, HRRD_U32); bM[11] = min(_scan, HRRD_U16); bM[12] = min(_reach, HRRD_U16)
+                _bl = Handler.deps.setdefault("_blk_last", {})
+                _rt, _bl[nid] = _blk_rates(_bl.get(nid), _blk, now_i)
+                bM = [0] * HRRD_NM; bM[3] = min(_rt["torrent"], HRRD_U32); bM[4] = min(_rt["blocked"], HRRD_U32); bM[5] = min(_rt["mech"], HRRD_U32); bM[11] = min(_scan, HRRD_U16); bM[12] = min(_reach, HRRD_U16)
                 with contextlib.suppress(Exception):
                     hrrd_update(block_rrd_path(stats_dir, nid), now_i, bM)
                 # OFFENDER STAMPS: record first/last-seen per offending source IP, per metric → ranged "who" bubble
