@@ -23146,31 +23146,31 @@ def block_rrd_path(stats_dir, nid):   # per-node blocking-activity ring — REUS
 def _blk_rates(prev, blk, now):
     """A node's blocking counters → per-hour rates: ({torrent, blocked, mech: rate}, what to keep for its next report).
     `blk` is the report's smartroute.block ({key: {torrent, blocked, mech, …}}, each field summed across keys); `prev` is
-    what the last call kept for this node ({"t": the report's epoch, field: value}) or None. A rate is the field's rise
-    since the last report that carried it, over the time since the last report: each sample stands for the interval since
-    the one before, so the mean-consolidated ring keeps every count. 0 for a first reading and a counter that went back
-    (a reset); a clock that went back starts over; a second report in the same second keeps the first (its rise counts
-    at the next).
-    NOT REPORTED IS NOT 0: a field no key carries reads 0 and keeps its last value, so its whole rise lands in the report
-    that carries it again. noded sends its first report after a start before its first P2P pass, so `torrent` is missing
-    from it; read as 0, the next report's LIFETIME count was one interval's rise — hundreds of thousands an hour on the
-    Protection card at every noded start, every version (msk-main, 2026-11-04)."""
+    what the last call kept for this node ({field: (value, epoch)}) or None. A rate is the field's rise since ITS OWN last
+    reading, spread over the time since then — the way every field already reads across a stopped node: a stretch with no
+    reading of a field is a stretch with no data for it, never a burst when it comes back. 0 for a first reading and a
+    counter that went back (a reset); a clock that went back starts over; a second report in the same second keeps the
+    first (its rise counts at the next).
+    NOT REPORTED IS NOT 0: a field no key carries reads 0 and keeps its last reading. noded sends its first report after
+    a start before its first P2P pass, so `torrent` is missing from it; read as 0, the next report's LIFETIME count was
+    one interval's rise — hundreds of thousands an hour on the Protection card at every noded start, every version
+    (msk-main, 2026-11-04)."""
     prev = prev or {}
-    t0 = prev.get("t")
-    if t0 is not None and now == t0:
-        return {"torrent": 0, "blocked": 0, "mech": 0}, prev
-    go = t0 is not None and now > t0                       # no earlier report, or a clock that went back: start over
-    rates, keep = {}, {"t": now}
+    rates, keep = {}, {}
     for f in ("torrent", "blocked", "mech"):
+        p = prev.get(f)
         rates[f] = 0
         if not any(isinstance(v, dict) and f in v for v in (blk or {}).values()):
-            if go and f in prev:
-                keep[f] = prev[f]
+            if p:
+                keep[f] = p
             continue
         cur = sum(int(v.get(f) or 0) for v in blk.values() if isinstance(v, dict))
-        if go and f in prev:
-            rates[f] = int(max(0, cur - prev[f]) * 3600 / (now - t0))
-        keep[f] = cur
+        if p and now == p[1]:
+            keep[f] = p
+            continue
+        if p and now > p[1]:                               # no earlier reading, or a clock that went back: start over
+            rates[f] = int(max(0, cur - p[0]) * 3600 / (now - p[1]))
+        keep[f] = (cur, now)
     return rates, keep
 
 
