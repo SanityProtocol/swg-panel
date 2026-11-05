@@ -75,6 +75,7 @@ Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
      nov6ret    swg_mech without its IPv6 return (an IPv6 packet reads every rule)              [11]
      v6pre      the dispatch without its IPv6 return (an IPv6 packet reads every goto)          [12]
      v6drift    the drift gate forgets the IPv6 return (DP2a's layout, or a lost one, stays)    [12]
+     v6pos      …asks only that it be somewhere (one moved past the gotos stays there)         [12]
      mechhead   a subnet left out of swg_mech's head set                                          [11]
      dohhead    a subnet left out of swg_doh's head set                                           [11]
      dohfib     swg_doh's route lookup ahead of the port test again                               [11]
@@ -147,7 +148,10 @@ PLANTS = {
     "nov6ret": ("[11]", '        lines.append("    meta nfproto ipv6 return")            # swg_mech: no rule below can match IPv6', '        pass'),
     "v6pre": ("[12]", '                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "meta", "nfproto", "ipv6", "return")',
               '                pass'),
-    "v6drift": ("[12]", '    pre_ok = pre_ok and (len(want_disp) <= 1 or "meta nfproto ipv6 return" in _pre)', '    pass'),
+    "v6drift": ("[12]", '    pre_ok = pre_ok and (not _headed or re.search(r"ip saddr != \\{[^}\\n]*\\} return[^\\n]*\\n\\s*meta nfproto ipv6 return\\b", _pre) is not None)',
+                '    pass'),
+    "v6pos": ("[12]", '    pre_ok = pre_ok and (not _headed or re.search(r"ip saddr != \\{[^}\\n]*\\} return[^\\n]*\\n\\s*meta nfproto ipv6 return\\b", _pre) is not None)',
+              '    pre_ok = pre_ok and (not _headed or "meta nfproto ipv6 return" in _pre)'),
     "mechhead": ("[11]", "        _ms = _collapse4(sorted(set(portsets) | set(meters)))", "        _ms = _collapse4(sorted(set(portsets) | set(meters))[1:])"),
     "dohhead": ("[11]", "        _ds = _collapse4(want_src)", "        _ds = _collapse4(want_src[1:])"),
     "dohfib": ("[11]", '            lines.append("    ip saddr " + S + " " + _new + "udp dport 853 " + _nl + _rec + _rej_u)',
@@ -1141,10 +1145,25 @@ for label, pin, queue in ENG:
           "and the pass after writes nothing" % (label, before, after),
           i6 is not None and rd[0]["scripts"] and not rd[1]["scripts"] and after < before and not any(x["errors"] for x in rd)
           and not Kd.refused, (i6, [x["errors"] for x in rd], rd[1]["scripts"][:1], Kd.refused[:1]))
-K1v, _, _, _, _, r1v = build8(N, 1, 3, False, False, geo="geo12o")
-check("one subnet (one chain, no head): no IPv6 return, an IPv6 packet reads its one goto rule and passes",
-      "meta nfproto ipv6 return" not in [r["text"] for r in K1v.m.tables[T]["chains"]["prerouting"]["rules"]]
-      and K1v.m.chain_walk(T, "prerouting", **V6P)["walked"] <= 2 and not r1v[2]["scripts"], K1v.m.tables[T]["chains"]["prerouting"]["rules"])
+    # …and one moved from outside past the gotos (still there, in the wrong place): put back after the head
+    rl = (((Kd.m.tables.get(T) or {}).get("chains") or {}).get("prerouting") or {}).get("rules", [])
+    i6 = next((i for i, r in enumerate(rl) if r["text"] == "meta nfproto ipv6 return"), None)
+    if i6 is not None:
+        rl.append(rl.pop(i6))
+    moved = Kd.m.chain_walk(T, "prerouting", **V6P)["walked"]
+    rm = [mpass(N, Kd, ents_d, cats_d, pin, queue, srcs=srcs_d) for _ in range(2)]
+    back = Kd.m.chain_walk(T, "prerouting", **V6P)["walked"]
+    check("%s: an IPv6 return moved from outside past the gotos (an IPv6 packet read %d rules) is put back after the head at "
+          "the next pass (%d), and the pass after writes nothing" % (label, moved, back),
+          i6 is not None and rm[0]["scripts"] and not rm[1]["scripts"] and back < moved and not any(x["errors"] for x in rm)
+          and not Kd.refused, (i6, [x["errors"] for x in rm], rm[1]["scripts"][:1], Kd.refused[:1]))
+for label, pin, queue in ENG:
+    K1v, _, _, _, _, r1v = build8(N, 1, 3, pin, queue, geo="geo12o")
+    pre1 = [r["text"] for r in (((K1v.m.tables.get(T) or {}).get("chains") or {}).get("prerouting") or {}).get("rules", [])]
+    w1 = K1v.m.chain_walk(T, "prerouting", **V6P)["walked"]
+    check("%s, one subnet (one chain, no head): no IPv6 return, an IPv6 packet reads the restore and the one goto rule at most "
+          "(%d), and the third pass writes nothing" % (label, w1),
+          pre1 and "meta nfproto ipv6 return" not in pre1 and w1 <= 2 and not r1v[2]["scripts"] and not any(x["errors"] for x in r1v), pre1)
 
 print()
 if PLANT:

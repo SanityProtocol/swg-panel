@@ -22,11 +22,11 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Routing rules cost a packet a fraction of what they did.** A node with routing rules made every packet it forwarded
   read the rules of every interface, even a reply from the internet that none of them could match: about 235 rules a
   packet on a node with 11 client subnets. A packet now reads only the rules of the subnet it comes from, and a reply,
-  the tunnels' own packets and traffic passing through read one, an IPv6 packet two. The rules beside them follow: the
-  free blocking (SMTP, QUIC, port scans) and the encrypted-DNS check cost a packet from anywhere else the same, and the
-  rules that drop IPv6 on routed interfaces and reset a connection's first hit in the SNI modes are one rule each, not
-  one per subnet and interface (about 40 a forwarded packet read on a node with 11 subnets, now at most 5). What each
-  rule decides is unchanged, and so is its order.
+  the tunnels' own packets and traffic passing through read a few, however many subnets the node has. The rules beside
+  them follow: the free blocking (SMTP, QUIC, port scans) and the encrypted-DNS check cost a packet from anywhere else
+  one rule, an IPv6 packet two, and the rules that drop IPv6 on routed interfaces and reset a connection's first hit in
+  the SNI modes are one rule each, not one per subnet and interface (about 40 a forwarded packet read on a node with 11
+  subnets, now at most 5). What each rule decides is unchanged, and so is its order.
 
 ### Fixed
 
