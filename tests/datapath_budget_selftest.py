@@ -37,6 +37,10 @@ packets a second, lives only in the rule, and multiplies each DELTA a reader tak
       swg_mech and swg_doh: one head set of every subnet, then an IPv6 return, ahead of rules that each open with a subnet
       inside the head, the rest the node before's own (swg_doh: the same matches, `fib` behind the port test); the update
       and the downgrade rebuild each once
+  [12] prerouting, IPv6: `meta nfproto ipv6 return` right after the dispatch's head (`ip saddr` never holds for IPv6, so
+      the head could not return it and it read every goto): the same rules with 2 subnets and 10, accepted unmarked; DP2a's
+      layout without it, or one lost from outside, rebuilt once; one subnet's single chain needs none. [9] and [10] compare
+      IPv6 packets with 1.8.11 too
 
 Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own section (exit 0 when caught):
@@ -69,6 +73,8 @@ Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
      fwdcount   the drift gate forgets forward's rule count (an older layout, a lost rule, stay)  [11]
      fwdwords   …counts the words `drop`/`reject` again (an interface `wg-drop`: a rebuild a pass) [11]
      nov6ret    swg_mech without its IPv6 return (an IPv6 packet reads every rule)              [11]
+     v6pre      the dispatch without its IPv6 return (an IPv6 packet reads every goto)          [12]
+     v6drift    the drift gate forgets the IPv6 return (DP2a's layout, or a lost one, stays)    [12]
      mechhead   a subnet left out of swg_mech's head set                                          [11]
      dohhead    a subnet left out of swg_doh's head set                                           [11]
      dohfib     swg_doh's route lookup ahead of the port test again                               [11]
@@ -139,6 +145,9 @@ PLANTS = {
     "fwdwords": ("[11]", '              and sum(1 for _l in _cbody("forward").splitlines() if _l.strip() and not _l.strip().startswith("type ")) == _nfw)',
                  '              and len(re.findall(r"\\b(?:drop|reject)\\b", _cbody("forward"))) == _nfw)'),
     "nov6ret": ("[11]", '        lines.append("    meta nfproto ipv6 return")            # swg_mech: no rule below can match IPv6', '        pass'),
+    "v6pre": ("[12]", '                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "meta", "nfproto", "ipv6", "return")',
+              '                pass'),
+    "v6drift": ("[12]", '    pre_ok = pre_ok and (len(want_disp) <= 1 or "meta nfproto ipv6 return" in _pre)', '    pass'),
     "mechhead": ("[11]", "        _ms = _collapse4(sorted(set(portsets) | set(meters)))", "        _ms = _collapse4(sorted(set(portsets) | set(meters))[1:])"),
     "dohhead": ("[11]", "        _ds = _collapse4(want_src)", "        _ds = _collapse4(want_src[1:])"),
     "dohfib": ("[11]", '            lines.append("    ip saddr " + S + " " + _new + "udp dport 853 " + _nl + _rec + _rej_u)',
@@ -758,13 +767,15 @@ def grid(subs, cats):
     nets = [ipaddress.ip_network(s, strict=False) for s in subs]       # a wider subnet: one address outside the narrower too
     srcs = [str(n.network_address + k) for n in nets for k in ((5, 6) if n.prefixlen >= 24 else (5, 6, 261))] + ["10.200.0.5", "198.51.0.9"]
     dsts = ["198.51.%d.7" % j for j in range(len(cats))] + ["203.0.113.9"]
-    return [(iif, s, d, pr, pt, ct) for s in srcs for d in dsts for (pr, pt) in (("tcp", 443), ("udp", 443), ("udp", 53))
-            for ct in ("new", "established") for iif in ("awg0", "awg1")]
+    g = [(iif, s, d, pr, pt, ct, False) for s in srcs for d in dsts for (pr, pt) in (("tcp", 443), ("udp", 443), ("udp", 53))
+         for ct in ("new", "established") for iif in ("awg0", "awg1")]
+    return g + [(iif, "0.0.0.0", "0.0.0.0", pr, pt, ct, True) for (pr, pt) in (("tcp", 443), ("udp", 443), ("udp", 53))   # …and
+                for ct in ("new", "established") for iif in ("awg0", "awg1", "eth0")]                                    # IPv6
 
 
 def verdicts(K, g, ctmark=7001):
-    return [(lambda v: (v["verdict"], v["mark"], v["ctmark"]))(K.m.packet(T, iif, s, d, proto=pr, dport=pt, ct=ct, ctmark=ctmark))
-            for iif, s, d, pr, pt, ct in g]
+    return [(lambda v: (v["verdict"], v["mark"], v["ctmark"]))(K.m.packet(T, iif, s, d, proto=pr, dport=pt, ct=ct, ctmark=ctmark, v6=v6))
+            for iif, s, d, pr, pt, ct, v6 in g]
 
 
 EQ = [("3 subnets, rows, a Block, Exits", plan8(3, 3)),
@@ -1101,6 +1112,39 @@ for tname, call, subs in (("swg_mech", mech11, sorted(MECH11)), ("swg_doh", doh1
     check("%s: a list with no IPv4 prefix gets no head and no `{ }` from it (not that such a table loads: its own rules name "
           "an IPv6 prefix, refused by nft as before; the panel sends IPv4 subnets only)" % tname,
           txt_v is not None and "ip saddr != " not in txt_v and not EMPTY.search(txt_v), (txt_v or "")[-300:])
+
+# ── [12] prerouting: an IPv6 packet stops at the dispatch's second rule ──────────────────────────────────────────────────
+SECTION[0] = "[12]"
+print("\n[12] prerouting: an IPv6 packet stops right after the dispatch's head")
+V6P = dict(iif="eth0", saddr="0.0.0.0", daddr="0.0.0.0", v6=True)
+for label, pin, queue in ENG:
+    Ka, _, _, _, _, ra = build8(N, 2, 3, pin, queue, geo="geo12a")
+    Kz, _, _, _, _, rz = build8(N, 10, 3, pin, queue, geo="geo12z")
+    pre_z = [r["text"] for r in (Kz.m.tables.get(T) or {}).get("chains", {}).get("prerouting", {}).get("rules", [])]
+    hi = next((i for i, t in enumerate(pre_z) if t.startswith("ip saddr != {")), -1)
+    check("%s: right after the head, `meta nfproto ipv6 return` — `ip saddr` never holds for IPv6, so the head cannot return it" % label,
+          hi >= 0 and pre_z[hi + 1:hi + 2] == ["meta nfproto ipv6 return"], pre_z[:hi + 3])
+    for k, p in (("an IPv6 packet from the WAN", V6P), ("an IPv6 packet from a client device", dict(V6P, iif="awg0"))):
+        wa, wz = Ka.m.chain_walk(T, "prerouting", **p), Kz.m.chain_walk(T, "prerouting", **p)
+        check("%s, %s: the same rules with 2 subnets and with 10 (%d), no goto, accepted unmarked" % (label, k, wa["walked"]),
+              wa["walked"] == wz["walked"] <= 4 and not [c for c in wz["via"] if c != "prerouting"] and wz["verdict"] == "accept", (wa, wz))
+    # DP2a's dispatch had no IPv6 return: a table without it — that layout, or one lost from outside — is rebuilt once
+    Kd, _, cats_d, ents_d, srcs_d, _ = build8(N, 3, 3, pin, queue, geo="geo12d")
+    rl = (((Kd.m.tables.get(T) or {}).get("chains") or {}).get("prerouting") or {}).get("rules", [])
+    i6 = next((i for i, r in enumerate(rl) if r["text"] == "meta nfproto ipv6 return"), None)   # a render without one is RED
+    if i6 is not None:                                                                              # below, never a crash
+        del rl[i6]
+    before = Kd.m.chain_walk(T, "prerouting", **V6P)["walked"]
+    rd = [mpass(N, Kd, ents_d, cats_d, pin, queue, srcs=srcs_d) for _ in range(2)]
+    after = Kd.m.chain_walk(T, "prerouting", **V6P)["walked"]
+    check("%s: DP2a's dispatch, without the IPv6 return (an IPv6 packet read %d rules), is rebuilt at the next pass (%d), "
+          "and the pass after writes nothing" % (label, before, after),
+          i6 is not None and rd[0]["scripts"] and not rd[1]["scripts"] and after < before and not any(x["errors"] for x in rd)
+          and not Kd.refused, (i6, [x["errors"] for x in rd], rd[1]["scripts"][:1], Kd.refused[:1]))
+K1v, _, _, _, _, r1v = build8(N, 1, 3, False, False, geo="geo12o")
+check("one subnet (one chain, no head): no IPv6 return, an IPv6 packet reads its one goto rule and passes",
+      "meta nfproto ipv6 return" not in [r["text"] for r in K1v.m.tables[T]["chains"]["prerouting"]["rules"]]
+      and K1v.m.chain_walk(T, "prerouting", **V6P)["walked"] <= 2 and not r1v[2]["scripts"], K1v.m.tables[T]["chains"]["prerouting"]["rules"])
 
 print()
 if PLANT:

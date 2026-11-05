@@ -6165,6 +6165,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     _pre = _cbody("prerouting")
     _exp = {disp[w[0]] for w in want if w[2] in ("exit", "block") or len(w) > 4} | (want_disp if pin else set())
     pre_ok = set(re.findall(r"\bgoto (pa\d+)", _pre)) == want_disp and all(_cbody(c).strip() for c in sorted(_exp))
+    # …and with several subnet chains, the IPv6 return after the head: a table without it (DP2a's) is rebuilt once on the
+    # update, and one lost from outside at the next pass. Not signed, as the dispatch itself is not
+    pre_ok = pre_ok and (len(want_disp) <= 1 or "meta nfproto ipv6 return" in _pre)
     rows_ok = ({c for c in _chs if re.fullmatch(r"sr\d+", c)} == want_sr        # the row chains, and the pin-mode Block
                and {c for c in _chs if re.fullmatch(r"pb\d+", c)} == want_pb   # chains (see pb_of) — the same scan
                # …and the arrivals' chain, its Block chains and the jump into it: a chain emptied or a jump flushed from
@@ -6373,6 +6376,10 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             _hs = _collapse4(subnets)                           # local subnet. Replies, outer packets and transit stop at one set
             if len(want_disp) > 1:                              # lookup; a client packet reads one prefix a subnet to its chain
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", "!=", "{ " + ", ".join(_hs) + " }", "return")
+                # …and an IPv6 packet at the next rule: `ip saddr` is IPv4 only, so the head never returns one, and it read every
+                # goto, one a subnet. No goto and no rule of a subnet's chain can match it (each opens `ip saddr`). After the
+                # head, not before it: an IPv4 reply, nearly all the traffic, still reads one rule here
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "meta", "nfproto", "ipv6", "return")
                 for S in subnets:
                     bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S, "goto", disp[S])
             else:                                               # one chain: a single subnet, or overlapping ones. No `{ }` ever

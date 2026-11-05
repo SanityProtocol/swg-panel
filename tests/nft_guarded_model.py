@@ -711,7 +711,7 @@ class SmartModel:
 
     # ── packets ──────────────────────────────────────────────────────────────────────────────────────────────────────────
     def packet(self, table, iif, saddr, daddr, proto="tcp", dport=443, ct="new", ctmark=0, reply=False, ctpackets=1,
-               ctorig=None, length=517, replybytes=60, replypkts=1):
+               ctorig=None, length=517, replybytes=60, replypkts=1, v6=False):
         """→ {verdict, mark, ctmark, via}: one IPv4 packet through `prerouting`. `via` lists the chains it walked.
         `ctpackets` counts both directions, `ctorig` the client's alone (default: `ctpackets`, an upper bound, so a test
         written for the old gate keeps its meaning — an early packet is early); `length` defaults to a ClientHello's, and
@@ -725,6 +725,8 @@ class SmartModel:
                "dir": "reply" if reply else "original", "ctpk": ctpackets,
                "ctopk": ctpackets if ctorig is None else ctorig, "len": length, "ctrb": replybytes,
                "ctra": replybytes // replypkts if replypkts else 0}
+        if v6:                                      # an IPv6 packet: no `ip saddr`/`ip daddr` match holds (see chain_walk)
+            pkt["v6"] = True
         base = [n for n, c in t["chains"].items() if c["hook"] and c["hook"][0] == "prerouting"]
         v = self._walk(t, base[0], pkt, st, 0) if base else None
         return dict(st, verdict=v or "accept")
