@@ -76,6 +76,7 @@ Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
      v6pre      the dispatch without its IPv6 return (an IPv6 packet reads every goto)          [12]
      v6drift    the drift gate forgets the IPv6 return (DP2a's layout, or a lost one, stays)    [12]
      v6pos      …asks only that it be somewhere (one moved past the gotos stays there)         [12]
+     v6brace    …reads the head only with its braces (a one-prefix head: a rebuild every pass)  [12]
      mechhead   a subnet left out of swg_mech's head set                                          [11]
      dohhead    a subnet left out of swg_doh's head set                                           [11]
      dohfib     swg_doh's route lookup ahead of the port test again                               [11]
@@ -148,10 +149,10 @@ PLANTS = {
     "nov6ret": ("[11]", '        lines.append("    meta nfproto ipv6 return")            # swg_mech: no rule below can match IPv6', '        pass'),
     "v6pre": ("[12]", '                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "meta", "nfproto", "ipv6", "return")',
               '                pass'),
-    "v6drift": ("[12]", '    pre_ok = pre_ok and (not _headed or re.search(r"ip saddr != \\{[^}\\n]*\\} return[^\\n]*\\n\\s*meta nfproto ipv6 return\\b", _pre) is not None)',
-                '    pass'),
-    "v6pos": ("[12]", '    pre_ok = pre_ok and (not _headed or re.search(r"ip saddr != \\{[^}\\n]*\\} return[^\\n]*\\n\\s*meta nfproto ipv6 return\\b", _pre) is not None)',
-              '    pre_ok = pre_ok and (not _headed or "meta nfproto ipv6 return" in _pre)'),
+    "v6drift": ("[12]", "    pre_ok = pre_ok and (not _headed or re.search(", "    pre_ok = pre_ok and (True or re.search("),
+    "v6pos": ("[12]", "    pre_ok = pre_ok and (not _headed or re.search(",
+              '    pre_ok = pre_ok and (not _headed or "meta nfproto ipv6 return" in _pre or re.search('),
+    "v6brace": ("[12]", "(?:\\{[^}\\n]*\\}|\\S+) return", "\\{[^}\\n]*\\} return"),
     "mechhead": ("[11]", "        _ms = _collapse4(sorted(set(portsets) | set(meters)))", "        _ms = _collapse4(sorted(set(portsets) | set(meters))[1:])"),
     "dohhead": ("[11]", "        _ds = _collapse4(want_src)", "        _ds = _collapse4(want_src[1:])"),
     "dohfib": ("[11]", '            lines.append("    ip saddr " + S + " " + _new + "udp dport 853 " + _nl + _rec + _rej_u)',
@@ -1157,6 +1158,21 @@ for label, pin, queue in ENG:
           "the next pass (%d), and the pass after writes nothing" % (label, moved, back),
           i6 is not None and rm[0]["scripts"] and not rm[1]["scripts"] and back < moved and not any(x["errors"] for x in rm)
           and not Kd.refused, (i6, [x["errors"] for x in rm], rm[1]["scripts"][:1], Kd.refused[:1]))
+    # two ADJACENT subnets: two chains, but one prefix in the head, which nft lists without its braces (verify F6)
+    pj = plan8(2, 3)
+    _mv = {"10.9.0.0/24": "10.8.1.0/24"}                                       # 10.8.0.0/24 + 10.8.1.0/24 = 10.8.0.0/23
+    pj = ([_mv.get(s, s) for s in pj[0]], pj[1], [dict(e, subnet=_mv.get(e["subnet"], e["subnet"])) for e in pj[2]],
+          {w: [[d, a.replace("10.9.0.", "10.8.1.")] for d, a in v] for w, v in pj[3].items()})
+    geo11(N, "geo12j")
+    Kj = SmartKernel()
+    rj = routing11(N, Kj, pj, 0, pin, queue, False, 3)
+    prej = [r["text"] for r in (((Kj.m.tables.get(T) or {}).get("chains") or {}).get("prerouting") or {}).get("rules", [])]
+    hj = "ip saddr != { 10.8.0.0/23 } return"
+    check("%s: two adjacent subnets (one prefix in the head, listed by nft without its braces: `%s`): the IPv6 return after "
+          "it, nothing refused, and the third pass rebuilds nothing" % (label, hj.replace("{ ", "").replace(" }", "")),
+          hj in prej and prej[prej.index(hj) + 1:prej.index(hj) + 2] == ["meta nfproto ipv6 return"]
+          and hj.replace("{ ", "").replace(" }", "") in (Kj.m.render(T) if T in Kj.m.tables else "")
+          and not rj[2]["scripts"] and not any(x["errors"] for x in rj) and not Kj.refused, (prej, rj[2]["scripts"][:1], Kj.refused[:1]))
 for label, pin, queue in ENG:
     K1v, _, _, _, _, r1v = build8(N, 1, 3, pin, queue, geo="geo12o")
     pre1 = [r["text"] for r in (((K1v.m.tables.get(T) or {}).get("chains") or {}).get("prerouting") or {}).get("rules", [])]

@@ -6169,8 +6169,11 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     pre_ok = set(re.findall(r"\bgoto (pa\d+)", _pre)) == want_disp and all(_cbody(c).strip() for c in sorted(_exp))
     # …and with several subnet chains, the IPv6 return RIGHT AFTER the head (one elsewhere, past the gotos, lets IPv6 read
     # them all): a table without it (DP2a's) is rebuilt once on the update, one lost or moved from outside at the next pass.
-    # nft 1.0.2 / 1.0.6 / 1.0.9 / 1.1.3 / 1.1.6 list both rules as written, a line each. Not signed, as the dispatch is not
-    pre_ok = pre_ok and (not _headed or re.search(r"ip saddr != \{[^}\n]*\} return[^\n]*\n\s*meta nfproto ipv6 return\b", _pre) is not None)
+    # nft 1.0.2 / 1.0.6 / 1.0.9 / 1.1.3 / 1.1.6 list both rules a line each — the head's set WITHOUT its braces when it holds
+    # one prefix (two adjacent subnets collapse to one: `ip saddr != 10.8.0.0/23 return`), so either form is the head
+    # (dp2a-v6 verify F6: braces alone rebuilt such a node's table every pass). Not signed, as the dispatch is not
+    pre_ok = pre_ok and (not _headed or re.search(r"ip saddr != (?:\{[^}\n]*\}|\S+) return[^\n]*\n\s*meta nfproto ipv6 return\b",
+                                                   _pre) is not None)
     rows_ok = ({c for c in _chs if re.fullmatch(r"sr\d+", c)} == want_sr        # the row chains, and the pin-mode Block
                and {c for c in _chs if re.fullmatch(r"pb\d+", c)} == want_pb   # chains (see pb_of) — the same scan
                # …and the arrivals' chain, its Block chains and the jump into it: a chain emptied or a jump flushed from

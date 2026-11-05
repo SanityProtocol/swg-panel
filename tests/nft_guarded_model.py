@@ -381,6 +381,16 @@ class Kernel:
 # packet through `prerouting` — jumps, marks and the connection mark included. Refused, as measured: a prefix member in a
 # hash concat set; a reference to a set / chain / counter that is not there; deleting a chain a jump still names or a set a
 # rule still matches ("Device or resource busy", smart-nft-ttl-swap-ordering). Anything it does not know is a syntax error.
+# nft lists a ONE-element anonymous set as its bare value — `ip saddr != { 10.8.0.0/23 }` reads back `ip saddr !=
+# 10.8.0.0/23`, `iifname { "awg0" }` reads back `iifname "awg0"` (measured: 1.0.2, 1.0.6, 1.0.9, 1.1.3, 1.1.6). The listing
+# does the same here, so a reader of it that wants the braces fails as it would on a node (dp2a-v6 verify F6, F7).
+_ONE_SET = re.compile(r"\b(ip [sd]addr|[io]ifname)( !=)? \{ ([^,{}\s]+) \}")
+
+
+def _listed(text):
+    return _ONE_SET.sub(lambda m: "%s%s %s" % (m.group(1), m.group(2) or "", m.group(3)), text)
+
+
 class SmartModel:
     def __init__(self):
         self.tables, self.handle = {}, 0
@@ -696,7 +706,7 @@ class SmartModel:
             if c["hook"]:
                 out.append("\t\ttype filter hook %s priority %s; policy accept;" % c["hook"])
             out += ["\t\t%s # handle %d" % (re.sub(r"\bcounter\b(?! name)", "counter packets %d bytes %d" % (r.get("pk", 0), r.get("pk", 0) * 60),
-                                                     r["text"]), r["handle"]) for r in c["rules"]]
+                                                     _listed(r["text"])), r["handle"]) for r in c["rules"]]
             out.append("\t}")
         return "\n".join(out + ["}"]) + "\n"
 
