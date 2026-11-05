@@ -6172,8 +6172,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                and ("sa" in _chs) == bool(arr) and {c for c in _chs if re.fullmatch(r"pa\d+", c)} == want_pa | want_disp
                and (not arr or ("@lg" in _pre and bool(_cbody("sa").strip())))
                and ("svb" in _chs) == bool(svb_of) and (not svb_of or bool(_cbody("svb").strip())))
+    _rst_s = _collapse4(subnets) if (pin and reset_mark) else []   # the SNI reset's subnets, one set (D2)
+    # `forward` holds exactly the rules a rebuild writes — the name-block reset, the SNI reset, the arrivals' reset and the two
+    # IPv6 drops: a rule added or lost from outside, or an older layout (one rule a subnet and two an interface), rebuilds
+    _nfw = bool(blk_rst) + bool(_rst_s) + bool(pin and reset_mark and arr) + 2 * bool(v6f)
     fwd_ok = (((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
-              and ((not blk_rst) or ("%#010x" % SNI_BLOCK_MARK) in _cbody("forward")))
+              and ((not blk_rst) or ("%#010x" % SNI_BLOCK_MARK) in _cbody("forward"))
+              and len(re.findall(r"\b(?:drop|reject)\b", _cbody("forward"))) == _nfw)
     if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
@@ -6383,15 +6388,16 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "tcp", "dport", "443", "meta", "mark", "&", "0x0000ffff",
                         "==", "%#010x" % SNI_BLOCK_MARK, "counter", "reject", "with", "tcp", "reset")   # bits is refused, every connection
             if pin and reset_mark:                         # SNI first-hit RST: swg-sni stamped the FIRST ClientHello to a
-                for S in subnets:                           # newly-learned dst with reset_mark → RST it so the client reconnects
-                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", S, "tcp", "dport", "443",
-                            "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset")   # counter = reset hit-rate (health); retry's SYN matches the set and routes correctly
-                if arr:                                     # …an arrival's first hit likewise: the RST goes back down its leg
+                if _rst_s:                                  # newly-learned dst with reset_mark → RST it so the client reconnects.
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", "{ " + ", ".join(_rst_s) + " }",   # ONE rule,
+                            "tcp", "dport", "443", "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset")   # every subnet
+                if arr:                                     # in its set (D2): a forwarded packet reads one. counter = reset hit-rate (health)
                     bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "iifname", "@lg", "ip", "saddr", "@ar", "tcp", "dport", "443",
-                            "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset")
-            for ifn in v6f:
-                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "iifname", ifn, "drop")
-                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "oifname", ifn, "drop")
+                            "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset")   # …an arrival's first hit likewise
+            if v6f:                                         # one rule a direction, every interface in its set (D2) — never `{ }`
+                _v6s = "{ " + ", ".join('"%s"' % f for f in v6f) + " }"
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "iifname", _v6s, "drop")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "oifname", _v6s, "drop")
         elif "forward" in chains_now:
             bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "forward")
             bat.add("delete", "chain", "inet", SMART_NFT_TABLE, "forward")
@@ -7922,7 +7928,7 @@ def _ensure_doh_block(observe, strict, res):
         ips = _doh_ips()
         strict_s = sorted(set(strict))
         sig = hashlib.sha256((";".join(want_src) + "|" + ";".join(strict_s) + "|" + ";".join(ips)
-                              + "|v2-pre").encode()).hexdigest()   # v2-pre: forward hook -> prerouting
+                              + "|v3-head").encode()).hexdigest()   # v3-head: one head rule, the fib behind the port test (D2); v2-pre: forward hook -> prerouting
         sigf = os.path.join(GEO_DIR, ".doh.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -7941,6 +7947,9 @@ def _ensure_doh_block(observe, strict, res):
         # applying the moment an interface is accelerated. DoQ/DoH3 are UDP and were never diverted, but they
         # move with their siblings so the tier has one home and one order.
         lines.append("  chain pre { type filter hook prerouting priority mangle - 10; policy accept;")
+        _ds = _collapse4(want_src)                              # every rule below opens `ip saddr S`: one set lookup for the rest (D2)
+        if _ds:
+            lines.append("    ip saddr != { " + ", ".join(_ds) + " } return")
         for S in want_src:
             _rec = "update @doh_seen { ip saddr } counter"
             _is_strict = S in set(strict_s)
@@ -7950,11 +7959,12 @@ def _ensure_doh_block(observe, strict, res):
             _new = "" if _is_strict else "ct state new "
             _rej_t = " reject with tcp reset" if _is_strict else ""
             _rej_u = " reject" if _is_strict else ""
-            _nl = "fib daddr type != local "        # keep the forward hook's old scope: never the node's own services
-            lines.append("    ip saddr " + S + " " + _nl + _new + "udp dport 853 " + _rec + _rej_u)             # DoQ
-            lines.append("    ip saddr " + S + " " + _nl + _new + "tcp dport 853 " + _rec + _rej_t)             # DoT
-            lines.append("    ip saddr " + S + " " + _nl + _new + "ip daddr @doh4 udp dport 443 " + _rec + _rej_u)   # DoH3 / QUIC
-            lines.append("    ip saddr " + S + " " + _nl + _new + "ip daddr @doh4 tcp dport 443 " + _rec + _rej_t)   # DoH
+            _nl = "fib daddr type != local "        # keep the forward hook's old scope: never the node's own services —
+            # behind the port test (D2): the route lookup only for a packet that could match, never for every packet of S
+            lines.append("    ip saddr " + S + " " + _new + "udp dport 853 " + _nl + _rec + _rej_u)             # DoQ
+            lines.append("    ip saddr " + S + " " + _new + "tcp dport 853 " + _nl + _rec + _rej_t)             # DoT
+            lines.append("    ip saddr " + S + " " + _new + "udp dport 443 ip daddr @doh4 " + _nl + _rec + _rej_u)   # DoH3 / QUIC
+            lines.append("    ip saddr " + S + " " + _new + "tcp dport 443 ip daddr @doh4 " + _nl + _rec + _rej_t)   # DoH
         lines += ["  }", "}"]
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True)
@@ -8040,7 +8050,7 @@ def _ensure_mech_block(mech, res, scan_allow=()):
             return
         _sa = sorted({str(a).strip() for a in (scan_allow or []) if str(a).strip()})   # never-flag source CIDRs (our fleet management — measured to sweep like malware, SCAN-GUARD-PLAN)
         _scan = {"sa": _sa, "sp": list(SCAN_PORTS), "b": SCAN_B, "wu": SCAN_WIN_UNIT, "ws": SCAN_WIN_S} if meters else {}   # scan-guard config folded in so a future port-list/threshold/allowlist edit forces the one-time rebuild; it means nothing without a portscan subnet, so a node that runs none carries none of it
-        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 9}, sort_keys=True).encode()).hexdigest()   # v9: rule (a) cuts by its own @scf, which only the sweep meter (b) fills — a 200/s flag (@pscf) is attribution only again; v8: `ct state new` right after the subnet in every rule that has it (an established packet reads its conntrack state and bails before any set lookup / fib); v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 10}, sort_keys=True).encode()).hexdigest()   # v10: one head rule, `ip saddr != { subnets } return` (D2); v9: rule (a) cuts by its own @scf, which only the sweep meter (b) fills — a 200/s flag (@pscf) is attribution only again; v8: `ct state new` right after the subnet in every rule that has it (an established packet reads its conntrack state and bails before any set lookup / fib); v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
         sigf = os.path.join(GEO_DIR, ".mech.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -8091,6 +8101,9 @@ def _ensure_mech_block(mech, res, scan_allow=()):
         # NODE ITSELF was never in scope here, and prerouting sees it. Without this, a client talking to the
         # node's own dnsmasq or a turn-proxy would newly count against the port-scan meter.
         lines.append("  chain pre { type filter hook prerouting priority mangle - 10; policy accept;")
+        _ms = _collapse4(sorted(set(portsets) | set(meters)))   # every rule below opens `ip saddr S`: a reply, a tunnel's own
+        if _ms:                                                   # packet and transit stop at this one set lookup (D2), never `{ }`
+            lines.append("    ip saddr != { " + ", ".join(_ms) + " } return")
         # ⚠️ `counter` COSTS ONLY ON PACKETS THAT ALREADY MATCHED, i.e. ones being dropped anyway. Without it
         # these drops are invisible: an operator who turns on SMTP blocking had no signal, ever, and on a node
         # with no xt_string the torrent PORT-HINT dropped silently while the signature counter (the only

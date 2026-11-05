@@ -30,6 +30,12 @@ packets a second, lives only in the rule, and multiplies each DELTA a reader tak
   [9] the same verdict, mark and connection mark as the node before dispatch (1.8.11, 7fbf2cfc), packet by packet, three plans
   [10] on one kernel: the update, a subnet with a row leaving, a row leaving, a subnet arriving, and the downgrade to the
       node before dispatch with a row removed in the same window — no batch refused, nothing left of the dispatch
+  [11] DP2b — the forward chain: the SNI reset one rule for every subnet, the IPv6 drops one rule a direction for every
+      interface; the same rules and the same walk with 2 subnets and 2 interfaces as with 10 and 12; never `{ }`; every
+      forwarded packet (IPv4 and IPv6, under every mark) decided as by 1.8.11; an older forward under this node's own render
+      rebuilt once, a rule lost from outside rebuilt, the downgrade clean. swg_mech and swg_doh: one head set of every
+      subnet ahead of rules that each open with a subnet inside it, the rest the node before's own (swg_doh: the same
+      matches, `fib` behind the port test); the update and the downgrade rebuild each once
 
 Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own section (exit 0 when caught):
@@ -55,6 +61,14 @@ Hermetic. Run: python3 tests/datapath_budget_selftest.py   (0 = pass)
      emptydrift the drift gate forgets the subnets' chains (one emptied from outside stays empty) [8]
      bkreap     the reaper forgets `c_bk` (it is deleted under the rules that count into it)      [8]
      bklate     `c_bk` is not made in the batch (a fresh table's first batch is refused)          [8]
+     fwdloop    the SNI reset goes back to one rule a subnet                                       [11]
+     v6loop     the IPv6 drops go back to two rules an interface                                  [11]
+     v6empty    the IPv6 set is written with no IPv6 interface (`{ }`)                            [11]
+     rstempty   the SNI reset's set is written with no IPv4 subnet (`{ }`)                        [11]
+     fwdcount   the drift gate forgets forward's rule count (an older layout, a lost rule, stay)  [11]
+     mechhead   a subnet left out of swg_mech's head set                                          [11]
+     dohhead    a subnet left out of swg_doh's head set                                           [11]
+     dohfib     swg_doh's route lookup ahead of the port test again                               [11]
 """
 import atexit, importlib.machinery, importlib.util, ipaddress, os, re, shutil, subprocess, sys, tempfile
 os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
@@ -106,6 +120,23 @@ PLANTS = {
     "emptydrift": ("[8]", ' and all(_cbody(c).strip() for c in sorted(_exp))', ''),
     "bkreap": ("[8]", ' | ({"c_bk"} if bk else set())', ''),
     "bklate": ("[8]", '            bat.add("add", "counter", "inet", SMART_NFT_TABLE, "c_bk")', '            pass'),
+    "fwdloop": ("[11]", '                if _rst_s:                                  # newly-learned dst with reset_mark → RST it so the client reconnects.\n'
+                        '                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", "{ " + ", ".join(_rst_s) + " }",   # ONE rule,',
+                '                for _S in _rst_s:\n                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", _S,'),
+    "v6loop": ("[11]", '            if v6f:                                         # one rule a direction, every interface in its set (D2) — never `{ }`\n'
+                       '                _v6s = "{ " + ", ".join(\'"%s"\' % f for f in v6f) + " }"',
+               '            for _v6s in v6f:\n                _v6s = \'"%s"\' % _v6s'),
+    "v6empty": ("[11]", '            if v6f:                                         # one rule a direction, every interface in its set (D2) — never `{ }`',
+                '            if True:'),
+    "rstempty": ("[11]", '                if _rst_s:                                  # newly-learned dst with reset_mark → RST it so the client reconnects.',
+                 '                if True:'),
+    "fwdcount": ("[11]", '              and ((not blk_rst) or ("%#010x" % SNI_BLOCK_MARK) in _cbody("forward"))\n'
+                         '              and len(re.findall(r"\\b(?:drop|reject)\\b", _cbody("forward"))) == _nfw)',
+                 '              and ((not blk_rst) or ("%#010x" % SNI_BLOCK_MARK) in _cbody("forward")))'),
+    "mechhead": ("[11]", "        _ms = _collapse4(sorted(set(portsets) | set(meters)))", "        _ms = _collapse4(sorted(set(portsets) | set(meters))[1:])"),
+    "dohhead": ("[11]", "        _ds = _collapse4(want_src)", "        _ds = _collapse4(want_src[1:])"),
+    "dohfib": ("[11]", '            lines.append("    ip saddr " + S + " " + _new + "udp dport 853 " + _nl + _rec + _rej_u)',
+               '            lines.append("    ip saddr " + S + " " + _nl + _new + "udp dport 853 " + _rec + _rej_u)'),
 }
 TMP = tempfile.mkdtemp(prefix="dp-budget-")
 atexit.register(shutil.rmtree, TMP, True)          # every exit, a plant's copy too
@@ -817,6 +848,244 @@ for label, pin, queue in ENG:
         check("%s: …and the downgraded table decides every packet as one that node built itself" % label,
               steps[-1][3] == verdicts(Kb, steps[-1][4]), next(((steps[-1][4][i], steps[-1][3][i]) for i in range(len(steps[-1][4]))
                                                                if steps[-1][3][i] != verdicts(Kb, steps[-1][4])[i]), None))
+
+# ── [11] DP2b: the forward chain, swg_mech, swg_doh ─────────────────────────────────────────────────────────────────────
+SECTION[0] = "[11]"
+print("\n[11] DP2b: forward, swg_mech and swg_doh — one rule where there was one a subnet or an interface")
+ARR11 = {"subnets": ["10.28.0.0/24"], "legs": ["swg_n"],
+         "entries": [{"category": "custom_c0", "action": "exit", "via_iface": "swg_h", "table": 7001}]}
+IFS = lambda n: ["awg%d" % i for i in range(n)]
+
+
+def geo11(M, name):
+    M.GEO_DIR = os.path.join(TMP, name)
+    shutil.rmtree(M.GEO_DIR, ignore_errors=True)
+    os.makedirs(M.GEO_DIR)
+    open(os.path.join(M.GEO_DIR, ".automerge-migrated"), "w").write("1")
+    getattr(M, "_NUMGEN", {})["ok"] = None                   # 1.8.11 (the base) has no numgen probe
+
+
+def fwd(K):
+    return [r["text"] for r in ((K.m.tables.get(T) or {}).get("chains", {}).get("forward") or {}).get("rules", [])]
+
+
+def routing11(M, K, plan, nv, pin, queue, arr, passes):
+    """`passes` routing passes of M on K with nv IPv6 smart interfaces, a block by name refused (pin) and, with `arr`, an
+    arrival; the categories filled after the first pass, as _smart_geo_refresh does."""
+    subs, cats, ents, srcs = plan
+    kw = dict(srcs=srcs, v6_ifaces=IFS(nv), blk_reject=pin, arrivals=(ARR11 if arr else None))
+    r = []
+    for i in range(passes):
+        r.append(mpass(M, K, ents, cats, pin, queue, **kw))
+        if i == 0:
+            for j, c in enumerate(cats):
+                if M._smart_setname(c) in K.m.tables.get(T, {}).get("sets", {}):
+                    K.load_set(T, M._smart_setname(c), ["198.51.%d.0/24" % j])
+    return r
+
+
+def build11(M, plan, nv, pin, queue, arr=True, name="geo11", passes=3):
+    geo11(M, name)
+    K = SmartKernel()
+    return K, routing11(M, K, plan, nv, pin, queue, arr, passes)
+
+
+# what forward decides on: a client's packet out, a reply in, transit, IPv6 on no smart interface
+FWD_PK = {"a client's packet out": dict(iif="awg0", saddr="10.9.0.6", daddr="198.51.1.7", oif="eth0"),
+          "a reply in": dict(iif="eth0", saddr="198.51.1.7", daddr="10.9.0.6", oif="awg0"),
+          "transit": dict(iif="swg_n", saddr="192.0.2.77", daddr="203.0.113.9", oif="eth0"),
+          "IPv6 on no smart interface": dict(iif="eth0", saddr="0.0.0.0", daddr="0.0.0.0", oif="eth1", v6=True)}
+LONE = re.compile(r"\b(?:ip saddr|[io]ifname) (?!\{|@|!= \{|!= @)")      # a subnet or a device named alone, not in a set
+for label, pin, queue in ENG:
+    Ka, ra = build11(N, plan8(2, 3), 2, pin, queue)
+    Kz, rz = build11(N, plan8(10, 3), 12, pin, queue)
+    fa, fz = fwd(Ka), fwd(Kz)
+    check("%s: three passes, 2 subnets and 2 IPv6 interfaces, 10 and 12: no error, nothing refused" % label,
+          not any(x["errors"] for x in ra + rz) and not Ka.refused and not Kz.refused, ([x["errors"] for x in ra + rz], Ka.refused[:1], Kz.refused[:1]))
+    check("%s: forward holds the same rules, %d, with 2 subnets and 2 interfaces as with 10 and 12" % (label, len(fz)),
+          len(fa) == len(fz) == (3 if pin else 0) + 2, (fa, fz))
+    check("%s: no forward rule names one subnet or one interface alone" % label, not [t for t in fz if LONE.search(t)], [t for t in fz if LONE.search(t)][:2])
+    if pin:
+        rst = "ip saddr { %s } tcp dport 443 meta mark %s counter reject with tcp reset" % (", ".join(N._collapse4(plan8(10, 3)[0])), hex(N.SNI_RESET_MARK))
+        check("%s: the SNI reset is one rule, every subnet collapsed in its set" % label, rst in fz, fz)
+    check("%s: the IPv6 drops are one rule a direction, every interface in its set" % label,
+          [t for t in fz if "nfproto ipv6" in t] == ["meta nfproto ipv6 %sname { %s } drop" % (d, ", ".join('"%s"' % f for f in sorted(IFS(12))))
+                                                     for d in ("iif", "oif")], fz)
+    check("%s: pass 3 over its own render rebuilds nothing" % label, not ra[2]["scripts"] and not rz[2]["scripts"],
+          (ra[2]["scripts"][:1], rz[2]["scripts"][:1]))
+    for k, p in FWD_PK.items():
+        wa, wz = Ka.m.chain_walk(T, "forward", **p)["walked"], Kz.m.chain_walk(T, "forward", **p)["walked"]
+        check("%s, %s: the same forward rules read with 2 subnets and 2 interfaces as with 10 and 12 (%d)" % (label, k, wa), wa == wz, (wa, wz))
+# never `{ }`: an SNI node with no IPv4 subnet of its own (arrivals only) and no IPv6 interface still has a forward chain
+Ke = SmartKernel()
+geo11(N, "geo11e")
+_ce = plan8(1, 3)[1]
+re11 = [mpass(N, Ke, [], _ce, True, False, v6_ifaces=[], blk_reject=True, arrivals=ARR11)]
+for j, c in enumerate(_ce):
+    if N._smart_setname(c) in Ke.m.tables.get(T, {}).get("sets", {}):
+        Ke.load_set(T, N._smart_setname(c), ["198.51.%d.0/24" % j])
+re11 += [mpass(N, Ke, [], _ce, True, False, v6_ifaces=[], blk_reject=True, arrivals=ARR11) for _ in range(2)]
+check("an SNI node with arrivals only and no IPv6 interface: no `{ }`, nothing refused, its forward resets the arrivals' first hits",
+      not any(x["errors"] for x in re11) and not Ke.refused and not any(EMPTY.search(s) for s in Ke.scripts)
+      and any("@ar" in t for t in fwd(Ke)) and not any("nfproto ipv6" in t for t in fwd(Ke)), ([x["errors"] for x in re11], Ke.refused[:2], fwd(Ke)))
+check("…and its third pass rebuilds nothing", not re11[2]["scripts"], re11[2]["scripts"][:1])
+
+
+def fgrid(subs, nv):
+    """Every forwarded packet the chain decides on: IPv4 from each subnet, an arrival, a stranger and a public address —
+    in by a client device, a mesh leg or the WAN, TCP 443, UDP 443 and TCP 80, under every mark swg-sni or routing leaves
+    on it, and replies to them; IPv6 in and out of each smart interface and two others, with and without the block mark."""
+    nets = [ipaddress.ip_network(s, strict=False) for s in subs]
+    srcs = [str(n.network_address + k) for n in nets for k in ((5, 6) if n.prefixlen >= 24 else (5, 6, 261))] + ["10.28.0.5", "10.200.0.5", "198.51.0.9"]
+    marks = (0, 0x1b59, N.SNI_RESET_MARK, N.SNI_BLOCK_MARK, (1 << 16) | N.SNI_BLOCK_MARK)
+    g = [dict(iif=iif, saddr=s, daddr="198.51.1.7", oif="eth0", proto=pr, dport=pt, mark=m) for s in srcs for iif in ("awg0", "swg_n", "eth0")
+         for pr, pt in (("tcp", 443), ("udp", 443), ("tcp", 80)) for m in marks]
+    g += [dict(iif="eth0", saddr="198.51.1.7", daddr=s, oif="awg0", mark=m) for s in srcs for m in marks]
+    devs = IFS(nv) + ["eth0", "wg9"]
+    return g + [dict(iif=a, saddr="0.0.0.0", daddr="0.0.0.0", oif=b, v6=True, mark=m) for a in devs for b in devs if a != b
+                for m in (0, N.SNI_BLOCK_MARK)]
+
+
+EQ11 = [("3 subnets, 3 IPv6 interfaces, an arrival", plan8(3, 3), 3, True), ("1 subnet, 1 interface", plan8(1, 4), 1, False),
+        ("overlapping subnets", EQ[2][1], 2, True)]
+for label, pin, queue in ENG if H else ():
+    for name, plan, nv, arr in EQ11:
+        Kc, rc = build11(N, plan, nv, pin, queue, arr, "geo11c", 2)
+        Kb, rb = build11(H, plan, nv, pin, queue, arr, "geo11b", 2)
+        g = fgrid(sorted({e["subnet"] for e in plan[2]}), nv)
+        vc = [Kc.m.chain_walk(T, "forward", **p)["verdict"] for p in g]
+        vb = [Kb.m.chain_walk(T, "forward", **p)["verdict"] for p in g]
+        diff = [(g[i], vb[i], vc[i]) for i in range(len(g)) if vc[i] != vb[i]]
+        check("%s, %s: %d forwarded packets, the same verdict as %s's forward (%d rules here, %d there)" % (label, name, len(g), BASE, len(fwd(Kc)), len(fwd(Kb))),
+              not diff and not any(x["errors"] for x in rc + rb) and len(set(vc)) > 1, (diff[:3], [x["errors"] for x in rc + rb]))
+
+# an older forward under this node's own render (the DP2a node's, with every other chain as this one writes it): rebuilt once
+for label, pin, queue in ENG if H else ():
+    p11 = plan8(3, 3)
+    Kh, _ = build11(H, p11, 3, pin, queue, True, "geo11h", 2)
+    Kn, rn = build11(N, p11, 3, pin, queue, True, "geo11n", 2)
+    mine = fwd(Kn)
+    tb = Kn.m.tables[T]
+    tb["chains"]["forward"]["rules"] = [dict(r, ops=list(r["ops"])) for r in Kh.m.tables[T]["chains"]["forward"]["rules"]]
+    for r in tb["chains"]["forward"]["rules"]:
+        Kn.m.handle += 1
+        r["handle"] = Kn.m.handle
+    old = fwd(Kn)
+    ru = routing11(N, Kn, p11, 3, pin, queue, True, 2)
+    check("%s: an older forward (%d rules) under this node's render is rebuilt at the next pass (%d), and the pass after writes nothing" % (label, len(old), len(fwd(Kn))),
+          len(old) > len(mine) and ru[0]["scripts"] and not ru[1]["scripts"] and fwd(Kn) == mine and not Kn.refused and not any(x["errors"] for x in ru),
+          (old, fwd(Kn), [x["errors"] for x in ru], Kn.refused[:1]))
+    v6out = dict(iif="eth0", saddr="0.0.0.0", daddr="0.0.0.0", oif="awg1", v6=True)
+    Kn.m.tables[T]["chains"]["forward"]["rules"].pop()                         # the outbound IPv6 drop, lost from outside (a
+    #                                                                            script commits a new copy: never a stale `tb`)
+    lost = Kn.m.chain_walk(T, "forward", **v6out)["verdict"]
+    rl = routing11(N, Kn, p11, 3, pin, queue, True, 1)
+    check("%s: an IPv6 drop lost from outside (the inbound one still there) is rebuilt at the next pass — IPv6 out by awg1 drops again" % label,
+          lost == "accept" and rl[0]["scripts"] and fwd(Kn) == mine and Kn.m.chain_walk(T, "forward", **v6out)["verdict"] == "drop",
+          (lost, fwd(Kn), rl[0]["errors"]))
+    H.GEO_DIR = N.GEO_DIR                                                      # the downgrade: the node before, on this kernel
+    rd = routing11(H, Kn, p11, 3, pin, queue, True, 2)
+    check("%s: the downgrade: the node before rebuilds forward as its own (%d rules), nothing refused, its next pass writes nothing" % (label, len(fwd(Kn))),
+          fwd(Kn) == fwd(Kh) and not Kn.refused and not any(x["errors"] for x in rd) and not rd[1]["scripts"], (fwd(Kn), fwd(Kh), Kn.refused[:1]))
+
+
+class TableNft:
+    """One nft table as `_ensure_mech_block` / `_ensure_doh_block` see it: `nft list table` prints what the last load wrote."""
+    def __init__(self, name):
+        self.name, self.text, self.loads = name, None, []
+
+    def __call__(self, args, input_text=None, timeout=20):
+        args = [str(a) for a in args]
+        if args[:4] == ["nft", "list", "table", "inet"] and args[4] == self.name:
+            return CP(args, 0 if self.text is not None else 1, self.text or "", "" if self.text is not None else "Error: No such file or directory")
+        if args[:2] == ["nft", "-f"]:
+            text = open(args[2]).read()
+            self.loads.append(text)
+            self.text = "table inet %s {" % self.name + text.split("table inet %s {" % self.name, 1)[1]
+        return CP(args, 0, "", "")
+
+
+def pre_rules(text):
+    m = re.search(r"chain pre \{[^\n]*\n(.*?)\n\s*\}", text or "", re.S)
+    return [ln.strip() for ln in m.group(1).splitlines() if ln.strip()] if m else []
+
+
+def inside(rules, subs):
+    """Rules that do NOT open with `ip saddr S`, S inside one of `subs` — a packet the head returns could match them."""
+    hs = [ipaddress.ip_network(x) for x in subs]
+    out = []
+    for t in rules:
+        m = re.match(r"ip saddr (\d+\.\d+\.\d+\.\d+(?:/\d+)?) ", t)
+        if not (m and any(ipaddress.ip_network(m.group(1), strict=False).subnet_of(h) for h in hs)):
+            out.append(t)
+    return out
+
+
+def table11(M, name, call, geo_name, nf=None):
+    """One `_ensure_*_block` pass of M on table `name` (a fresh one unless `nf` is given) → (nf, res, loaded or None)."""
+    nf = nf or TableNft(name)
+    if geo_name:
+        geo11(M, geo_name)
+    M.run = nf
+    res = {"changed": 0, "errors": []}
+    n0 = len(nf.loads)
+    call(M, res)
+    return nf, res, (nf.loads[n0] if len(nf.loads) > n0 else None)
+
+
+MECH11 = {"10.8.0.0/24": ["smtp", "portscan"], "10.9.0.0/24": ["portscan"], "10.12.0.0/24": ["quic"], "10.13.0.0/16": ["smtp"]}
+SA11 = ["10.10.0.4/32", "192.0.2.0/24"]
+OBS11, STR11 = ["10.8.0.0/24", "10.9.0.0/24", "10.13.0.0/16"], ["10.12.0.0/24"]
+mech11 = lambda M, res, m=MECH11: M._ensure_mech_block(m, res, scan_allow=SA11)
+doh11 = lambda M, res, o=OBS11, s=STR11: M._ensure_doh_block(o, s, res)
+CL = re.compile(r"ip saddr \S+|ct state new|(?:udp|tcp) dport \d+|ip daddr @\S+|fib daddr type != local")
+
+
+def clauses(t):
+    """A swg_doh rule → (its matches, as a set; whether they are the whole match part; its statements)."""
+    m, _, st = t.partition(" update @doh_seen")
+    return set(CL.findall(m)), " ".join(CL.findall(m)) == m.strip(), "update @doh_seen" + st
+
+
+for tname, call, subs in (("swg_mech", mech11, sorted(MECH11)), ("swg_doh", doh11, sorted(set(OBS11) | set(STR11)))):
+    table = N.MECH_NFT_TABLE if tname == "swg_mech" else N.DOH_NFT_TABLE
+    _, res_c, txt_c = table11(N, table, call, "geo11t")
+    c = pre_rules(txt_c)
+    head = "ip saddr != { %s } return" % ", ".join(N._collapse4(subs))
+    check("%s: loads, and its first rule is one head set of every subnet, collapsed (%s)" % (tname, head),
+          not res_c["errors"] and c[:1] == [head], (res_c["errors"], c[:2]))
+    hm = re.fullmatch(r"ip saddr != \{ (.+) \} return", c[0]) if c else None   # the head as written, not as this test expects it
+    hset = hm.group(1).split(", ") if hm else []
+    check("%s: …every rule after it opens with a subnet inside the head set as written: a packet the head returns matched none of them" % tname,
+          len(c) > 1 and hset and not inside(c[1:], hset), (hset, inside(c[1:], hset)[:2]))
+    if tname == "swg_doh":
+        late = [t for t in c[1:] if not -1 < t.find(" dport ") < t.find("fib daddr type != local")]
+        check("swg_doh: …the route lookup (`fib`) after the port test in every rule: a packet of S to no DNS port never reaches it", not late, late[:2])
+    if H:
+        _, res_b, txt_b = table11(H, table, call, "geo11tb")
+        b = pre_rules(txt_b)
+        if tname == "swg_mech":
+            check("swg_mech: …and apart from that one line, the table is the node before's, byte for byte (%d rules after it)" % len(b),
+                  txt_c.replace("    " + head + "\n", "", 1) == txt_b, (c[1:3], b[:2]))
+        else:
+            cc, bb = [clauses(t) for t in c[1:]], [clauses(t) for t in b]
+            check("swg_doh: …and every rule after it is the node before's, rule for rule: the same matches, the same statements (%d)" % len(b),
+                  len(cc) == len(bb) and all(x[1] and x[0] == y[0] and x[2] == y[2] for x, y in zip(cc, bb)), (c[1:3], b[:2]))
+            check("swg_doh: …and the sets are the node before's", txt_c.split("  chain pre")[0] == txt_b.split("  chain pre")[0],
+                  (txt_c.split("  chain pre")[0][-200:], txt_b.split("  chain pre")[0][-200:]))
+        nf = TableNft(table)                                       # the update: the node before's table, then this node's passes
+        geo11(H, "geo11tu")
+        N.GEO_DIR = H.GEO_DIR
+        table11(H, table, call, None, nf)
+        up = [table11(N, table, call, None, nf)[2] for _ in range(2)]
+        down = [table11(H, table, call, None, nf)[2] for _ in range(2)]
+        check("%s: the update rebuilds it once and then holds; the downgrade rebuilds it once, to the node before's own table" % tname,
+              up[0] is not None and up[1] is None and down[0] is not None and down[1] is None and pre_rules(nf.text) == b,
+              ([x is not None for x in up + down], pre_rules(nf.text)[:2]))
+    _, res_v, txt_v = table11(N, table, (lambda M, res: mech11(M, res, {"fd00:8::/64": ["smtp"]})) if tname == "swg_mech"
+                              else (lambda M, res: doh11(M, res, ["fd00:8::/64"], [])), "geo11tv")
+    check("%s: a subnet list with no IPv4 prefix writes no head and no `{ }`" % tname,
+          txt_v is not None and "return" not in txt_v and not EMPTY.search(txt_v), (txt_v or "")[-300:])
 
 print()
 if PLANT:

@@ -307,10 +307,20 @@ else:
     # Read back to the base node's shape — the chain's rules into `prerouting`, in the order they were written, its own lines
     # set aside — so the rest still compares line for line, the signature included (the layout is not signed: D2's drift
     # gate rebuilds a table without it).
-    _nocnt = lambda s: "\n".join(re.sub(r"^add rule inet swg_smart pa1\d{5} ", "add rule inet swg_smart prerouting ", l)
-                                 for l in str(s).split("\n")
+    # `forward` too (DP2b): its one SNI reset with every subnet in a set and its two IPv6 drops with every interface in one
+    # read back to the base node's one rule a subnet and two an interface, in the order it wrote them.
+    def _fwd_base(l):
+        m = re.match(r"(add rule inet swg_smart forward ip saddr )\{ ([^}]*) \}( tcp dport 443 .*)$", l)
+        if m:
+            return [m.group(1) + x + m.group(3) for x in sorted(m.group(2).split(", "))]
+        m = re.match(r"(add rule inet swg_smart forward meta nfproto ipv6 )iifname \{ ([^}]*) \} drop$", l)
+        if m:
+            return [m.group(1) + d + " " + x.strip('"') + " drop" for x in m.group(2).split(", ") for d in ("iifname", "oifname")]
+        return [] if re.match(r"add rule inet swg_smart forward meta nfproto ipv6 oifname \{", l) else [l]
+    _nocnt = lambda s: "\n".join(x for l in str(s).split("\n")
                                  if not re.match(r"add rule inet swg_smart (catcount|catany) |(add|flush) chain inet swg_smart pa1\d{5}$"
-                                                 r"|add rule inet swg_smart prerouting .*\bgoto pa1\d{5}$", l))
+                                                 r"|add rule inet swg_smart prerouting .*\bgoto pa1\d{5}$", l)
+                                 for x in _fwd_base(re.sub(r"^add rule inet swg_smart pa1\d{5} ", "add rule inet swg_smart prerouting ", l)))
     for label, pin, queue in MODES:
         out = []
         for mod in (N, H):

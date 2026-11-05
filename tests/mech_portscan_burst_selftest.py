@@ -180,7 +180,7 @@ def run_checks(N, label=""):
 SRC = open(NODED).read()
 if "--perturb" in sys.argv:
     plants = {"the burst removed": (" burst 200 packets }", " }", "[1]"),
-              "the signature not bumped (left at v8)": ('"v": 9}', '"v": 8}', "[2]")}
+              "the signature not bumped (left at v8)": ('"v": 10}', '"v": 8}', "[2]")}
     bad = []
     for name, (a, b, want) in plants.items():
         if SRC.count(a) != 1:

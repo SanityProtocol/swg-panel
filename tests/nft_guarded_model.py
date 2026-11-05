@@ -443,6 +443,15 @@ class SmartModel:
             elif tk[i] == "iifname" and i + 1 < len(tk) and (tk[i + 1].startswith("@") or (tk[i + 1] == "!=" and tk[i + 2].startswith("@"))):
                 neg = tk[i + 1] == "!="                                  # the device in an `ifname` set (`iifname @lg`)
                 ops.append(("iifset", (tk[i + 2] if neg else tk[i + 1])[1:], neg)); i += 3 if neg else 2
+            elif tk[i] in ("iifname", "oifname") and "{" in tk[i + 1:i + 3]:   # an anonymous set of devices: `iifname { "a", "b" }`
+                neg = tk[i + 1] == "!="
+                j = tk.index("}", i)
+                els = [x.strip(",") for x in tk[i + (3 if neg else 2):j] if x.strip(",")]
+                if not els:
+                    raise NftError("syntax error, unexpected '}' in %r" % text)            # `{ }`: the whole batch is refused
+                if any(not re.fullmatch(r'"[A-Za-z0-9_.@:+-]{1,15}"', x) for x in els):
+                    raise NftError("syntax error in element of %r" % text)
+                ops.append(("ifs", "iif" if tk[i] == "iifname" else "oif", {x.strip('"') for x in els}, neg)); i = j + 1
             elif tk[i] in ("iifname", "oifname") and i + 1 < len(tk):
                 neg = tk[i + 1] == "!="
                 ops.append(("iif" if tk[i] == "iifname" else "oif", (tk[i + 2] if neg else tk[i + 1]).strip('"'), neg))
@@ -721,16 +730,22 @@ class SmartModel:
         return dict(st, verdict=v or "accept")
 
     def chain_walk(self, table, chain, iif, saddr, daddr, mark=0, ctmark=0, proto="tcp", dport=443, ct="established", sock=False, local=False,
-                   rnd=0):
+                   rnd=0, oif=None, v6=False):
         """→ {verdict, mark, ctmark, via, walked}: one packet through a NAMED base chain (the post-queue `svb`, the `forward`
         chain, `catcount`), entering with `mark` — what swg-sni's verdict put on it. `rnd` is `numgen random`'s draw: 0 passes
-        every sampling gate, anything else is a packet the gate skips where N divides it not."""
+        every sampling gate, anything else is a packet the gate skips where N divides it not. `oif` is the device a forwarded
+        packet leaves by (None: no output device, as in prerouting); `v6` an IPv6 packet — no `ip saddr`/`ip daddr` match
+        holds for it, a negated one neither (nft's implicit `meta nfproto ipv4`), and its addresses are not read."""
         t = self.tables.get(table)
         st = {"mark": mark, "ctmark": ctmark, "via": [], "walked": 0}
         if t is None or chain not in t["chains"]:
             return dict(st, verdict="accept")
         pkt = {"iif": iif, "s": _ip(saddr), "d": _ip(daddr), "proto": proto, "dport": dport, "ct": ct, "dir": "original",
                "ctpk": 4, "ctopk": 3, "len": 517, "ctrb": 60, "ctra": 60, "sock": sock, "local": local, "rnd": rnd}
+        if oif is not None:
+            pkt["oif"] = oif
+        if v6:
+            pkt["v6"] = True
         v = self._walk(t, chain, pkt, st, 0)
         return dict(st, verdict=v or "accept")
 
@@ -749,7 +764,9 @@ class SmartModel:
             st["walked"] = st.get("walked", 0) + 1                   # rules this packet read (the datapath budget)
             for o in r["ops"]:
                 k = o[0]
-                if k == "nets":
+                if pkt.get("v6") and k in ("nets", "net", "set", "concat_src"):
+                    ok = False                              # an IPv4 address match never holds for IPv6, negated or not
+                elif k == "nets":
                     ok = any(a <= pkt[o[1]] <= b for a, b in o[2]) != o[3]
                 elif k == "numgen":
                     ok = pkt.get("rnd", 0) % o[1] != 0                    # `rnd` stands for the draw: 0 is the sampled packet
@@ -760,7 +777,10 @@ class SmartModel:
                 elif k == "iifset":
                     ok = any(e[0] == pkt["iif"] for e in t["sets"][o[1]]["els"]) != o[2]
                 elif k == "oif":
-                    ok = False                              # prerouting has no output interface
+                    ok = (pkt["oif"] == o[1]) != o[2] if "oif" in pkt else False   # prerouting has no output interface
+                elif k == "ifs":
+                    dev = pkt["iif"] if o[1] == "iif" else pkt.get("oif")
+                    ok = (dev in o[2]) != o[3] if dev is not None else False
                 elif k == "set":
                     ok = self._in(t, o[2], pkt[o[1]]) != o[3]
                 elif k == "net":
@@ -800,7 +820,7 @@ class SmartModel:
                 elif k == "ctmark_ne":
                     ok = st["ctmark"] != o[1]
                 elif k == "nfproto":
-                    ok = o[1] == "ipv4"
+                    ok = o[1] == ("ipv6" if pkt.get("v6") else "ipv4")
                 elif k == "l4":
                     ok = pkt["proto"] == o[1] and pkt["dport"] == o[2]
                 elif k == "mark_from_ct":
