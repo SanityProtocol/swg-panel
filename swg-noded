@@ -6174,11 +6174,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                and ("svb" in _chs) == bool(svb_of) and (not svb_of or bool(_cbody("svb").strip())))
     _rst_s = _collapse4(subnets) if (pin and reset_mark) else []   # the SNI reset's subnets, one set (D2)
     # `forward` holds exactly the rules a rebuild writes — the name-block reset, the SNI reset, the arrivals' reset and the two
-    # IPv6 drops: a rule added or lost from outside, or an older layout (one rule a subnet and two an interface), rebuilds
+    # IPv6 drops: a rule added or lost from outside, or an older layout (one rule a subnet and two an interface), rebuilds.
+    # Counted as the chain's rule LINES (nft lists a rule on one line, a set of any size included), never as words: an
+    # interface named `wg-drop` sits in the drops' sets, and a word count rebuilt the table every pass (DP2b review F2)
     _nfw = bool(blk_rst) + bool(_rst_s) + bool(pin and reset_mark and arr) + 2 * bool(v6f)
     fwd_ok = (((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
               and ((not blk_rst) or ("%#010x" % SNI_BLOCK_MARK) in _cbody("forward"))
-              and len(re.findall(r"\b(?:drop|reject)\b", _cbody("forward"))) == _nfw)
+              and sum(1 for _l in _cbody("forward").splitlines() if _l.strip() and not _l.strip().startswith("type ")) == _nfw)
     if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
@@ -7928,7 +7930,7 @@ def _ensure_doh_block(observe, strict, res):
         ips = _doh_ips()
         strict_s = sorted(set(strict))
         sig = hashlib.sha256((";".join(want_src) + "|" + ";".join(strict_s) + "|" + ";".join(ips)
-                              + "|v3-head").encode()).hexdigest()   # v3-head: one head rule, the fib behind the port test (D2); v2-pre: forward hook -> prerouting
+                              + "|v3-head").encode()).hexdigest()   # v3-head: one head rule and an IPv6 return, the fib behind the port test (D2); v2-pre: forward hook -> prerouting
         sigf = os.path.join(GEO_DIR, ".doh.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -7950,6 +7952,7 @@ def _ensure_doh_block(observe, strict, res):
         _ds = _collapse4(want_src)                              # every rule below opens `ip saddr S`: one set lookup for the rest (D2)
         if _ds:
             lines.append("    ip saddr != { " + ", ".join(_ds) + " } return")
+        lines.append("    meta nfproto ipv6 return")            # IPv6: `ip saddr` never holds for it, here or below (as swg_mech's)
         for S in want_src:
             _rec = "update @doh_seen { ip saddr } counter"
             _is_strict = S in set(strict_s)
@@ -8050,7 +8053,7 @@ def _ensure_mech_block(mech, res, scan_allow=()):
             return
         _sa = sorted({str(a).strip() for a in (scan_allow or []) if str(a).strip()})   # never-flag source CIDRs (our fleet management — measured to sweep like malware, SCAN-GUARD-PLAN)
         _scan = {"sa": _sa, "sp": list(SCAN_PORTS), "b": SCAN_B, "wu": SCAN_WIN_UNIT, "ws": SCAN_WIN_S} if meters else {}   # scan-guard config folded in so a future port-list/threshold/allowlist edit forces the one-time rebuild; it means nothing without a portscan subnet, so a node that runs none carries none of it
-        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 10}, sort_keys=True).encode()).hexdigest()   # v10: one head rule, `ip saddr != { subnets } return` (D2); v9: rule (a) cuts by its own @scf, which only the sweep meter (b) fills — a 200/s flag (@pscf) is attribution only again; v8: `ct state new` right after the subnet in every rule that has it (an established packet reads its conntrack state and bails before any set lookup / fib); v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 10}, sort_keys=True).encode()).hexdigest()   # v10: one head rule, `ip saddr != { subnets } return`, then `meta nfproto ipv6 return` (D2); v9: rule (a) cuts by its own @scf, which only the sweep meter (b) fills — a 200/s flag (@pscf) is attribution only again; v8: `ct state new` right after the subnet in every rule that has it (an established packet reads its conntrack state and bails before any set lookup / fib); v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
         sigf = os.path.join(GEO_DIR, ".mech.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -8104,6 +8107,9 @@ def _ensure_mech_block(mech, res, scan_allow=()):
         _ms = _collapse4(sorted(set(portsets) | set(meters)))   # every rule below opens `ip saddr S`: a reply, a tunnel's own
         if _ms:                                                   # packet and transit stop at this one set lookup (D2), never `{ }`
             lines.append("    ip saddr != { " + ", ".join(_ms) + " } return")
+        # …and an IPv6 packet at the next rule: `ip saddr` is IPv4 only, so the head never returns one and no rule below can
+        # match it (DP2b review F1). After the head, not before it: IPv4 replies, nearly all the traffic, still read one rule
+        lines.append("    meta nfproto ipv6 return")            # swg_mech: no rule below can match IPv6
         # ⚠️ `counter` COSTS ONLY ON PACKETS THAT ALREADY MATCHED, i.e. ones being dropped anyway. Without it
         # these drops are invisible: an operator who turns on SMTP blocking had no signal, ever, and on a node
         # with no xt_string the torrent PORT-HINT dropped silently while the signature counter (the only
