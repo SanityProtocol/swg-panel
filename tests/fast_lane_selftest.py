@@ -7,9 +7,10 @@ the panel's `fast_lane` (% CPU, default 70, 0 = Off) and stops 20 points lower, 
 
   [1] the table: a flowtable on the node's own tunnels and its WAN, each once and only if it exists, names nft can quote;
       `open` by `typeof iifname`, every element on a timeout of max(30 s, 3 intervals); the rule offloads past packet 32,
-      original direction, established, after every verdict chain; `table ip`; nothing to offload raises
-  [2] the start: three beats in a row at or above the start with 2,000+ forwarded packets/s, and conntrack's count rose
-      since the beat before; never before the panel's first answer, never at Off, never without the rise (entries outlive
+      original direction, established, after every verdict chain, never a source the P2P guard has flagged (its drop sits
+      in postrouting, after `flow add`: review F1); `table ip`; nothing to offload raises
+  [2] the start: three beats in a row at or above the start (the beat's own /proc/stat reading: a node may report no
+      health) with 2,000+ forwarded packets/s, and conntrack's count rose since the beat before; never before the panel's first answer, never at Off, never without the rise (entries outlive
       their user), never on a node whose nft could not drop the table at start, never in the 10 minutes after a failure;
       at most a beat every 4 s
   [3] a beat: the drop first, then the hold — the statistics read at both ends, the CPU across the sleep only (noded's own
@@ -30,6 +31,10 @@ the panel's `fast_lane` (% CPU, default 70, 0 = Off) and stops 20 points lower, 
 Hermetic (a panel on 127.0.0.1 for [8]). Run: python3 tests/fast_lane_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own section (exit 0 when caught):
      nowan      the WAN is left off the device list                                     [1]
+     noflag     the P2P guard's flagged sources offload (its postrouting drop never sees them) [1]
+     snapcpu    the start reads the snapshot's health again (none reported: never on)    [2]
+     flagopen   an unreadable flagged set loads the lane anyway                          [5]
+     panelpub   the node record does not publish `fast_lane`                             [8]
      noexist    a device that is not there goes on the list (the load is refused)        [1]
      opentype   `open` declared by type, not `typeof iifname`                            [1]
      norise     the start without conntrack's rise (leftover entries pass it)             [2]
@@ -109,6 +114,12 @@ PLANTS = {
     "nosnapnone": ("[7]", NODED, "        snap = None                                 # …and the fast lane", "        pass                                        # …and the fast lane"),
     "panelint": ("[8]", PANEL, "if type(_fl) is not int or _fl not in FAST_LANE_STEPS:", "if _fl not in FAST_LANE_STEPS:"),
     "panel70": ("[8]", PANEL, "            if _fl == FAST_LANE_DEFAULT:\n                nodes[nid].pop", "            if False:\n                nodes[nid].pop"),
+    "noflag": ("[1]", NODED, "@open ip saddr != @noff ct direction original", "@open ct direction original"),
+    "flagopen": ("[5]", NODED, '        raise RuntimeError("could not read the P2P guard\'s flagged sources (rc %d)" % r.returncode)',
+                 "        return []"),
+    "snapcpu": ("[2]", NODED, '        cpu = 100.0 * (cur[0] - prev[0]) / max(1, cur[1] - prev[1]) if cur and prev else None',
+                '        cpu = ((snap or {}).get("health") or {}).get("cpu_pct")'),
+    "panelpub": ("[8]", PANEL, '                        "fast_lane": c.get("fast_lane", FAST_LANE_DEFAULT),   # the fast lane\'s start (D3): published, as log_mb\n', ""),
     "panelwire": ("[8]", PANEL, '**({"fast_lane": node["fast_lane"]}       # the fast lane\'s start (D3), only when not 70\n'
                                 '                                   if node.get("fast_lane", FAST_LANE_DEFAULT) != FAST_LANE_DEFAULT else {})',
                   '**({"fast_lane": node.get("fast_lane", FAST_LANE_DEFAULT)}       # the fast lane\'s start (D3), only when not 70\n'
@@ -148,14 +159,18 @@ class Clock:
 
     def sleep(self, s):
         EV.append("sleep")
+        CPU[0] += BUSY[0] * s
+        CPU[1] += 100.0 * s
         self.t += s
 
 
 EV, LOGS = [], []
 RC = {"drop": 0, "load": 0}
 CT = [100]
-BUSY = [90.0]
-CPUQ = []
+BUSY = [90.0]                                    # % CPU while the clock sleeps: a hold, every flow on the normal path
+CPU = [0.0, 0.0]                                 # /proc/stat's busy and total ticks, as they add up
+FLAG = [None]                                    # the P2P guard's flagged sources: None = no guard, "fail" = unreadable
+LASTLOAD = [""]
 DEVS = {"wg1", "awg2", "swg_4d548000", "wdtt1", "csqtt2", "wgx-ab12cd34"}
 REAL_RUN, REAL = N.run, {k: getattr(N, k) for k in ("sample_inet", "sample_catk", "sample_cats", "_smart_table", "_nft_counters",
                                                     "_nft_gate", "read_inet_bytes", "inet_managed_ifaces")}
@@ -168,16 +183,23 @@ def fake_run(args, input_text=None, timeout=20, env=None):
         return CP(args, RC["drop"], "", "" if RC["drop"] == 0 else "Error: drop refused")
     if "flowtable" in (input_text or ""):
         EV.append("load")
+        LASTLOAD[0] = input_text
         return CP(args, RC["load"], "", "" if RC["load"] == 0 else "Error: load refused")
+    if list(args[:6]) == ["nft", "list", "set", "inet", "swg_p2p", "flag"]:
+        EV.append("flagread")
+        if FLAG[0] is None:
+            return CP(args, 1, "", "Error: No such file or directory\n")
+        if FLAG[0] == "fail":
+            return CP(args, 124, "", "timeout")
+        return CP(args, 0, "table inet swg_p2p {\n\tset flag {\n\t\ttypeof ip saddr\n\t\tflags dynamic,timeout\n"
+                  "\t\telements = { %s }\n\t}\n}\n" % ",\n\t\t\t     ".join("%s timeout 10m expires 9m5s" % a for a in FLAG[0]), "")
     EV.append("run:" + " ".join(args[:3]))
     return CP(args, 0, "", "")
 
 
 def fake_cpu(proc_root="/proc"):
     EV.append("cpu")
-    if not CPUQ:                                             # a hold's two reads: BUSY % across them
-        CPUQ.extend([{"cpu": (1000, 10000, 0)}, {"cpu": (1000 + BUSY[0], 10100, 0)}])
-    return CPUQ.pop(0)
+    return {"cpu": (CPU[0], CPU[1], 0)}
 
 
 N.run = fake_run
@@ -193,22 +215,25 @@ CFG = {"interfaces": {}}
 
 
 def reset(start=70, ok=True):
-    EV.clear(); LOGS.clear(); CPUQ.clear()
+    EV.clear(); LOGS.clear()
     RC.update(drop=0, load=0)
     BUSY[0] = 90.0
-    N._FAST.update(on=False, held=False, ok=ok, t=0.0, n=0, ct=None, retry=0.0, start=start, wan="eth0")
+    FLAG[0] = None
+    N._FAST.update(on=False, held=False, ok=ok, t=0.0, n=0, ct=None, cpu=None, retry=0.0, start=start, wan="eth0")
     N._STEER["pps"] = 3000
 
 
 def beat(cpu=80, pps=3000, rise=True, snap=True, busy=None, dt=5.0):
-    """One loop's beat as main runs it: the snapshot's CPU, the steer's pps, conntrack's count (rising or not)."""
+    """One loop's beat as main runs it: `cpu` % since the beat before, the steer's pps, conntrack's count (rising or not)."""
     N.time.t += dt
+    CPU[0] += cpu * dt
+    CPU[1] += 100.0 * dt
     if rise:
         CT[0] += 7
     if busy is not None:
         BUSY[0] = busy
     N._STEER["pps"] = pps
-    s = {"health": {"cpu_pct": cpu}, "wan_iface": "eth0"} if snap else None
+    s = {"wan_iface": "eth0"} if snap else None
     try:
         N._fast_beat(CFG, s, 5)
     except Exception as e:
@@ -217,7 +242,7 @@ def beat(cpu=80, pps=3000, rise=True, snap=True, busy=None, dt=5.0):
 
 def turn_on():
     reset()
-    for _ in range(3):
+    for _ in range(4):                                       # the first beat takes /proc/stat's baseline
         beat()
     assert N._FAST["on"], LOGS
 
@@ -241,8 +266,26 @@ check("[1] `open` by `typeof iifname`, its elements the same devices, each on a 
       els is not None and re.findall(r'"([^"]+)" timeout 30s', els.group(1)) == want, els and els.group(1))
 check("[1] …3 intervals at a 20 s interval (it must not lapse between beats)",
       re.findall(r'"([^"]+)" timeout 60s', N._fast_table(CFG, "eth0", 20)) == want)
-check("[1] the rule: both devices in `open`, original direction, established, past packet 32 → the flowtable",
-      "    iifname @open oifname @open ct direction original ct state established ct original packets > 32 flow add @ft\n" in t5, t5)
+check("[1] the rule: both devices in `open`, not a flagged source, original direction, established, past packet 32 → the "
+      "flowtable", "    iifname @open oifname @open ip saddr != @noff ct direction original ct state established "
+      "ct original packets > 32 flow add @ft\n" in t5, t5)
+check("[1] the P2P guard's flagged sources are kept off it: `ip saddr != @noff` in the rule, `noff` holding them",
+      "@open ip saddr != @noff ct direction original" in t5 and "  set noff { typeof ip saddr; }\n" in t5
+      and "  set noff { typeof ip saddr; elements = { 10.19.0.5, 10.9.0.2 }; }\n" in N._fast_table(CFG, "eth0", 5,
+                                                                                               ["10.19.0.5", "10.9.0.2"]), t5)
+FLAG[0] = ["10.9.0.2", "10.19.0.5", "10.9.0.2"]
+_fl = N._p2p_flagged()
+FLAG[0] = None
+_fa = N._p2p_flagged()
+FLAG[0] = "fail"
+try:
+    N._p2p_flagged()
+    _ff = False
+except RuntimeError:
+    _ff = True
+FLAG[0] = None
+check("[1] …read from the guard's `flag` set (each once); no guard: none; unreadable: it raises (the beat loads nothing)",
+      _fl == ["10.19.0.5", "10.9.0.2"] and _fa == [] and _ff, (_fl, _fa, _ff))
 check("[1] `table ip swg_fast`, its chain after every verdict chain (filter + 10), the flowtable on ingress",
       t5.startswith("table ip swg_fast {\n") and "type filter hook forward priority filter + 10; policy accept;" in t5
       and "flowtable ft { hook ingress priority filter; devices = {" in t5, t5[:300])
@@ -259,10 +302,11 @@ _present = set(DEVS)
 # ── [2] the start ───────────────────────────────────────────────────────────────────────────────────────────────────
 print("[2] the start")
 reset()
-for i in range(3):
+for i in range(4):
     beat()
-    if i < 2:
-        check("[2] beat %d at 80 %% with the count rising: not yet" % (i + 1), not N._FAST["on"] and "load" not in EV, EV)
+    if i < 3:
+        check("[2] beat %d at 80 %% with the count rising: not yet (the first is /proc/stat's baseline)" % (i + 1),
+              not N._FAST["on"] and "load" not in EV, EV)
 check("[2] the third beat in a row at or above 70 %, 2,000+ packets/s and a rise: on, dropped first, loaded",
       N._FAST["on"] and EV.count("drop") == 1 and EV[-1] == "load", (N._FAST, EV))
 check("[2] …and says so once", sum("fast lane: on" in m for _, m in LOGS) == 1, LOGS)
@@ -275,11 +319,11 @@ reset(start=None)
 for _ in range(8):
     beat()
 check("[2] before the panel's first answer: never on (a node set to Off must not start while the panel is away)",
-      not N._FAST["on"] and not EV, EV)
+      not N._FAST["on"] and "drop" not in EV and "load" not in EV, EV)
 reset(start=0)
 for _ in range(8):
     beat()
-check("[2] Off: never on", not N._FAST["on"] and not EV, EV)
+check("[2] Off: never on", not N._FAST["on"] and "drop" not in EV and "load" not in EV, EV)
 reset()
 for _ in range(8):
     beat(pps=1999)
@@ -291,12 +335,13 @@ check("[2] a beat below the start in between counts the three again", not N._FAS
 beat()
 check("[2] …the third in a row after it: on", N._FAST["on"])
 reset()
-for _ in range(8):
+for _ in range(4):
     beat(snap=False)
-check("[2] no snapshot (a pass that raised): no CPU read, never on", not N._FAST["on"], N._FAST)
+check("[2] no snapshot, or one without health (`health.enabled: false`): the start reads /proc/stat itself (review F8)",
+      N._FAST["on"], N._FAST)
 reset(start=90)
 for _ in range(5):
-    beat(cpu=85)
+    beat(cpu=85)                                             # (the first: the baseline)
 check("[2] a start of 90: 85 % never starts it", not N._FAST["on"])
 for _ in range(3):
     beat(cpu=90)
@@ -326,8 +371,13 @@ turn_on()
 EV.clear()
 beat(busy=95)
 S3 = ["sample:sample_inet", "sample:sample_catk", "sample:sample_cats"]
-check("[3] drop, the statistics, CPU, the 0.5 s sleep, CPU, the statistics, load — in that order",
-      EV == ["drop"] + S3 + ["cpu", "sleep", "cpu"] + S3 + ["load"], EV)
+check("[3] drop, the statistics, CPU, the 0.5 s sleep, CPU, the statistics, the P2P guard's flagged, load — in that order",
+      EV == ["drop"] + S3 + ["cpu", "sleep", "cpu"] + S3 + ["flagread", "load"], EV)
+FLAG[0] = ["10.9.0.2"]
+beat()
+check("[3] …a source the guard flagged since is in the next load's `noff`",
+      "  set noff { typeof ip saddr; elements = { 10.9.0.2 }; }\n" in LASTLOAD[0], LASTLOAD[0][:400])
+FLAG[0] = None
 check("[3] …the hold is over when it loads", N._FAST["held"] is False)
 
 # ── [4] the stop ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -392,6 +442,12 @@ RC["drop"] = 0
 EV.clear()
 beat()
 check("[5] …the next beat drops it and turns it off: no hold, no load", not N._FAST["on"] and EV == ["drop"], EV)
+turn_on()
+FLAG[0] = "fail"
+EV.clear()
+beat()
+check("[5] the P2P guard's flagged sources unreadable: no load — dropped, off", not N._FAST["on"] and "load" not in EV
+      and EV[-1] == "drop", EV)
 turn_on()
 RC["drop"] = 1
 for _ in range(3):
@@ -562,12 +618,19 @@ try:
           (c, _r))
     req(port_n, "/api/nodes/update", {"id": "n1", "ip_learning": False})
     check("[8] …a save of another field on the node keeps it", sync(port_n, tok_n).get("fast_lane") == 50)
+    st = req(port_n, "/api/state")[1]
+    nd = [n for n in ((st.get("data") or st).get("nodes") or []) if n.get("id") == "n1"]
+    check("[8] …and the node's record publishes it (review F13: what a settings form posts back)",
+          nd and nd[0].get("fast_lane") == 50, nd and nd[0].get("fast_lane"))
     req(port_n, "/api/nodes/update", {"id": "n1", "fast_lane": 0})
     check("[8] Off: the node is sent 0", sync(port_n, tok_n).get("fast_lane") == 0)
     req(port_n, "/api/nodes/update", {"id": "n1", "fast_lane": 70})
     stored = json.load(open(os.path.join(state_n, "nodes.json")))["n1"]
-    check("[8] back to 70: not stored, and the key is gone from the reply",
-          "fast_lane" not in stored and "fast_lane" not in sync(port_n, tok_n), stored.get("fast_lane"))
+    st = req(port_n, "/api/state")[1]
+    nd = [n for n in ((st.get("data") or st).get("nodes") or []) if n.get("id") == "n1"]
+    check("[8] back to 70: not stored, the key gone from the reply, the record reads 70",
+          "fast_lane" not in stored and "fast_lane" not in sync(port_n, tok_n) and nd and nd[0].get("fast_lane") == 70,
+          (stored.get("fast_lane"), nd and nd[0].get("fast_lane")))
 finally:
     for p in procs:
         p.terminate()

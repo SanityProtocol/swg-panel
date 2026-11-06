@@ -25672,6 +25672,7 @@ def api(method, path, qs, body, deps):
                         # the disk budget: STORED (published, or the next save of anything else on this node posts the
                         # default back — `new-record-field-must-be-published`), and what the node last reported
                         "log_mb": log_mb(c.get("log_mb")),
+                        "fast_lane": c.get("fast_lane", FAST_LANE_DEFAULT),   # the fast lane's start (D3): published, as log_mb
                         "log": snap.get("log") if isinstance(snap.get("log"), dict) else None,
                         "catalog_cats": c.get("catalog_cats") or [],          # provider-catalog categories opted into on this node (node-lens)
                         # Every routing rule's category, per interface, from the NODE RECORD — including the
