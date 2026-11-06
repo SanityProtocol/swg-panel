@@ -19135,6 +19135,11 @@ def log_mb_parse(v):
     return mb, None
 
 
+# A node's fast lane (docs/DATAPATH-PLAN.md D3, §11 decision 10): the % CPU it starts at, 0 = Off; it stops 20 points lower.
+# Stored on the node only when not the default, and sent to the node only then: a node left alone gets the reply it got.
+FAST_LANE_DEFAULT, FAST_LANE_STEPS = 70, (0, 50, 60, 70, 80, 90)
+
+
 def log_wire(ps, now=None, mb=None):
     """The sync reply's `panel.log` = {level, debug_left?, mb?}, or None at the defaults (Info, no Debug, 100 MB):
     omitted then, so a default fleet's reply is byte-identical to one from before levels, and a node reads an absent key
@@ -29896,6 +29901,14 @@ def api(method, path, qs, body, deps):
             else:   nodes[nid].pop("dns_upstream", None)
         if "ip_learning" in body:               # keep learned SNI IPs (True) vs stay fresh / no remembered IPs (False)
             nodes[nid]["ip_learning"] = bool(body.get("ip_learning"))
+        if "fast_lane" in body:                 # the fast lane's start in % CPU, 0 = Off (an exact int: False == 0, 50.0 == 50)
+            _fl = body.get("fast_lane")
+            if type(_fl) is not int or _fl not in FAST_LANE_STEPS:
+                return 400, {"ok": False, "error": "fast_lane must be 0 (off), 50, 60, 70, 80 or 90", "code": "bad_request"}
+            if _fl == FAST_LANE_DEFAULT:
+                nodes[nid].pop("fast_lane", None)
+            else:
+                nodes[nid]["fast_lane"] = _fl
         if "log_mb" in body:                    # this node's disk budget for swg's logs; stored only when not the default
             _lmb, _lerr = log_mb_parse(body.get("log_mb"))
             if _lerr:
@@ -36102,7 +36115,9 @@ class Handler(BaseHTTPRequestHandler):
                                           "geo_epoch": _ps.get("geo_epoch") or 0,
                                           # the fleet's log level — absent at the defaults (byte-identical reply)
                                           **({"log": _lw} if (_lw := log_wire(_ps, mb=node.get("log_mb"))) else {})},
-                                "update": upd or None, "interval": interval})
+                                "update": upd or None, "interval": interval,
+                                **({"fast_lane": node["fast_lane"]}       # the fast lane's start (D3), only when not 70
+                                   if node.get("fast_lane", FAST_LANE_DEFAULT) != FAST_LANE_DEFAULT else {})})
 
     def _node_goodbye(self):
         # The node's uninstaller signs off here (its bearer token). We ONLY complete a full removal (archive +

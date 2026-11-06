@@ -14351,11 +14351,18 @@ def sample_cats():
     """LATEST per-category throughput {cat:{up,dn}} B/s — the delta of the cumulative nft category counters
     (harvested by _smart_table) over the last interval. The LIVE 'traffic by destination' figure: the most
     recent push, not a window average. Reset/vanish-safe; cheap (reuses the per-loop dump — no new subprocess)."""
+    if _FAST["on"] and not _FAST["held"]:                # the fast lane carries most flows past the counters: the hold's rate
+        return {c: dict(v) for c, v in _CATS["rate"].items()}
     t = _smart_table()
     if t["rc"] != 0:
         _CATS["rate"] = {}
         return {}
     cum = t["bytes"]
+    if _FAST["held"]:                                    # a hold reads twice in one loop: the counters now, not the loop's render
+        nl = _nft_counters(SMART_NFT_TABLE)
+        if nl is None:                                   # nothing to read them by: the last rate stands
+            return {c: dict(v) for c, v in _CATS["rate"].items()}
+        cum = _smart_cat_bytes((c, v[1]) for c, v in nl.items())
     now = time.time()
     # each chain's gate (D1), from the same render: `c_uncat_*` count in catany, every other category in catcount
     gs = {c: _nft_gate(t["out"], c)[0] for c in ("catcount", "catany")}
@@ -15881,7 +15888,9 @@ def sample_inet(node_cfg, now):
     Refreshes the per-exit-device split at the same moment, off the same read — `sample_exit()` hands that
     back. Splitting them into two sampled functions would mean two reads of one chain a few milliseconds
     apart, whose totals would then not even agree."""
-    if _INET["cum"] is not None and (now - _INET["t"]) < INET_SAMPLE_EVERY_S:
+    if _FAST["on"] and not _FAST["held"]:              # the fast lane carries most flows past the counters: the hold's rate
+        return dict(_INET["rate"])
+    if not _FAST["held"] and _INET["cum"] is not None and (now - _INET["t"]) < INET_SAMPLE_EVERY_S:
         return _INET["rate"]
     # SAME set as the chain, via the same function. It used to be node interfaces only, so a node serving
     # nothing but WDTT/csqtt instances had a populated chain and still returned early here — reporting a flat
@@ -15980,7 +15989,9 @@ def reconcile_catk_chain(cats):
 def sample_catk():
     """Kernel-SNI per-category {cat:{up,dn}} B/s from the SWG_CATK counters (delta). {} if the chain isn't built."""
     now = time.time()
-    if _CATK["cum"] is not None and (now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:
+    if _FAST["on"] and not _FAST["held"]:                   # the fast lane carries most flows past the counters: the hold's rate
+        return dict(_CATK["rate"])
+    if not _FAST["held"] and _CATK["cum"] is not None and (now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:
         return dict(_CATK["rate"])
     if not _CATK["on"]:                                     # no Kernel-SNI category here: no chain, and no spawn to learn it
         _CATK["cum"] = None; _CATK["rate"] = {}             # None: the first read once there is one is a baseline — the
@@ -16063,7 +16074,7 @@ def _stats_steer():
         n, low = want, 0
     if n != _STEER["n"]:
         log(LOG_DEBUG, "stats: sampling 1 packet in %d (%.0f forwarded packets/s)", n, pps)
-    _STEER.update(n=n, low=low)
+    _STEER.update(n=n, low=low, pps=pps)                     # pps: what the fast lane's start asks for (D3)
     for chain, (tbl, tag) in _IPT_GATE.items():
         if seen.get(chain, n) != n:
             run(["iptables", "-t", tbl, "-R", chain, "1"] + _ipt_gate_args(tag, n))
@@ -16075,6 +16086,135 @@ def _stats_steer():
                 rep.append("replace rule inet %s %s handle %s %s" % (SMART_NFT_TABLE, chain, h, " ".join(_nft_gate_args(n))))
     if rep:
         run(["nft", "-f", "-"], input_text="\n".join(rep) + "\n")
+
+
+# ── the fast lane under pressure (docs/DATAPATH-PLAN.md D3) ────────────────────────────────────────────────────────────
+# A node out of CPU hands established flows to the kernel's flowtable fast path, which reads no rule. On at the panel's
+# start (`fast_lane`: % CPU, default 70, 0 = Off), off after a minute below 20 points under it on the normal path. Each
+# beat (~5 s) DROPS the table — every flow back on the rules, so a Block or a cut lands on its next packet — holds 0.5 s
+# to read the statistics and what the normal path costs right now, then loads it again. No table before or after: a
+# failed beat lands dropped, off, with no new start for 10 minutes; `open` is a dead-man whose elements lapse by
+# themselves, so a killed noded offloads nothing new after 30 s, and a restart drops the table. It starts only when
+# conntrack's count ROSE between two beats: entries outlive their user by days, and the lane must never be conntrack's
+# last user (its drop would then unhook conntrack, losing every close in a hold).
+FAST_TABLE = "swg_fast"
+_FAST_DROP = "table ip %s {}\ndelete table ip %s\n" % (FAST_TABLE, FAST_TABLE)   # gone whether it was there or not
+FAST_DEFAULT, FAST_GAP, FAST_PPS, FAST_RETRY_S = 70, 20, 2000, 600
+_FAST = {"on": False, "held": False, "ok": False, "t": 0.0, "n": 0, "ct": None, "retry": 0.0, "start": None, "wan": ""}
+# ok: the startup drop went through (no usable nft: never on) · start: the panel's setting, None until a valid sync
+
+
+def _fast_setting(v):
+    """The panel's `fast_lane`: 0 = Off, otherwise the start in % CPU (50–95); anything else reads as the default."""
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return FAST_DEFAULT
+    return v and min(95, max(50, v))
+
+
+def _ct_count():
+    """Connections conntrack holds in this network namespace now; None where it cannot be read."""
+    try:
+        with open("/proc/sys/net/netfilter/nf_conntrack_count") as f:
+            return int(f.read())
+    except (OSError, ValueError):
+        return None
+
+
+def _fast_nft(text):
+    r = run(["nft", "-f", "-"], input_text=text)
+    if r.returncode != 0:
+        raise RuntimeError("nft refused it (rc %d: %s)" % (r.returncode, (r.stderr or "").strip()[:160]))
+
+
+def _fast_table(node_cfg, wan, interval):
+    """A flowtable on this node's own tunnels and its WAN, and one rule after every verdict chain: a flow whose two devices
+    are in `open` is offloaded once its 32nd packet in the original direction has passed (past swg-sni's 16 and the P2P
+    guard's 4). `open` is the device list and the dead-man. A device must exist (an absent one refuses the whole load on
+    most kernels) and appear once (a duplicate refuses it on all)."""
+    devs = sorted(d for d in _own_tunnel_devs(node_cfg) | {wan}
+                  if d and re.fullmatch(r"[A-Za-z0-9_.@-]{1,15}", d) and os.path.exists("/sys/class/net/" + d))
+    if not devs:
+        raise RuntimeError("no device to offload")
+    to = max(30, 3 * int(interval or 5))                     # a long node interval must not close it between beats
+    return ("table ip %s {\n  flowtable ft { hook ingress priority filter; devices = { %s }; }\n"
+            "  set open { typeof iifname; flags timeout; elements = { %s }; }\n"
+            "  chain f { type filter hook forward priority filter + 10; policy accept;\n"
+            "    iifname @open oifname @open ct direction original ct state established ct original packets > 32 flow add @ft\n"
+            "  }\n}\n" % (FAST_TABLE, ", ".join('"%s"' % d for d in devs), ", ".join('"%s" timeout %ds' % (d, to) for d in devs)))
+
+
+def _stats_baseline():
+    """The next read of each sampler is a baseline and its rate holds a sample: no rate spans seconds the lane carried."""
+    _INET["cum"] = None
+    _CATK["cum"] = None
+    _CATS["cum"] = {}
+
+
+def _fast_samples(node_cfg):
+    for f in (lambda: sample_inet(node_cfg, time.time()), sample_catk, sample_cats):   # their 5 s gates do not apply
+        with contextlib.suppress(Exception):
+            f()
+
+
+def _fast_off(why, prio=LOG_INFO):
+    _FAST.update(on=False, n=0)
+    _stats_baseline()
+    log(prio, "fast lane: off — " + why)
+
+
+def _fast_beat(node_cfg, snap, interval):
+    """One beat, called every loop, at most every 4 s. Raises on whatever failed: the caller lands it on the safe side."""
+    now = time.time()
+    if now - _FAST["t"] < 4:                                 # a 1 s turn-job loop must not spend half its time in a hold
+        return
+    _FAST["t"] = now
+    start = _FAST["start"]
+    if not _FAST["on"]:
+        c, _FAST["ct"] = _FAST["ct"], _ct_count()            # only a rise proves conntrack is hooked NOW
+        cpu = ((snap or {}).get("health") or {}).get("cpu_pct")
+        _FAST["n"] = _FAST["n"] + 1 if start and cpu is not None and cpu >= start and _STEER.get("pps", 0) >= FAST_PPS else 0
+        if (_FAST["n"] < 3 or not _FAST["ok"] or now < _FAST["retry"] or c is None or _FAST["ct"] is None
+                or _FAST["ct"] <= c):
+            return
+        _FAST.update(on=True, n=0)
+        log(LOG_INFO, "fast lane: on — CPU %.0f %% at %.0f forwarded packets/s: established flows take the kernel's fast path, "
+                      "every rule read again at each beat" % (cpu, _STEER.get("pps", 0)))
+    _fast_nft(_FAST_DROP)                                    # the beat: every flow is back on the rules
+    if not start or now < _FAST["retry"]:                    # Off in the panel, or the drop a failed beat could not make
+        _fast_off("off in the panel" if not start else "dropped after a failed beat")
+        return
+    _FAST["held"] = True
+    try:
+        _stats_baseline()                                    # the statistics' slice starts here
+        _fast_samples(node_cfg)
+        a = _cpu_fields()
+        time.sleep(0.5)                                      # every flow on the normal path: the node as it is without the lane
+        b = _cpu_fields()
+        _fast_samples(node_cfg)
+    finally:
+        _FAST["held"] = False
+    busy = 100.0 * (b["cpu"][0] - a["cpu"][0]) / max(1, b["cpu"][1] - a["cpu"][1])   # across the sleep: noded's own spawns out
+    _FAST["n"] = _FAST["n"] + 1 if busy < start - FAST_GAP else 0
+    if _FAST["n"] >= 12:                                     # a minute below the stop: a spike that ended, or a load that left
+        _fast_off("the normal path below %d %% CPU for a minute" % (start - FAST_GAP))
+        return
+    _FAST["wan"] = (snap or {}).get("wan_iface") or _FAST["wan"]
+    _fast_nft(_fast_table(node_cfg, _FAST["wan"], interval))
+
+
+def _fast_failed(e):
+    """A beat that failed: dropped, off, no new start for 10 minutes. `on` clears only once a drop has gone through, so a
+    drop that failed too is made again at the next beat, which then turns it off."""
+    _FAST["retry"] = time.time() + FAST_RETRY_S
+    try:
+        _fast_nft(_FAST_DROP)
+    except Exception as e2:
+        log(LOG_ERR, "fast lane: %s — and its table could not be dropped (%s): again at the next beat" % (e, e2))
+        return
+    if _FAST["on"]:
+        _fast_off("failed: %s — no new start for 10 minutes" % e, LOG_ERR)
+    else:
+        log(LOG_ERR, "fast lane: failed: %s — no new start for 10 minutes" % e)
 
 
 def _awg_record(name):
@@ -26518,6 +26658,8 @@ def main():
     # Per-leg link health. Background because a probe is seconds of wall clock and the sync loop runs every 5s;
     # the snapshot reads the cache, so a slow or hung probe can never delay a sync.
     threading.Thread(target=_mesh_probe_loop, args=(node_cfg,), daemon=True).start()
+    # the fast lane's table a killed noded left (D3); a node whose nft cannot even drop it never starts the lane
+    _FAST["ok"] = run(["nft", "-f", "-"], input_text=_FAST_DROP).returncode == 0
     while True:
         t0 = time.time()
         _acct = (time.process_time(), _children_cpu_s(), _RUN_SPAWNS)   # the pass's accounting line, at its end (Debug)
@@ -26530,6 +26672,7 @@ def main():
         with contextlib.suppress(Exception):
             conntrack_size()                        # raise only; one file read a pass once it holds (SCALE-PLAN N2)
         _relay_plan, _relay_sync_ok = None, False   # the relay watchdog runs below whatever happens in between
+        snap = None                                 # …and the fast lane: a pass that raised reads as no snapshot, not the last
         if t0 - last_verify_t >= VERIFY_EVERY_S:    # periodic drift heal: force the next routing pass to re-assert
             _force_reverify(); last_route_sig = None   # (drop sig-markers + un-gate the routing reconcile this cycle)
             last_verify_t = t0
@@ -26562,6 +26705,7 @@ def main():
                 _CTR_ADOPT.clear()
             if status == 200 and isinstance(reply.get("desired"), dict):
                 _relay_plan, _relay_sync_ok = reply.get("relay"), True
+                _FAST["start"] = _fast_setting(reply.get("fast_lane", FAST_DEFAULT))   # absent: the default (D3)
                 _newurl = apply_panel_hints(panel, node_cfg, reply)   # pin-gated auto-repoint on a panel host/port change
                 # T-10: and a TRANSFER to a different panel entirely, promoted only once that panel answers
                 # `whoami` with the token it sent. Tried AFTER the hints, on the same valid sync that
@@ -26884,6 +27028,10 @@ def main():
                 _relay_disarm()
                 _RELAY_ARM["sig"] = None
                 _RELAY_ARM["why"] = "watchdog error: %s" % _e
+        try:                                        # the fast lane (D3), outside the sync's try for the same reason: it
+            _fast_beat(node_cfg, snap, interval)    # beats when the sync failed, and a beat that failed lands it dropped
+        except Exception as _e:
+            _fast_failed(_e)
         with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the
             _busy = bool(_TURN_JOBS)                 # panel actually SEES the "updating" phase (else a sub-interval
         _iv = 1.0 if _busy else interval            # download finishes entirely between two 5s posts → pending→updated)

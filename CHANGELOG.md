@@ -5,6 +5,15 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ## [Unreleased]
 
+### Added
+
+- **A node short of CPU hands established connections to the kernel's fast path.** When a node's CPU stays at 70 % or
+  more under real traffic, a connection past its first 32 packets skips the firewall rules entirely, and the CPU they
+  cost is freed. Every 5 seconds the node puts every connection back on the rules for half a second and reads its
+  statistics there, so while it is on, a block, a cut or a routing change reaches a running connection within one pass
+  (5 seconds) instead of on its next packet, and Top destinations and the internet lane are rougher. It turns itself off
+  after a minute below 50 %, so a node that never reaches 70 % never runs it.
+
 ### Changed
 
 - **A busy node no longer runs out of room for connections.** Every connection through a node takes a place in the
