@@ -16128,7 +16128,7 @@ def _fast_nft(text):
         raise RuntimeError("nft refused it (rc %d: %s)" % (r.returncode, (r.stderr or "").strip()[:160]))
 
 
-def _p2p_flagged():
+def _fast_flagged():
     """The sources the P2P guard holds flagged now ([] with no guard). Its drop for one leaving by a device it may not use
     sits in postrouting, AFTER the lane's `flow add`: a flagged flow offloaded there would run past it (DP3 review F1), so
     they never offload; one flagged between two loads is cut at the next beat. Unreadable: no load (the caller raises)."""
@@ -16153,12 +16153,12 @@ def _fast_table(node_cfg, wan, interval, noff=()):
     to = max(30, 3 * int(interval or 5))                     # a long node interval must not close it between beats
     return ("table ip %s {\n  flowtable ft { hook ingress priority filter; devices = { %s }; }\n"
             "  set open { typeof iifname; flags timeout; elements = { %s }; }\n"
-            "  set noff { typeof ip saddr%s; }\n"
+            "  set noff { typeof ip saddr; %s}\n"
             "  chain f { type filter hook forward priority filter + 10; policy accept;\n"
             "    iifname @open oifname @open ip saddr != @noff ct direction original ct state established ct original packets > 32 "
             "flow add @ft\n  }\n}\n" % (FAST_TABLE, ", ".join('"%s"' % d for d in devs),
                                      ", ".join('"%s" timeout %ds' % (d, to) for d in devs),
-                                     "; elements = { %s }" % ", ".join(noff) if noff else ""))
+                                     "elements = { %s }; " % ", ".join(noff) if noff else ""))
 
 
 def _stats_baseline():
@@ -16191,7 +16191,7 @@ def _fast_beat(node_cfg, snap, interval):
         c, _FAST["ct"] = _FAST["ct"], _ct_count()            # only a rise proves conntrack is hooked NOW
         cur = _cpu_fields().get("cpu")                       # the CPU since the last beat, its own: a node may report no health
         prev, _FAST["cpu"] = _FAST["cpu"], cur               # (review F8), and `read_cpu_pct`'s one baseline is collect_health's
-        cpu = 100.0 * (cur[0] - prev[0]) / max(1, cur[1] - prev[1]) if cur and prev else None
+        cpu = 100.0 * (cur[0] - prev[0]) / (cur[1] - prev[1]) if cur and prev and cur[1] > prev[1] else None   # (F16)
         _FAST["n"] = _FAST["n"] + 1 if start and cpu is not None and cpu >= start and _STEER.get("pps", 0) >= FAST_PPS else 0
         if (_FAST["n"] < 3 or not _FAST["ok"] or now < _FAST["retry"] or c is None or _FAST["ct"] is None
                 or _FAST["ct"] <= c):
@@ -16219,7 +16219,7 @@ def _fast_beat(node_cfg, snap, interval):
         _fast_off("the normal path below %d %% CPU for a minute" % (start - FAST_GAP))
         return
     _FAST["wan"] = (snap or {}).get("wan_iface") or _FAST["wan"]
-    _fast_nft(_fast_table(node_cfg, _FAST["wan"], interval, _p2p_flagged()))
+    _fast_nft(_fast_table(node_cfg, _FAST["wan"], interval, _fast_flagged()))
 
 
 def _fast_failed(e):

@@ -33,6 +33,7 @@ Hermetic (a panel on 127.0.0.1 for [8]). Run: python3 tests/fast_lane_selftest.p
      nowan      the WAN is left off the device list                                     [1]
      noflag     the P2P guard's flagged sources offload (its postrouting drop never sees them) [1]
      snapcpu    the start reads the snapshot's health again (none reported: never on)    [2]
+     hotplug    a CPU total that went backwards (a vCPU unplugged) is read as a figure     [2]
      flagopen   an unreadable flagged set loads the lane anyway                          [5]
      panelpub   the node record does not publish `fast_lane`                             [8]
      noexist    a device that is not there goes on the list (the load is refused)        [1]
@@ -115,9 +116,11 @@ PLANTS = {
     "panelint": ("[8]", PANEL, "if type(_fl) is not int or _fl not in FAST_LANE_STEPS:", "if _fl not in FAST_LANE_STEPS:"),
     "panel70": ("[8]", PANEL, "            if _fl == FAST_LANE_DEFAULT:\n                nodes[nid].pop", "            if False:\n                nodes[nid].pop"),
     "noflag": ("[1]", NODED, "@open ip saddr != @noff ct direction original", "@open ct direction original"),
+    "hotplug": ("[2]", NODED, "(cur[1] - prev[1]) if cur and prev and cur[1] > prev[1] else None",   # round 1's reading
+                "max(1, cur[1] - prev[1]) if cur and prev else None"),
     "flagopen": ("[5]", NODED, '        raise RuntimeError("could not read the P2P guard\'s flagged sources (rc %d)" % r.returncode)',
                  "        return []"),
-    "snapcpu": ("[2]", NODED, '        cpu = 100.0 * (cur[0] - prev[0]) / max(1, cur[1] - prev[1]) if cur and prev else None',
+    "snapcpu": ("[2]", NODED, '        cpu = 100.0 * (cur[0] - prev[0]) / (cur[1] - prev[1]) if cur and prev and cur[1] > prev[1] else None',
                 '        cpu = ((snap or {}).get("health") or {}).get("cpu_pct")'),
     "panelpub": ("[8]", PANEL, '                        "fast_lane": c.get("fast_lane", FAST_LANE_DEFAULT),   # the fast lane\'s start (D3): published, as log_mb\n', ""),
     "panelwire": ("[8]", PANEL, '**({"fast_lane": node["fast_lane"]}       # the fast lane\'s start (D3), only when not 70\n'
@@ -223,11 +226,11 @@ def reset(start=70, ok=True):
     N._STEER["pps"] = 3000
 
 
-def beat(cpu=80, pps=3000, rise=True, snap=True, busy=None, dt=5.0):
+def beat(cpu=80, pps=3000, rise=True, snap=True, busy=None, dt=5.0, back=0.0):
     """One loop's beat as main runs it: `cpu` % since the beat before, the steer's pps, conntrack's count (rising or not)."""
     N.time.t += dt
     CPU[0] += cpu * dt
-    CPU[1] += 100.0 * dt
+    CPU[1] += 100.0 * dt - back                             # back: ticks a vCPU took with it when it went offline
     if rise:
         CT[0] += 7
     if busy is not None:
@@ -274,12 +277,12 @@ check("[1] the P2P guard's flagged sources are kept off it: `ip saddr != @noff` 
       and "  set noff { typeof ip saddr; elements = { 10.19.0.5, 10.9.0.2 }; }\n" in N._fast_table(CFG, "eth0", 5,
                                                                                                ["10.19.0.5", "10.9.0.2"]), t5)
 FLAG[0] = ["10.9.0.2", "10.19.0.5", "10.9.0.2"]
-_fl = N._p2p_flagged()
+_fl = N._fast_flagged()
 FLAG[0] = None
-_fa = N._p2p_flagged()
+_fa = N._fast_flagged()
 FLAG[0] = "fail"
 try:
-    N._p2p_flagged()
+    N._fast_flagged()
     _ff = False
 except RuntimeError:
     _ff = True
@@ -339,6 +342,12 @@ for _ in range(4):
     beat(snap=False)
 check("[2] no snapshot, or one without health (`health.enabled: false`): the start reads /proc/stat itself (review F8)",
       N._FAST["on"], N._FAST)
+reset()
+beat(); beat()
+beat(back=2000.0)
+beat()
+check("[2] a CPU total that went backwards (a vCPU unplugged) is no reading: it counts the three again (review F16)",
+      not N._FAST["on"] and N._FAST["n"] == 1, N._FAST)
 reset(start=90)
 for _ in range(5):
     beat(cpu=85)                                             # (the first: the baseline)
