@@ -16129,23 +16129,35 @@ def _fast_nft(text):
 
 
 def _fast_flagged():
-    """The sources the P2P guard holds flagged now ([] with no guard). Its drop for one leaving by a device it may not use
-    sits in postrouting, AFTER the lane's `flow add`: a flagged flow offloaded there would run past it (DP3 review F1), so
-    they never offload; one flagged between two loads is cut at the next beat. Unreadable: no load (the caller raises)."""
-    r = run(["nft", "list", "set", "inet", P2P_NFT_TABLE, "flag"])
-    if r.returncode != 0:
-        if _nft_absent(r):
-            return []
-        raise RuntimeError("could not read the P2P guard's flagged sources (rc %d)" % r.returncode)
-    m = re.search(r"elements = \{([^}]*)\}", r.stdout or "")
-    return sorted(set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", m.group(1)))) if m else []
+    """The P2P guard's flagged sources now and the devices its drop lets them leave by — ([], []) with no guard. That drop
+    sits in postrouting, AFTER the lane's `flow add` (DP3 review F1), so a flagged flow offloaded toward any other device
+    would run past it. The guard's own rule says which: `oifname != {…}` on its flagged drop (Direct: the WAN, Route: the
+    exit), read live, so the lane keeps off exactly what the guard cuts — a flagged torrent leaving by the WAN under Direct
+    still offloads. A guard by groups (`jump gflag`), a drop with no device condition, or a line not understood: no device
+    (every flagged flow stays on the rules). One flagged between two loads is cut at the next beat. Unreadable: raise."""
+    out = []
+    for what in (["set", "inet", P2P_NFT_TABLE, "flag"], ["chain", "inet", P2P_NFT_TABLE, "guard"]):
+        r = run(["nft", "list"] + what)
+        if r.returncode != 0 and not _nft_absent(r):
+            raise RuntimeError("could not read the P2P guard's %s (rc %d)" % (what[-1], r.returncode))
+        out.append(r.stdout or "" if r.returncode == 0 else None)
+    flag, guard = out
+    if flag is None or guard is None:                        # no flagged set or no postrouting drop: nothing to carry past
+        return [], []
+    m = re.search(r"elements = \{([^}]*)\}", flag)
+    noff = sorted(set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", m.group(1)))) if m else []
+    line = next((ln.strip() for ln in guard.splitlines() if "ip saddr @flag " in ln), "")
+    o = re.search(r'oifname != (?:\{([^}]*)\}|"([^"]+)")', line) if line.endswith(" drop") else None   # one device: bare
+    pok = sorted(set(re.findall(r'"([^"]+)"', o.group(1)) if o.group(1) is not None else [o.group(2)])) if o else []
+    return noff, [d for d in pok if re.fullmatch(r"[A-Za-z0-9_.@-]{1,15}", d)]
 
 
-def _fast_table(node_cfg, wan, interval, noff=()):
-    """A flowtable on this node's own tunnels and its WAN, and one rule after every verdict chain: a flow whose two devices
-    are in `open`, from a source not in `noff` (the P2P guard's flagged), is offloaded once its 32nd packet in the original
-    direction has passed (past swg-sni's 16 and the P2P guard's 4). `open` is the device list and the dead-man. A device
-    must exist (an absent one refuses the whole load on older kernels) and appear once (a duplicate refuses it on all)."""
+def _fast_table(node_cfg, wan, interval, noff=(), pok=()):
+    """A flowtable on this node's own tunnels and its WAN, and after every verdict chain: a flow whose two devices are in
+    `open` is offloaded once its 32nd packet in the original direction has passed (past swg-sni's 16 and the P2P guard's
+    4) — unless its source is one the P2P guard flagged (`noff`) and it leaves by a device the guard does not let flagged
+    P2P use (not in `pok`). `open` is the device list and the dead-man. A device must exist (an absent one refuses the
+    whole load on older kernels) and appear once (a duplicate refuses it on all)."""
     devs = sorted(d for d in _own_tunnel_devs(node_cfg) | {wan}
                   if d and re.fullmatch(r"[A-Za-z0-9_.@-]{1,15}", d) and os.path.exists("/sys/class/net/" + d))
     if not devs:
@@ -16154,11 +16166,13 @@ def _fast_table(node_cfg, wan, interval, noff=()):
     return ("table ip %s {\n  flowtable ft { hook ingress priority filter; devices = { %s }; }\n"
             "  set open { typeof iifname; flags timeout; elements = { %s }; }\n"
             "  set noff { typeof ip saddr; %s}\n"
+            "  set pok { typeof iifname; %s}\n"
             "  chain f { type filter hook forward priority filter + 10; policy accept;\n"
-            "    iifname @open oifname @open ip saddr != @noff ct direction original ct state established ct original packets > 32 "
-            "flow add @ft\n  }\n}\n" % (FAST_TABLE, ", ".join('"%s"' % d for d in devs),
-                                     ", ".join('"%s" timeout %ds' % (d, to) for d in devs),
-                                     "elements = { %s }; " % ", ".join(noff) if noff else ""))
+            "    ip saddr @noff oifname != @pok return\n"
+            "    iifname @open oifname @open ct direction original ct state established ct original packets > 32 flow add @ft\n"
+            "  }\n}\n" % (FAST_TABLE, ", ".join('"%s"' % d for d in devs), ", ".join('"%s" timeout %ds' % (d, to) for d in devs),
+                          "elements = { %s }; " % ", ".join(noff) if noff else "",
+                          "elements = { %s }; " % ", ".join('"%s"' % d for d in pok) if pok else ""))
 
 
 def _stats_baseline():
@@ -16219,7 +16233,7 @@ def _fast_beat(node_cfg, snap, interval):
         _fast_off("the normal path below %d %% CPU for a minute" % (start - FAST_GAP))
         return
     _FAST["wan"] = (snap or {}).get("wan_iface") or _FAST["wan"]
-    _fast_nft(_fast_table(node_cfg, _FAST["wan"], interval, _fast_flagged()))
+    _fast_nft(_fast_table(node_cfg, _FAST["wan"], interval, *_fast_flagged()))
 
 
 def _fast_failed(e):
