@@ -33,6 +33,8 @@ Hermetic (a panel on 127.0.0.1 for [8]). Run: python3 tests/fast_lane_selftest.p
      nowan      the WAN is left off the device list                                     [1]
      noflag     the P2P guard's flagged sources offload anywhere (its postrouting drop never sees them) [1]
      bareone    the guard's one device, listed bare, is not read (a flagged torrent never offloads) [1]
+     lookupfirst  the set lookups ahead of the conntrack tests (a reply pays them)          [1]
+     chainalways  the guard's chain read with nobody flagged                                [1]
      snapcpu    the start reads the snapshot's health again (none reported: never on)    [2]
      hotplug    a CPU total that went backwards (a vCPU unplugged) is read as a figure     [2]
      flagopen   an unreadable flagged set or guard chain loads the lane anyway           [1] [5]
@@ -116,7 +118,10 @@ PLANTS = {
     "nosnapnone": ("[7]", NODED, "        snap = None                                 # …and the fast lane", "        pass                                        # …and the fast lane"),
     "panelint": ("[8]", PANEL, "if type(_fl) is not int or _fl not in FAST_LANE_STEPS:", "if _fl not in FAST_LANE_STEPS:"),
     "panel70": ("[8]", PANEL, "            if _fl == FAST_LANE_DEFAULT:\n                nodes[nid].pop", "            if False:\n                nodes[nid].pop"),
-    "noflag": ("[1]", NODED, '            "    ip saddr @noff oifname != @pok return\\n"\n', ""),
+    "noflag": ("[1]", NODED, '            "    ct direction original ct state established ct original packets > 32 ip saddr @noff oifname != @pok return\\n"\n', ""),
+    "lookupfirst": ("[1]", NODED, '"    ct direction original ct state established ct original packets > 32 ip saddr @noff oifname != @pok return',
+                    '"    ip saddr @noff oifname != @pok ct direction original ct state established ct original packets > 32 return'),
+    "chainalways": ("[1]", NODED, "            if not noff:                                     # nobody flagged", "            if False:                                        # nobody flagged"),
     "bareone": ("[1]", NODED, """(?:\\{([^}]*)\\}|"([^"]+)")""", """\\{([^}]*)\\}()"""),
     "hotplug": ("[2]", NODED, "(cur[1] - prev[1]) if cur and prev and cur[1] > prev[1] else None",   # round 1's reading
                 "max(1, cur[1] - prev[1]) if cur and prev else None"),
@@ -203,8 +208,9 @@ def fake_run(args, input_text=None, timeout=20, env=None):
             return CP(args, 1, "", "Error: No such file or directory\n")
         if FLAG[0] == "fail":
             return CP(args, 124, "", "timeout")
-        return CP(args, 0, "table inet swg_p2p {\n\tset flag {\n\t\ttypeof ip saddr\n\t\tflags dynamic,timeout\n"
-                  "\t\telements = { %s }\n\t}\n}\n" % ",\n\t\t\t     ".join("%s timeout 10m expires 9m5s" % a for a in FLAG[0]), "")
+        return CP(args, 0, "table inet swg_p2p {\n\tset flag {\n\t\ttypeof ip saddr\n\t\tflags dynamic,timeout\n%s\t}\n}\n"
+                  % ("\t\telements = { %s }\n" % ",\n\t\t\t     ".join("%s timeout 10m expires 9m5s" % a for a in FLAG[0])
+                     if FLAG[0] else ""), "")
     if list(args[:6]) == ["nft", "list", "chain", "inet", "swg_p2p", "guard"]:
         EV.append("guardread")
         if GUARD[0] is None:
@@ -288,9 +294,11 @@ check("[1] `open` by `typeof iifname`, its elements the same devices, each on a 
 check("[1] …3 intervals at a 20 s interval (it must not lapse between beats)",
       re.findall(r'"([^"]+)" timeout 60s', N._fast_table(CFG, "eth0", 20)) == want)
 check("[1] the chain: a flagged source leaving by a device the guard does not let it use returns first, then the offload "
-      "(both devices in `open`, original direction, established, past packet 32)",
-      "    ip saddr @noff oifname != @pok return\n    iifname @open oifname @open ct direction original ct state established "
-      "ct original packets > 32 flow add @ft\n" in t5, t5)
+      "(both devices in `open`, original direction, established, past packet 32) — the conntrack tests first in both, so a "
+      "reply or a young flow pays no set lookup (review F2)",
+      "    ct direction original ct state established ct original packets > 32 ip saddr @noff oifname != @pok return\n"
+      "    ct direction original ct state established ct original packets > 32 iifname @open oifname @open flow add @ft\n"
+      in t5, t5)
 _t2 = N._fast_table(CFG, "eth0", 5, ["10.19.0.5", "10.9.0.2"], ["eth0"])
 check("[1] `noff` holds the flagged sources and `pok` (typeof iifname, as `open`) the devices they may leave by; empty "
       "without them", "  set noff { typeof ip saddr; }\n  set pok { typeof iifname; }\n" in t5
@@ -303,7 +311,11 @@ for g in ("direct", "two", "groups", "nodev", None):
     _fl[g] = N._fast_flagged()
 FLAG[0] = None
 GUARD[0] = "direct"
+EV.clear()
 _fa = N._fast_flagged()
+FLAG[0] = []
+_fe = N._fast_flagged()
+_ev = list(EV)
 _ff = []
 for f, g in (("fail", "direct"), (["10.9.0.2"], "fail")):
     FLAG[0], GUARD[0] = f, g
@@ -318,8 +330,10 @@ check("[1] the guard read live: Direct lets a flagged flow leave by the WAN alon
       "both, a guard by groups or with no device condition none, no guard chain excludes nothing",
       _fl == {"direct": (_fs, ["eth0"]), "two": (_fs, ["eth0", "wgx-ab12cd34"]), "groups": (_fs, []), "nodev": (_fs, []),
               None: ([], [])}, _fl)
-check("[1] …no flagged set: nothing excluded; either read unreadable: it raises (the beat loads nothing)",
-      _fa == ([], []) and _ff == [True, True], (_fa, _ff))
+check("[1] …no flagged set, or an empty one: nothing excluded, and the guard's chain not read (review F3); either read "
+      "unreadable: it raises (the beat loads nothing)",
+      _fa == ([], []) and _fe == ([], []) and "guardread" not in _ev and _ev.count("flagread") == 2 and _ff == [True, True],
+      (_fa, _fe, _ev, _ff))
 check("[1] `table ip swg_fast`, its chain after every verdict chain (filter + 10), the flowtable on ingress",
       t5.startswith("table ip swg_fast {\n") and "type filter hook forward priority filter + 10; policy accept;" in t5
       and "flowtable ft { hook ingress priority filter; devices = {" in t5, t5[:300])
@@ -411,10 +425,12 @@ turn_on()
 EV.clear()
 beat(busy=95)
 S3 = ["sample:sample_inet", "sample:sample_catk", "sample:sample_cats"]
-check("[3] drop, the statistics, CPU, the 0.5 s sleep, CPU, the statistics, the P2P guard (its flagged, its chain), load",
-      EV == ["drop"] + S3 + ["cpu", "sleep", "cpu"] + S3 + ["flagread", "guardread", "load"], EV)
+check("[3] drop, the statistics, CPU, the 0.5 s sleep, CPU, the statistics, the P2P guard's flagged set, load (nobody flagged)",
+      EV == ["drop"] + S3 + ["cpu", "sleep", "cpu"] + S3 + ["flagread", "load"], EV)
 FLAG[0] = ["10.9.0.2"]
+EV.clear()
 beat()
+check("[3] …someone flagged: the set, then the guard's chain, then the load", EV[-3:] == ["flagread", "guardread", "load"], EV)
 check("[3] …a source the guard flagged since is in the next load's `noff`, with the guard's own device in `pok`",
       "  set noff { typeof ip saddr; elements = { 10.9.0.2 }; }\n  set pok { typeof iifname; elements = { \"eth0\" }; }\n"
       in LASTLOAD[0], LASTLOAD[0][:500])
