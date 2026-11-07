@@ -20,14 +20,14 @@ Client report 2026-11-07, two defects on one Docker master:
   [3] docker/node-entrypoint.sh keeps the configured address before a learned one replaces it, and exports it
 
 Run: python3 tests/master_node_heal_selftest.py            (0 = pass)
-     --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag|anyarg0|eqflag|emptyword|valnear|mainurl>   one old behaviour back → RED (exit 0 when caught)
+     --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag|anyarg0|eqflag|emptyword|valnear|mainurl|wordsonly|noprefix> → RED (exit 0 when caught)
      --perturb                                               them all → RED
 """
 import importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport", "nearflag", "anyarg0", "eqflag", "emptyword", "valnear",
-              "mainurl")
+              "mainurl", "wordsonly", "noprefix")
 PLANTS = set(PLANTS_ALL) if "--perturb" in sys.argv else (
     {sys.argv[sys.argv.index("--plant") + 1]} if "--plant" in sys.argv else set())
 assert PLANTS <= set(PLANTS_ALL), "unknown plant"
@@ -56,16 +56,21 @@ if "nearflag" in PLANTS:   # a flag near update/uninstall passed on, as shipped
     BS = plant(BS, '                                 [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;   # …unless it is a value',
                '                                 PASS+=("$1"); shift;;')
 if "noarg0" in PLANTS:     # the word bash took as $0 left there
-    BS = plant(BS, '      _SWG_ARG0="$0"; set -- "$0" "$@";;', '      ;;')
-if "anyarg0" in PLANTS:    # review F1's shape: any name but `--` / a shell taken as an argument (`_` refused)
-    BS = plant(BS, "    --|-|-bash|-sh) ;;\n    -?*|update|", "    --|-|-bash|-sh|bash|sh|*/bash|*/sh) ;;\n    *|update|")
+    BS = plant(BS, '    *) _SWG_ARG0="$0"; set -- "$0" "$@";;', '    *) ;;')
+if "anyarg0" in PLANTS:    # review F1's shape: `_` and a script name taken as an argument (`_` refused)
+    BS = plant(BS, "    --|-|_|bash|sh|-bash|-sh|*/bash|*/sh|*.sh) ;;", "    --|-|bash|sh|-bash|-sh|*/bash|*/sh) ;;")
+if "wordsonly" in PLANTS and "noarg0" not in PLANTS:   # verify F11's shape: only exact words taken, a typo dropped
+    BS = plant(BS, '    *) _SWG_ARG0="$0"; set -- "$0" "$@";;',
+               '    -?*|update|uninstall|docker|bare-metal|baremetal|master|host|node|recovery|convert|keep|abort) _SWG_ARG0="$0"; set -- "$0" "$@";;')
 if "eqflag" in PLANTS:     # `--x=v` read as wanting the next word as its value
     BS = plant(BS, '    -*=*)                        PASS+=("$1"); shift;;', '')
 if "emptyword" in PLANTS:  # an empty argument refused
     BS = plant(BS, '    "")                          PASS+=("$1"); shift;;', '')
-if "valnear" in PLANTS:    # a flag's value starting like a near flag refused
+if "valnear" in PLANTS and "nearflag" not in PLANTS:   # a flag's value starting like a near flag refused (same line as nearflag)
     BS = plant(BS, '                                 [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;   # …unless it is a value',
                '                                 _bs_unknown "$1";;')
+if "noprefix" in PLANTS:   # verify F15: the ref in the URL only, SWG_REF dropped by sudo
+    BS = plant(BS, '    sudo bash -c \\"$pre\\$(curl -fsSL', '    sudo bash -c \\"\\$(curl -fsSL')
 if "mainurl" in PLANTS:    # the refusal always names main's bootstrap
     BS = plant(BS, 'swg-panel/${REF:-main}/bootstrap.sh)\\" -- ${mean', 'swg-panel/main/bootstrap.sh)\\" -- ${mean')
 if "nofirst" in PLANTS:    # the configured address not probed
@@ -149,6 +154,16 @@ check("[1] a flag's value that starts like a near flag is that value (review F7)
 rc, v, out = parse(["--", "uninstal"], env={"SWG_REF": "dev"})
 check("[1] the refusal's command fetches the branch this run came from (review F8)",
       "swg-panel/dev/bootstrap.sh" in out and "swg-panel/main/" not in out, out[-400:])
+check("[1] …and carries SWG_REF inside the string, where sudo cannot drop it (verify F15)",
+      'bash -c "SWG_REF=dev; $(curl' in out, out[-400:])
+rc, v, out = parse(["--", "uninstal"])
+check("[1] …on main: no SWG_REF prefix", 'bash -c "$(curl' in out and "SWG_REF=" not in out, out[-400:])
+for w in ("uninstal", "Uninstall"):
+    rc, v, out = parse([w])
+    check("[1] a mistyped word WITHOUT the `--` (%r) is refused too, not dropped into an install (verify F11)" % w,
+          rc != 0 and "unknown command '%s'" % w in out and "ACTION" not in v, (rc, v, out[-300:]))
+rc, v, out = parse(["host-node"])
+check("[1] `host-node` without the `--` is passed on (verify F12)", rc == 0 and v.get("PASS") == "host-node", (rc, v, out[-300:]))
 rc, v, out = parse([])
 check("[1] a bare `bash -c` (no arguments) is an install, as before",
       rc == 0 and (v.get("ACTION"), v.get("PASS")) == ("", "") and "script's name" not in out, (rc, v, out[-300:]))

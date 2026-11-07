@@ -1812,9 +1812,13 @@ if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFIL
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
   if [ "$_LRN_SWEEP" = yes ]; then   # the old node is gone now: what it learned while this ran goes too (see _LRN_SWEEP)
-    for _lf in panel-url panel-token panel-verify panel-fp; do
-      [ -e "$INSTALL_DIR/data/node/$_lf" ] && rm -f "$INSTALL_DIR/data/node/$_lf" && sub "the old node wrote data/node/$_lf again while this ran — removed"
-    done
+    if [ -e "$INSTALL_DIR/data/node/panel-token" ]; then   # …but a TRANSFER it completed meanwhile is the node's new panel
+      sub "the old node was transferred to $(b "$(head -n1 "$INSTALL_DIR/data/node/panel-url" 2>/dev/null || echo 'another panel')") while this ran — it syncs there now; its learned copy is kept"
+    else
+      for _lf in panel-url panel-verify panel-fp; do
+        [ ! -e "$INSTALL_DIR/data/node/$_lf" ] || { rm -f "$INSTALL_DIR/data/node/$_lf"; sub "the old node wrote data/node/$_lf again while this ran — removed"; }
+      done
+    fi
   fi
   ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 # "re-installed AND UPDATED" only when a container that was already running now runs a different image. Same images

@@ -50,16 +50,15 @@ SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
 swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
 # ⚠️ `bash -c "$(curl …)" uninstall` — WITHOUT the `--` — hands bash `uninstall` as the script's NAME ($0), not as an
 # argument, and the run went on with none: a full install on a box the operator was trying to remove (client report
-# 2026-11-07, `--uninstall` the same way). Under `bash -c` a name that is one of this script's words, or a flag, is an
-# argument that lost its way, so it is taken as the first one; any other name (`--`, `_`, `bash`, a script name) stays
-# the name, as before. A script run as a file, or piped in, has no BASH_EXECUTION_STRING; the update launchers all run
+# 2026-11-07, `--uninstall` the same way). Under `bash -c` a name that is not a placeholder (`--`, `-`, `_`), a shell or
+# a script name is an argument that lost its way, so it is taken as the first one — and checked there like every other
+# word, so a mistyped `uninstal` without the `--` is refused too, not dropped into an install. A script run as a file, or piped in, has no BASH_EXECUTION_STRING; the update launchers all run
 # the file (swg-noded's UPDATE_CMD_TMPL, the swg-update wrapper) or pass `--`.
 _SWG_ARG0=""
 if [ -n "${BASH_EXECUTION_STRING:-}" ]; then
   case "$0" in
-    --|-|-bash|-sh) ;;
-    -?*|update|uninstall|docker|bare-metal|baremetal|master|host|node|recovery|convert|keep|abort)
-      _SWG_ARG0="$0"; set -- "$0" "$@";;
+    --|-|_|bash|sh|-bash|-sh|*/bash|*/sh|*.sh) ;;
+    *) _SWG_ARG0="$0"; set -- "$0" "$@";;
   esac
 fi
 SWG_ARGS=("$@")   # as given — the command the warning below hands back is built from them
@@ -228,6 +227,8 @@ PASS=()
 _bs_words="update uninstall docker bare-metal master host node recovery convert keep abort"
 _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
   local b="${w#-}"; b="${b#-}"                            # `--uninstal` is near `uninstall` too
+  local pre=""   # a ref other than main rides INSIDE the string: sudo drops SWG_REF (the TTY warning's _bs_pre, below)
+  [ -n "${REF:-}" ] && [ "$REF" != main ] && pre="SWG_REF=$(printf '%q' "$REF"); "
   for k in $_bs_words; do case "$k" in "$b"?*) mean="$k";; esac; case "$b" in "$k"?*) mean="$k";; esac; done
   if [[ "$w" == *[![:alnum:]._-]* ]]; then
     odd="
@@ -236,7 +237,7 @@ _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII i
   fi
   die "unknown command '$w' — nothing was done.${mean:+ Did you mean '$mean'?}$odd
     Commands: $_bs_words (and flags that start with -), after the -- :
-    sudo bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\" -- ${mean:-uninstall}"; }
+    sudo bash -c \"$pre\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\" -- ${mean:-uninstall}"; }
 _bs_after_flag=no
 while [ $# -gt 0 ]; do
   _bs_val="$_bs_after_flag"; _bs_after_flag=no

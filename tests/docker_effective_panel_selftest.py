@@ -38,6 +38,7 @@ Run: python3 tests/docker_effective_panel_selftest.py      (0 = pass)
      --perturb-nodeonly    the removal on a node only, as shipped — a master keeps its stale copy → RED on [9]
      --perturb-takeback    a master takes a transferred node back unasked → RED on [9]
      --perturb-nosweep     no second sweep before `up` → RED on [9]
+     --perturb-sweeptoken  the second sweep drops a transfer the old node completed meanwhile → RED on [9]
      --perturb-salv        the recovery list back to the .env's address and key → RED on [10]
      --perturb-salvtrust   the recovery's trust without the CA rule → RED on [10]
 """
@@ -72,6 +73,8 @@ PLANTS = {
                            '  if false; then'),
     "--perturb-nosweep": ("install-docker.sh", '  if [ "$_LRN_SWEEP" = yes ]; then   # the old node is gone now',
                           '  if false; then   # the old node is gone now'),
+    "--perturb-sweeptoken": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ]; then   # …but a TRANSFER',
+                             '    if false; then   # …but a TRANSFER'),
     "--perturb-salv": ("bootstrap.sh", '    _salv_learned "$(dirname "$_f")"\n', ""),
     "--perturb-salvtrust": ("bootstrap.sh", '    [ "$_lv" = yes ] && [ -z "$_lf" ] && f="";; esac', "    ;; esac"),
 }
@@ -254,8 +257,20 @@ check("[9] master: a node transferred to another panel is kept, said with where 
 UP = ids[ids.index('  for _c in $(case "$PROFILE" in node) echo swg-node;;'):]
 UP = UP[:UP.index("on_tty $COMPOSE")]
 check("[9] the old node's late copy is swept after its container is gone, before `up`",
-      'if [ "$_LRN_SWEEP" = yes ]; then' in UP and 'rm -f "$INSTALL_DIR/data/node/$_lf"' in UP
-      and UP.index("docker rm -f") < UP.index('if [ "$_LRN_SWEEP" = yes ]'), UP[-600:])
+      'if [ "$_LRN_SWEEP" = yes ]; then' in UP and UP.index("docker rm -f") < UP.index('if [ "$_LRN_SWEEP" = yes ]'), UP[-600:])
+ms = re.search(r'(?ms)^  if [^\n]*; then   # the old node is gone now.*?^  fi\n', UP)   # loose: --perturb-nosweep edits its test
+assert ms, "the sweep is not where this gate reads it — this run would FALSE-PASS"
+for fx, kept in (("re-point", False), ("pinned-xfer", True)):
+    d = make_dir("sweep-" + fx, FIXTURES[fx][0])
+    rc, out, err = run_bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nb(){ printf %%s "$*"; }\n_LRN_SWEEP=yes; INSTALL_DIR="%s"\n%s'
+                            % (d, ms.group(0)))
+    left = sorted(os.listdir(os.path.join(d, "data", "node")))
+    if kept:
+        check("[9] …a transfer the old node completed meanwhile is kept, and said (verify F14)",
+              rc == 0 and len(left) == 5 and "transferred to %s" % NEW_URL in out, (rc, left, out, err[-200:]))
+    else:
+        check("[9] …a late re-point is removed, and said", rc == 0 and left == ["transport.json"] and "again while this ran" in out,
+              (rc, left, out, err[-200:]))
 
 # ── [10] bootstrap.sh's recovery list ──────────────────────────────────────────────────────────────────────────
 bs = src_of("bootstrap.sh")
