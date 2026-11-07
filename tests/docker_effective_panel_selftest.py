@@ -36,6 +36,7 @@ Run: python3 tests/docker_effective_panel_selftest.py      (0 = pass)
      --perturb-convert     convert.sh without it → RED on [4]
      --perturb-keep        the learned copy left behind after the .env is written → RED on [9]
      --perturb-nodeonly    the removal on a node only, as shipped — a master keeps its stale copy → RED on [9]
+     --perturb-latesweep   a second sweep before `up` (rounds 1-4's, a glob this time) → RED on [9]
      --perturb-takeback    a master takes a transferred node back unasked → RED on [9]
      --perturb-salv        the recovery list back to the .env's address and key → RED on [10]
      --perturb-salvtrust   the recovery's trust without the CA rule → RED on [10]
@@ -69,6 +70,8 @@ PLANTS = {
                            'if [ "$PROFILE" = node ] && [ -z "${SWG_CONVERT_DIR:-}" ]; then\n  _lrn=""'),
     "--perturb-takeback": ("install-docker.sh", '  if [ "$PROFILE" = master ] && [ -e "$INSTALL_DIR/data/node/panel-token" ]; then\n    sub "this box',
                            '  if false; then\n    sub "this box'),
+    "--perturb-latesweep": ("install-docker.sh", '  ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi',
+                            '  rm -f "$INSTALL_DIR"/data/node/panel-*\n  ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi'),
     "--perturb-salv": ("bootstrap.sh", '    _salv_learned "$(dirname "$_f")"\n', ""),
     "--perturb-salvtrust": ("bootstrap.sh", '    [ "$_lv" = yes ] && [ -z "$_lf" ] && f="";; esac', "    ;; esac"),
 }
@@ -249,10 +252,11 @@ left = sorted(os.listdir(os.path.join(d, "data", "node")))
 check("[9] master: a node transferred to another panel is kept, said with where it went and the way back",
       rc == 0 and len(left) == 5 and "transferred to %s" % NEW_URL in out and "delete those files and re-run" in out,
       (rc, left, out, err[-200:]))
-UP = ids[ids.index('  for _c in $(case "$PROFILE" in node) echo swg-node;;'):]
-UP = UP[:UP.index("on_tty $COMPOSE")]
-check("[9] no second sweep before `up` (verify round 5: a late transfer is the node's new panel, a late loopback "
-      "re-point is undone by the new node's heal)", "data/node/" not in UP, UP[-400:])
+_a = ids.index(REMOVAL) + len(REMOVAL)
+UP = ids[_a:ids.index("\n", ids.index('on_tty $COMPOSE --profile "$PROFILE" up -d'))]   # the first pass's end through `up` (not `pull`)
+check("[9] the learned copy is touched once — no second sweep before `up` (verify round 5: a late transfer is the "
+      "node's new panel, a late loopback re-point is undone by the new node's heal)",
+      not re.search(r'panel-(url|token|verify|fp|\*)|panel-\{|_lrn|_LRN', UP), re.findall(r'.*panel-.*', UP)[:3])
 
 # ── [10] bootstrap.sh's recovery list ──────────────────────────────────────────────────────────────────────────
 bs = src_of("bootstrap.sh")

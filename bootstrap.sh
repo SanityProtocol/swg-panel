@@ -232,19 +232,16 @@ _bs_refpre(){ if [ -n "${REF:-}" ] && [ "$REF" != main ]; then printf 'SWG_REF=%
 _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
   local b="${w#-}"; b="${b#-}"; b="${b,,}"                # `--uninstal` and `Update` are near a command too
   local bs; bs="sudo bash -c \"$(_bs_refpre)\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\""
-  # Near (case-blind): the word itself, or one it starts or ends a command with — `upd`, `uninstal`, `--uninstall-now`.
-  # `host-…` is the Docker installer's name for master, never `host` (the panel-only role). A word near two commands
-  # (`u`) names none: a guess there could hand back the removal command.
+  # Near (case-blind) is offered for the two commands this refusal exists for, update and uninstall, and no other: the
+  # word itself, a start of it, or a word that starts with it — `Update`, `upd`, `uninstal`, `--uninstall-now`. A role
+  # or method word is not guessed (a wrong one installs the wrong thing: host-node is master, host is panel-only), and a
+  # word near both (`u`) names neither — the examples below are shown instead.
   if [ -n "$b" ]; then
-    case "$b" in host-*) mean=host-node;; esac
-    if [ -z "$mean" ]; then
-      local near=""
-      for k in $_bs_words; do
-        if [ "$b" = "$k" ]; then near="$k"; break; fi
-        case "$k" in "$b"?*) near="$near $k";; esac; case "$b" in "$k"?*) near="$near $k";; esac
-      done
-      set -- $near; [ $# = 1 ] && mean="$1"
-    fi
+    local near=""
+    for k in update uninstall; do
+      case "$k" in "$b"|"$b"?*) near="$near $k";; esac; case "$b" in "$k"?*) near="$near $k";; esac
+    done
+    set -- $near; [ $# = 1 ] && mean="$1"
   fi
   if [[ "$w" == *[![:alnum:]._-]* ]]; then
     odd="

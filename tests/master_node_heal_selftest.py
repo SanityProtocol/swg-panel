@@ -21,14 +21,14 @@ Client report 2026-11-07, two defects on one Docker master:
 
 Run: python3 tests/master_node_heal_selftest.py            (0 = pass)
      --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag|anyarg0|eqflag|emptyword|valnear|mainurl|wordsonly|noprefix|
-              uninstdefault|emptyarg0|casesens|crossdash|placeholder|ambiguous> → RED (exit 0 when caught)
+              uninstdefault|emptyarg0|casesens|roleguess|placeholder|ambiguous> → RED (exit 0 when caught)
      --perturb                                               them all → RED
 """
 import importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport", "nearflag", "anyarg0", "eqflag", "emptyword", "valnear",
-              "mainurl", "wordsonly", "noprefix", "uninstdefault", "emptyarg0", "casesens", "crossdash", "placeholder", "ambiguous")
+              "mainurl", "wordsonly", "noprefix", "uninstdefault", "emptyarg0", "casesens", "roleguess", "placeholder", "ambiguous")
 PLANTS = set(PLANTS_ALL) if "--perturb" in sys.argv else (
     {sys.argv[sys.argv.index("--plant") + 1]} if "--plant" in sys.argv else set())
 assert PLANTS <= set(PLANTS_ALL), "unknown plant"
@@ -74,8 +74,8 @@ if "noprefix" in PLANTS:   # verify F15: the ref in the URL only, SWG_REF droppe
     BS = plant(BS, 'bs="sudo bash -c \\"$(_bs_refpre)\\$(curl -fsSL', 'bs="sudo bash -c \\"\\$(curl -fsSL')
 if "uninstdefault" in PLANTS:   # verify F17: with no near command the refusal handed back `-- uninstall`
     BS = plant(BS, '  if [ -n "$mean" ]; then\n    die', '  mean="${mean:-uninstall}"\n  if [ -n "$mean" ]; then\n    die')
-if "crossdash" in PLANTS:  # verify F27: `Host-Node` read as `host` (the panel-only role)
-    BS = plant(BS, '    case "$b" in host-*) mean=host-node;; esac\n', '')
+if "roleguess" in PLANTS:  # verify F27/F29/F36/F37: a role word guessed (host-node is master, host panel-only)
+    BS = plant(BS, '    for k in update uninstall; do', '    for k in $_bs_words host-node; do')
 if "ambiguous" in PLANTS:  # a word near two commands guessed (the last one: `u` → uninstall)
     BS = plant(BS, 'set -- $near; [ $# = 1 ] && mean="$1"', 'set -- $near; [ $# -ge 1 ] && mean="${!#}"')
 if "placeholder" in PLANTS:  # verify F28: a help line that does not run as printed
@@ -185,14 +185,16 @@ for w in ("install", "upgrade"):
     lines = [l.strip() for l in out.splitlines() if l.strip().startswith("sudo bash -c")]
     bad = [l for l in lines if subprocess.run(["bash", "-n"], input=l, text=True, capture_output=True).returncode != 0]
     check("[1] …every command line it prints runs as printed (verify F28)", len(lines) == 3 and not bad, (lines, bad))
-for w, want in (("hos", "host"), ("--uninstall-now", "uninstall"), ("upd", "update")):
+for w, want in (("--uninstall-now", "uninstall"), ("upd", "update"), ("Uninstal", "uninstall")):
     rc, v, out = parse(["--", w])
-    check("[1] %r is near %r (verify F29, F30)" % (w, want), rc != 0 and "Did you mean '%s'?" % want in out, out[-300:])
+    check("[1] %r is near %r (verify F30)" % (w, want), rc != 0 and "Did you mean '%s'?" % want in out, out[-300:])
+for w in ("hos", "Host-Node", "hostnode", "host-only", "docke"):
+    rc, v, out = parse(["--", w])
+    check("[1] %r: no role or method word is guessed — the examples instead (verify F29, F36, F37, F38)" % w,
+          rc != 0 and "Did you mean" not in out and re.search(r'-- uninstall\s+# remove', out), out[-300:])
 rc, v, out = parse(["--", "u"])
 check("[1] a word near two commands (`u`: update, uninstall) names neither", rc != 0 and "Did you mean" not in out, out[-300:])
-rc, v, out = parse(["--", "Host-Node"])
-check("[1] `Host-Node` is near the master alias, never `host` (the panel-only role) (verify F27)",
-      "Did you mean 'host-node'?" in out and "'host'" not in out, out[-300:])
+
 rc, v, out = parse(["Update"])
 check("[1] `Update` (a phone's capital) is near `update`", rc != 0 and "Did you mean 'update'?" in out and "-- update" in out, out[-400:])
 rc, v, out = parse(["", "docker", "node"])
