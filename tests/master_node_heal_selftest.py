@@ -12,7 +12,7 @@ Client report 2026-11-07, two defects on one Docker master:
 
   [1] bootstrap.sh's words: update / uninstall (and --update / --uninstall) are the action; a word after `bash -c`
       that bash took as the script's name is read as the first argument, said in one line; a word it does not know is
-      refused before anything runs — a hidden character shown, a near word named; a flag's value is passed on; the
+      refused before anything runs — a hidden character shown, a near word named, a flag near update/uninstall refused too; a flag's value is passed on; the
       switches take none; a file run and a bare `bash -c` (no arguments) unchanged
   [2] swg-noded's local heal probes the configured loopback address (SWG_PANEL_URL_CONFIGURED) first, then the panel's
       local port (access.panel.local_port), then the common ports as before; a non-loopback configured address, or the
@@ -20,13 +20,13 @@ Client report 2026-11-07, two defects on one Docker master:
   [3] docker/node-entrypoint.sh keeps the configured address before a learned one replaces it, and exports it
 
 Run: python3 tests/master_node_heal_selftest.py            (0 = pass)
-     --plant <passall|noarg0|nofirst|nolocal|noexport>       one old behaviour back → RED (exit 0 when caught)
+     --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag>   one old behaviour back → RED (exit 0 when caught)
      --perturb                                               them all → RED
 """
 import importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport")
+PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport", "nearflag")
 PLANTS = set(PLANTS_ALL) if "--perturb" in sys.argv else (
     {sys.argv[sys.argv.index("--plant") + 1]} if "--plant" in sys.argv else set())
 assert PLANTS <= set(PLANTS_ALL), "unknown plant"
@@ -51,6 +51,8 @@ def plant(s, a, b):
 BS, NODED, EP = src("bootstrap.sh"), src("swg-noded"), src("docker/node-entrypoint.sh")
 if "passall" in PLANTS:    # every word passed on, as shipped
     BS = plant(BS, '[ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=', 'PASS+=')
+if "nearflag" in PLANTS:   # a flag near update/uninstall passed on, as shipped
+    BS = plant(BS, '    -upda*|--upda*|-unin*|--unin*) _bs_unknown "$1";;', '')
 if "noarg0" in PLANTS:     # the word bash took as $0 left there
     BS = plant(BS, '*) _SWG_ARG0="$0"; set -- "$0" "$@";; esac', '*) ;; esac')
 if "nofirst" in PLANTS:    # the configured address not probed
@@ -96,12 +98,15 @@ rc, v, out = parse(["--uninstall"])
 check("[1] `bash -c … --uninstall` (no --): the same", rc == 0 and v.get("ACTION") == "uninstall", (rc, v, out[-300:]))
 for args, why in ((["--", "uninstal"], "a near word"), (["--", "uninstal\nl"], "a line break inside it"),
                   (["--", "unin​stall"], "a zero-width space inside it"), (["--", "--yes", "uninstal"], "after a switch"),
-                  (["--", "docker", "reinstall"], "after a command word")):
+                  (["--", "docker", "reinstall"], "after a command word"), (["--", "--uninstal"], "a near flag"),
+                  (["--", "-updates", "-y"], "a near flag, one dash")):
     rc, v, out = parse(args)
     check("[1] refused, nothing run: %s (%r)" % (why, args[-1]),
           rc != 0 and "unknown command" in out and "nothing was done" in out and "ACTION" not in v, (rc, out[-300:]))
 rc, v, out = parse(["--", "uninstal"])
 check("[1] …a near word is named", "Did you mean 'uninstall'?" in out, out[-300:])
+rc, v, out = parse(["--", "--uninstal"])
+check("[1] …a near flag too", "Did you mean 'uninstall'?" in out, out[-300:])
 rc, v, out = parse(["--", "unin​stall"])
 check("[1] …a hidden character is shown", "$'unin\\342\\200\\213stall'" in out and "type the word by hand" in out, out[-400:])
 rc, v, out = parse(["--", "docker", "host", "-pass", "s3cret", "-domain", "vpn.example.com", "--yes", "--dry-run"])

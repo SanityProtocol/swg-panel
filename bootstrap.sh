@@ -222,7 +222,8 @@ PASS=()
 # (`-pass x`, `-domain x`): passed on as before. The switches below take none, so a word after one is a word.
 _bs_words="update uninstall docker bare-metal master host node recovery convert keep abort"
 _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
-  for k in $_bs_words; do case "$k" in "$w"?*) mean="$k";; esac; case "$w" in "$k"?*) mean="$k";; esac; done
+  local b="${w#-}"; b="${b#-}"                            # `--uninstal` is near `uninstall` too
+  for k in $_bs_words; do case "$k" in "$b"?*) mean="$k";; esac; case "$b" in "$k"?*) mean="$k";; esac; done
   if [[ "$w" == *[![:alnum:]._-]* ]]; then
     odd="
     It holds a character that is not a plain letter: $(printf '%q' "$w"). A copied command can carry one you cannot see
@@ -255,6 +256,7 @@ while [ $# -gt 0 ]; do
     --)                          shift;;
     host-node)                   PASS+=("$1"); shift;;   # the Docker installer's older name for master — it reads it
     -y|--yes|--dry-run|-f|--force|--no-components|--node-only|--build) PASS+=("$1"); shift;;   # switches: no value
+    -upda*|--upda*|-unin*|--unin*) _bs_unknown "$1";;   # `--uninstal`: no installer flag starts so, it would re-install
     -*)                          PASS+=("$1"); _bs_after_flag=yes; shift;;
     *)                           [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;
   esac
