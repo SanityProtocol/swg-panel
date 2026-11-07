@@ -232,13 +232,19 @@ _bs_refpre(){ if [ -n "${REF:-}" ] && [ "$REF" != main ]; then printf 'SWG_REF=%
 _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
   local b="${w#-}"; b="${b#-}"; b="${b,,}"                # `--uninstal` and `Update` are near a command too
   local bs; bs="sudo bash -c \"$(_bs_refpre)\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\""
-  # Near: the word itself (case-blind; host-node too, the Docker installer's name for master — it must not read as
-  # `host`, the panel-only role), or one a letter or more shorter or longer — never across a `-` (host-node ≠ host).
+  # Near (case-blind): the word itself, or one it starts or ends a command with — `upd`, `uninstal`, `--uninstall-now`.
+  # `host-…` is the Docker installer's name for master, never `host` (the panel-only role). A word near two commands
+  # (`u`) names none: a guess there could hand back the removal command.
   if [ -n "$b" ]; then
-    for k in $_bs_words host-node; do
-      [ "$b" = "$k" ] && { mean="$k"; break; }
-      case "$k" in "$b"?*) mean="$k";; esac; case "$b" in "$k"[!-]*) mean="$k";; esac
-    done
+    case "$b" in host-*) mean=host-node;; esac
+    if [ -z "$mean" ]; then
+      local near=""
+      for k in $_bs_words; do
+        if [ "$b" = "$k" ]; then near="$k"; break; fi
+        case "$k" in "$b"?*) near="$near $k";; esac; case "$b" in "$k"?*) near="$near $k";; esac
+      done
+      set -- $near; [ $# = 1 ] && mean="$1"
+    fi
   fi
   if [[ "$w" == *[![:alnum:]._-]* ]]; then
     odd="

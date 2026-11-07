@@ -23,7 +23,7 @@ The entrypoint did too, so the node itself refused every sync after its next res
   [8] …after a re-point (url only): the .env's pin is carried to the learned address (not a fresh trust-on-first-use)
   [9] after a real .env write the learned copy is removed (and only it); a dry run removes nothing — on a node and on a
       master (whose .env names its own panel's loopback door), never on a host (no node); a master's node TRANSFERRED to
-      another panel (a panel-token) is kept and said; a copy the old node writes while the run goes is swept before `up`
+      another panel (a panel-token) is kept and said; nothing is swept again before `up`
   [10] bootstrap.sh's recovery list (a node whose live install is gone) reads a Docker identity the same way:
        the learned address and key over the .env's, and the trust by the same rule (_salv_learned, _salv_trust)
 
@@ -37,10 +37,6 @@ Run: python3 tests/docker_effective_panel_selftest.py      (0 = pass)
      --perturb-keep        the learned copy left behind after the .env is written → RED on [9]
      --perturb-nodeonly    the removal on a node only, as shipped — a master keeps its stale copy → RED on [9]
      --perturb-takeback    a master takes a transferred node back unasked → RED on [9]
-     --perturb-nosweep     no second sweep before `up` → RED on [9]
-     --perturb-sweeptoken  the second sweep drops a transfer the old node completed meanwhile → RED on [9]
-     --perturb-nodekeeps   …and keeps it on a node install too, over the panel the run was given → RED on [9]
-     --perturb-givenonly   …and drops it on a node install that was given no panel (round 3's shape) → RED on [9]
      --perturb-salv        the recovery list back to the .env's address and key → RED on [10]
      --perturb-salvtrust   the recovery's trust without the CA rule → RED on [10]
 """
@@ -73,14 +69,6 @@ PLANTS = {
                            'if [ "$PROFILE" = node ] && [ -z "${SWG_CONVERT_DIR:-}" ]; then\n  _lrn=""'),
     "--perturb-takeback": ("install-docker.sh", '  if [ "$PROFILE" = master ] && [ -e "$INSTALL_DIR/data/node/panel-token" ]; then\n    sub "this box',
                            '  if false; then\n    sub "this box'),
-    "--perturb-nosweep": ("install-docker.sh", '  if [ "$_LRN_SWEEP" = yes ]; then   # the old node is gone now',
-                          '  if false; then   # the old node is gone now'),
-    "--perturb-sweeptoken": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then',
-                             '    if false; then'),
-    "--perturb-nodekeeps": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then',
-                            '    if [ -e "$INSTALL_DIR/data/node/panel-token" ]; then'),
-    "--perturb-givenonly": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then',
-                            '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && [ "$PROFILE" = master ]; then'),
     "--perturb-salv": ("bootstrap.sh", '    _salv_learned "$(dirname "$_f")"\n', ""),
     "--perturb-salvtrust": ("bootstrap.sh", '    [ "$_lv" = yes ] && [ -z "$_lf" ] && f="";; esac', "    ;; esac"),
 }
@@ -236,7 +224,7 @@ check("[8] re-point: the .env's pin is carried to the learned address — the sa
 
 # ── [9] the removal after a real .env write ──────────────────────────────────────────────────────────────────────
 ids = src_of("install-docker.sh")
-m = re.search(r'(?ms)^_LRN_SWEEP=no\nif [^\n]*"\$PROFILE" = node \][^\n]*; then\n  _lrn="".*?^  fi\nfi\n', ids)
+m = re.search(r'(?ms)^if [^\n]*"\$PROFILE" = node \][^\n]*; then\n  _lrn="".*?^  fi\nfi\n', ids)
 assert m, "the removal block is not where this gate reads it — this run would FALSE-PASS"
 REMOVAL = m.group(0)
 for prof, dryrun, fx in (("node", "false", "pinned-xfer"), ("node", "true", "pinned-xfer"), ("master", "false", "re-point"),
@@ -255,35 +243,16 @@ for prof, dryrun, fx in (("node", "false", "pinned-xfer"), ("node", "true", "pin
     else:
         check("[9] %s: a dry run leaves them" % prof, rc == 0 and len(left) == want, (rc, left))
 d = make_dir("rm-master-xfer", FIXTURES["pinned-xfer"][0])
-rc, out, err = run_bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nb(){ printf %%s "$*"; }\nPROFILE=master; DRYRUN=false; INSTALL_DIR="%s"\n%s\necho "SWEEP=$_LRN_SWEEP"'
+rc, out, err = run_bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nb(){ printf %%s "$*"; }\nPROFILE=master; DRYRUN=false; INSTALL_DIR="%s"\n%s'
                         % (d, REMOVAL))
 left = sorted(os.listdir(os.path.join(d, "data", "node")))
-check("[9] master: a node transferred to another panel is kept, said with where it went, and not swept",
-      rc == 0 and len(left) == 5 and "transferred to %s" % NEW_URL in out and "SWEEP=no" in out, (rc, left, out, err[-200:]))
+check("[9] master: a node transferred to another panel is kept, said with where it went and the way back",
+      rc == 0 and len(left) == 5 and "transferred to %s" % NEW_URL in out and "delete those files and re-run" in out,
+      (rc, left, out, err[-200:]))
 UP = ids[ids.index('  for _c in $(case "$PROFILE" in node) echo swg-node;;'):]
 UP = UP[:UP.index("on_tty $COMPOSE")]
-check("[9] the old node's late copy is swept after its container is gone, before `up`",
-      'if [ "$_LRN_SWEEP" = yes ]; then' in UP and UP.index("docker rm -f") < UP.index('if [ "$_LRN_SWEEP" = yes ]'), UP[-600:])
-ms = re.search(r'(?ms)^  if [^\n]*; then   # the old node is gone now.*?^  fi\n', UP)   # loose: --perturb-nosweep edits its test
-assert ms, "the sweep is not where this gate reads it — this run would FALSE-PASS"
-for prof, fx, kept, given in (("master", "re-point", False, ""), ("master", "pinned-xfer", True, ""),
-                              ("node", "pinned-xfer", False, "_GIVEN_PANEL_URL=https://given.example; "),
-                              ("node", "pinned-xfer", True, "")):
-    d = make_dir("sweep-%s-%s-%s" % (prof, fx, bool(given)), FIXTURES[fx][0])
-    rc, out, err = run_bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nb(){ printf %%s "$*"; }\n%sPROFILE=%s; _LRN_SWEEP=yes; INSTALL_DIR="%s"\n%s'
-                            % (given, prof, d, ms.group(0)))
-    left = sorted(os.listdir(os.path.join(d, "data", "node")))
-    if kept:
-        check("[9] …%s%s: a transfer the old node completed meanwhile is kept, said with the way back (verify F14, F21, F26)"
-              % (prof, "" if prof == "master" else " given no panel"),
-              rc == 0 and len(left) == 5 and "transferred to %s" % NEW_URL in out and "delete those files and re-run" in out,
-              (rc, left, out, err[-200:]))
-    elif prof == "node":
-        check("[9] …node: the panel this run was given (-host) wins over a transfer completed meanwhile (verify F16)",
-              rc == 0 and left == ["transport.json"] and "again while this ran" in out, (rc, left, out, err[-200:]))
-    else:
-        check("[9] …master: a late re-point is removed, and said", rc == 0 and left == ["transport.json"] and "again while this ran" in out,
-              (rc, left, out, err[-200:]))
+check("[9] no second sweep before `up` (verify round 5: a late transfer is the node's new panel, a late loopback "
+      "re-point is undone by the new node's heal)", "data/node/" not in UP, UP[-400:])
 
 # ── [10] bootstrap.sh's recovery list ──────────────────────────────────────────────────────────────────────────
 bs = src_of("bootstrap.sh")

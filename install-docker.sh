@@ -1521,17 +1521,15 @@ ok "${_WROTE:-wrote} $INSTALL_DIR/.env (profile $PROFILE)"
 # while the panel was down for the re-install kept syncing there — "waiting for connection" for good (client report
 # 2026-11-07: data/node/panel-url = http://127.0.0.1:80, every sync reset). …BUT NOT A TRANSFER: a panel-token means the
 # node was handed to another panel, which holds it now — a master re-install does not take it back unasked, it says so.
-# _LRN_SWEEP: the old node runs until just before `up` and can write a copy again meanwhile (a heal while the panel is
-# down for this very run) — swept once more there.
-_LRN_SWEEP=no
+# A copy the old node writes after this point (it runs until just before `up`; a heal while the panel is down for this
+# very run) is not swept again: a transfer completed meanwhile is the node's new panel, and a loopback re-point is undone
+# by the new node itself — its heal tries the configured address first (swg-noded _heal_local_panel).
 if { [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; } && [ -z "${SWG_CONVERT_DIR:-}" ]; then
   _lrn=""; for _lf in panel-url panel-token panel-verify panel-fp; do [ -e "$INSTALL_DIR/data/node/$_lf" ] && _lrn="${_lrn:+$_lrn, }$_lf"; done
   if [ "$PROFILE" = master ] && [ -e "$INSTALL_DIR/data/node/panel-token" ]; then
     sub "this box's node was transferred to $(b "$(head -n1 "$INSTALL_DIR/data/node/panel-url" 2>/dev/null || echo 'another panel')") and syncs there — kept (data/node: $_lrn). To bring it back to this panel, delete those files and re-run."
-  else
-    _LRN_SWEEP=yes
-    if [ -z "$_lrn" ]; then :
-    elif $DRYRUN; then sub "(dry run) the node's learned copy of its panel (data/node: $_lrn) would be removed — the .env names that panel now"
+  elif [ -n "$_lrn" ]; then
+    if $DRYRUN; then sub "(dry run) the node's learned copy of its panel (data/node: $_lrn) would be removed — the .env names that panel now"
     else rm -f "$INSTALL_DIR/data/node/panel-url" "$INSTALL_DIR/data/node/panel-token" "$INSTALL_DIR/data/node/panel-verify" "$INSTALL_DIR/data/node/panel-fp"
       sub "the .env names the panel this node syncs with — its learned copy (data/node: $_lrn) is not needed any more, removed"
     fi
@@ -1811,18 +1809,6 @@ if [ "$PROFILE" != node ] && ! $DRYRUN && [ "${NEW_LOGIN:-no}" != yes ]; then do
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
-  if [ "$_LRN_SWEEP" = yes ]; then   # the old node is gone now: what it learned while this ran goes too (see _LRN_SWEEP)
-    # …but a transfer it completed meanwhile is the node's new panel — on a master (the first pass's rule) and on a node
-    # install that was not given its panel: there the .env only carries the old one on. A panel given by flag or env
-    # (-host / -key, PANEL_URL= / NODE_TOKEN=) wins, as in the first pass. (One typed at the prompt is not told apart.)
-    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then
-      sub "the old node was transferred to $(b "$(head -n1 "$INSTALL_DIR/data/node/panel-url" 2>/dev/null || echo 'another panel')") while this ran — it syncs there now; its learned copy is kept (data/node/panel-*). To use the panel in .env instead, delete those files and re-run."
-    else
-      for _lf in panel-url panel-token panel-verify panel-fp; do
-        [ ! -e "$INSTALL_DIR/data/node/$_lf" ] || { rm -f "$INSTALL_DIR/data/node/$_lf"; sub "the old node wrote data/node/$_lf again while this ran — removed"; }
-      done
-    fi
-  fi
   ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 # "re-installed AND UPDATED" only when a container that was already running now runs a different image. Same images
 # (or nothing was running — an uninstall came first) → plain "re-installed". See _IMG_BEFORE above.
