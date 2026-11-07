@@ -15,6 +15,9 @@ log(){ printf '\033[0;36m[swg-node]\033[0m %s\n' "$*"; }
 rand32(){ od -An -N4 -tu4 /dev/urandom | tr -d ' '; }   # one unsigned 32-bit int
 
 : "${PANEL_URL:?PANEL_URL required (host-node: https://swg-panel:8443)}"
+# The address as configured, before a learned one below replaces it: swg-noded's local heal (_heal_local_panel) tries it
+# first when a loopback sync fails — a master's node can always find its way back to the panel's own loopback door.
+SWG_PANEL_URL_CONFIGURED="$PANEL_URL"
 # systemd's LoadCredential= puts the enrolment token in a per-unit tmpfs and exports its directory
 # here. Preferred over NODE_TOKEN when present, because an EnvironmentFile= token stays in this
 # process's environment for the life of the daemon and is inherited by every subprocess it spawns —
@@ -365,7 +368,7 @@ nft_typeof_migrate
 
 # ───────── 4) sync loop: sample interfaces -> POST snapshot -> reconcile desired peers ─────────
 log "syncing to ${PANEL_URL} (interfaces:${MANAGED}, endpoint ${NODE_ENDPOINT})"
-export SWG_AGENT_CONFIG=/etc/swg-agent/config.json SWG_NODED_STATE=/var/lib/swg-noded
+export SWG_AGENT_CONFIG=/etc/swg-agent/config.json SWG_NODED_STATE=/var/lib/swg-noded SWG_PANEL_URL_CONFIGURED
 # The two overrides above and here are what let this same script bootstrap a node whose programs
 # live somewhere other than /opt — a Nix store path, say. Defaults unchanged, so every existing
 # container behaves exactly as before. This script is the node's bootstrap on BOTH delivery

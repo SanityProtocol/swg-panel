@@ -21,7 +21,8 @@
 #   convert|keep|abort  (or -on-conflict <…>, env SWG_ON_CONFLICT) — the answer when the box already holds the
 #                       OTHER method's install: convert it, keep + re-install it as it is, or stop. Unattended runs.
 #
-# Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
+# Override the source with SWG_REPO / SWG_REF (branch or tag). Other flags (-x, with their values) are passed through
+# to the installer; a word this script does not know is refused before anything runs.
 
 # ⚠️ THE WHOLE SCRIPT IS ONE BRACE GROUP, closed on the last line. bash parses a group completely before it runs any of
 # it, so a download cut off mid-way — `bash -c "$(curl …)"` or `curl … | bash`, either way — is a syntax error that runs
@@ -47,6 +48,15 @@ _swg_tty_fg(){ local s f p e i IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/nul
     { read -r s <"/proc/$p/stat"; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; done; return 0; }
 SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
 swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+# ⚠️ `bash -c "$(curl …)" uninstall` — WITHOUT the `--` — hands bash `uninstall` as the script's NAME ($0), not as an
+# argument, and the run went on with none: a full install on a box the operator was trying to remove (client report
+# 2026-11-07, `--uninstall` the same way). Under `bash -c` a name that is not the `--` placeholder or a shell is an
+# argument that lost its way, so it is taken as the first one. A script run as a file, or piped in, has no
+# BASH_EXECUTION_STRING; the update launchers all pass `--` (swg-noded's UPDATE_CMD_TMPL runs the file).
+_SWG_ARG0=""
+if [ -n "${BASH_EXECUTION_STRING:-}" ]; then
+  case "$0" in --|-|bash|sh|-bash|-sh|*/bash|*/sh) ;; *) _SWG_ARG0="$0"; set -- "$0" "$@";; esac
+fi
 SWG_ARGS=("$@")   # as given — the command the warning below hands back is built from them
 # Survive being launched from a directory that no longer exists — common right after an uninstall
 # removed it (the shell stays "in" the deleted dir, getcwd() fails, and git/curl refuse to run).
@@ -206,9 +216,27 @@ ask_yn(){ local p="$1" d="$2" var="$3" v pr   # ask_yn <prompt> <y|n default> <v
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
 ON_CONFLICT="${SWG_ON_CONFLICT:-}"   # convert|keep|abort — the cross-method question's answer, for an unattended run
 PASS=()
+# ⚠️ A WORD THIS SCRIPT DOES NOT KNOW IS REFUSED, NOT PASSED ON. Every word went to the installer, which ignores what it
+# does not read — so `-- uninstal`, or an `uninstall` that a phone's copy and paste had changed, ran a full install on
+# the box the operator was removing (client report 2026-11-07). A word right after a flag is that flag's value
+# (`-pass x`, `-domain x`): passed on as before. The switches below take none, so a word after one is a word.
+_bs_words="update uninstall docker bare-metal master host node recovery convert keep abort"
+_bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
+  for k in $_bs_words; do case "$k" in "$w"?*) mean="$k";; esac; case "$w" in "$k"?*) mean="$k";; esac; done
+  if [[ "$w" == *[![:alnum:]._-]* ]]; then
+    odd="
+    It holds a character that is not a plain letter: $(printf '%q' "$w"). A copied command can carry one you cannot see
+    (a changed letter, a hidden space or a line break) — type the word by hand."
+  fi
+  die "unknown command '$w' — nothing was done.${mean:+ Did you mean '$mean'?}$odd
+    Commands: $_bs_words (and flags that start with -), after the -- :
+    sudo bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)\" -- ${mean:-uninstall}"; }
+_bs_after_flag=no
 while [ $# -gt 0 ]; do
+  _bs_val="$_bs_after_flag"; _bs_after_flag=no
   case "$1" in
     update|uninstall)            ACTION="$1"; shift;;
+    --update|--uninstall|-update|-uninstall) ACTION="${1##*-}"; shift;;   # the spelling people try first
     recovery)                    ROLE=node; ROLE_EXPLICIT=yes; export SWG_RECOVER_MENU=1; shift;;   # open the leftover-identity menu directly (even on a box that still has a live node)
     docker)                      METHOD=docker; shift;;
     bare-metal|baremetal)        METHOD=baremetal; shift;;
@@ -225,9 +253,13 @@ while [ $# -gt 0 ]; do
     convert|keep|abort)          ON_CONFLICT="$1"; shift;;
     -on-conflict|--on-conflict)  ON_CONFLICT="${2:-}"; shift 2 || shift;;
     --)                          shift;;
-    *)                           PASS+=("$1"); shift;;
+    host-node)                   PASS+=("$1"); shift;;   # the Docker installer's older name for master — it reads it
+    -y|--yes|--dry-run|-f|--force|--no-components|--node-only|--build) PASS+=("$1"); shift;;   # switches: no value
+    -*)                          PASS+=("$1"); _bs_after_flag=yes; shift;;
+    *)                           [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;
   esac
 done
+[ -n "$_SWG_ARG0" ] && info "read '$_SWG_ARG0' as the first argument — bash took it as the script's name (the command has no \`--\` before it)"
 [ "$METHOD" = bare-metal ] && METHOD=baremetal
 
 [ "$(id -u)" = 0 ] || die "run with sudo (it installs users, units and certs)"

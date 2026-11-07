@@ -20836,8 +20836,16 @@ def _heal_local_panel(panel, node_cfg):
     """A CO-LOCATED node (loopback panel URL, e.g. a bare-metal master's local node) can't learn a new panel port
     via sync — its link is refused, so it never receives the panel_url hint. When a LOOPBACK sync fails, rediscover
     the panel locally: read its bind port from the standard settings file, else probe common ports, and re-point.
-    No MITM risk on loopback. Docker masters use a stable internal link (swg-panel:8443) that never breaks, so this
-    only ever fires bare-metal. Returns the new sync URL if it moved, else None."""
+    No MITM risk on loopback. A Docker master's node dials http://127.0.0.1:<PANEL_LOCAL_PORT> on the host network, so
+    this fires there too. Returns the new sync URL if it moved, else None.
+
+    ⚠️ THE PANEL'S OWN LOOPBACK DOOR FIRST. A master's node dials the panel's dedicated plain-HTTP port (8088 by
+    default), which no list of common ports holds: once a heal had moved the node off it — the panel was down for a
+    minute during a re-install and something else answered on :80 — no later heal could bring it back, and the
+    re-point it saved (data/node/panel-url) outranks the .env at every start: the node was stranded on a door that
+    no longer took a sync (client report 2026-11-07). So the address the node was configured with
+    (SWG_PANEL_URL_CONFIGURED, docker/node-entrypoint.sh) and the panel's local port (access.panel.local_port) are
+    probed before the rest, each through the same whoami check."""
     try:
         cur = (panel.get("url") or "").rstrip("/")
         u = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
@@ -20854,9 +20862,18 @@ def _heal_local_panel(panel, node_cfg):
         token = panel.get("token") or ""
         candidates = [443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8000, 9443]
         bases = [cur_base]
+        firsts = []                                      # whole URLs, probed ahead of the port × base scan
+        cfg = (os.environ.get("SWG_PANEL_URL_CONFIGURED") or "").strip().rstrip("/")
+        if cfg and "://" in cfg:
+            ch = (urllib.parse.urlparse(cfg).hostname or "").lower()
+            if ch == "localhost" or ch.startswith("127.") or ch == "::1":   # loopback only: no new trust to decide
+                firsts.append(cfg)
         for sp in ("/var/lib/swg-panel/panel-settings.json", "/etc/swg-panel/panel-settings.json"):
             try:
                 _acc = (((json.load(open(sp)) or {}).get("access") or {}).get("panel") or {})
+                lp = int(_acc.get("local_port") or 0)    # the dedicated loopback door: plain HTTP, at the root
+                if 0 < lp < 65536:
+                    firsts.append("http://%s:%d" % ("[%s]" % host if ":" in host else host, lp))
                 pp = int(_acc.get("port") or 0)
                 if pp and pp not in candidates:
                     candidates.insert(0, pp)             # the exact configured port → covers a non-standard one
@@ -20866,17 +20883,23 @@ def _heal_local_panel(panel, node_cfg):
                 break
             except Exception:
                 pass
+        probes = [p for p in firsts if p != cur]
         for base in bases:                               # try the configured base first, then the one we were on
             for port in candidates:
                 if port == cur_port and base == cur_base:
                     continue
-                probe = "%s://%s:%d%s" % (scheme, host, port, base)
-                if _verify_panel(probe, token, panel):
-                    panel["url"] = probe
-                    _persist_candidate("")
-                    _persist_panel_url(node_cfg, probe)
-                    log(LOG_WARNING, f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed")
-                    return probe.rstrip("/") + "/api/node/sync"
+                probes.append("%s://%s:%d%s" % (scheme, host, port, base))
+        seen = set()
+        for probe in probes:
+            if probe in seen:
+                continue
+            seen.add(probe)
+            if _verify_panel(probe, token, panel):
+                panel["url"] = probe
+                _persist_candidate("")
+                _persist_panel_url(node_cfg, probe)
+                log(LOG_WARNING, f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed")
+                return probe.rstrip("/") + "/api/node/sync"
     except Exception as e:
         log(LOG_WARNING, '_heal_local_panel: %s', e)
     return None

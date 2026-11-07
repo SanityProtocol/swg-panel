@@ -1516,7 +1516,11 @@ ok "${_WROTE:-wrote} $INSTALL_DIR/.env (profile $PROFILE)"
 # transfer or re-point overrode the panel this run decided — an address or key given here (-host / -key, typed at the
 # prompt, or a fresh install over a kept data/node) was replaced by the old one at the next start, silently. The .env
 # carries what they said (docker_node_panel above); swg-noded writes them again after the next transfer or re-point.
-if [ "$PROFILE" = node ] && [ -z "${SWG_CONVERT_DIR:-}" ]; then
+# ⚠️ A MASTER TOO. Its .env names this box's own panel (http://127.0.0.1:<PANEL_LOCAL_PORT>), which this run enrolls
+# the node into; a copy kept from an earlier install outranked it, and a node a heal had moved to another local port
+# while the panel was down for the re-install kept syncing there — "waiting for connection" for good (client report
+# 2026-11-07: data/node/panel-url = http://127.0.0.1:80, every sync reset).
+if { [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; } && [ -z "${SWG_CONVERT_DIR:-}" ]; then
   _lrn=""; for _lf in panel-url panel-token panel-verify panel-fp; do [ -e "$INSTALL_DIR/data/node/$_lf" ] && _lrn="${_lrn:+$_lrn, }$_lf"; done
   if [ -n "$_lrn" ]; then
     if $DRYRUN; then sub "(dry run) the node's learned copy of its panel (data/node: $_lrn) would be removed — the .env names that panel now"

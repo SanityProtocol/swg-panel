@@ -44,6 +44,16 @@ earlier releases predate the changelog — see the git history. · Русски�
   restart arrives before it has read its torrent guard, and the panel took the missing count for zero: the next report's
   lifetime count then read as one 5-second burst, hundreds of thousands of torrents an hour on the card at every restart
   of the node's service. The panel now keeps the last count until the node reports it again, for nodes of any version.
+- **A mistyped command no longer re-installs instead of uninstalling.** `bootstrap.sh` handed every word it did not
+  know to the installer, which ignores what it does not read, so `-- uninstal`, or an `uninstall` that a copy and paste
+  on a phone had changed, ran a full re-install on the server being removed. A word it does not know now stops the run
+  before anything happens, names the command it may have meant, and shows a hidden character if the word holds one.
+  `--uninstall` and `--update` work as well, and so does `uninstall` without the `--` in front of it.
+- **The node on a Docker master no longer stays "waiting for connection" after a re-install.** While the panel was down
+  during the re-install, the node could re-point itself at another local port of the server and save that address
+  ahead of the one in `.env`; the panel's own local port was not among the ones it tried, so it never came back. It now
+  tries the address it was configured with and the panel's local port first, and a master install clears an address
+  the node saved, as a node install already did. A node stuck like this recovers on its own after the update.
 
 ## [1.8.11-beta] — 2026-11-01
 
