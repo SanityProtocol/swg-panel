@@ -607,7 +607,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   Docker node in bridge mode, a port another program on the server already uses — the bubble shows no port. Keep
   20000–29999 free on the servers: the panel refuses it for a new interface, turn-proxy, WDTT or csqtt server, or
   dial-in exit. A switch to Block also ends the incoming connections already open.
-- **A busy server moves its connections to a fast lane.** When forwarding keeps a server's CPU at 70% or more, it hands
+- **A busy server moves its connections to a fast lane.** When forwarding keeps a server's CPU at 70 % or more, it hands
   the connections already under way to the Linux kernel's fast path, which skips the per-packet rules, and takes them
   back once its CPU stays 20 points lower for about a minute. While the fast lane is on, traffic by category and Top
   destinations are read from short samples, and a new block can take a few seconds to cut a connection that is already

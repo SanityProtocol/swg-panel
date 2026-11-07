@@ -7,12 +7,13 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
-- **A node short of CPU hands established connections to the kernel's fast path.** When a node's CPU stays at 70 % or
-  more under real traffic, a connection past its first 32 packets skips the firewall rules entirely, and the CPU they
-  cost is freed. Every 5 seconds the node puts every connection back on the rules for half a second and reads its
-  statistics there, so while it is on, a block, a cut or a routing change reaches a running connection within one pass
-  (5 seconds) instead of on its next packet, and Top destinations and the internet lane are rougher. It turns itself off
-  after a minute below 50 %, so a node that never reaches 70 % never runs it.
+- **A node short of CPU hands established connections to the kernel's fast path.** When a node's CPU stays at its start
+  or more under real traffic — 70 % by default, set per node in Node settings → Datapath → Fast lane (50 to 90 %, or
+  Off) — a connection past its first 32 packets skips the firewall rules entirely, and the CPU they cost is freed. Every
+  5 seconds the node puts every connection back on the rules for half a second and reads its statistics there, so while
+  it is on, a block, a cut or a routing change reaches a running connection within one pass (5 seconds) instead of on
+  its next packet, and Top destinations and the internet lane are rougher. It turns itself off after a minute 20 points
+  below its start, so a node that never reaches its start never runs it.
 
 ### Changed
 
