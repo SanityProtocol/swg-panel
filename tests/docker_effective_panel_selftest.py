@@ -40,6 +40,7 @@ Run: python3 tests/docker_effective_panel_selftest.py      (0 = pass)
      --perturb-nosweep     no second sweep before `up` → RED on [9]
      --perturb-sweeptoken  the second sweep drops a transfer the old node completed meanwhile → RED on [9]
      --perturb-nodekeeps   …and keeps it on a node install too, over the panel the run was given → RED on [9]
+     --perturb-givenonly   …and drops it on a node install that was given no panel (round 3's shape) → RED on [9]
      --perturb-salv        the recovery list back to the .env's address and key → RED on [10]
      --perturb-salvtrust   the recovery's trust without the CA rule → RED on [10]
 """
@@ -74,10 +75,12 @@ PLANTS = {
                            '  if false; then\n    sub "this box'),
     "--perturb-nosweep": ("install-docker.sh", '  if [ "$_LRN_SWEEP" = yes ]; then   # the old node is gone now',
                           '  if false; then   # the old node is gone now'),
-    "--perturb-sweeptoken": ("install-docker.sh", '    if [ "$PROFILE" = master ] && [ -e "$INSTALL_DIR/data/node/panel-token" ]; then\n      sub "the old node was transferred',
-                             '    if false; then\n      sub "the old node was transferred'),
-    "--perturb-nodekeeps": ("install-docker.sh", '    if [ "$PROFILE" = master ] && [ -e "$INSTALL_DIR/data/node/panel-token" ]; then\n      sub "the old node was transferred',
-                            '    if [ -e "$INSTALL_DIR/data/node/panel-token" ]; then\n      sub "the old node was transferred'),
+    "--perturb-sweeptoken": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then',
+                             '    if false; then'),
+    "--perturb-nodekeeps": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then',
+                            '    if [ -e "$INSTALL_DIR/data/node/panel-token" ]; then'),
+    "--perturb-givenonly": ("install-docker.sh", '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && { [ "$PROFILE" = master ] || [ -z "${_GIVEN_PANEL_URL:-}${_GIVEN_NODE_TOKEN:-}" ]; }; then',
+                            '    if [ -e "$INSTALL_DIR/data/node/panel-token" ] && [ "$PROFILE" = master ]; then'),
     "--perturb-salv": ("bootstrap.sh", '    _salv_learned "$(dirname "$_f")"\n', ""),
     "--perturb-salvtrust": ("bootstrap.sh", '    [ "$_lv" = yes ] && [ -z "$_lf" ] && f="";; esac', "    ;; esac"),
 }
@@ -263,17 +266,20 @@ check("[9] the old node's late copy is swept after its container is gone, before
       'if [ "$_LRN_SWEEP" = yes ]; then' in UP and UP.index("docker rm -f") < UP.index('if [ "$_LRN_SWEEP" = yes ]'), UP[-600:])
 ms = re.search(r'(?ms)^  if [^\n]*; then   # the old node is gone now.*?^  fi\n', UP)   # loose: --perturb-nosweep edits its test
 assert ms, "the sweep is not where this gate reads it — this run would FALSE-PASS"
-for prof, fx, kept in (("master", "re-point", False), ("master", "pinned-xfer", True), ("node", "pinned-xfer", False)):
-    d = make_dir("sweep-%s-%s" % (prof, fx), FIXTURES[fx][0])
-    rc, out, err = run_bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nb(){ printf %%s "$*"; }\nPROFILE=%s; _LRN_SWEEP=yes; INSTALL_DIR="%s"\n%s'
-                            % (prof, d, ms.group(0)))
+for prof, fx, kept, given in (("master", "re-point", False, ""), ("master", "pinned-xfer", True, ""),
+                              ("node", "pinned-xfer", False, "_GIVEN_PANEL_URL=https://given.example; "),
+                              ("node", "pinned-xfer", True, "")):
+    d = make_dir("sweep-%s-%s-%s" % (prof, fx, bool(given)), FIXTURES[fx][0])
+    rc, out, err = run_bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nb(){ printf %%s "$*"; }\n%sPROFILE=%s; _LRN_SWEEP=yes; INSTALL_DIR="%s"\n%s'
+                            % (given, prof, d, ms.group(0)))
     left = sorted(os.listdir(os.path.join(d, "data", "node")))
     if kept:
-        check("[9] …master: a transfer the old node completed meanwhile is kept, said with the way back (verify F14, F21)",
+        check("[9] …%s%s: a transfer the old node completed meanwhile is kept, said with the way back (verify F14, F21, F26)"
+              % (prof, "" if prof == "master" else " given no panel"),
               rc == 0 and len(left) == 5 and "transferred to %s" % NEW_URL in out and "delete those files and re-run" in out,
               (rc, left, out, err[-200:]))
     elif prof == "node":
-        check("[9] …node: the panel this run was given wins over a transfer completed meanwhile (verify F16)",
+        check("[9] …node: the panel this run was given (-host) wins over a transfer completed meanwhile (verify F16)",
               rc == 0 and left == ["transport.json"] and "again while this ran" in out, (rc, left, out, err[-200:]))
     else:
         check("[9] …master: a late re-point is removed, and said", rc == 0 and left == ["transport.json"] and "again while this ran" in out,

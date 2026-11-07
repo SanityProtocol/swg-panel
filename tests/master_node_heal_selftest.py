@@ -21,14 +21,14 @@ Client report 2026-11-07, two defects on one Docker master:
 
 Run: python3 tests/master_node_heal_selftest.py            (0 = pass)
      --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag|anyarg0|eqflag|emptyword|valnear|mainurl|wordsonly|noprefix|
-              uninstdefault|emptyarg0|casesens> → RED (exit 0 when caught)
+              uninstdefault|emptyarg0|casesens|crossdash|placeholder> → RED (exit 0 when caught)
      --perturb                                               them all → RED
 """
 import importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport", "nearflag", "anyarg0", "eqflag", "emptyword", "valnear",
-              "mainurl", "wordsonly", "noprefix", "uninstdefault", "emptyarg0", "casesens")
+              "mainurl", "wordsonly", "noprefix", "uninstdefault", "emptyarg0", "casesens", "crossdash", "placeholder")
 PLANTS = set(PLANTS_ALL) if "--perturb" in sys.argv else (
     {sys.argv[sys.argv.index("--plant") + 1]} if "--plant" in sys.argv else set())
 assert PLANTS <= set(PLANTS_ALL), "unknown plant"
@@ -71,15 +71,20 @@ if "valnear" in PLANTS and "nearflag" not in PLANTS:   # a flag's value starting
     BS = plant(BS, '                                 [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;   # …unless it is a value',
                '                                 _bs_unknown "$1";;')
 if "noprefix" in PLANTS:   # verify F15: the ref in the URL only, SWG_REF dropped by sudo
-    BS = plant(BS, '    sudo bash -c \\"$pre\\$(curl -fsSL', '    sudo bash -c \\"\\$(curl -fsSL')
+    BS = plant(BS, 'bs="sudo bash -c \\"$(_bs_refpre)\\$(curl -fsSL', 'bs="sudo bash -c \\"\\$(curl -fsSL')
 if "uninstdefault" in PLANTS:   # verify F17: with no near command the refusal handed back `-- uninstall`
-    BS = plant(BS, '/bootstrap.sh)\\" -- ${mean:-<command>}"; }', '/bootstrap.sh)\\" -- ${mean:-uninstall}"; }')
+    BS = plant(BS, '  if [ -n "$mean" ]; then\n    die', '  mean="${mean:-uninstall}"\n  if [ -n "$mean" ]; then\n    die')
+if "crossdash" in PLANTS:  # verify F27: `Host-Node` read as `host` (the panel-only role)
+    BS = plant(BS, '    for k in $_bs_words host-node; do', '    for k in $_bs_words; do')
+    BS = plant(BS, 'case "$b" in "$k"[!-]*) mean="$k";; esac', 'case "$b" in "$k"?*) mean="$k";; esac')
+if "placeholder" in PLANTS:  # verify F28: a help line that does not run as printed
+    BS = plant(BS, '    $bs                  # install\n', '    $bs -- <command>\n')
 if "emptyarg0" in PLANTS and "anyarg0" not in PLANTS:  # verify F19 (same line as anyarg0): an empty $0 taken as an argument
     BS = plant(BS, '    ""|--|-|_|bash|', '    --|-|_|bash|')
 if "casesens" in PLANTS:   # `Update` near nothing
     BS = plant(BS, 'b="${b#-}"; b="${b,,}"', 'b="${b#-}"')
 if "mainurl" in PLANTS:    # the refusal always names main's bootstrap
-    BS = plant(BS, 'swg-panel/${REF:-main}/bootstrap.sh)\\" -- ${mean', 'swg-panel/main/bootstrap.sh)\\" -- ${mean')
+    BS = plant(BS, 'swg-panel/${REF:-main}/bootstrap.sh)\\""', 'swg-panel/main/bootstrap.sh)\\""')
 if "nofirst" in PLANTS:    # the configured address not probed
     NODED = plant(NODED, '                firsts.append(cfg)\n', '                pass\n')
 if "nolocal" in PLANTS:    # the panel's local port not probed
@@ -173,9 +178,15 @@ for w in ("uninstal", "Uninstall"):
           rc != 0 and "unknown command '%s'" % w in out and "ACTION" not in v, (rc, v, out[-300:]))
 for w in ("install", "upgrade"):
     rc, v, out = parse([w])
-    check("[1] %r (near no command) is refused WITHOUT handing back a command — never `uninstall` (verify F17)" % w,
-          rc != 0 and "-- <command>" in out and "-- uninstall" not in out and "Did you mean" not in out
-          and "none at all installs" in out, out[-400:])
+    check("[1] %r (near no command) is refused with no command picked for it — never `uninstall` alone (verify F17)" % w,
+          rc != 0 and "Did you mean" not in out and re.search(r'bootstrap\.sh\)"\s+# install', out)
+          and re.search(r'-- uninstall\s+# remove', out), out[-500:])
+    lines = [l.strip() for l in out.splitlines() if l.strip().startswith("sudo bash -c")]
+    bad = [l for l in lines if subprocess.run(["bash", "-n"], input=l, text=True, capture_output=True).returncode != 0]
+    check("[1] …every command line it prints runs as printed (verify F28)", len(lines) == 3 and not bad, (lines, bad))
+rc, v, out = parse(["--", "Host-Node"])
+check("[1] `Host-Node` is near the master alias, never `host` (the panel-only role) (verify F27)",
+      "Did you mean 'host-node'?" in out and "'host'" not in out, out[-300:])
 rc, v, out = parse(["Update"])
 check("[1] `Update` (a phone's capital) is near `update`", rc != 0 and "Did you mean 'update'?" in out and "-- update" in out, out[-400:])
 rc, v, out = parse(["", "docker", "node"])

@@ -231,18 +231,31 @@ _bs_words="update uninstall docker bare-metal master host node recovery convert 
 _bs_refpre(){ if [ -n "${REF:-}" ] && [ "$REF" != main ]; then printf 'SWG_REF=%q; ' "$REF"; fi; }
 _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
   local b="${w#-}"; b="${b#-}"; b="${b,,}"                # `--uninstal` and `Update` are near a command too
-  local pre; pre="$(_bs_refpre)"
-  [ -n "$b" ] && for k in $_bs_words; do case "$k" in "$b"|"$b"?*) mean="$k";; esac; case "$b" in "$k"?*) mean="$k";; esac; done
+  local bs; bs="sudo bash -c \"$(_bs_refpre)\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\""
+  # Near: the word itself (case-blind; host-node too, the Docker installer's name for master — it must not read as
+  # `host`, the panel-only role), or one a letter or more shorter or longer — never across a `-` (host-node ≠ host).
+  if [ -n "$b" ]; then
+    for k in $_bs_words host-node; do
+      [ "$b" = "$k" ] && { mean="$k"; break; }
+      case "$k" in "$b"?*) mean="$k";; esac; case "$b" in "$k"[!-]*) mean="$k";; esac
+    done
+  fi
   if [[ "$w" == *[![:alnum:]._-]* ]]; then
     odd="
     It holds a character that is not a plain letter: $(printf '%q' "$w"). A copied command can carry one you cannot see
     (a changed letter, a hidden space or a line break) — type the word by hand."
   fi
   # ⚠️ A command is named only when the word is near one. With none it fell back to `uninstall`, and `install` or
-  # `upgrade` was handed the removal command to copy (qualification verify, F17).
-  die "unknown command '$w' — nothing was done.${mean:+ Did you mean '$mean'?}$odd
-    Commands: $_bs_words (and flags that start with -), after the -- ; none at all installs:
-    sudo bash -c \"$pre\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\" -- ${mean:-<command>}"; }
+  # `upgrade` was handed the removal command to copy (qualification verify, F17); every line shown runs as printed.
+  if [ -n "$mean" ]; then
+    die "unknown command '$w' — nothing was done. Did you mean '$mean'?$odd
+    $bs -- $mean"
+  fi
+  die "unknown command '$w' — nothing was done.$odd
+    Commands: $_bs_words (and flags that start with -), after the -- . For example:
+    $bs                  # install
+    $bs -- update        # update in place
+    $bs -- uninstall     # remove"; }
 _bs_after_flag=no
 while [ $# -gt 0 ]; do
   _bs_val="$_bs_after_flag"; _bs_after_flag=no
