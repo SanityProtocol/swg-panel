@@ -15,7 +15,10 @@ chain it is asked for; measured on swgt). A node without Kernel SNI has no SWG_C
       unreadable chain (a timeout) leaves the last rates (a blip is not "the traffic stopped"); a chain another tool
       removed (exit 1) clears them, as the dump did, until the next pass rebuilds it; an empty chain clears them; a mode
       change (reconcile_catk_chain([])) clears them without a read. The first read once there is a chain is a baseline
-      — the chain outlives a noded restart, and its accumulated total is no 5 s rate.
+      — the chain outlives a noded restart, and its accumulated total is no 5 s rate — and so is the first read when
+      Kernel SNI comes back in the same run. There the gate's N (DATAPATH D1) is the one read before, so only
+      sample_catk's reset makes that read a baseline; after a restart there is no N before the first read, which makes it
+      one as well, so the first read alone cannot tell whether the reset is there.
   [4] Neither ever spawns `iptables-save`.
 
 Run: python3 tests/mangle_chain_reads_selftest.py   (0 = pass)
@@ -27,8 +30,9 @@ Run: python3 tests/mangle_chain_reads_selftest.py   (0 = pass)
      blipclears   an unreadable SWG_CATK clears the rates (a 5 s blip reads as "the traffic stopped", then a spike)
      rc1keeps     a SWG_CATK another tool removed keeps the last rates (they freeze until the next pass, ~65 s)
      inetrc1      a missing SWG_INET reads as unreadable, not as nothing counted (the rate freezes where it read 0)
-     spike        no baseline after a node without the chain gets one: a restart in Kernel SNI reports the chain's whole
-                  total as one 5 s rate
+     spike        no baseline after a node without the chain gets one: Kernel SNI back in the same run reports what the
+                  chain holds as one rate (caught by [3]'s last check; after a restart the gate's first N makes a baseline
+                  by itself)
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, threading
 
@@ -198,6 +202,14 @@ N.reconcile_catk_chain([])
 CALLS.clear()
 NOW[0] += 5
 check("[3] a mode change away from Kernel SNI clears them, without a read", N.sample_catk() == {} and CALLS == [], CALLS)
+# Back in the same run: the gate's N is the one read before, so the step baseline (DATAPATH D1) does not apply and only the
+# reset to None makes this read a baseline. The first read of [3] has no N before it, which makes it one either way.
+N.reconcile_catk_chain(["c1", "c2"])
+REPLY["catk"] = (0, catk(800000, 800000, 800000))
+NOW[0] += 5
+back = N.sample_catk()
+check("[3] …and Kernel SNI back in the same run starts with a baseline: what the chain holds is no rate", back == {},
+      (back, N._CATK))
 
 # ── [4] never a dump ──────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] never a dump of mangle")

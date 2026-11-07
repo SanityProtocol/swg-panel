@@ -105,7 +105,7 @@ if not CHROME:
 # ── the web root: the repo's SPA, or a copy with one fix undone ─────────────────────────────────────────────────────────────
 PERTURBATIONS = {
     # [B17]: a focused button's Enter fires the sheet's primary again (s9b F10)
-    "enterbtn": ("js/ui.js", '          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab]")) return;\n', '          && false) return;\n'),
+    "enterbtn": ("js/ui.js", '          && e.target.closest("button, a[href], [role=button], [role=switch], [role=radio], [role=checkbox], [role=tab], [data-nodirty]")) return;\n', '          && false) return;\n'),
     # [B17]: a button BEHIND the sheet takes Enter too (review F5)
     "enterroot": ("js/ui.js", '(root.contains(e.target) || e.target.closest(".uc-pop', '(true || e.target.closest(".uc-pop'),
     # [B17]: a button in a picker's layer above the sheet loses its Enter to the primary (verify F11)
