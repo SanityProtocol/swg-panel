@@ -2457,6 +2457,18 @@ export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, r
 }
 export function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
 
+// THE FAST LANE'S START (docs/DATAPATH-PLAN.md D3, §11 decisions 10 and 11): Off, or the CPU load at which this node hands its
+// established connections to the kernel's flowtable; it stops 20 points lower. /api/nodes/update takes an exact int from these
+// steps and refuses anything else — "80" included — so the values are numbers, the server's FAST_LANE_STEPS and its default.
+export const FAST_LANE_DEFAULT = 70, FAST_LANE_STEPS = [0, 50, 60, 70, 80, 90];
+export const fastLaneOptions = () => FAST_LANE_STEPS.map(v => ({ value: v, label: v === 0 ? T("Off")
+  : v === FAST_LANE_DEFAULT ? T("Starts at {v1}% CPU (default)", { v1: v }) : T("Starts at {v1}% CPU", { v1: v }) }));
+export function FastLaneField({ value, onChange }) {
+  return html`<div class="field"><label>${T("Fast lane")}</label>
+    <${Dropdown} value=${value} onChange=${onChange} options=${fastLaneOptions()} ariaLabel=${T("Fast lane")}/>
+    <div class="hint">${T("When forwarding keeps this node's CPU at or above this load, its established connections move to the kernel's fast path, which skips the per-packet rules. The node switches back once its CPU stays 20 points lower for about a minute. While the fast lane is on, traffic by category and Top destinations are read from short samples, and a new block can take a few seconds to cut a connection that is already open.")}</div></div>`;
+}
+
 export function NodeEditSheet({ node }) {
   const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults (used when the node has no override)
   const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
@@ -2470,6 +2482,16 @@ export function NodeEditSheet({ node }) {
   const [defEgress, setDefEgress] = useState(node.default_egress_ip || "");
   const [panelIp, setPanelIp] = useState(node.panel_ip || "");
   const [meshEgress, setMeshEgress] = useState(node.mesh_egress_ip || "");
+  // /api/state publishes it on every node record (70 when none is stored); it is sent only when changed, so a save of the
+  // other fields never writes it
+  const fl0 = node.fast_lane ?? FAST_LANE_DEFAULT;
+  const [fastLane, setFastLane] = useState(fl0);
+  // The Sheet's own guard hears typed fields only; the colour, the three egress pickers and the fast lane are clicks. So the
+  // sheet hands it what differs from the opened state, as the interface sheet does, and its Cancel goes through the guard.
+  const dirtyRef = useRef(false), closeRef = useRef(null), base = useRef(null);
+  const editKey = JSON.stringify([name, color, defEgress, panelIp, meshEgress, fastLane]);
+  if (base.current === null) base.current = editKey;
+  dirtyRef.current = editKey !== base.current;
   const ips = node.ips || [];
   const ovSub = meshSubnet.trim() === dSub ? "" : meshSubnet.trim();   // normalized overrides (default → inherit)
   const ovPort = meshPort.trim() === dPort ? "" : meshPort.trim();
@@ -2483,7 +2505,8 @@ export function NodeEditSheet({ node }) {
     // Sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept — it used to
     // close the sheet (and the re-provision confirm on top) first and lose them all. Accepted, both close.
     const r = await sheetSend(() => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort,
-        mesh_egress_ip: meshEgress, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp }),
+        mesh_egress_ip: meshEgress, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp,
+        ...(fastLane !== fl0 ? { fast_lane: fastLane } : {}) }),
       t => setMsg(t ? { k: "err", t } : null), setBusy);
     if (!r.ok) return;
     closeAllModals(); Store.poll().catch(() => {});
@@ -2498,7 +2521,7 @@ export function NodeEditSheet({ node }) {
     doSave();
   };
   const [showAwg, setShowAwg] = useState(false);
-  return html`<${Sheet} title=${T("Node settings · {v1}", { v1: node.name })}
+  return html`<${Sheet} title=${T("Node settings · {v1}", { v1: node.name })} dirtyRef=${dirtyRef} closeRef=${closeRef}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost" title=${T("Rotate this node's enrollment token (re-enroll / re-install)")} onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> ${T("Rotate key")}</button>
         ${/* §3.1: the door for a node that IS reporting — the old box is alive, so this one supersedes it
@@ -2515,7 +2538,7 @@ export function NodeEditSheet({ node }) {
           <button class="btn btn-ghost" title=${T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
           <button class="btn btn-ghost" title=${T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
           <//>` : null}
-      <//>`, onCancel: closeModal, disabled: busy, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), disabled: busy, onAction: save, action: T("Save") })}>
     <div class="field"><label>${T("Name")}</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/>
         <${ThemedSwatch} val=${color} title=${T("Node colour")} onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || node.name || T("tag|node")}</span>`}/></div>
@@ -2534,6 +2557,8 @@ export function NodeEditSheet({ node }) {
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
       <${NodeIpPick} ips=${ips} value=${meshEgress} onChange=${setMeshEgress} auto=${T("Auto (default route)")}/>
       <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
+    <div class="seclabel">${T("Datapath")}</div>
+    <${FastLaneField} value=${fastLane} onChange=${setFastLane}/>
     <div class="hint" style="margin-top:14px">${meshElsewhere()}</div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;

@@ -607,6 +607,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   Docker node in bridge mode, a port another program on the server already uses — the bubble shows no port. Keep
   20000–29999 free on the servers: the panel refuses it for a new interface, turn-proxy, WDTT or csqtt server, or
   dial-in exit. A switch to Block also ends the incoming connections already open.
+- **A busy server moves its connections to a fast lane.** When forwarding keeps a server's CPU at 70% or more, it hands
+  the connections already under way to the Linux kernel's fast path, which skips the per-packet rules, and takes them
+  back once its CPU stays 20 points lower for about a minute. While the fast lane is on, traffic by category and Top
+  destinations are read from short samples, and a new block can take a few seconds to cut a connection that is already
+  open. Each server has its own start, or Off: its settings (the gear on its card) → Datapath → Fast lane.
 - **In Docker, the panel keeps port 80 for its certificate.** With a Let's Encrypt certificate (for a domain or the
   bare IP), the panel's container holds the server's port 80, so it renews on its own with nothing to set up. Another
   certificate tool on the same server (your own acme.sh or certbot) then can't use port 80: give it hooks that stop the

@@ -4090,6 +4090,15 @@ export const STR = {
     "Адрес источника, с которого нода обращается к панели. На установках на одном сервере игнорируется; при неудаче — авто.",
   "Mesh settings (ingress address, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.":
     "Настройки меша (адрес входа, подсеть, порт, префикс, AWG) для этой ноды задаются в {where} — выберите там эту ноду.",
+  // ── the fast lane's start, Node settings → Datapath (docs/DATAPATH-PLAN.md D3) ──
+  // «Быстрый путь»: fast path is what a network operator calls it, and the hint names the same thing. Top destinations is
+  // named by the Overview panel's own Russian title, «Куда идёт трафик».
+  "Fast lane": "Быстрый путь",
+  "Starts at {v1}% CPU": "Включается при {v1}% CPU",
+  // budget-ok: a full-width dropdown's face and row, measured at 390 px
+  "Starts at {v1}% CPU (default)": "Включается при {v1}% CPU (по умолчанию)",
+  "When forwarding keeps this node's CPU at or above this load, its established connections move to the kernel's fast path, which skips the per-packet rules. The node switches back once its CPU stays 20 points lower for about a minute. While the fast lane is on, traffic by category and Top destinations are read from short samples, and a new block can take a few seconds to cut a connection that is already open.":
+    "Когда пересылка трафика держит CPU этой ноды на этом уровне или выше, её установленные соединения переходят на быстрый путь ядра, в обход правил, которые проверяют каждый пакет. Нода возвращается на обычный путь, когда CPU около минуты держится на 20 пунктов ниже. Пока быстрый путь включён, трафик по категориям и «Куда идёт трафик» считаются по коротким выборкам, а новая блокировка может оборвать уже открытое соединение только через несколько секунд.",
   "The current token stops working immediately. Re-enroll the node with the new token or it will go offline.":
     "Текущий токен перестанет работать сразу. Переподключите ноду с новым токеном, иначе она уйдёт в офлайн.",
   "This cuts {name} off {now} without waiting for it to confirm — {dropped}. Use this only when the server is unreachable. This can't be undone.":
