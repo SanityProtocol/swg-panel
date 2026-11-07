@@ -50,12 +50,17 @@ SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
 swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
 # ⚠️ `bash -c "$(curl …)" uninstall` — WITHOUT the `--` — hands bash `uninstall` as the script's NAME ($0), not as an
 # argument, and the run went on with none: a full install on a box the operator was trying to remove (client report
-# 2026-11-07, `--uninstall` the same way). Under `bash -c` a name that is not the `--` placeholder or a shell is an
-# argument that lost its way, so it is taken as the first one. A script run as a file, or piped in, has no
-# BASH_EXECUTION_STRING; the update launchers all pass `--` (swg-noded's UPDATE_CMD_TMPL runs the file).
+# 2026-11-07, `--uninstall` the same way). Under `bash -c` a name that is one of this script's words, or a flag, is an
+# argument that lost its way, so it is taken as the first one; any other name (`--`, `_`, `bash`, a script name) stays
+# the name, as before. A script run as a file, or piped in, has no BASH_EXECUTION_STRING; the update launchers all run
+# the file (swg-noded's UPDATE_CMD_TMPL, the swg-update wrapper) or pass `--`.
 _SWG_ARG0=""
 if [ -n "${BASH_EXECUTION_STRING:-}" ]; then
-  case "$0" in --|-|bash|sh|-bash|-sh|*/bash|*/sh) ;; *) _SWG_ARG0="$0"; set -- "$0" "$@";; esac
+  case "$0" in
+    --|-|-bash|-sh) ;;
+    -?*|update|uninstall|docker|bare-metal|baremetal|master|host|node|recovery|convert|keep|abort)
+      _SWG_ARG0="$0"; set -- "$0" "$@";;
+  esac
 fi
 SWG_ARGS=("$@")   # as given — the command the warning below hands back is built from them
 # Survive being launched from a directory that no longer exists — common right after an uninstall
@@ -231,7 +236,7 @@ _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII i
   fi
   die "unknown command '$w' — nothing was done.${mean:+ Did you mean '$mean'?}$odd
     Commands: $_bs_words (and flags that start with -), after the -- :
-    sudo bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)\" -- ${mean:-uninstall}"; }
+    sudo bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\" -- ${mean:-uninstall}"; }
 _bs_after_flag=no
 while [ $# -gt 0 ]; do
   _bs_val="$_bs_after_flag"; _bs_after_flag=no
@@ -256,12 +261,15 @@ while [ $# -gt 0 ]; do
     --)                          shift;;
     host-node)                   PASS+=("$1"); shift;;   # the Docker installer's older name for master — it reads it
     -y|--yes|--dry-run|-f|--force|--no-components|--node-only|--build) PASS+=("$1"); shift;;   # switches: no value
-    -upda*|--upda*|-unin*|--unin*) _bs_unknown "$1";;   # `--uninstal`: no installer flag starts so, it would re-install
+    -upda*|--upda*|-unin*|--unin*)   # `--uninstal`: no installer flag starts so, and passed on it would re-install
+                                 [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;   # …unless it is a value
+    -*=*)                        PASS+=("$1"); shift;;   # `--x=v` carries its value: the word after it is a word
     -*)                          PASS+=("$1"); _bs_after_flag=yes; shift;;
+    "")                          PASS+=("$1"); shift;;   # an empty argument (a script's unset variable): passed on, as ever
     *)                           [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;
   esac
 done
-[ -n "$_SWG_ARG0" ] && info "read '$_SWG_ARG0' as the first argument — bash took it as the script's name (the command has no \`--\` before it)"
+[ -n "${_SWG_ARG0:-}" ] && info "read '$_SWG_ARG0' as the first argument — bash took it as the script's name (the command has no \`--\` before it)"
 [ "$METHOD" = bare-metal ] && METHOD=baremetal
 
 [ "$(id -u)" = 0 ] || die "run with sudo (it installs users, units and certs)"

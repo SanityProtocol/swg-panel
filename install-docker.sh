@@ -1519,11 +1519,19 @@ ok "${_WROTE:-wrote} $INSTALL_DIR/.env (profile $PROFILE)"
 # ⚠️ A MASTER TOO. Its .env names this box's own panel (http://127.0.0.1:<PANEL_LOCAL_PORT>), which this run enrolls
 # the node into; a copy kept from an earlier install outranked it, and a node a heal had moved to another local port
 # while the panel was down for the re-install kept syncing there — "waiting for connection" for good (client report
-# 2026-11-07: data/node/panel-url = http://127.0.0.1:80, every sync reset).
+# 2026-11-07: data/node/panel-url = http://127.0.0.1:80, every sync reset). …BUT NOT A TRANSFER: a panel-token means the
+# node was handed to another panel, which holds it now — a master re-install does not take it back unasked, it says so.
+# _LRN_SWEEP: the old node runs until just before `up` and can write a copy again meanwhile (a heal while the panel is
+# down for this very run) — swept once more there.
+_LRN_SWEEP=no
 if { [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; } && [ -z "${SWG_CONVERT_DIR:-}" ]; then
   _lrn=""; for _lf in panel-url panel-token panel-verify panel-fp; do [ -e "$INSTALL_DIR/data/node/$_lf" ] && _lrn="${_lrn:+$_lrn, }$_lf"; done
-  if [ -n "$_lrn" ]; then
-    if $DRYRUN; then sub "(dry run) the node's learned copy of its panel (data/node: $_lrn) would be removed — the .env names that panel now"
+  if [ "$PROFILE" = master ] && [ -e "$INSTALL_DIR/data/node/panel-token" ]; then
+    sub "this box's node was transferred to $(b "$(head -n1 "$INSTALL_DIR/data/node/panel-url" 2>/dev/null || echo 'another panel')") and syncs there — kept (data/node: $_lrn). To bring it back to this panel, delete those files and re-run."
+  else
+    _LRN_SWEEP=yes
+    if [ -z "$_lrn" ]; then :
+    elif $DRYRUN; then sub "(dry run) the node's learned copy of its panel (data/node: $_lrn) would be removed — the .env names that panel now"
     else rm -f "$INSTALL_DIR/data/node/panel-url" "$INSTALL_DIR/data/node/panel-token" "$INSTALL_DIR/data/node/panel-verify" "$INSTALL_DIR/data/node/panel-fp"
       sub "the .env names the panel this node syncs with — its learned copy (data/node: $_lrn) is not needed any more, removed"
     fi
@@ -1803,6 +1811,11 @@ if [ "$PROFILE" != node ] && ! $DRYRUN && [ "${NEW_LOGIN:-no}" != yes ]; then do
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
+  if [ "$_LRN_SWEEP" = yes ]; then   # the old node is gone now: what it learned while this ran goes too (see _LRN_SWEEP)
+    for _lf in panel-url panel-token panel-verify panel-fp; do
+      [ -e "$INSTALL_DIR/data/node/$_lf" ] && rm -f "$INSTALL_DIR/data/node/$_lf" && sub "the old node wrote data/node/$_lf again while this ran — removed"
+    done
+  fi
   ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 # "re-installed AND UPDATED" only when a container that was already running now runs a different image. Same images
 # (or nothing was running — an uninstall came first) → plain "re-installed". See _IMG_BEFORE above.

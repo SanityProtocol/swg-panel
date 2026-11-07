@@ -20,13 +20,14 @@ Client report 2026-11-07, two defects on one Docker master:
   [3] docker/node-entrypoint.sh keeps the configured address before a learned one replaces it, and exports it
 
 Run: python3 tests/master_node_heal_selftest.py            (0 = pass)
-     --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag>   one old behaviour back → RED (exit 0 when caught)
+     --plant <passall|noarg0|nofirst|nolocal|noexport|nearflag|anyarg0|eqflag|emptyword|valnear|mainurl>   one old behaviour back → RED (exit 0 when caught)
      --perturb                                               them all → RED
 """
 import importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport", "nearflag")
+PLANTS_ALL = ("passall", "noarg0", "nofirst", "nolocal", "noexport", "nearflag", "anyarg0", "eqflag", "emptyword", "valnear",
+              "mainurl")
 PLANTS = set(PLANTS_ALL) if "--perturb" in sys.argv else (
     {sys.argv[sys.argv.index("--plant") + 1]} if "--plant" in sys.argv else set())
 assert PLANTS <= set(PLANTS_ALL), "unknown plant"
@@ -50,11 +51,23 @@ def plant(s, a, b):
 
 BS, NODED, EP = src("bootstrap.sh"), src("swg-noded"), src("docker/node-entrypoint.sh")
 if "passall" in PLANTS:    # every word passed on, as shipped
-    BS = plant(BS, '[ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=', 'PASS+=')
+    BS = plant(BS, '    *)                           [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=', '    *)                           PASS+=')
 if "nearflag" in PLANTS:   # a flag near update/uninstall passed on, as shipped
-    BS = plant(BS, '    -upda*|--upda*|-unin*|--unin*) _bs_unknown "$1";;', '')
+    BS = plant(BS, '                                 [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;   # …unless it is a value',
+               '                                 PASS+=("$1"); shift;;')
 if "noarg0" in PLANTS:     # the word bash took as $0 left there
-    BS = plant(BS, '*) _SWG_ARG0="$0"; set -- "$0" "$@";; esac', '*) ;; esac')
+    BS = plant(BS, '      _SWG_ARG0="$0"; set -- "$0" "$@";;', '      ;;')
+if "anyarg0" in PLANTS:    # review F1's shape: any name but `--` / a shell taken as an argument (`_` refused)
+    BS = plant(BS, "    --|-|-bash|-sh) ;;\n    -?*|update|", "    --|-|-bash|-sh|bash|sh|*/bash|*/sh) ;;\n    *|update|")
+if "eqflag" in PLANTS:     # `--x=v` read as wanting the next word as its value
+    BS = plant(BS, '    -*=*)                        PASS+=("$1"); shift;;', '')
+if "emptyword" in PLANTS:  # an empty argument refused
+    BS = plant(BS, '    "")                          PASS+=("$1"); shift;;', '')
+if "valnear" in PLANTS:    # a flag's value starting like a near flag refused
+    BS = plant(BS, '                                 [ "$_bs_val" = yes ] || _bs_unknown "$1"; PASS+=("$1"); shift;;   # …unless it is a value',
+               '                                 _bs_unknown "$1";;')
+if "mainurl" in PLANTS:    # the refusal always names main's bootstrap
+    BS = plant(BS, 'swg-panel/${REF:-main}/bootstrap.sh)\\" -- ${mean', 'swg-panel/main/bootstrap.sh)\\" -- ${mean')
 if "nofirst" in PLANTS:    # the configured address not probed
     NODED = plant(NODED, '                firsts.append(cfg)\n', '                pass\n')
 if "nolocal" in PLANTS:    # the panel's local port not probed
@@ -74,9 +87,10 @@ open(PF, "w", encoding="utf-8").write(PARSE)
 ENV = dict(os.environ, NO_COLOR="1")
 
 
-def parse(args, filemode=False):
+def parse(args, filemode=False, env=None):
     cmd = ["bash", PF] + args if filemode else ["bash", "-c", PARSE] + args
-    p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=ENV, cwd=T, timeout=30)
+    p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=dict(ENV, **(env or {})), cwd=T,
+                       timeout=30)
     v = dict(re.findall(r'declare -- (\w+)="([^"]*)"', p.stdout))
     m = re.search(r"^PASS=(.*)$", p.stdout, re.M)
     v["PASS"] = m.group(1) if m else None
@@ -118,6 +132,23 @@ check("[1] the Docker installer's older name for master is passed on", rc == 0 a
 rc, v, out = parse(["--", "-key", "abc", "-host", "https://p.example", "node"])
 check("[1] -key / -host take their value here, the role word stays a role",
       rc == 0 and (v.get("ROLE"), v.get("PASS")) == ("node", ""), (rc, v))
+rc, v, out = parse(["_", "node", "-key", "K"])
+check("[1] the `_` placeholder stays the script's name (review F1)",
+      rc == 0 and (v.get("ROLE"), v.get("PASS")) == ("node", "") and "script's name" not in out, (rc, v, out[-300:]))
+rc, v, out = parse(["bootstrap.sh", "update"])
+check("[1] …and so does a script name given on purpose", rc == 0 and v.get("ACTION") == "update" and "script's name" not in out,
+      (rc, v, out[-300:]))
+rc, v, out = parse(["--", "--profile=master", "uninstal"])
+check("[1] a `--flag=value` carries its value: the word after it is checked (review F2)",
+      rc != 0 and "unknown command 'uninstal'" in out, (rc, out[-300:]))
+rc, v, out = parse(["--", "docker", "node", ""])
+check("[1] an empty argument is passed on, as before (review F6)", rc == 0 and v.get("METHOD") == "docker", (rc, v, out[-300:]))
+rc, v, out = parse(["--", "docker", "host", "-pass", "-uninstall2024"])
+check("[1] a flag's value that starts like a near flag is that value (review F7)",
+      rc == 0 and v.get("PASS") == "-pass -uninstall2024", (rc, v, out[-300:]))
+rc, v, out = parse(["--", "uninstal"], env={"SWG_REF": "dev"})
+check("[1] the refusal's command fetches the branch this run came from (review F8)",
+      "swg-panel/dev/bootstrap.sh" in out and "swg-panel/main/" not in out, out[-400:])
 rc, v, out = parse([])
 check("[1] a bare `bash -c` (no arguments) is an install, as before",
       rc == 0 and (v.get("ACTION"), v.get("PASS")) == ("", "") and "script's name" not in out, (rc, v, out[-300:]))

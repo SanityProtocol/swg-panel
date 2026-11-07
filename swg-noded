@@ -20844,8 +20844,10 @@ def _heal_local_panel(panel, node_cfg):
     minute during a re-install and something else answered on :80 — no later heal could bring it back, and the
     re-point it saved (data/node/panel-url) outranks the .env at every start: the node was stranded on a door that
     no longer took a sync (client report 2026-11-07). So the address the node was configured with
-    (SWG_PANEL_URL_CONFIGURED, docker/node-entrypoint.sh) and the panel's local port (access.panel.local_port) are
-    probed before the rest, each through the same whoami check."""
+    (SWG_PANEL_URL_CONFIGURED, docker/node-entrypoint.sh) and the panel's local port (access.panel.local_port — read
+    where the node can see panel-settings.json, i.e. bare metal; a Docker node mounts only data/node) are probed before
+    the rest, each through the same whoami check. Known gap: the configured address is the one the container started
+    with — a local port moved since (swg-netctl-docker set-local-port) reaches it at the next recreate."""
     try:
         cur = (panel.get("url") or "").rstrip("/")
         u = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
