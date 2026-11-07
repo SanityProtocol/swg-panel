@@ -57,7 +57,7 @@ swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
 _SWG_ARG0=""
 if [ -n "${BASH_EXECUTION_STRING:-}" ]; then
   case "$0" in
-    --|-|_|bash|sh|-bash|-sh|*/bash|*/sh|*.sh) ;;
+    ""|--|-|_|bash|sh|-bash|-sh|*/bash|*/sh|*.sh) ;;
     *) _SWG_ARG0="$0"; set -- "$0" "$@";;
   esac
 fi
@@ -225,19 +225,24 @@ PASS=()
 # the box the operator was removing (client report 2026-11-07). A word right after a flag is that flag's value
 # (`-pass x`, `-domain x`): passed on as before. The switches below take none, so a word after one is a word.
 _bs_words="update uninstall docker bare-metal master host node recovery convert keep abort"
+# A ref other than main rides INSIDE the command string a message hands back: sudo resets the environment, so SWG_REF in
+# front of it would be dropped, and the URL does not reach the script either — the dev bootstrap would run main's tree
+# (see _ref_from_url). One copy, for the refusal below and the terminal warning further down.
+_bs_refpre(){ if [ -n "${REF:-}" ] && [ "$REF" != main ]; then printf 'SWG_REF=%q; ' "$REF"; fi; }
 _bs_unknown(){ local w="$1" k mean="" odd="" LC_ALL=C   # C: a byte past ASCII is not a letter
-  local b="${w#-}"; b="${b#-}"                            # `--uninstal` is near `uninstall` too
-  local pre=""   # a ref other than main rides INSIDE the string: sudo drops SWG_REF (the TTY warning's _bs_pre, below)
-  [ -n "${REF:-}" ] && [ "$REF" != main ] && pre="SWG_REF=$(printf '%q' "$REF"); "
-  for k in $_bs_words; do case "$k" in "$b"?*) mean="$k";; esac; case "$b" in "$k"?*) mean="$k";; esac; done
+  local b="${w#-}"; b="${b#-}"; b="${b,,}"                # `--uninstal` and `Update` are near a command too
+  local pre; pre="$(_bs_refpre)"
+  [ -n "$b" ] && for k in $_bs_words; do case "$k" in "$b"|"$b"?*) mean="$k";; esac; case "$b" in "$k"?*) mean="$k";; esac; done
   if [[ "$w" == *[![:alnum:]._-]* ]]; then
     odd="
     It holds a character that is not a plain letter: $(printf '%q' "$w"). A copied command can carry one you cannot see
     (a changed letter, a hidden space or a line break) — type the word by hand."
   fi
+  # ⚠️ A command is named only when the word is near one. With none it fell back to `uninstall`, and `install` or
+  # `upgrade` was handed the removal command to copy (qualification verify, F17).
   die "unknown command '$w' — nothing was done.${mean:+ Did you mean '$mean'?}$odd
-    Commands: $_bs_words (and flags that start with -), after the -- :
-    sudo bash -c \"$pre\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\" -- ${mean:-uninstall}"; }
+    Commands: $_bs_words (and flags that start with -), after the -- ; none at all installs:
+    sudo bash -c \"$pre\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh)\" -- ${mean:-<command>}"; }
 _bs_after_flag=no
 while [ $# -gt 0 ]; do
   _bs_val="$_bs_after_flag"; _bs_after_flag=no
@@ -280,9 +285,7 @@ done
 if [ "$SWG_TTY" = /dev/null ] && { : </dev/tty; } 2>/dev/null; then
   _bs_url="<this bootstrap.sh URL>"
   [ "$REPO" = https://github.com/SanityProtocol/swg-panel ] && _bs_url="https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh"
-  # A ref other than main rides INSIDE the script string: sudo resets the environment, so SWG_REF in front of it would be
-  # dropped, and the URL does not reach the script either — the dev bootstrap would install main (see _ref_from_url).
-  _bs_pre=""; [ -n "${REF:-}" ] && [ "${REF:-}" != main ] && _bs_pre="SWG_REF=$(printf '%q' "$REF"); "
+  _bs_pre="$(_bs_refpre)"   # a ref other than main rides inside the string (_bs_refpre)
   _bs_cmd="sudo bash -c \"$_bs_pre\$(curl -fsSL $_bs_url)\" --"
   for _a in ${SWG_ARGS[@]+"${SWG_ARGS[@]}"}; do _bs_cmd+=" $(printf '%q' "$_a")"; done
   warn "this terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults, and one that has none stops the run. To answer them, run instead:"
