@@ -91,21 +91,27 @@ PLANTS = {   # name: (file, old text, planted text)
     "drain-stays":   ("node", '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now and k not in cur}', '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now}'),
     "fill-dup":      ("panel", "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and not any(v in on.get(n, ()) for n in ns):",
                       "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
-    "fill-fleetwide": ("panel", " and not any(v in on.get(n, ()) for n in ns):", " and v not in used:"),
-    "fill-todofleet": ("panel", "        x = next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)",
-                       "        x = next(_p2p_free(roster, lambda x: x in used), None)"),
+    "fill-fleetwide": ("panel", " and not any(v in on.get(n, ()) for n in ns):", " and not any(v in s_ for s_ in on.values()):"),
+    "fill-todofleet": ("panel", "next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)",
+                       "next(_p2p_free(roster, lambda x: any(x in s_ for s_ in on.values())), None)"),
     "take-fleetwide": ("panel", '            if k != pid and isinstance(q, dict) and "p2p_port" in q and any(n in nodes for n in _p2p_on(q))}',
                        '            if k != pid and isinstance(q, dict) and "p2p_port" in q}'),
+    "take-fastfleet": ("panel", "        return x in here[0]\n", "        return True\n"),
     "nodes-wgonly":  ("panel", '    return (t.get("node") for t in (p.get("targets") or []) if isinstance(t, dict) and t.get("node"))',
                       '    return (t.get("node") for t in (p.get("targets") or []) if isinstance(t, dict) and t.get("node") and not _is_self_contained_target(t))'),
-    "set-noclash":   ("panel", '    if held is not None and (new := _p2p_nodes(rec) - _p2p_nodes(p))', '    if False and (new := _p2p_nodes(rec) - _p2p_nodes(p))'),
+    "set-noclash":   ("panel", "            and held in _p2p_held(roster, pid, ns) and (_free", "            and False and (_free"),
+    "set-newonly":   ("panel", "    if held is not None and (ns - _p2p_nodes(p) or (p2p_port_wanted(rec) and not p2p_port_wanted(p))) \\",
+                      "    if held is not None and (ns - _p2p_nodes(p)) \\"),
+    "set-dropnone":  ("panel", "            and held in _p2p_held(roster, pid, ns) and (_free := p2p_port_take(roster, pid, ns)):",
+                      "            and held in _p2p_held(roster, pid, ns) and ((_free := p2p_port_take(roster, pid, ns)) or True):"),
+    "fill-nofull":   ("panel", "        x = None if any(f <= ns for f in full) else next(", "        x = None if False else next("),
     "fill-first":    ("panel", "    for pid in sorted(peers, key=lambda k: (k not in first, k)):", "    for pid in sorted(peers):"),
     "fill-fullrewrite": ("panel", '        if x != q.get("p2p_port"):\n', '        if True:\n'),
     "fill-keyless":  ("panel", '        elif p2p_port_wanted(q):\n            todo.append((q, ns))', '        else:\n            todo.append((q, ns))'),
-    "fill-noseed":   ("panel", '    if used and roster.get("p2p_next") is None:', '    if False:'),
-    "set-keyless":   ("panel", '    if "p2p_port" not in rec and (held is not None or p2p_port_wanted(rec)):   # a WDTT', '    if "p2p_port" not in rec:   # a WDTT'),
-    "set-takeback":  ("panel", '    if "p2p_port" not in rec and (held is not None or p2p_port_wanted(rec)):   # a WDTT',
-                      '    if not p2p_port_wanted(rec):\n        rec.pop("p2p_port", None)\n    if "p2p_port" not in rec and (held is not None or p2p_port_wanted(rec)):   # a WDTT'),
+    "fill-noseed":   ("panel", '    if top is not None and roster.get("p2p_next") is None:', '    if False:'),
+    "set-keyless":   ("panel", '    elif "p2p_port" not in rec and p2p_port_wanted(rec):     # a WDTT', '    elif "p2p_port" not in rec:     # a WDTT'),
+    "set-takeback":  ("panel", '    held, ns = rec.get("p2p_port"), _p2p_nodes(rec)\n',
+                      '    held, ns = rec.get("p2p_port"), _p2p_nodes(rec)\n    if not p2p_port_wanted(rec):\n        rec.pop("p2p_port", None)\n'),
     "lowest-first":  ("panel", '        nx = min(max([q.get("p2p_port") for q in', '        nx = lo or min(max([q.get("p2p_port") for q in'),
     "mark-ignored":  ("panel", '    if not (type(nx) is int and lo <= nx <= hi):', '    if True:'),
     "mark-still":    ("panel", '        _p2p_mark(roster, x)\n    return x', '        pass\n    return x'),
@@ -570,6 +576,23 @@ def unit_checks(src, ok):
     ok(got == (20001, 20000) and mv["peers"]["d"].get("p2p_port") == 20001,
        "[7] P8: a save that puts a device on a node where another device holds its port gives it a new one, free on both of its "
        "nodes; the holder keeps its own; the next save keeps the new one (%s %s)" % (got, mv["peers"]["d"].get("p2p_port")))
+    fz = {"peers": {"q%05d" % i: W2("n2", p2p_port=20000 + i) for i in range(10000)}, "p2p_next": 21001}
+    fz["peers"]["d"] = W2("n1", p2p_port=21000)
+    m.peer_set(fz, "d", {"targets": W2("n1")["targets"] + W2("n2")["targets"]}, 0)
+    ok(fz["peers"]["d"].get("p2p_port") == 21000, "[7] P8: moved onto a full node where its port is held, with no port free on "
+       "both, the device keeps its own — still forwarded where it was (scale-k1 F2) (%s)" % fz["peers"]["d"].get("p2p_port"))
+    cq = {"peers": {"c": {"targets": [{"node": "A", "iface": "csqtt1", "type": "csqtt"}], "p2p_port": 20000},
+                    "m": W2("A", p2p_port=20000)}, "p2p_next": 20001}
+    m.peer_set(cq, "c", {"targets": cq["peers"]["c"]["targets"] + W2("A")["targets"]}, 0)
+    ok(cq["peers"]["c"].get("p2p_port") == 20001 and cq["peers"]["m"]["p2p_port"] == 20000,
+       "[7] P8: a csqtt-only device holding a duplicate on its node, given a wg target there, gets a port of its own "
+       "(scale-k1 F4) (%s)" % cq["peers"])
+    sl = {"peers": {"p%05d" % i: W(p2p_port=20000 + i) for i in range(10000)}, "p2p_next": 20000}
+    for i in range(1000):
+        sl["peers"]["x%04d" % i] = W()
+    t0 = time.monotonic(); m.p2p_ports_fill(sl); dt = time.monotonic() - t0
+    ok(dt < 1.0 and not any("p2p_port" in sl["peers"]["x%04d" % i] for i in range(1000)),
+       "[7] P8: 1,000 devices past a full node's pool: the fill walks the pool once, not once each (scale-k1 F1) (%.2f s)" % dt)
     kr = {"peers": {"k": {"targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}], "p2p_port": 20005}}, "p2p_next": 20005}
     x1 = m.p2p_port_take(kr, "new", {"n1"})
     ok(x1 == 20006, "[7] P8: a csqtt-only device keeps reserving its port on its node (%s)" % x1)

@@ -4433,12 +4433,18 @@ def peer_set(roster, pid, fields, now):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
-    held = rec.get("p2p_port")
-    if held is not None and (new := _p2p_nodes(rec) - _p2p_nodes(p)) and held in _p2p_held(roster, pid, new):
-        del rec["p2p_port"]                                   # another device's port on a node this save puts it on (P8,
-                                                              # only once the pool has come round): a new one, free on all
-    if "p2p_port" not in rec and (held is not None or p2p_port_wanted(rec)):   # a WDTT / csqtt-only device takes none
-        _free = p2p_port_take(roster, pid, _p2p_nodes(rec))
+    # P8: a port is the device's own on every node it is on. A save that adds a node, or gives a csqtt-only holder a wg/awg
+    # target (a transfer can leave it a duplicate the fill does not take back), checks the port there; held by another device
+    # → a new one free on all its nodes, said in the log. None free on all of them together → it keeps its own, still
+    # forwarded where it was.
+    held, ns = rec.get("p2p_port"), _p2p_nodes(rec)
+    if held is not None and (ns - _p2p_nodes(p) or (p2p_port_wanted(rec) and not p2p_port_wanted(p))) \
+            and held in _p2p_held(roster, pid, ns) and (_free := p2p_port_take(roster, pid, ns)):
+        log(LOG_NOTICE, "p2p: device %s's incoming torrent port %s is another device's on a node it is now on — it is %s now, "
+            "on every node (the subscription shows it)", pid, held, _free)
+        rec["p2p_port"] = _free
+    elif "p2p_port" not in rec and p2p_port_wanted(rec):     # a WDTT / csqtt-only device takes none
+        _free = p2p_port_take(roster, pid, ns)
         if _free:                                             # pool full: no port, nothing forwarded for it
             rec["p2p_port"] = _free
     roster["peers"][pid] = rec
@@ -9474,7 +9480,8 @@ def _p2p_held(roster, pid, nodes):
 def _p2p_free(roster, taken):
     """The free pool ports in hand-out order (`taken(x)` → held where the device is): from the roster's high-water mark
     (`p2p_next`) up, then from the bottom — a port a deleted device held goes to another device only once the pool has come
-    round (its swarm and trackers still know it). Until then every port handed out is free fleet-wide."""
+    round (its swarm and trackers still know it). Ports this panel handed out are fleet-wide unique until then; a port kept
+    from a transfer or a hand edit may sit above the mark on other nodes, and is handed out again where it is free."""
     lo, hi = P2P_PORT_POOL
     nx = roster.get("p2p_next")
     if not (type(nx) is int and lo <= nx <= hi):              # a roster from before the mark: past the highest port held
@@ -9489,9 +9496,18 @@ def _p2p_mark(roster, x):
 
 
 def p2p_port_take(roster, pid, nodes):
-    """The next port for `pid` on `nodes` (peer_set), moving the high-water mark past it. None when the pool is full there."""
-    used = _p2p_held(roster, pid, nodes)
-    x = next(_p2p_free(roster, used.__contains__), None)
+    """The next port for `pid` on `nodes` (peer_set), moving the high-water mark past it. None when the pool is full there.
+    A port no device holds anywhere is free at once (one cheap pass — every port until the pool has come round); the ports
+    held on `nodes` are worked out only when a candidate is held somewhere (a per-node set built per holder costs ~3× the
+    pass at 15,000 devices, and an adopt takes one port per device)."""
+    used, here = {q.get("p2p_port") for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict)}, []
+    def taken(x):
+        if x not in used:
+            return False
+        if not here:
+            here.append(_p2p_held(roster, pid, nodes))
+        return x in here[0]
+    x = next(_p2p_free(roster, taken), None)
     if x is not None:
         _p2p_mark(roster, x)
     return x
@@ -9504,7 +9520,7 @@ def p2p_ports_fill(roster, first=()):
     taken back — a device left WDTT / csqtt-only for a while keeps the one its client listens on. "Held" is per node (P8): a
     port is a duplicate only where both devices are. A roster with no mark gets one, past the highest port held. True when
     something changed."""
-    peers, on, used, todo, changed = roster.get("peers") or {}, {}, set(), [], False
+    peers, on, top, todo, full, changed = roster.get("peers") or {}, {}, None, [], [], False
     for pid in sorted(peers, key=lambda k: (k not in first, k)):
         q = peers[pid]
         if not isinstance(q, dict):
@@ -9515,18 +9531,20 @@ def p2p_ports_fill(roster, first=()):
                 v = int(float(v))
         ns = _p2p_nodes(q)
         if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and not any(v in on.get(n, ()) for n in ns):
-            used.add(v)
+            top = v if top is None else max(top, v)
             for n in ns:
                 on.setdefault(n, set()).add(v)
             if type(q.get("p2p_port")) is not int:
                 q["p2p_port"], changed = v, True
         elif p2p_port_wanted(q):
             todo.append((q, ns))
-    if used and roster.get("p2p_next") is None:               # a roster from before the mark: seeded, so a delete never
-        _p2p_mark(roster, max(used))                          # hands the highest port to the next device
+    if top is not None and roster.get("p2p_next") is None:   # a roster from before the mark: seeded, so a delete never
+        _p2p_mark(roster, top)                                # hands the highest port to the next device
         changed = True
-    for q, ns in todo:
-        x = next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)
+    for q, ns in todo:                                        # (no port frees inside a fill: nodes found full stay full)
+        x = None if any(f <= ns for f in full) else next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)
+        if x is None:
+            full.append(ns)
         if x != q.get("p2p_port"):
             changed = True
             q.update(p2p_port=x) if x else q.pop("p2p_port", None)
