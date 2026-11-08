@@ -495,7 +495,12 @@ const targetOpen = t => {
 // interface allows it — Everyone to anyone there, Nobody to nobody, "user" to the same person and whoever shares a group with
 // them. Cross-node reach is never claimed: it does not exist (§12). Blocked and expired are off the node, so neither reaches
 // nor is reached.
-let _reachOf = null, _reachIdx = null;
+// ⚠️ PER NODE, NOT PER PAIR (SCALE-PLAN K3). The index used to hold every user × user pair per node: on a node that enforces
+// nothing (an old build, or a STALE one — nodeEnforces needs "live") everyone there reaches everyone, so 2,000 people on one
+// box made 4,000,000 entries every poll (0.5–1.4 GB of heap at 5,000 users). It now keeps who is on each node and at which
+// level, and works out one person's set only when asked — the rows on screen and an open bubble — in the order the pair walk
+// produced it: node by node, everyone at Everyone there, then their groups' members at "user" there.
+let _reachOf = null, _reachIdx = null, _ownCache = new Map();
 function reachIndex() {
   if (_reachOf === Store.recon && _reachIdx) return _reachIdx;
   const open = new Map(), lvl = new Map(), here = new Map();
@@ -511,22 +516,24 @@ function reachIndex() {
       else if (lv === "user") put(lvl, t.node, p.user_id);
     }
   }
-  const out = new Map();
-  const add = (uid, other) => { if (other !== uid) put(out, uid, other); };
+  _reachOf = Store.recon; _reachIdx = { open, lvl, here }; _ownCache = new Map();
+  return _reachIdx;
+}
+export function reachOwners(uid) {
+  const { open, lvl, here } = reachIndex();
+  const hit = _ownCache.get(uid);
+  if (hit) return hit;
+  const out = new Set(), groups = Store.groupsByUser(uid);
   for (const [nid, users] of here) {
-    for (const uid of users) for (const o of open.get(nid) || []) add(uid, o);
-    // "user": every member of a group reaches every other member's devices there — walked per GROUP, never per pair of people
-    const atUser = lvl.get(nid) || new Set();
-    for (const g of Store.groups()) {
-      const mates = g.users.filter(x => users.has(x));
-      if (mates.length < 2) continue;
-      for (const a of mates) for (const b of mates) if (atUser.has(b)) add(a, b);
-    }
+    if (!users.has(uid)) continue;
+    for (const o of open.get(nid) || []) if (o !== uid) out.add(o);
+    // "user": every member of a group reaches every other member's devices there (a member at "user" there is on the node)
+    const atUser = lvl.get(nid);
+    if (atUser) for (const g of groups) for (const b of g.users) if (b !== uid && atUser.has(b)) out.add(b);
   }
-  _reachOf = Store.recon; _reachIdx = out;
+  _ownCache.set(uid, out);
   return out;
 }
-export const reachOwners = uid => reachIndex().get(uid) || new Set();
 
 // The devices of ONE person that the other members of a group can open connections to — the group sheet's per-member number
 // and its bubble. Same test the reach index applies at the destination: a live device (not blocked, expired, unassigned, of a

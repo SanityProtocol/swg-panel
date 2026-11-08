@@ -834,18 +834,22 @@ export function FlowMap2({ selIds, range, hist }) {
   // size a node by the traffic it VISIBLY shows — Σ of its incident line widths — NOT raw bps. Line widths are
   // sqrt-compressed and capped at 25px, so two nodes whose lines all read "max" look equally busy; sizing by raw
   // bps would still blow one up 10× for having more underlying Mbps behind those same-looking lines.
-  const visBusy = id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) : a, 0);
+  // ⚠️ MEMOISED PER RENDER (SCALE-PLAN K3): each of these re-reduced every flow per call, and the relaxation below asks satR
+  // for every satellite pair 70 times — ~1 s a poll at 20 nodes. Every input (flows, sats, the mappers, the names) is fixed
+  // for the render, so one answer per id is the same answer.
+  const memo = f => { const m = new Map(); return id => { if (!m.has(id)) m.set(id, f(id)); return m.get(id); }; };
+  const visBusy = memo(id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) : a, 0));
   const fontMap = mapper(fleet.map(n => visBusy(n.id)), NODE_FLOOR, 21, 0);    // nodes: few & all meaningful → no tail clamp
   const satMap = mapper(sats.map(s => (satTot[s.id] || {}).tot || 0), SAT_FLOOR, 22, 0);
-  const seatNeed = id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) + 4 : a, 0);   // Σ incident line widths + gaps (ref px)
+  const seatNeed = memo(id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) + 4 : a, 0));   // Σ incident line widths + gaps (ref px)
   // the thickest SINGLE connection's pair (both lanes + gap) — a bidirectional link lands as a tight parallel pair on one
   // rim point, so the node's cross-dimension must span it even if the total perimeter (seatNeed) looks roomy.
-  const pairThick = id => { const bo = {}; flows.forEach(f => { const o = f.from === id ? f.to : f.to === id ? f.from : null; if (o == null) return; bo[o] = (bo[o] || 0) + wOf(f.bps); }); let mx = 0; for (const k in bo) if (bo[k] > mx) mx = bo[k]; return mx ? mx + 2 : 0; };
+  const pairThick = memo(id => { const bo = {}; flows.forEach(f => { const o = f.from === id ? f.to : f.to === id ? f.from : null; if (o == null) return; bo[o] = (bo[o] || 0) + wOf(f.bps); }); let mx = 0; for (const k in bo) if (bo[k] > mx) mx = bo[k]; return mx ? mx + 2 : 0; });
   // a satellite's lines all enter from ONE side (toward its parent), so its DIAMETER must span the line stack → r ≥ Σ/2
-  const satR = id => Math.max(satMap((satTot[id] || {}).tot || 0), seatNeed(id) / 2);
+  const satR = memo(id => Math.max(satMap((satTot[id] || {}).tot || 0), seatNeed(id) / 2));
   // node height is 2·hh = 2·fs+6; the pill's 8px rounded CORNERS eat into the straight edge a pair can seat on, so
   // require the straight run (2fs+6 − 2·8) ≥ pairThick (which already includes the inter-lane gap) → fs ≥ pairThick/2+5.
-  const nodeFont = id => Math.max(fontMap(visBusy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 + 5);    // size by VISIBLE traffic · pill perimeter 4·(hw+hh) ≥ Σ lines · straight edge ≥ thickest pair
+  const nodeFont = memo(id => Math.max(fontMap(visBusy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 + 5));    // size by VISIBLE traffic · pill perimeter 4·(hw+hh) ≥ Σ lines · straight edge ≥ thickest pair
   const nR = id => (0.31 * nameLen(id) + 0.85) * nodeFont(id) + 2;        // ≈ pill half-width
   const nmeta = id => { if (!nodeIds.has(id)) { const r = satR(id); return { hw: r, hh: r }; }   // sat = circle; node = pill (est.)
     const fs = nodeFont(id), L = nameLen(id); return { hw: (0.31 * L + 0.85) * fs + 2, hh: fs + 3 }; };
@@ -1376,6 +1380,20 @@ function attnAct(key, awaySet) {   // awaySet: the render's one read of the dism
       if (!away) { _attnDismissAt = Date.now(); setTimeout(() => bus.emit(), 5100); } bus.emit(); }}>
     <${Ic} i=${away ? "refresh" : "x"}/></button></span>`;
 }
+// The scoped peers counted ONCE for the whole screen (SCALE-PLAN K3): their owners, and per node how many have a deployment there
+// and how many an online one. Overview walked every peer per user and every peer per node three times — 7 s of every 25 at
+// 10,000 users for the owners alone. A peer counts once per node, however many of its deployments sit there.
+export function scopeCounts(sPeers) {
+  const users = new Set(), total = new Map(), online = new Map();
+  for (const p of sPeers) {
+    if (p.user_id != null) users.add(p.user_id);
+    const seen = new Set(), on = new Set();
+    for (const t of p.targets) { seen.add(t.node); if (t.online) on.add(t.node); }
+    for (const n of seen) total.set(n, (total.get(n) || 0) + 1);
+    for (const n of on) online.set(n, (online.get(n) || 0) + 1);
+  }
+  return { users, total, online };
+}
 export function Overview() {
   useStore();
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
@@ -1416,7 +1434,8 @@ export function Overview() {
   const attention = sPeers.length - online - ready;
   const pAssigned = sPeers.filter(p => !p.unassigned).length;   // peers attached to a user vs. floating (no owner)
   const pUnassigned = sPeers.length - pAssigned;
-  const sUsers = users.filter(u => sPeers.some(p => p.user_id === u.id));
+  const sc = scopeCounts(sPeers);
+  const sUsers = users.filter(u => sc.users.has(u.id));
   const liveNodes = fleetSel.filter(n => ns[n.id] === "live").length;
   const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length + ((Store.stats[id] || {}).wdtt || []).filter(w => w && w.iface).length + ((Store.stats[id] || {}).csqtt || []).filter(c => c && c.iface).length, 0);   // + WDTT + csqtt interfaces (own their TUN, not in describe)
   const nodesAlerting = fleetSel.filter(n => healthAlerts(((Store.nodes || []).find(x => x.id === n.id) || {}).health).length).length;
@@ -1462,15 +1481,15 @@ export function Overview() {
     return { rx: rx * dStep, tx: tx * dStep }; };
   const nodeTraffic = fleetSel.map(n => {
     const [lr, lt] = nodeRate(n.id); const v = dRanged ? nodeVol(n.id) : { rx: lr, tx: lt };
-    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: v.rx, tx: v.tx, peers: sPeers.filter(p => p.targets.some(d => d.node === n.id)).length };
+    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: v.rx, tx: v.tx, peers: sc.total.get(n.id) || 0 };
   });
   // Top nodes by ONLINE peers — live = online right now; a range = DISTINCT peers seen online over the window
   // (presence bitmaps, same source as the online-peers hero). If live and NOBODY is online, fall back to each
   // node's total peer count so the chart still says something.
   const onlineOf = n => dRanged ? (((rangeHist.presence || {}).nodes || {})[n.id] || {}).peers || 0
-                                 : sPeers.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
+                                 : sc.online.get(n.id) || 0;
   const nodeOnline = fleetSel.map(n => ({ id: n.id, name: n.name, color: Store.nodeColor(n.id),
-    online: onlineOf(n), total: sPeers.filter(p => p.targets.some(t => t.node === n.id)).length }));
+    online: onlineOf(n), total: sc.total.get(n.id) || 0 }));
   const rnkTotal = !dRanged && !nodeOnline.some(x => x.online > 0);   // live + nobody online → show totals
   const rankRows = nodeOnline.slice()
     .sort((a, b) => rnkTotal ? b.total - a.total : (b.online - a.online) || (b.total - a.total))

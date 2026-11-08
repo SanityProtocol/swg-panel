@@ -271,6 +271,16 @@ export const api = {
 export const bus = { subs: new Set(), emit() { this.subs.forEach(f => { try { f(); } catch (e) { console.error(e); } }); }, sub(f) { this.subs.add(f); return () => this.subs.delete(f); } };
 export function useStore() { const [, set] = useState(0); useEffect(() => bus.sub(() => set(x => x + 1)), []); }
 
+const _idMaps = { peers: [null, null], users: [null, null] };   // kind → [the array it was built from, Map id → item]
+function _byId(store, kind) {
+  const arr = (store.recon && store.recon[kind]) || [], c = _idMaps[kind];
+  if (c[0] !== arr) {
+    const m = new Map();
+    for (const x of arr) if (x && !m.has(x.id)) m.set(x.id, x);
+    c[0] = arr; c[1] = m;
+  }
+  return c[1];
+}
 export const Store = {
   fleet: [], storeConfigs: false, env: {}, versions: {},
   roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [], describe: {}, events: [],
@@ -400,8 +410,12 @@ export const Store = {
   // an in-flight change never blinks out between polls.
   apply() {
     for (const id of Object.keys(this.pending)) if (this.pending[id].done) delete this.pending[id];
-    const snap = (typeof structuredClone === "function") ? structuredClone(this._server)
-                                                         : JSON.parse(JSON.stringify(this._server));
+    // A pending patch writes into roster / nodes, so it gets a CLONE of the fetched data — dropped with the patch, the fetched
+    // copy untouched. With none pending the screens read the fetched objects themselves: nothing writes them outside a patch
+    // (reconcile() is pure), and at 10,000 users the clone was ~140 ms of every poll at a mid laptop's speed (SCALE-PLAN K3).
+    const pend = Object.keys(this.pending).length > 0;
+    const snap = !pend ? this._server : (typeof structuredClone === "function") ? structuredClone(this._server)
+                                                                               : JSON.parse(JSON.stringify(this._server));
     this.roster = snap.roster; this.nodes = snap.nodes;
     for (const id of Object.keys(this.pending)) { try { this.pending[id].apply(this); } catch (_) {} }
     // fleet entries carry the stable id (the connector everywhere) + the mutable name (display)
@@ -527,8 +541,11 @@ export const Store = {
     const cs = ((this.stats[node] || {}).csqtt || []).map(c => c && c.iface).filter(Boolean);
     return Array.from(new Set([...base, ...wd, ...cs]));
   },
-  peer(id) { return this.recon.peers.find(p => p.id === id); },
-  user(id) { return this.recon.users.find(u => u.id === id); },
+  // By id, through a Map built on first use per ARRAY — a linear find a call made a list that asks per row O(rows · peers), and
+  // the reach index asks per peer (SCALE-PLAN K3: 4 s of 25 on the Users screen at 10,000). Keyed on the array, not the recon:
+  // a replaced `recon.peers` is a new array. The first of two equal ids wins, as find() did.
+  peer(id) { return _byId(this, "peers").get(id); },
+  user(id) { return _byId(this, "users").get(id); },
   // A user GROUP as the screens read it (docs/GROUPS-PLAN.md G1): the members that still exist — a deleted user stays in the stored
   // list and is filtered here, where it is read. Sorted by name.
   // Built ONCE per roster: apply() replaces the roster object on every poll and every optimistic patch, so its identity is the
