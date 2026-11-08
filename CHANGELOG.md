@@ -23,6 +23,16 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Changed
 
+- **Every device gets its incoming torrent port on a big fleet too.** A device's port was unique across the whole fleet,
+  so past 10,000 devices with a WireGuard or AmneziaWG connection a device got none, without a word. It is now unique on
+  each server — up to 10,000 such devices a server — and still the same on every server the device is on. A device keeps
+  its port; added to a server where another device already holds it (once the panel has handed out 10,000 ports, or
+  after a server is transferred in from another panel), it gets a new one, free on all its servers: the panel log says
+  so and its subscription shows the new port, which the torrent client must be set to. If no port is free on all its
+  servers together, it keeps its own, and that server forwards the port to only one of the two.
+- **The panel keeps up with more users.** Saving `users.json` at 10,000 users takes about 55 ms instead of about 385:
+  it is written once, without indentation (a third smaller). The panel accepts 128 waiting connections instead of 5, so
+  nodes reconnecting together after a panel restart are no longer refused.
 - **A busy node no longer runs out of room for connections.** Every connection through a node takes a place in the
   kernel's connection table, and a full table refuses new connections for every user at once. The kernel makes it small:
   8,192 places on a 1 GB server. The node now raises it to 65,536 places for each GB of RAM, and never lowers a larger

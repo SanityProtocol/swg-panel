@@ -604,9 +604,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   (20000–29999, the same on every server it is on), and the server forwards it from its address to the device on a
   WireGuard or AmneziaWG interface (one per server: its primary connection there): other peers can connect in, which
   is what seeding and private trackers need. The magnet's bubble then opens with that port; set it as the client's
-  listening port and turn off the random port at startup. A port is unique on each server, so a server holds up to
-  10,000 such devices; a device added to a server where another device already holds its port (possible only once the
-  panel has handed out 10,000 ports) gets a new one on every server, and the bubble shows the new port. Where nothing is forwarded — a WDTT or csqtt connection, a
+  listening port and turn off the random port at startup. A port is unique on each server, so a server takes up to
+  10,000 such devices. A device keeps its port; added to a server where another device holds it (once the panel has
+  handed out 10,000 ports, or after a server is transferred in from another panel), it gets a new one, free on all its
+  servers, and the bubble shows it — if no port is free on all of them together, it keeps its own, and that server
+  forwards the port to only one of the two. Where nothing is forwarded — a WDTT or csqtt connection, a
   Docker node in bridge mode, a port another program on the server already uses — the bubble shows no port. Keep
   20000–29999 free on the servers: the panel refuses it for a new interface, turn-proxy, WDTT or csqtt server, or
   dial-in exit. A switch to Block also ends the incoming connections already open.
