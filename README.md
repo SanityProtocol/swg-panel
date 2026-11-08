@@ -604,14 +604,12 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   (20000–29999, the same on every server it is on), and the server forwards it from its address to the device on a
   WireGuard or AmneziaWG interface (one per server: its primary connection there): other peers can connect in, which
   is what seeding and private trackers need. The magnet's bubble then opens with that port; set it as the client's
-  listening port and turn off the random port at startup. A port is unique on each server, so a server takes up to
-  10,000 such devices. A device keeps its port; added to a server where another device holds it (once the panel has
-  handed out 10,000 ports, or after a server is transferred in from another panel), it gets a new one, free on all its
-  servers, and the bubble shows it — if no port is free on all of them together, it keeps its own, and that server
-  forwards the port to only one of the two. Where nothing is forwarded — a WDTT or csqtt connection, a
-  Docker node in bridge mode, a port another program on the server already uses — the bubble shows no port. Keep
-  20000–29999 free on the servers: the panel refuses it for a new interface, turn-proxy, WDTT or csqtt server, or
-  dial-in exit. A switch to Block also ends the incoming connections already open.
+  listening port and turn off the random port at startup. Each server has the 10,000 ports to itself. A device keeps
+  its port; in rare cases — once the panel has handed out 10,000 ports, or after a server is transferred in — it can
+  change, or stop being forwarded when no port is free, and the bubble always shows the current one. Where nothing is
+  forwarded — a WDTT or csqtt connection, a Docker node in bridge mode, a port another program on the server already
+  uses — the bubble shows no port. Keep 20000–29999 free on the servers: the panel refuses it for a new interface,
+  turn-proxy, WDTT or csqtt server, or dial-in exit. A switch to Block also ends the incoming connections already open.
 - **A busy server moves its connections to a fast lane.** When forwarding keeps a server's CPU at 70 % or more, it hands
   the connections already under way to the Linux kernel's fast path, which skips the per-packet rules, and takes them
   back once its CPU stays 20 points lower for about a minute. While the fast lane is on, traffic by category and Top
