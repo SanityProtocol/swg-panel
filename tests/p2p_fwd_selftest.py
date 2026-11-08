@@ -155,7 +155,9 @@ PLANTS = {   # name: (file, old text, planted text)
     "book-nodel":    ("panel", "    if book is not None:\n        _p2p_book_move(book, p, None)", "    if False:\n        _p2p_book_move(book, p, None)"),
     "book-unwired":  ("panel", "                    }, int(time.time()), book=_bk)", "                    }, int(time.time()))"),
     "xfer-sent":     ("panel", '        moved.pop("p2p_yield", None)', '        pass'),
-    "xfer-yieldport": ("panel", '            moved.pop("p2p_port", None) # it one of its own', '            pass # it one of its own'),
+    "xfer-yieldport": ("panel", '            moved.pop("p2p_port", None) # its port here is another device', '            pass # its port here is another device'),
+    "xfer-staleyield": ("panel", '        if type(p.get("p2p_port")) is int and owner.get(p["p2p_port"]) != (nid in _p2p_yields(p), pid):',
+                        '        if nid in _p2p_yields(p):'),
     "xfer-clash":    ("panel", 'if k not in ("targets", "p2p_port", "p2p_yield")}', 'if k not in ("targets", "p2p_port")}'),
     "xfer-merge":    ("panel", '**{k: cur_p[k] for k in ("p2p_port", "p2p_yield") if k in cur_p}}', '**{k: cur_p[k] for k in ("p2p_port",) if k in cur_p}}'),
     "sub-noyield":   ("sub", '    if _p2p_lost(peers, pid, port, tg.get("node"), tg.get("node") in _p2p_yields(p)):', '    if False:'),
@@ -772,7 +774,9 @@ def unit_checks(src, ok):
                                  "dev-a": {"targets": [T("NN", "10.8.0.3"), T("M", "10.6.0.3")], "p2p_port": 20000,
                                            "p2p_yield": ["NN"]},
                                  "dev-m": {"targets": [T("NN", "10.8.0.4"), T("M", "10.6.0.4")], "p2p_port": 20001,
-                                           "p2p_yield": ["M"]}}}
+                                           "p2p_yield": ["M"]},
+                                 "dev-s": {"targets": [T("NN", "10.8.0.5")], "p2p_port": 20002, "p2p_yield": ["NN"]}}}   # its
+    fw = m.p2p_fwd_for_node(None, tr, "NN", ("direct", ()))      # holder deleted: the one forwarded 20002 on NN
     bp = m.transfer_plan({"now": lambda: 0, "sub_dir": os.path.join(tempfile.gettempdir(), "p2p-fwd-no-subs")}, NN, "NN", {}, {},
                          tr)["peers"]                         # (no subscriptions: the file is absent, read as none)
     recv = {"peers": json.loads(json.dumps(bp)), "p2p_next": 20000}
@@ -783,6 +787,9 @@ def unit_checks(src, ok):
        "[7] K2: a device that yields its port on the node moved leaves without it, so the far panel's fill leaves the holder "
        "its port and gives this one its own; a yield on a node that stays is no reason (scale-k2 F7) (%s | %s)"
        % ({k: q.get("p2p_port") for k, q in bp.items()}, {k: q.get("p2p_port") for k, q in recv["peers"].items()}))
+    ok(["10.8.0.5", 20002] in fw and bp["dev-s"].get("p2p_port") == 20002 and recv["peers"]["dev-s"]["p2p_port"] == 20002,
+       "[7] K2: a yield whose holder has gone is a hold — the device forwarded the port on the node moved takes it along, "
+       "and the far panel keeps it (scale-k2 F30) (%s %s)" % (fw, bp["dev-s"].get("p2p_port")))
 
     def imp(book):
         """an import past the pool's wrap: one device moved off n1, then 300 new devices on n1 — with a book or without"""

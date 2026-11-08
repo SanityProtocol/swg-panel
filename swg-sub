@@ -743,11 +743,11 @@ def _p2p_fwd_of(p, tg, describe, peers=None, pid=None):
     e = fw.get(tg.get("iface"))
     if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):
         return {}
-    if _p2p_lost(peers, pid, port, tg.get("node"), tg.get("node") in _p2p_yields(p)):
-        return {}
     mine = min(((_role_of(t) != "primary", str(t.get("iface") or "")) for t in (p.get("targets") or [])
                 if isinstance(t, dict) and t.get("node") == tg.get("node") and str(t.get("iface") or "") in fw), default=None)
     if not mine or mine[1] != tg.get("iface"):
+        return {}
+    if _p2p_lost(peers, pid, port, tg.get("node"), tg.get("node") in _p2p_yields(p)):   # (a roster scan: the cheap tests first)
         return {}
     with contextlib.suppress(ValueError):                 # the address only where the swarm sees it: a node behind 1:1 NAT
         if ipaddress.ip_address(str(e.get("addr") or "")).is_global:   # holds a private one (its forward works all the same)

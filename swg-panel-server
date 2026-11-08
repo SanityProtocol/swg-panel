@@ -12951,7 +12951,11 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
     clean, stripped = transfer_strip(nodes[nid])
 
     # ── the roster half. A peer moves when it has a target on this node; the user moves with it.
-    peers, users, split = {}, {}, []
+    peers, users, split, owner = {}, {}, [], {}
+    for pid, p in _peers_on(roster, nid):                     # each port's holder here, as p2p_fwd_for_node judges it (K2)
+        if type(p.get("p2p_port")) is int:
+            k = (nid in _p2p_yields(p), pid)
+            owner[p["p2p_port"]] = min(owner.get(p["p2p_port"], k), k)
     for pid, p in sorted((roster.get("peers") or {}).items()):
         if not isinstance(p, dict):
             continue
@@ -12964,8 +12968,10 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
         moved["targets"] = mine
         moved.pop("p2p_yield", None)    # this panel's own (K2): its node ids mean nothing there, and an older panel would
                                         # compare it and refuse a peer it already holds — the far panel works out its own
-        if nid in _p2p_yields(p):       # its port there is another device's: it leaves without it, and the far panel gives
-            moved.pop("p2p_port", None) # it one of its own — so the device that holds it there keeps it (scale-k2 F7)
+        if type(p.get("p2p_port")) is int and owner.get(p["p2p_port"]) != (nid in _p2p_yields(p), pid):
+            moved.pop("p2p_port", None) # its port here is another device's: it leaves without it and the far panel gives it
+                                        # one of its own, so the holder keeps it (scale-k2 F7) — a yield whose holder has
+                                        # gone is a hold: that device is the one forwarded here, and keeps it (F30)
         peers[pid] = moved
         uid = p.get("user_id")
         if uid and uid in (roster.get("users") or {}):
