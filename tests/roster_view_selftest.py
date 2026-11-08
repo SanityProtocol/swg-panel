@@ -11,11 +11,14 @@ a write there would reach every node's next sync, and a peer dropped from a desi
   [3] writers: peer_set and roster_save refuse the view; roster_own gives a fresh copy of it (any other roster as it is);
       a sync that imports (the T-18 mirror) writes users.json, the import is in the next view, the view it read is unchanged
   [4] _peers_on — from the view: per node, roster order, once a peer, tuples, a non-string node names none, built once per
-      revision; any other roster: every dict peer (the walk it replaced)
+      revision; any other roster (a writer's copy): the same peers, by a walk (scale-k2 F1)
   [5] SWG_ROSTER_GUARD (the gate runner sets it for every gate): on with the variable; the view is hashed when published;
       a sync and /api/state leave it as it was; a reader that writes it ends the panel; every JSON reply checks
   [6] the differential: 200 random fleets × their nodes — every function the index feeds, on the view, equals the pre-K2
-      panel's (bef1783a) on the plain roster, and this panel's on a plain copy
+      panel's (bef1783a) on the plain roster, and this panel's on a plain copy. Torrent ports repeat across nodes, some
+      devices yield theirs; in every other fleet they repeat on one node too, where only K2 judges between two devices
+      (one forward a port), so there the view and the plain copy must agree and the pre-K2 panel only off the forwards
+      (scale-k2 F10)
   [7] whole sync replies: the pre-K2 handler and this one, in process, on the same state and snapshots (one with a T-18
       import, for the copy-on-write wiring) — byte for byte
 
@@ -47,8 +50,11 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "idx-anynode":    ("if isinstance(t, dict)\n                              and isinstance(t.get(\"node\"), str)}:", "if isinstance(t, dict)}:"),
     "idx-rebuilt":    ("        idx = roster.idx\n        if idx is None:", "        idx = None\n        if idx is None:"),
     "idx-wrongnode":  ("        return idx.get(nid, ())", "        return idx.get(nid, ()) or next(iter(idx.values()), ())"),
-    "walk-filtered":  ("    return [(pid, p) for pid, p in (roster.get(\"peers\") or {}).items() if isinstance(p, dict)]",
-                       "    return [(pid, p) for pid, p in (roster.get(\"peers\") or {}).items() if isinstance(p, dict) and p.get(\"targets\")][:1]"),
+    "walk-filtered":  ("        isinstance(t, dict) and isinstance(t.get(\"node\"), str) and t[\"node\"] == nid for t in (p.get(\"targets\") or ()))]",
+                       "        isinstance(t, dict) and isinstance(t.get(\"node\"), str) and t[\"node\"] == nid for t in (p.get(\"targets\") or ()))][:1]"),
+    "walk-whole":     ("    return [(pid, p) for pid, p in (roster.get(\"peers\") or {}).items() if isinstance(p, dict) and any(\n"
+                       "        isinstance(t, dict) and isinstance(t.get(\"node\"), str) and t[\"node\"] == nid for t in (p.get(\"targets\") or ()))]",
+                       "    return [(pid, p) for pid, p in (roster.get(\"peers\") or {}).items() if isinstance(p, dict)]"),
     "routes-fleet":   ("        _peers_here = [q for _k, q in _peers_on(roster, nid)]", "        _peers_here = []"),
     "guard-nodigest": ("                if _ROSTER_GUARD:\n                    v.digest = _roster_digest(v)", "                pass"),
     "guard-noreply":  ("        if _ROSTER_GUARD:                                # the gates: did this request write the shared roster? (P2)\n"
@@ -77,10 +83,11 @@ def pre_k2_src():
     return r.stdout
 
 
-def rand_fleet(rnd):
+def rand_fleet(rnd, dup=False):
     """A random roster, node records and snapshots: users (blocked, expired, in groups), devices on 0-4 nodes of every kind
-    (two interfaces on one node, roles, private, router, networks with shares, keyless passwords), unique torrent ports, every
-    access level, enforcing nodes and not, csqtt App routing exceptions."""
+    (two interfaces on one node, roles, private, router, networks with shares, keyless passwords), torrent ports from a
+    small pool — one a node, so they repeat across nodes, or (`dup`) repeated on a node too — some yielded, every access
+    level, enforcing nodes and not, P2P Direct or the default, csqtt App routing exceptions."""
     nodes = ["n%d" % i for i in range(1, rnd.randint(1, 4) + 1)]
     users = {}
     for i in range(rnd.randint(0, 10)):
@@ -96,7 +103,7 @@ def rand_fleet(rnd):
     uids = list(users)
     groups = {"g%d" % g: {"name": "G%d" % g, "users": sorted(rnd.sample(uids, rnd.randint(0, min(4, len(uids)))))}
               for g in range(rnd.randint(0, 3))}
-    ports, peers = iter(rnd.sample(range(20000, 20500), 200)), {}
+    used, peers = {}, {}
     for i in range(rnd.randint(0, 25)):
         tg = []
         for n in rnd.sample(nodes, rnd.randint(0, len(nodes))):
@@ -113,8 +120,14 @@ def rand_fleet(rnd):
              "targets": tg, "created_at": rnd.randint(0, 50), "modified_at": 0}
         if any(t["type"] in ("wg", "awg") for t in tg):
             p["pubkey"], p["psk"] = key(i), key(100 + i)
-            if rnd.random() < 0.8:
-                p["p2p_port"] = next(ports)
+            ns = sorted({t["node"] for t in tg})
+            free = [x for x in range(20000, 20006) if dup or not any(x in used.get(n, ()) for n in ns)]
+            if free and rnd.random() < 0.8:
+                p["p2p_port"] = rnd.choice(free)
+                for n in ns:
+                    used.setdefault(n, set()).add(p["p2p_port"])
+                if rnd.random() < 0.3:                                     # (a junk shape names no node)
+                    p["p2p_yield"] = rnd.choice((rnd.sample(ns, rnd.randint(1, len(ns))), ["n9"], "n1", [["n1"]]))
         if any(t["type"] == "csqtt" for t in tg):
             p["csqtt_password"] = "c%03d" % i
         if any(t["type"] == "wdtt" for t in tg):
@@ -136,7 +149,8 @@ def rand_fleet(rnd):
         rec[n] = {"id": n, "name": n, "ifaces": {i: ({"reach": l} if l else {}) for i, l in zip(("wg0", "awg0", "wg1"), lv)},
                   "csqtt": {"csqtt1": dict({"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "line": "2.5"},
                                            **({"app_routing_except": exc} if rnd.random() < 0.4 else {}))},
-                  "wdtt": {"wdtt0": {"listen": "0.0.0.0:56000", "wg_port": 56001, "wg_addr": "10.66.73.1/24", "fork": "amurcanov"}}}
+                  "wdtt": {"wdtt0": {"listen": "0.0.0.0:56000", "wg_port": 56001, "wg_addr": "10.66.73.1/24", "fork": "amurcanov"}},
+                  **({"p2p": {"action": "direct"}} if rnd.random() < 0.5 else {})}
         here = [q for q in peers.values() if any(t["node"] == n for t in q["targets"])]
         snaps[n] = {"interfaces": {i: {"peers": [{"public_key": q["pubkey"]} for q in here if q["pubkey"] and rnd.random() < 0.7]}
                                    for i in ("wg0", "awg0")},
@@ -320,8 +334,9 @@ def run_checks(src, old_src, which="all", rounds=200):
            "[4] another node's own; an unknown node none")
         ok(not any(isinstance(n, list) for n in (v.idx or {})) and len(v.idx or {}) == 2,
            "[4] a hand-edited list for a node names no node (and does not break the index) (%s)" % sorted(map(str, v.idx or {})))
-        ok([k for k, _q in P._peers_on(json.loads(json.dumps(v)), "n9")] == ["p1", "p2"],
-           "[4] any other roster: every dict peer, as the walk it replaced")
+        pl = json.loads(json.dumps(v))
+        ok(P._peers_on(pl, "n1") == list(a1) and P._peers_on(pl, "n2") == list(P._peers_on(v, "n2")) and P._peers_on(pl, "n9") == [],
+           "[4] any other roster (a writer's copy): the same peers as the view, by a walk — never another node's (scale-k2 F1)")
         cp = P.roster_load(path); cp["peers"]["p4"] = {"id": "p4", "targets": [{"node": "n1", "iface": "wg0", "ip": "10.8.0.4"}]}
         P.roster_save(path, cp)
         ok([k for k, _q in P._peers_on(P.roster_view(path)[0], "n1")] == ["p1", "p2", "p4"], "[4] a save: a new index with it")
@@ -377,7 +392,7 @@ def run_checks(src, old_src, which="all", rounds=200):
         rnd, bad, n = random.Random(1812), [], 0
         try:
             for i in range(rounds):
-                roster, rec, snaps = rand_fleet(rnd)
+                roster, rec, snaps = rand_fleet(rnd, dup=i % 2 == 1)
                 fp = os.path.join(tmp, "d%d.json" % (i % 2))
                 json.dump(roster, open(fp, "w"))
                 view = P.roster_view(fp)[0]
@@ -386,8 +401,11 @@ def run_checks(src, old_src, which="all", rounds=200):
                     want = json.dumps(per_node(O, json.loads(json.dumps(roster)), rec, nid, snaps[nid]), sort_keys=True)
                     got = json.dumps(per_node(P, view, rec, nid, snaps[nid]), sort_keys=True)
                     walk = json.dumps(per_node(P, json.loads(json.dumps(roster)), rec, nid, snaps[nid]), sort_keys=True)
-                    if not (want == got == walk):
-                        bad.append((i, nid, [k for k in json.loads(want) if json.loads(want)[k] != json.loads(got)[k]]))
+                    G, Wk, Wn = json.loads(got), json.loads(walk), json.loads(want)
+                    own = ("fwd_direct", "fwd_iface") if i % 2 else ()   # one port twice on a node: K2's one forward a port
+                    diff = [k for k in G if G[k] != Wk[k] or (k not in own and G[k] != Wn[k])]
+                    if diff:
+                        bad.append((i, nid, diff))
                     if bad and which != "all":
                         break
                 if bad and which != "all":

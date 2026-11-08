@@ -3077,8 +3077,9 @@ def roster_own(path, roster):
 def _peers_on(roster, nid):
     """(pid, peer) for each peer with a target on node `nid`, in roster order — what one node's sync reads (1.8.12 Scale P3).
     From the shared view's per-node index, built once per revision (tuples: no reader can grow another sync's list); any
-    other roster — a writer's own copy — gives every dict peer, exactly the walk it replaced. Each reader skips a target on
-    another node and takes nothing from a peer without one here, so both give the same reply."""
+    other roster — a writer's own copy, which a sync that imports reads from there on — gives the same peers by a walk. The
+    same set either way: a reader that judges between the peers it is given (p2p_fwd_for_node's one holder a port) must
+    never see another node's (scale-k2 F1)."""
     if isinstance(roster, _RosterView):
         idx = roster.idx
         if idx is None:
@@ -3090,7 +3091,8 @@ def _peers_on(roster, nid):
                         idx.setdefault(n, []).append((pid, p))
             idx = roster.idx = {n: tuple(v) for n, v in idx.items()}
         return idx.get(nid, ())
-    return [(pid, p) for pid, p in (roster.get("peers") or {}).items() if isinstance(p, dict)]
+    return [(pid, p) for pid, p in (roster.get("peers") or {}).items() if isinstance(p, dict) and any(
+        isinstance(t, dict) and isinstance(t.get("node"), str) and t["node"] == nid for t in (p.get("targets") or ()))]
 
 
 def roster_save(path, roster):
@@ -4507,7 +4509,7 @@ def peer_set(roster, pid, fields, now, book=None):
     # unrelated save — an update-target or a rekey would silently un-private a device, which is the direction that opens
     # something. `if v` also means an explicit False clears the key, which is how it is unset.
     for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
-              "routes", "share", "private", "router", "p2p_port", "p2p_yield"):
+              "routes", "share", "private", "router", "p2p_port"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -4516,14 +4518,16 @@ def peer_set(roster, pid, fields, now, book=None):
     # together → it keeps its own and YIELDS there (`p2p_yield`, K2): the holder keeps the forward, and this device's
     # subscription shows no port on that node. A node it was already on keeps its standing — save one where it shares its
     # port with a device that does not yield it (a transfer's duplicate), resolved when it gets its first wg/awg target (F4).
+    # Its yields are worked out here from the stored record, never copied: a node it left leaves them, and one it re-joins
+    # (a target an interface's delete removed) is judged afresh (scale-k2 F8).
     if book is not None:
         _p2p_book_move(book, p, None)                         # its old record leaves the book, the new one goes in below
     held, ns, was = rec.get("p2p_port"), _p2p_nodes(rec), _p2p_nodes(p)
-    yl, clash = _p2p_yields(rec) & ns, set()                  # (a node it left leaves its yields)
+    yl, clash = _p2p_yields(p) & ns & was, set()
     if held is not None:
         if ns - was:
             clash = _p2p_clash(roster, pid, held, ns - was, book)
-        if p2p_port_wanted(rec) and not p2p_port_wanted(p):
+        if ns & was and p2p_port_wanted(rec) and not p2p_port_wanted(p):
             clash |= _p2p_clash(roster, pid, held, ns & was, holders=True)
     if clash:
         _free = p2p_port_take(roster, pid, ns, book)
@@ -4536,6 +4540,7 @@ def peer_set(roster, pid, fields, now, book=None):
                 "forwarded on %s, where another device holds it (its subscription shows no port there)", pid, held,
                 ", ".join(sorted(clash)))
             yl |= clash
+            _p2p_heal(roster, pid, held, clash)
     elif "p2p_port" not in rec and p2p_port_wanted(rec):     # a WDTT / csqtt-only device takes none
         _free = p2p_port_take(roster, pid, ns, book)
         if _free:                                             # pool full: no port, nothing forwarded for it
@@ -9563,8 +9568,9 @@ def p2p_port_wanted(p):
 
 def _p2p_on(p):
     """The nodes a device is on, any target kind: its port is its own on each (a csqtt-only holder keeps reserving the port
-    its client listens on)."""
-    return (t.get("node") for t in (p.get("targets") or []) if isinstance(t, dict) and t.get("node"))
+    its client listens on). A node id is a string: a hand-edited list there names no node — every holder of a port is read
+    by an import's port book, and a raise there failed the node's sync (scale-k2 F2)."""
+    return (t["node"] for t in (p.get("targets") or []) if isinstance(t, dict) and isinstance(t.get("node"), str) and t["node"])
 
 
 def _p2p_nodes(p):
@@ -9580,9 +9586,8 @@ def _p2p_held(roster, pid, nodes):
 def _p2p_yields(p):
     """The nodes where device `p`'s port is another device's (`p2p_yield`, 1.8.12 Scale K2): set when a save or the fill kept
     a duplicate because no port was free on all its nodes. It is not forwarded the port there, and its subscription shows no
-    port there (swg-sub twins this). Anything but a list of strings is none."""
-    v = p.get("p2p_yield") if isinstance(p, dict) else None
-    return {x for x in v if isinstance(x, str)} if isinstance(v, list) else set()
+    port there (swg-sub twins this). Anything but a list of strings is none (_who_ids)."""
+    return _who_ids(p.get("p2p_yield") if isinstance(p, dict) else None)
 
 
 def _p2p_clash(roster, pid, port, nodes, book=None, holders=False):
@@ -9592,6 +9597,24 @@ def _p2p_clash(roster, pid, port, nodes, book=None, holders=False):
         return {n for n in nodes if (book.get(n) or {}).get(port, 0) > 0}
     return {n for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict) and q.get("p2p_port") == port
             for n in _p2p_on(q) if n in nodes and not (holders and n in _p2p_yields(q))}
+
+
+def _p2p_heal(roster, pid, port, nodes):
+    """On each of `nodes` where only devices that yield `port` hold it — the one they yielded to has gone: a delete or a move
+    leaves the others' records as they are — the device forwarded there (the lowest id) holds it outright from now on, so
+    `pid`, yielding to it there, never takes it over on a lower id (scale-k2 F5). Called only when `pid` keeps a port it
+    yields (none free on all its nodes): one pass."""
+    by = {}
+    for k, q in (roster.get("peers") or {}).items():
+        if k != pid and isinstance(q, dict) and q.get("p2p_port") == port:
+            for n in _p2p_nodes(q) & nodes:
+                by.setdefault(n, []).append((n in _p2p_yields(q), k))
+    for n, hs in by.items():
+        y, k = min(hs)
+        if y:                                                 # nobody holds it there without yielding it
+            q = roster["peers"][k]
+            ys = sorted(_p2p_yields(q) - {n})
+            q.update(p2p_yield=ys) if ys else q.pop("p2p_yield", None)
 
 
 def p2p_book(roster):
@@ -9639,7 +9662,7 @@ def p2p_port_take(roster, pid, nodes, book=None):
     pass at 15,000 devices, and an adopt takes one port per device). With a `book` (p2p_book: an import loop) no pass at all."""
     if book is not None:
         def taken(x):
-            return any((book.get(n) or {}).get(x, 0) > 0 for n in nodes)
+            return bool(_p2p_clash(roster, pid, x, nodes, book))
     else:
         used, here = {q.get("p2p_port") for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict)}, []
         def taken(x):
@@ -9657,13 +9680,15 @@ def p2p_port_take(roster, pid, nodes, book=None):
 def p2p_ports_fill(roster, first=()):
     """Give every device that wants a port (`p2p_port_wanted`) and has none — or holds one an earlier peer holds, or one
     outside the pool (a hand edit, a node transfer from another panel) — the next free one, in sorted peer-id order
-    (`first`, the peers this panel already held, claim theirs before the rest; a device that yields somewhere after the
-    others, and a forwarded one before a csqtt-only one, so the holders claim first): the same result every run. A port is
-    never taken back — a device left WDTT / csqtt-only for a while keeps the one its client listens on. "Held" is per node
-    (P8): a port is a duplicate only where both devices are, and a device that keeps a duplicate — csqtt-only, or none free
-    on all its nodes — yields it there (`p2p_yield`, K2): every yield is worked out again here. A roster with no mark gets
-    one, past the highest port held. True when something changed."""
-    peers, on, top, todo, full, changed = roster.get("peers") or {}, {}, None, [], [], False
+    (`first`, the peers this panel already held, claim theirs before the rest, and a forwarded device before a csqtt-only
+    one): the same result every run. A port is never taken back — a device left WDTT / csqtt-only for a while keeps the one
+    its client listens on. "Held" is per node (P8), and a device keeps its standing on each (K2, scale-k2 F4): first every
+    device holds its port where it does not yield it, then it yields it (`p2p_yield`) where it does only while another
+    holds it there — a yield nobody holds against any more is a hold. A device that keeps a duplicate — csqtt-only, or
+    none free on all its nodes — yields it where another holds it. A device that yields keeps its port and its yield: a
+    port changes only where two devices hold one without yielding it. A roster with no mark gets one, past the highest port
+    held. True when something changed."""
+    peers, on, top, kept, todo, full, changed = roster.get("peers") or {}, {}, None, [], [], [], False
 
     def keep(q, v, ns, clash):                                # its own port: held where it came first, yielded where not
         nonlocal changed
@@ -9676,9 +9701,9 @@ def p2p_ports_fill(roster, first=()):
             changed = True
             q.update(p2p_yield=y) if y else q.pop("p2p_yield", None)
 
-    def order(k):                                             # this panel's own first; then a device that yields somewhere
-        q = peers[k]                                          # after the rest, and one forwarded (a wg/awg target) before a
-        return (k not in first, bool(_p2p_yields(q)), not (isinstance(q, dict) and p2p_port_wanted(q)), k)   # csqtt-only one
+    def order(k):                                             # this panel's own first, and a forwarded device (a wg/awg
+        q = peers[k]                                          # target) before a csqtt-only one
+        return (k not in first, not (isinstance(q, dict) and p2p_port_wanted(q)), k)
 
     for pid in sorted(peers, key=order):
         q = peers[pid]
@@ -9690,21 +9715,26 @@ def p2p_ports_fill(roster, first=()):
                 v = int(float(v))
         ns = _p2p_nodes(q)
         ok = type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]
-        clash = {n for n in ns if v in on.get(n, ())} if ok else set()
+        ys = _p2p_yields(q) & ns if ok else set()
+        clash = {n for n in ns - ys if v in on.get(n, ())} if ok else set()
         if ok and not (clash and p2p_port_wanted(q)):
             top = v if top is None else max(top, v)
-            keep(q, v, ns, clash)
+            for n in ns - ys - clash:                         # where it holds its port: first, before any yield is judged
+                on.setdefault(n, set()).add(v)
+            kept.append((q, v, ns, ys, clash))
         elif p2p_port_wanted(q):
-            todo.append((q, ns, v if ok else None, clash))
+            todo.append((q, ns, v if ok else None))
+    for q, v, ns, ys, clash in kept:                          # then where it yields: still, while another holds it there
+        keep(q, v, ns, clash | {n for n in ys if v in on.get(n, ())})
     if top is not None and roster.get("p2p_next") is None:   # a roster from before the mark: seeded, so a delete never
         _p2p_mark(roster, top)                                # hands the highest port to the next device
         changed = True
-    for q, ns, v, clash in todo:                              # (no port frees inside a fill: nodes found full stay full)
+    for q, ns, v in todo:                                     # (no port frees inside a fill: nodes found full stay full)
         x = None if any(f <= ns for f in full) else next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)
         if x is None:
             full.append(ns)
             if v is not None:                                 # none free: it keeps its own, yielded where another holds it
-                keep(q, v, ns, clash)
+                keep(q, v, ns, {n for n in ns if v in on.get(n, ())})   # — by now, on all its nodes (scale-k2 F3)
                 continue
         if x != q.get("p2p_port"):
             changed = True
@@ -12934,6 +12964,8 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
         moved["targets"] = mine
         moved.pop("p2p_yield", None)    # this panel's own (K2): its node ids mean nothing there, and an older panel would
                                         # compare it and refuse a peer it already holds — the far panel works out its own
+        if nid in _p2p_yields(p):       # its port there is another device's: it leaves without it, and the far panel gives
+            moved.pop("p2p_port", None) # it one of its own — so the device that holds it there keeps it (scale-k2 F7)
         peers[pid] = moved
         uid = p.get("user_id")
         if uid and uid in (roster.get("users") or {}):

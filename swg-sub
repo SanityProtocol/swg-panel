@@ -725,10 +725,11 @@ def _p2p_yields(p):
     return {x for x in v if isinstance(x, str)} if isinstance(v, list) else set()
 
 
-def _p2p_lost(peers, pid, port, nid):
-    """Does device `pid`, which yields `port` on node `nid`, lose it there? The panel's holder rule (p2p_fwd_for_node),
-    twinned: of the devices on that node with that port, the one that does not yield it wins, else the lowest id."""
-    return any((nid in _p2p_yields(q), qid) < (True, pid) for qid, q in (peers or {}).items()
+def _p2p_lost(peers, pid, port, nid, mine):
+    """Does device `pid` lose `port` on node `nid` (`mine`: does it yield it there)? The panel's holder rule
+    (p2p_fwd_for_node), twinned whole: of the devices on that node with that port, the one that does not yield it wins,
+    else the lowest id — between two that do not yield it too (a hand edit's), as the panel judges (scale-k2 F6)."""
+    return any((nid in _p2p_yields(q), qid) < (mine, pid) for qid, q in (peers or {}).items()
                if qid != pid and isinstance(q, dict) and type(q.get("p2p_port")) is int and q["p2p_port"] == port
                and any(isinstance(t, dict) and t.get("node") == nid for t in (q.get("targets") or ())))
 
@@ -742,7 +743,7 @@ def _p2p_fwd_of(p, tg, describe, peers=None, pid=None):
     e = fw.get(tg.get("iface"))
     if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):
         return {}
-    if tg.get("node") in _p2p_yields(p) and _p2p_lost(peers, pid, port, tg.get("node")):   # (only a yielder can lose)
+    if _p2p_lost(peers, pid, port, tg.get("node"), tg.get("node") in _p2p_yields(p)):
         return {}
     mine = min(((_role_of(t) != "primary", str(t.get("iface") or "")) for t in (p.get("targets") or [])
                 if isinstance(t, dict) and t.get("node") == tg.get("node") and str(t.get("iface") or "") in fw), default=None)

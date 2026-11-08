@@ -369,10 +369,11 @@ if P_XXSUB:
 
 if P_SUBPORT:   # the page's own copy of swg-sub, the port's wiring removed
     _ss = open(SUB).read()
-    if _ss.count("                    tg.update(_p2p_fwd_of(p, tg, describe))\n") != 1:
+    _wire = '                    tg.update(_p2p_fwd_of(p, tg, describe, roster.get("peers"), pid))\n'
+    if _ss.count(_wire) != 1:
         print("PERTURB FAILED — the incoming port's wiring: its anchor is not in swg-sub exactly once"); sys.exit(1)
     SUB = os.path.join(D, "swg-sub")
-    open(SUB, "w").write(_ss.replace("                    tg.update(_p2p_fwd_of(p, tg, describe))\n", ""))
+    open(SUB, "w").write(_ss.replace(_wire, ""))
 sock = socket.socket(); sock.bind(("127.0.0.1", 0)); PORT = sock.getsockname()[1]; sock.close()
 env = dict(os.environ, SWG_SUB_FLEET=D + "/fleet.json", SWG_SUB_WEB=WEB, SWG_SUB_HOST="127.0.0.1", SWG_SUB_PORT=str(PORT),
            SWG_SUB_TLS_DIR=D + "/no-tls")
