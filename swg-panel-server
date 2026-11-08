@@ -15655,8 +15655,10 @@ P2P_PORTOK_DEFAULT = ["1194", "3478-3481", "4500", "5222-5223", "5349", "8801-88
 def p2p_portok_clean(raw):
     """(canonical list, error): the port-rule grammar (`ports_clean`, gated on tests/ports_vectors.json — commas or spaces,
     an en dash read as a hyphen, ASCII digits, 1-65535, ranges merged and sorted; the node's interval set refuses an
-    overlap), as a list or one string. Empty is refused: "nothing exempt" is not what clearing the field means — Reset to
-    defaults is. What it cannot take is named."""
+    overlap), as a list or one string. An empty LIST is the operator's No exceptions, stored as []. Empty TEXT is refused:
+    a cleared field is not that choice — Reset to defaults or No exceptions is. What it cannot take is named."""
+    if raw == []:
+        return [], None
     if isinstance(raw, list):
         raw = " ".join(str(x) for x in raw)                   # a 0 in a JSON list is an entry, refused below — never dropped
     if not isinstance(raw, str):                              # a number, an object: named, never read as "empty" (s11c F15)
@@ -15665,7 +15667,7 @@ def p2p_portok_clean(raw):
     if proto is not None:
         return canon.split(","), None
     if canon == "empty":
-        return None, perr("Keep at least one port, or reset the list to its defaults.")
+        return None, perr("Keep at least one port, or choose No exceptions.")
     if canon == "too_many":
         return None, perr("Too many entries — at most {v1}.", v1=str(PORTS_MAX_TOKENS))
     bad = [t for t in _ports_toks(raw) if ports_clean("both", t)[0] is None]
@@ -15673,12 +15675,13 @@ def p2p_portok_clean(raw):
 
 
 def p2p_portok_wire(ps, node):
-    """The node's never-cut ports for the sync — its own list, else the fleet's — as the node's "a-b, c" string; None
-    when that is the built-in list (the reply a fleet on the defaults always got). A stored value that is not a list (a
-    hand edit) counts as absent — joined as a string it would exempt its characters."""
+    """The node's never-cut ports for the sync — its own list, else the fleet's — as the node's "a-b, c" string; "none"
+    for No exceptions ([]), which a node older than it does not read and keeps its built-in list (it cuts less, never
+    more); None when that is the built-in list (the reply a fleet on the defaults always got). A stored value that is not
+    a list (a hand edit) counts as absent — joined as a string it would exempt its characters."""
     own, fleet = (node or {}).get("p2p_portok"), (ps or {}).get("p2p_portok")
-    eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT
-    return None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)
+    eff = own if isinstance(own, list) else fleet if isinstance(fleet, list) else P2P_PORTOK_DEFAULT
+    return "none" if not eff else None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)
 
 
 def p2p_route_dev(node, p2p):
@@ -26378,7 +26381,7 @@ def api(method, path, qs, body, deps):
                 cur["block_allow"] = _keep
             else:
                 cur.pop("block_allow", None)
-        if "p2p_portok" in incoming:          # ports the torrent filter never cuts (S11c); null / the defaults → no key
+        if "p2p_portok" in incoming:          # ports the torrent filter never cuts (S11c); null / the defaults → no key; [] = No exceptions
             if incoming["p2p_portok"] is None:
                 cur.pop("p2p_portok", None)
             else:
@@ -30034,7 +30037,7 @@ def api(method, path, qs, body, deps):
                 nodes[nid]["p2p"] = _prec
             else:
                 return 400, {"ok": False, **perr("torrent policy must be one of: {v1}", v1=", ".join(P2P_ACTIONS)), "code": "bad_request"}
-        if "p2p_portok" in body:                # this node's own never-cut ports (S11c); null → the fleet's list
+        if "p2p_portok" in body:                # this node's own never-cut ports (S11c); null → the fleet's list; [] = No exceptions
             if body.get("p2p_portok") is None:
                 nodes[nid].pop("p2p_portok", None)
             else:

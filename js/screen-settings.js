@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokRead, portokSame } from "./model.js";
+import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokNone, portokRead, portokSame, portokText } from "./model.js";
 import {
   BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
 } from "./util.js";
@@ -2105,7 +2105,8 @@ export function PanelSettingsScreen() {
   // The Never-block list (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md A.5): read by the rules' own grammar; what it cannot take is
   // named under the box before Save, and the server refuses it again with the same reasons.
   const [blockAllow, setBlockAllow] = useState((ps.block_allow || []).join("\n"));
-  const [pok, setPok] = useState((ps.p2p_portok || P2P_PORTOK_DEFAULT).join(", "));   // ports the torrent filter never cuts (S11c)
+  const [pok, setPok] = useState(portokText(ps.p2p_portok));   // ports the torrent filter never cuts (S11c)
+  const [pokNone, setPokNone] = useState(portokNone(ps.p2p_portok));   // …or No exceptions, stored as []
   const nbRead = s => classifyAll(s).map(c => ({ ...c, ok: c.kind === "site" || (c.kind === "ip" && +String(c.value).split("/")[1] >= 8) }));
   const normBlockAllow = s => [...new Set(nbRead(s).map(c => c.ok ? c.value : c.raw.toLowerCase()))];
   const [meshGen, setMeshGen] = useState(ps.mesh_awg_gen || "2.0");   // the type new mesh links are made as (2.0 | 3.1 | wg)
@@ -2423,7 +2424,7 @@ export function PanelSettingsScreen() {
     // with no target, which the server refuses (measured on swgt, P3 live check)
     p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),
                                    ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,
-    p2p_portok: Array.isArray(n.p2p_portok) ? n.p2p_portok.join(", ") : null,   // its own never-cut ports, as typed; null = the fleet's
+    p2p_portok: portokNone(n.p2p_portok) ? [] : Array.isArray(n.p2p_portok) ? n.p2p_portok.join(", ") : null,   // its own never-cut ports, as typed; [] = No exceptions; null = the fleet's
     endpoint_hosts: [...(n.endpoint_hosts || [])],
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     // ⚠️ REBUILT FROM A KEY LIST ON PURPOSE. /api/state attaches a derived `why_not` to each stored exit, and
@@ -2514,7 +2515,7 @@ export function PanelSettingsScreen() {
         scan_allow: normScanAllow(scanAllow),
         block_allow: normBlockAllow(blockAllow),
         // only when changed; the defaults → null (no key). The text as typed, so the panel names what it cannot take
-        ...(pokDirty() ? { p2p_portok: (r => !r.bad.length && portokSame(r.list, P2P_PORTOK_DEFAULT) ? null : pok)(portokRead(pok)) } : {}),
+        ...(pokDirty() ? { p2p_portok: pokNone ? [] : (r => !r.bad.length && portokSame(r.list, P2P_PORTOK_DEFAULT) ? null : pok)(portokRead(pok)) } : {}),
         mesh_mode: meshMode,
         mesh_awg_gen: meshGen,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
@@ -2566,7 +2567,7 @@ export function PanelSettingsScreen() {
         default_routing: Array.isArray(e.default_routing) ? e.default_routing : null,
         default_routing_exit_ips: e.default_routing_exit_ips || {},
         p2p: e.p2p || null,
-        p2p_portok: e.p2p_portok ?? null,   // the text as typed, so the panel names what it cannot take; null = the fleet's
+        p2p_portok: e.p2p_portok ?? null,   // the text as typed, so the panel names what it cannot take; [] = No exceptions; null = the fleet's
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
         catalog_cats: e.catalog_cats || [], exits: e.exits || [], log_mb: +e.log_mb || 100 });
@@ -2606,7 +2607,8 @@ export function PanelSettingsScreen() {
     // typed with host bits — 10.0.0.1/24 → 10.0.0.0/24 — does not leave the section showing unsaved changes for ever.
     setScanAllow((((Store.panelSettings) || {}).scan_allow || []).join("\n"));
     setBlockAllow((((Store.panelSettings) || {}).block_allow || []).join("\n"));   // its canonical form (host bits masked)
-    setPok((((Store.panelSettings) || {}).p2p_portok || P2P_PORTOK_DEFAULT).join(", "));   // merged and sorted
+    setPok(portokText(((Store.panelSettings) || {}).p2p_portok));   // merged and sorted
+    setPokNone(portokNone(((Store.panelSettings) || {}).p2p_portok));
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
     } catch (e) {
@@ -2636,7 +2638,7 @@ export function PanelSettingsScreen() {
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
     if (normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) out.push(T("Port-scan guard — trusted sources updated"));
     if (nbDirty()) out.push(T("Never-block list updated"));
-    if (pokDirty()) out.push(T("Ports the torrent filter never cuts — updated"));
+    if (pokDirty()) out.push(pokNone ? T("Ports the torrent filter never cuts → no exceptions") : T("Ports the torrent filter never cuts — updated"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
     if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)))) out.push(T("System mesh defaults"));
@@ -2659,7 +2661,8 @@ export function PanelSettingsScreen() {
         fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
       if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
       if (!eq(e.p2p, o.p2p)) fl.push(T("torrents → {v1}", { v1: p2pLabel(e.p2p, e.exits || n.exits, n) }));
-      if (!eq(e.p2p_portok, o.p2p_portok)) fl.push(e.p2p_portok == null ? T("never-cut ports → the fleet's list") : T("never-cut ports → {v1}", { v1: e.p2p_portok }));
+      if (!eq(e.p2p_portok, o.p2p_portok)) fl.push(e.p2p_portok == null ? T("never-cut ports → the fleet's list")
+        : Array.isArray(e.p2p_portok) ? T("never-cut ports → no exceptions") : T("never-cut ports → {v1}", { v1: e.p2p_portok }));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -2805,7 +2808,8 @@ const sectionLabel = k => ({
   // Geo data providers, without the Never-block list — which the confirm names on a line of its own (diffList).
   const geoDirty = () => (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00"));
   const nbDirty = () => normBlockAllow(blockAllow).join(",") !== (ps.block_allow || []).join(",");
-  const pokDirty = () => (r => r.bad.length > 0 || !portokSame(r.list, ps.p2p_portok || P2P_PORTOK_DEFAULT))(portokRead(pok));
+  const pokDirty = () => pokNone !== portokNone(ps.p2p_portok)
+    || (!pokNone && (r => r.bad.length > 0 || !portokSame(r.list, ps.p2p_portok || P2P_PORTOK_DEFAULT))(portokRead(pok)));
   const glDirty = sec =>
     sec === "routing" ? (listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
@@ -3275,10 +3279,14 @@ const sectionLabel = k => ({
           <p class="hint" style="margin:6px 0 0">${T("To stop the port-scan guard flagging one of your own machines, use Trusted sources (Settings → Network).")}</p>
           <div class="seclabel" style="margin-top:20px">${T("Ports the torrent filter never cuts")}</div>
           <p class="hint" style="margin:0 0 8px">${T("A device the torrent filter has flagged keeps its connections to these ports — its VPN, calls, games. Torrents are still blocked by what they send, on every port. A node can keep its own list (Settings → Network → the node → Filters & abuse). Ports and ranges, comma-separated.")}</p>
-          <div class="field" style="margin:0"><input class="mono" value=${pok} spellcheck="false" autocomplete="off" onInput=${e => setPok(e.target.value)}/>
-            <${PortokHints} text=${pok}/>
-            ${pok === P2P_PORTOK_DEFAULT.join(", ") ? null
-              : html`<div style="margin-top:6px"><button class="btn btn-mini" onClick=${() => setPok(P2P_PORTOK_DEFAULT.join(", "))}>${T("Reset to defaults")}</button></div>`}</div>` : null}
+          <div class="field" style="margin:0">
+            <${Dropdown} value=${pokNone ? "none" : "list"} onChange=${a => setPokNone(a === "none")}
+              options=${[{ value: "list", label: T("These ports") }, { value: "none", label: T("No exceptions") }]}/>
+            ${pokNone ? html`<div class="hint warnish"><${Ic} i="warn"/> ${PORTOK_NONE_HINT()}</div>`
+              : html`<input class="mono" style="margin-top:6px" value=${pok} spellcheck="false" autocomplete="off" onInput=${e => setPok(e.target.value)}/>
+              <${PortokHints} text=${pok}/>
+              ${pok === P2P_PORTOK_DEFAULT.join(", ") ? null
+                : html`<div style="margin-top:6px"><button class="btn btn-mini" onClick=${() => setPok(P2P_PORTOK_DEFAULT.join(", "))}>${T("Reset to defaults")}</button></div>`}`}</div>` : null}
 
           <div class="seclabel" style="margin-top:20px">${T("Update schedule")}</div>
           <p class="hint" style="margin:0 0 10px">${Trich("When each node re-fetches its lists. Refreshing briefly reloads the node's match sets, which clients can feel — so schedule it for a *quiet hour*. (A failed fetch retries on the next sync; existing lists keep working meanwhile.)")}</p>
@@ -5658,25 +5666,29 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
             ${p2pTargetHints(curRec, node, exits)}
             ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.")}</div>` : null}
           </div>
-          ${(() => { const fleet = ((Store.panelSettings || {}).p2p_portok || P2P_PORTOK_DEFAULT).join(", "), own = v.p2p_portok != null;
+          ${(() => { const fl = (Store.panelSettings || {}).p2p_portok;
+            const mode = v.p2p_portok == null ? "fleet" : Array.isArray(v.p2p_portok) ? "none" : "own";   // [] = No exceptions
             return html`<div class="field"><label>${T("Ports the torrent filter never cuts")}</label>
-              <${Dropdown} value=${own ? "own" : "fleet"} onChange=${a => set({ p2p_portok: a === "own" ? (v.p2p_portok ?? fleet) : null })}
-                options=${[{ value: "fleet", label: T("The fleet's list") }, { value: "own", label: T("This node's own list") }]}/>
-              ${own ? html`<input class="mono" style="margin-top:6px" value=${v.p2p_portok} spellcheck="false" autocomplete="off" onInput=${e => set({ p2p_portok: e.target.value })}/>
+              <${Dropdown} value=${mode} onChange=${a => set({ p2p_portok: a === "own" ? (typeof v.p2p_portok === "string" ? v.p2p_portok : portokText(fl)) : a === "none" ? [] : null })}
+                options=${[{ value: "fleet", label: T("The fleet's list") }, { value: "own", label: T("This node's own list") }, { value: "none", label: T("No exceptions") }]}/>
+              ${mode === "own" ? html`<input class="mono" style="margin-top:6px" value=${v.p2p_portok} spellcheck="false" autocomplete="off" onInput=${e => set({ p2p_portok: e.target.value })}/>
                       <${PortokHints} text=${v.p2p_portok}/>`
-                : html`<div class="hint">${fleet} — ${T("set in Settings → Geo data providers → Blocking.")}</div>`}</div>`; })()}
+                : mode === "none" ? html`<div class="hint warnish"><${Ic} i="warn"/> ${PORTOK_NONE_HINT()}</div>`
+                : html`<div class="hint">${portokNone(fl) ? T("No exceptions") : portokText(fl)} — ${T("set in Settings → Geo data providers → Blocking.")}</div>`}</div>`; })()}
         <//></div>`; })()}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
   </div>`;
 }
 
+// The cost of No exceptions — under both choices (fleet and node).
+const PORTOK_NONE_HINT = () => T("While a device is flagged, all of its connections to ports from 1024 up are treated like its torrents — its VPN, calls and games too.");
 // What a never-cut ports list cannot take, and the cost of a wide one (S11c) — under both inputs.
 function PortokHints({ text }) {
   const r = portokRead(text);
   return html`${r.bad.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Not a port or a port range (1-65535): {v1}", { v1: r.bad.slice(0, 5).join(", ") })}</div>` : null}
     ${r.tooMany ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Too many entries — at most {v1}.", { v1: PORTS_MAX_TOKENS })}</div>` : null}
-    ${!r.bad.length && !r.tooMany && !r.list.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Keep at least one port, or reset the list to its defaults.")}</div>` : null}
+    ${!r.bad.length && !r.tooMany && !r.list.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Keep at least one port, or choose No exceptions.")}</div>` : null}
     ${r.ports > PORTOK_WIDE ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Ports on the list: {v1} — encrypted torrents get through on them.", { v1: fmtNum(r.ports) })}</div>` : null}`;
 }
 

@@ -181,6 +181,10 @@ export function portokRead(text) {
   return { list, bad, tooMany: r.bad === "too_many", ports };
 }
 export const portokSame = (a, b) => (a || []).join(",") === (b || []).join(",");
+// A stored list (fleet or node) as its field shows it: [] is No exceptions — the field then keeps the defaults, for a switch
+// back — and absent is the defaults.
+export const portokNone = l => Array.isArray(l) && !l.length;
+export const portokText = l => (Array.isArray(l) && l.length ? l : P2P_PORTOK_DEFAULT).join(", ");
 
 // Can this device be marked a router (S11b)? Only through a wg/awg deployment — a router runs WireGuard / AmneziaWG, and a
 // keyless one (WDTT / csqtt) is an app on one device. A device already marked keeps the switch, so it can be turned off.

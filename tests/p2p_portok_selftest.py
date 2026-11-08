@@ -7,23 +7,27 @@ block, pre-filled with the built-ins + 1194 + 51820) and a per-node override. @p
 cut, fan-out count and flagged re-route uses; signatures never read it, so a torrent to an exempt port is still caught.
 
   THE NODE (the REAL swg-noded)
-    [1] _p2p_portok — the port rules' own `_ports_spans`: canonical (merged, sorted); absent, empty, junk, out of range or
-        past 32 entries → the built-in list — never an empty set (a syntax error) and never "nothing exempt"
-    [2] _ensure_p2p renders `set portok` from the wire; absent → the built-in list
+    [1] _p2p_portok — the port rules' own `_ports_spans`: canonical (merged, sorted); "none" (No exceptions, 1.8.12) → "";
+        absent, empty, junk, out of range or past 32 entries → the built-in list — never "nothing exempt" by accident
+    [2] _ensure_p2p renders `set portok` from the wire; absent → the built-in list; "none" → the set with no elements
     [3] reconcile_cascade hands `smart.p2p_portok` to _ensure_p2p
     [4] the built-in list is one list in three places: swg-noded, the panel, the SPA (and has 1194 + 51820)
     [5] on the real nft a merged list loads; on the real kernel (throwaway namespaces, `sudo -n`; SKIPPED without) a FLAGGED
         source's UDP flow to an exempt port leaves by the WAN, to a port next to it is cut, and a DHT query to the exempt
-        port is still dropped (dht counted)
+        port is still dropped (dht counted); under "none" the empty set loads and the flow to that port is cut too
   THE PANEL (a REAL panel process: temp state, scratch port, no auth; the node is played by POSTing /api/node/sync)
     [6] settings save — the port rules' grammar (`ports_clean`): stored merged and sorted; an en dash reads as a hyphen; the
         defaults, or null, store no key; a bad entry is refused by name, a 0 in a JSON list too (never dropped), digits
-        that are not ASCII too; past 32 entries is refused saying so; an empty list is refused
-    [7] node save: its own list stored; null clears it; a bad entry refused
+        that are not ASCII too; past 32 entries is refused saying so; empty TEXT is refused, naming No exceptions; an
+        empty LIST is No exceptions, stored as []
+    [7] node save: its own list stored; [] stored (No exceptions); null clears it; a bad entry refused
     [8] the wire: on the defaults no key (the reply a fleet always got); a fleet list reaches every node; a node's own list
         reaches only that node; a node whose own list IS the built-in list gets no key even while the fleet's differs; a
-        stored value that is not a list counts as absent
-    [9] /api/state carries both (the SPA reads them there; a node field not published is posted back empty by the next save)
+        stored value that is not a list counts as absent; No exceptions is "none": a fleet [] reaches every node without its
+        own list, a node's own [] beats the fleet's list, a node's own list beats a fleet []
+    [9] /api/state carries both, [] included (the SPA reads them there; a node field not published is posted back empty)
+  THE RELEASED NODE
+    [10] `main`'s swg-noded reads "none" as its built-in list — a node not yet updated cuts less, never more
 
 Run: python3 tests/p2p_portok_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -44,7 +48,10 @@ MODEL = open(os.path.join(ROOT, "js", "model.js"), encoding="utf-8").read()
 PLANTS = {   # name: (file, old text, planted text)
     "node-first-only": ("node", '    ps = _ports_spans({"proto": "both", "list": v.replace(" ", "")}) if isinstance(v, str) else None',
                         '    ps = (lambda r: (r[0], r[1][:1]) if r else r)(_ports_spans({"proto": "both", "list": v.replace(" ", "")})) if isinstance(v, str) else None'),
-    "node-hard":    ("node", '"  set portok { typeof th dport; flags interval; elements = { %s } }" % portok,', '"  set portok { typeof th dport; flags interval; elements = { %s } }" % _P2P_PORTOK,'),
+    "node-hard":    ("node", '(" elements = { %s }" % portok if portok else "")', '(" elements = { %s }" % _P2P_PORTOK if portok else "")'),
+    "node-none-builtin": ("node", '    if v == "none":\n        return ""\n', ''),
+    "node-none-elements": ("node", '"  set portok { typeof th dport; flags interval;%s }" % (" elements = { %s }" % portok if portok else ""),',
+                           '"  set portok { typeof th dport; flags interval; elements = { %s } }" % portok,'),
     "node-unread":  ("node", '                portok=(smart or {}).get("p2p_portok"),', '                portok=None,'),
     "node-nodefault": ("node", '_P2P_PORTOK = "1194, 3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200, 51820"',
                        '_P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"'),
@@ -55,12 +62,16 @@ PLANTS = {   # name: (file, old text, planted text)
     "panel-noname": ("panel", '    return None, perr("Not a port or a port range (1-65535): {v1}", v1=", ".join(bad[:5]) or str(raw)[:40])',
                      '    return None, perr("Not a port or a port range (1-65535): {v1}", v1="")'),
     "panel-empty":  ("panel", '    if canon == "empty":\n        return None, perr("Keep at least one port', '    if canon == "empty":\n        return [], None\n        return None, perr("Keep at least one port'),
+    "panel-none-refused": ("panel", '    if raw == []:\n        return [], None\n', ''),
     "panel-keepdefault": ("panel", '                if _pok == P2P_PORTOK_DEFAULT:\n                    cur.pop("p2p_portok", None)', '                if False:\n                    cur.pop("p2p_portok", None)'),
     "node-save-unwired": ("panel", '        if "p2p_portok" in body:                # this node\'s own never-cut ports', '        if False:                # this node\'s own never-cut ports'),
-    "wire-always":  ("panel", '    return None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)', '    return ", ".join(eff)'),
-    "wire-fleetonly": ("panel", '    eff = own if isinstance(own, list) and own else fleet', '    eff = fleet'),
-    "wire-string":  ("panel", '    eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT',
+    "wire-always":  ("panel", '    return "none" if not eff else None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)', '    return "none" if not eff else ", ".join(eff)'),
+    "wire-fleetonly": ("panel", '    eff = own if isinstance(own, list) else fleet', '    eff = fleet'),
+    "wire-string":  ("panel", '    eff = own if isinstance(own, list) else fleet if isinstance(fleet, list) else P2P_PORTOK_DEFAULT',
                      '    eff = own or fleet or P2P_PORTOK_DEFAULT'),
+    "wire-none-absent": ("panel", '    eff = own if isinstance(own, list) else fleet if isinstance(fleet, list) else P2P_PORTOK_DEFAULT',
+                         '    eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT'),
+    "wire-none-token": ("panel", '    return "none" if not eff else None', '    return "" if not eff else None'),
     "wire-unwired": ("panel", '**({"p2p_portok": _pokw} if (_pokw := p2p_portok_wire(_ps, node)) else {}),', ''),
     "unpublished":  ("panel", '                        "p2p_portok": c.get("p2p_portok") if isinstance(c.get("p2p_portok"), list) else None,\n', ''),
 }
@@ -121,10 +132,12 @@ def node_checks(src, psrc, ok):
     ok(m._p2p_portok("51820, 1194 , 3478-3481, 3480-3500, 7000") == "1194, 3478-3500, 7000, 51820",
        "[1] canonical: merged and sorted (%s)" % m._p2p_portok("51820, 1194 , 3478-3481, 3480-3500, 7000"))
     ok(m._p2p_portok("1194, 1195-1200") == "1194-1200", "[1] adjacent ranges join (%s)" % m._p2p_portok("1194, 1195-1200"))
-    bad = [None, "", "  ", 7, "x", "0", "70000", "9-8", ", ".join(str(2000 + 2 * i) for i in range(33))]
+    ok(m._p2p_portok("none") == "", "[1] \"none\" (No exceptions) → \"\" — an empty set (%r)" % m._p2p_portok("none"))
+    bad = [None, "", "  ", 7, "x", "0", "70000", "9-8", "None", " none", ", ".join(str(2000 + 2 * i) for i in range(33))]
     got = [m._p2p_portok(b) for b in bad]
     ok(all(g == D for g in got), "[1] absent, empty, junk, out of range, reversed or past the port rules' 32 entries → the built-in list (%s)"
        % [b for b, g in zip(bad, got) if g != D][:3])
+    ok(m._p2p_portok("none") != D and all(g == D for g in got[8:10]), "[1] only the exact token \"none\" is No exceptions")
     # [2]
     def table(portok):
         mm = base.load(src); b = base.Box()
@@ -134,6 +147,9 @@ def node_checks(src, psrc, ok):
     t1, t0 = table("51820, 1194"), table(None)
     ok("set portok { typeof th dport; flags interval; elements = { 1194, 51820 } }" in t1, "[2] the wire's list renders @portok")
     ok("set portok { typeof th dport; flags interval; elements = { %s } }" % D in t0, "[2] no wire → the built-in list")
+    tn = table("none")
+    ok("set portok { typeof th dport; flags interval; }" in tn and "elements = {  }" not in tn,
+       "[2] \"none\" → the set with no elements (%s)" % [ln.strip() for ln in tn.splitlines() if "set portok" in ln][:1])
     # [3]
     seen = []
     m2 = base.load(src)
@@ -170,6 +186,23 @@ def node_checks(src, psrc, ok):
         return
     ok(out["LEFT"].split() == ["3", "0"], "[5] a flagged source's flow to the exempt port leaves, to the next port is cut (left %s)" % out["LEFT"])
     ok(out.get("DHT") == "1", "[5] a DHT query to the exempt port is still caught by signature (dht %s)" % out.get("DHT"))
+    tn = m._p2p_nft("block", [], [], [], True, portok=m._p2p_portok("none"))
+    out = _wire(tn, "nft -f \"$1\" && echo LOADED yes")
+    ok(out is not None and out.get("LOADED") == "yes", "[5] the empty set (No exceptions) loads on the real nft")
+    out = _wire(tn, WIRE_PORTOK)
+    if out and "LEFT" in out:
+        ok(out["LEFT"].split() == ["0", "0"] and out.get("DHT") == "1",
+           "[5] under No exceptions a flagged source's flow to 1194 is cut too, DHT still caught (left %s, dht %s)" % (out["LEFT"], out.get("DHT")))
+
+
+def released_checks(ok):
+    """[10] main's swg-noded — what a node not yet updated runs — reads "none" as its built-in list."""
+    r = subprocess.run(["git", "-C", ROOT, "show", "main:swg-noded"], capture_output=True, text=True)
+    if r.returncode != 0 or "def _p2p_portok" not in r.stdout:
+        print("  SKIPPED [10] no main:swg-noded with the never-cut list here")
+        return
+    mo = base.load(r.stdout)
+    ok(mo._p2p_portok("none") == mo._P2P_PORTOK, "[10] the released node reads \"none\" as its built-in list (%s)" % mo._p2p_portok("none"))
 
 
 def panel_checks(src, ok):
@@ -240,7 +273,9 @@ def panel_checks(src, ok):
         ok(c == 400 and "70000" in json.dumps(r) and ps().get("p2p_portok") == ["1194", "3478-3500", "51820"],
            "[6] a bad entry is refused by name, nothing changed (%s %s)" % (c, str(r)[:120]))
         c, r = req("/api/panel/settings", {"p2p_portok": ""})
-        ok(c == 400, "[6] an empty list is refused (%s)" % c)
+        ok(c == 400 and "No exceptions" in json.dumps(r), "[6] empty text is refused, naming No exceptions (%s %s)" % (c, str(r)[:120]))
+        c, r = req("/api/panel/settings", {"p2p_portok": "  ,  "})
+        ok(c == 400 and ps().get("p2p_portok") == ["1194", "3478-3500", "51820"], "[6] blank text is refused too, nothing changed (%s)" % c)
         c, r = req("/api/panel/settings", {"p2p_portok": 1194})
         ok(c == 400 and "empty" not in json.dumps(r).lower() and "Keep at least one" not in json.dumps(r) and "1194" in json.dumps(r),
            "[6] a number (not a list or text) is named, never read as empty (s11c F15) (%s %s)" % (c, str(r)[:120]))
@@ -268,6 +303,18 @@ def panel_checks(src, ok):
         ok(c == 400, "[7] a bad entry on the node is refused (%s)" % c)
         c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": None})
         ok(c == 200 and "p2p_portok" not in json.load(open(nodes))["n2"], "[7] null clears the node's own list (%s)" % c)
+        # No exceptions (1.8.12): [] stored, published, "none" on the wire, by the three precedences
+        c, r = req("/api/panel/settings", {"p2p_portok": []})
+        ok(c == 200 and ps().get("p2p_portok") == [], "[6] an empty list is No exceptions, stored and published as [] (%s %s)" % (c, ps().get("p2p_portok")))
+        ok(wire(t1) == "none" and wire(t2) == "none", "[8] a fleet [] is \"none\" on every node without its own list (%s | %s)" % (wire(t1), wire(t2)))
+        req("/api/nodes/update", {"id": "n2", "p2p_portok": "1194, 8443"})
+        ok(wire(t2) == "1194, 8443" and wire(t1) == "none", "[8] a node's own list beats a fleet [] (%s | %s)" % (wire(t2), wire(t1)))
+        c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": []})
+        ok(c == 200 and json.load(open(nodes))["n2"].get("p2p_portok") == [] and stnode("n2").get("p2p_portok") == [],
+           "[7] a node's own [] is stored, [9] and published (%s %s)" % (c, stnode("n2").get("p2p_portok")))
+        req("/api/panel/settings", {"p2p_portok": "8443"})
+        ok(wire(t2) == "none" and wire(t1) == "8443", "[8] a node's own [] beats the fleet's list (%s | %s)" % (wire(t2), wire(t1)))
+        req("/api/nodes/update", {"id": "n2", "p2p_portok": None})
         # [6] back to the defaults → no key
         c, r = req("/api/panel/settings", {"p2p_portok": None})
         ok(c == 200 and "p2p_portok" not in ps(), "[6] null stores no key (%s)" % ps().get("p2p_portok"))
@@ -289,6 +336,7 @@ def run_checks(psrc, nsrc):
         if not cond:
             fails.append(what)
     node_checks(nsrc, psrc, ok)
+    released_checks(ok)
     panel_checks(psrc, ok)
     return fails
 
