@@ -572,7 +572,7 @@ for _who, _uid in (("an unassigned", None), ("an orphaned", "deleted-owner")):
     _r["peers"]["apriv"]["user_id"] = _uid
     check("⚠️ %s private device promotes NOTHING — it cannot be protected, and others would pay for it" % _who,
           P.dev_reach_promotes(_r, _ev_node, "n1", _ev_snap) == set(), P.dev_reach_promotes(_r, _ev_node, "n1", _ev_snap))
-_h0 = _psrc.find("_peers_all = [q for q in (roster.get(\"peers\") or {}).values() if isinstance(q, dict)]")
+_h0 = _psrc.find("_peers_here = [q for _k, q in _peers_on(roster, nid)]")
 _h1 = _psrc.find("_dreach = dev_reach_for_node(", _h0)
 _handler = _psrc[_h0:_h1] if 0 < _h0 < _h1 else ""
 check("the networks are computed once for both passes, only when one needs them",

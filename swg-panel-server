@@ -3019,7 +3019,83 @@ def roster_mark(path):
     return (_ROSTER_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+class _RosterView(dict):
+    """users.json as parsed for READERS (roster_view, 1.8.12 Scale P2): one copy shared by every sync and /api/state build
+    until the next save. ⚠️ NEVER WRITTEN — a write would reach every node's next sync until the next save, and a peer dropped
+    from a desired set is REMOVED by its node. peer_set and roster_save refuse one; a request that writes takes roster_own().
+    `idx` is its per-node index (P3, _peers_on); `digest` its hash under SWG_ROSTER_GUARD."""
+    __slots__ = ("idx", "digest")
+
+    def __init__(self, r):
+        super().__init__(r)
+        self.idx = self.digest = None
+
+
+_ROSTER_VIEW = [None]               # (path, roster_mark, _RosterView), swapped whole: a reader never sees half of one
+_ROSTER_VIEW_LOCK = threading.Lock()
+# The gates run every panel with this (.campaign/qual/rig/rungates.sh): the view is hashed when it is published and checked
+# before every JSON reply (_send_bytes) — the request that wrote it is the one checked — and the panel then ends (70), so
+# the gate's next request fails. Never set on a real panel: the hash is a whole-roster serialisation per reply.
+_ROSTER_GUARD = os.environ.get("SWG_ROSTER_GUARD") == "1"
+
+
+def _roster_digest(r):
+    return hashlib.sha256(json.dumps(r, sort_keys=True, separators=(",", ":")).encode()).digest()
+
+
+def _roster_guard_check():
+    c = _ROSTER_VIEW[0]
+    if c is not None and c[2].digest is not None and _roster_digest(c[2]) != c[2].digest:
+        log(LOG_ERR, "roster view: a reader wrote the shared copy of %s (SWG_ROSTER_GUARD) — the panel ends" % c[0])
+        os._exit(70)
+
+
+def roster_view(path):
+    """(roster, its mark) — users.json parsed ONCE per change and shared by every READER (1.8.12 Scale P2): each sync and each
+    /api/state build parsed the whole file (51 ms at 10,000 users). Keyed by the path and roster_mark(), taken BEFORE the
+    read, so a save racing it moves the mark and the next call reads again. Read-only: see _RosterView."""
+    c, m = _ROSTER_VIEW[0], roster_mark(path)
+    if c is None or m is None or c[:2] != (path, m):
+        with _ROSTER_VIEW_LOCK:
+            c, m = _ROSTER_VIEW[0], roster_mark(path)
+            if c is None or m is None or c[:2] != (path, m):
+                v = _RosterView(roster_load(path))
+                if _ROSTER_GUARD:
+                    v.digest = _roster_digest(v)
+                c = (path, m, v)
+                if m is not None:                    # no file: nothing to key it on, read each time
+                    _ROSTER_VIEW[0] = c
+    return c[2], c[1]
+
+
+def roster_own(path, roster):
+    """A roster this request may write: `roster` itself, unless it is the shared view — then a fresh load, which the request
+    reads from there on. The caller holds _api_lock, so the copy holds what the view held."""
+    return roster_load(path) if isinstance(roster, _RosterView) else roster
+
+
+def _peers_on(roster, nid):
+    """(pid, peer) for each peer with a target on node `nid`, in roster order — what one node's sync reads (1.8.12 Scale P3).
+    From the shared view's per-node index, built once per revision (tuples: no reader can grow another sync's list); any
+    other roster — a writer's own copy — gives every dict peer, exactly the walk it replaced. Each reader skips a target on
+    another node and takes nothing from a peer without one here, so both give the same reply."""
+    if isinstance(roster, _RosterView):
+        idx = roster.idx
+        if idx is None:
+            idx = {}
+            for pid, p in (roster.get("peers") or {}).items():
+                if isinstance(p, dict):               # (a node id is a string: a hand-edited list there names no node)
+                    for n in {t.get("node") for t in (p.get("targets") or ()) if isinstance(t, dict)
+                              and isinstance(t.get("node"), str)}:
+                        idx.setdefault(n, []).append((pid, p))
+            idx = roster.idx = {n: tuple(v) for n, v in idx.items()}
+        return idx.get(nid, ())
+    return [(pid, p) for pid, p in (roster.get("peers") or {}).items() if isinstance(p, dict)]
+
+
 def roster_save(path, roster):
+    if isinstance(roster, _RosterView):
+        raise RuntimeError("roster_save: the shared roster view is read-only — take roster_own() first")
     _ROSTER_SAVES[0] += 1                            # before the write: a parse racing it is never taken for current
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
@@ -4393,7 +4469,9 @@ def group_set(roster, gid, fields):
     return rec
 
 
-def peer_set(roster, pid, fields, now):
+def peer_set(roster, pid, fields, now, book=None):
+    if isinstance(roster, _RosterView):
+        raise RuntimeError("peer_set: the shared roster view is read-only — take roster_own() first")
     p = roster["peers"].get(pid) or {}
     targets = fields.get("targets", p.get("targets", []))
     # overrides: re-clean only when the caller passes them explicitly; otherwise PRESERVE whatever's
@@ -4429,25 +4507,46 @@ def peer_set(roster, pid, fields, now):
     # unrelated save — an update-target or a rekey would silently un-private a device, which is the direction that opens
     # something. `if v` also means an explicit False clears the key, which is how it is unset.
     for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
-              "routes", "share", "private", "router", "p2p_port"):
+              "routes", "share", "private", "router", "p2p_port", "p2p_yield"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
-    # P8: a port is the device's own on every node it is on. A save that adds a node, or gives a csqtt-only holder a wg/awg
-    # target (a transfer can leave it a duplicate the fill does not take back), checks the port there; held by another device
-    # → a new one free on all its nodes, said in the log. None free on all of them together → it keeps its own, still
-    # forwarded where it was.
-    held, ns = rec.get("p2p_port"), _p2p_nodes(rec)
-    if held is not None and (ns - _p2p_nodes(p) or (p2p_port_wanted(rec) and not p2p_port_wanted(p))) \
-            and held in _p2p_held(roster, pid, ns) and (_free := p2p_port_take(roster, pid, ns)):
-        log(LOG_NOTICE, "p2p: device %s's incoming torrent port %s is another device's on a node it is now on — it is %s now, "
-            "on every node (the subscription shows it)", pid, held, _free)
-        rec["p2p_port"] = _free
+    # P8: a port is the device's own on every node it is on. A save that puts it on a node where another device holds its
+    # port — that one was there first — gives it a new port free on all its nodes, said in the log. None free on all of them
+    # together → it keeps its own and YIELDS there (`p2p_yield`, K2): the holder keeps the forward, and this device's
+    # subscription shows no port on that node. A node it was already on keeps its standing — save one where it shares its
+    # port with a device that does not yield it (a transfer's duplicate), resolved when it gets its first wg/awg target (F4).
+    if book is not None:
+        _p2p_book_move(book, p, None)                         # its old record leaves the book, the new one goes in below
+    held, ns, was = rec.get("p2p_port"), _p2p_nodes(rec), _p2p_nodes(p)
+    yl, clash = _p2p_yields(rec) & ns, set()                  # (a node it left leaves its yields)
+    if held is not None:
+        if ns - was:
+            clash = _p2p_clash(roster, pid, held, ns - was, book)
+        if p2p_port_wanted(rec) and not p2p_port_wanted(p):
+            clash |= _p2p_clash(roster, pid, held, ns & was, holders=True)
+    if clash:
+        _free = p2p_port_take(roster, pid, ns, book)
+        if _free:
+            log(LOG_NOTICE, "p2p: device %s's incoming torrent port %s is another device's on a node it is now on — it is %s "
+                "now, on every node (the subscription shows it)", pid, held, _free)
+            rec["p2p_port"], yl = _free, set()
+        else:
+            log(LOG_NOTICE, "p2p: device %s keeps its incoming torrent port %s — no port is free on all its nodes — and is not "
+                "forwarded on %s, where another device holds it (its subscription shows no port there)", pid, held,
+                ", ".join(sorted(clash)))
+            yl |= clash
     elif "p2p_port" not in rec and p2p_port_wanted(rec):     # a WDTT / csqtt-only device takes none
-        _free = p2p_port_take(roster, pid, ns)
+        _free = p2p_port_take(roster, pid, ns, book)
         if _free:                                             # pool full: no port, nothing forwarded for it
             rec["p2p_port"] = _free
+    if yl:
+        rec["p2p_yield"] = sorted(yl)
+    else:
+        rec.pop("p2p_yield", None)
     roster["peers"][pid] = rec
+    if book is not None:
+        _p2p_book_move(book, None, rec)
     return rec
 
 
@@ -6628,7 +6727,7 @@ def node_networks(roster, nid, snap):
     users = roster.get("users") or {}
     nowv = int(time.time())
     provs = []
-    for key, p in (roster.get("peers") or {}).items():
+    for key, p in _peers_on(roster, nid):
         if not isinstance(p, dict) or not p.get("routes"):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -6914,7 +7013,7 @@ def net_share_for_node(roster, nid, carry, snap=None):
     if not restricted:
         return []
     by_user, kidx = {}, None
-    for key, q in peers.items():
+    for key, q in _peers_on(roster, nid):
         if not isinstance(q, dict) or q.get("user_id") not in users:
             continue
         qu = users[q["user_id"]] or {}
@@ -7033,7 +7132,7 @@ def dev_reach_promotes(roster, node_rec, nid, snap):
     nowv = int(time.time())
     lv = dev_reach_levels(node_rec)
     out = set()
-    for q in (roster.get("peers") or {}).values():
+    for _k, q in _peers_on(roster, nid):
         if not isinstance(q, dict) or not q.get("private"):
             continue
         # ⚠️ An owner the roster does not have promotes NOTHING. `protect` below needs `user_id in users`, so such a
@@ -7077,7 +7176,7 @@ def dev_reach_for_node(roster, node_rec, nid, snap, carry=None, promotes=None):
     if not guarded:
         return {}
     src, dst, kidx = {}, [], None                 # src: uid → {(device, prefix)} · dst: [(address, owner uid)]
-    for key, q in (roster.get("peers") or {}).items():
+    for key, q in _peers_on(roster, nid):
         if not isinstance(q, dict):
             continue
         qu = users.get(q.get("user_id")) or {}
@@ -9326,9 +9425,10 @@ def desired_for_node(roster, node_id, snap=None):
     nowv = int(time.time())
     out = {}
     nets = {}
-    if snap is not None and any(isinstance(q, dict) and q.get("routes") for q in (roster.get("peers") or {}).values()):
+    here = _peers_on(roster, node_id)                # P3 (and a network carried on another node is not this one's)
+    if snap is not None and any(q.get("routes") for _k, q in here):
         nets = node_networks(roster, node_id, snap)["carry"]
-    for p in (roster.get("peers") or {}).values():
+    for _k, p in here:
         if not isinstance(p, dict):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -9477,6 +9577,43 @@ def _p2p_held(roster, pid, nodes):
             if k != pid and isinstance(q, dict) and "p2p_port" in q and any(n in nodes for n in _p2p_on(q))}
 
 
+def _p2p_yields(p):
+    """The nodes where device `p`'s port is another device's (`p2p_yield`, 1.8.12 Scale K2): set when a save or the fill kept
+    a duplicate because no port was free on all its nodes. It is not forwarded the port there, and its subscription shows no
+    port there (swg-sub twins this). Anything but a list of strings is none."""
+    v = p.get("p2p_yield") if isinstance(p, dict) else None
+    return {x for x in v if isinstance(x, str)} if isinstance(v, list) else set()
+
+
+def _p2p_clash(roster, pid, port, nodes, book=None, holders=False):
+    """The nodes of `nodes` where a device other than `pid` holds `port` — from `book` when the caller keeps one. `holders`:
+    only a device that does not yield it there counts (one pass, never the book)."""
+    if book is not None and not holders:
+        return {n for n in nodes if (book.get(n) or {}).get(port, 0) > 0}
+    return {n for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict) and q.get("p2p_port") == port
+            for n in _p2p_on(q) if n in nodes and not (holders and n in _p2p_yields(q))}
+
+
+def p2p_book(roster):
+    """{node: {port: devices}} — the ports held on each node, built once for a loop that gives many devices a port (the
+    import of an onboarded interface or of a container's peers). peer_set(..., book=) checks and takes against it and moves
+    its record in it, so a device costs its own nodes, not a pass over the fleet (8.4 ms a device past the pool's wrap at
+    13,000 devices, so ~17 s under the lock for a 2,000-device import)."""
+    book = {}
+    for q in (roster.get("peers") or {}).values():
+        _p2p_book_move(book, None, q)
+    return book
+
+
+def _p2p_book_move(book, old, new):
+    for q, d in ((old, -1), (new, 1)):
+        x = q.get("p2p_port") if isinstance(q, dict) else None
+        if x is not None:
+            for n in _p2p_nodes(q):
+                c = book.setdefault(n, {})
+                c[x] = c.get(x, 0) + d
+
+
 def _p2p_free(roster, taken):
     """The free pool ports in hand-out order (`taken(x)` → held where the device is): from the roster's high-water mark
     (`p2p_next`) up, then from the bottom — a port a deleted device held goes to another device only once the pool has come
@@ -9495,18 +9632,22 @@ def _p2p_mark(roster, x):
     roster["p2p_next"] = x + 1 if x < P2P_PORT_POOL[1] else P2P_PORT_POOL[0]
 
 
-def p2p_port_take(roster, pid, nodes):
+def p2p_port_take(roster, pid, nodes, book=None):
     """The next port for `pid` on `nodes` (peer_set), moving the high-water mark past it. None when the pool is full there.
     A port no device holds anywhere is free at once (one cheap pass — every port until the pool has come round); the ports
     held on `nodes` are worked out only when a candidate is held somewhere (a per-node set built per holder costs ~3× the
-    pass at 15,000 devices, and an adopt takes one port per device)."""
-    used, here = {q.get("p2p_port") for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict)}, []
-    def taken(x):
-        if x not in used:
-            return False
-        if not here:
-            here.append(_p2p_held(roster, pid, nodes))
-        return x in here[0]
+    pass at 15,000 devices, and an adopt takes one port per device). With a `book` (p2p_book: an import loop) no pass at all."""
+    if book is not None:
+        def taken(x):
+            return any((book.get(n) or {}).get(x, 0) > 0 for n in nodes)
+    else:
+        used, here = {q.get("p2p_port") for k, q in (roster.get("peers") or {}).items() if k != pid and isinstance(q, dict)}, []
+        def taken(x):
+            if x not in used:
+                return False
+            if not here:
+                here.append(_p2p_held(roster, pid, nodes))
+            return x in here[0]
     x = next(_p2p_free(roster, taken), None)
     if x is not None:
         _p2p_mark(roster, x)
@@ -9516,12 +9657,30 @@ def p2p_port_take(roster, pid, nodes):
 def p2p_ports_fill(roster, first=()):
     """Give every device that wants a port (`p2p_port_wanted`) and has none — or holds one an earlier peer holds, or one
     outside the pool (a hand edit, a node transfer from another panel) — the next free one, in sorted peer-id order
-    (`first`, the peers this panel already held, claim theirs before the rest): the same result every run. A port is never
-    taken back — a device left WDTT / csqtt-only for a while keeps the one its client listens on. "Held" is per node (P8): a
-    port is a duplicate only where both devices are. A roster with no mark gets one, past the highest port held. True when
-    something changed."""
+    (`first`, the peers this panel already held, claim theirs before the rest; a device that yields somewhere after the
+    others, and a forwarded one before a csqtt-only one, so the holders claim first): the same result every run. A port is
+    never taken back — a device left WDTT / csqtt-only for a while keeps the one its client listens on. "Held" is per node
+    (P8): a port is a duplicate only where both devices are, and a device that keeps a duplicate — csqtt-only, or none free
+    on all its nodes — yields it there (`p2p_yield`, K2): every yield is worked out again here. A roster with no mark gets
+    one, past the highest port held. True when something changed."""
     peers, on, top, todo, full, changed = roster.get("peers") or {}, {}, None, [], [], False
-    for pid in sorted(peers, key=lambda k: (k not in first, k)):
+
+    def keep(q, v, ns, clash):                                # its own port: held where it came first, yielded where not
+        nonlocal changed
+        for n in ns - clash:
+            on.setdefault(n, set()).add(v)
+        if type(q.get("p2p_port")) is not int:
+            q["p2p_port"], changed = v, True
+        y = sorted(clash)
+        if q.get("p2p_yield") != (y or None):
+            changed = True
+            q.update(p2p_yield=y) if y else q.pop("p2p_yield", None)
+
+    def order(k):                                             # this panel's own first; then a device that yields somewhere
+        q = peers[k]                                          # after the rest, and one forwarded (a wg/awg target) before a
+        return (k not in first, bool(_p2p_yields(q)), not (isinstance(q, dict) and p2p_port_wanted(q)), k)   # csqtt-only one
+
+    for pid in sorted(peers, key=order):
         q = peers[pid]
         if not isinstance(q, dict):
             continue
@@ -9530,24 +9689,29 @@ def p2p_ports_fill(roster, first=()):
             if not isinstance(v, (bool, int)) and float(v) == int(float(v)):
                 v = int(float(v))
         ns = _p2p_nodes(q)
-        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and not any(v in on.get(n, ()) for n in ns):
+        ok = type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]
+        clash = {n for n in ns if v in on.get(n, ())} if ok else set()
+        if ok and not (clash and p2p_port_wanted(q)):
             top = v if top is None else max(top, v)
-            for n in ns:
-                on.setdefault(n, set()).add(v)
-            if type(q.get("p2p_port")) is not int:
-                q["p2p_port"], changed = v, True
+            keep(q, v, ns, clash)
         elif p2p_port_wanted(q):
-            todo.append((q, ns))
+            todo.append((q, ns, v if ok else None, clash))
     if top is not None and roster.get("p2p_next") is None:   # a roster from before the mark: seeded, so a delete never
         _p2p_mark(roster, top)                                # hands the highest port to the next device
         changed = True
-    for q, ns in todo:                                        # (no port frees inside a fill: nodes found full stay full)
+    for q, ns, v, clash in todo:                              # (no port frees inside a fill: nodes found full stay full)
         x = None if any(f <= ns for f in full) else next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)
         if x is None:
             full.append(ns)
+            if v is not None:                                 # none free: it keeps its own, yielded where another holds it
+                keep(q, v, ns, clash)
+                continue
         if x != q.get("p2p_port"):
             changed = True
             q.update(p2p_port=x) if x else q.pop("p2p_port", None)
+        if "p2p_yield" in q:
+            q.pop("p2p_yield")
+            changed = True
         if x is not None:
             _p2p_mark(roster, x)
             for n in ns:
@@ -9569,17 +9733,24 @@ def p2p_fwd_for_node(mark, roster, node_id, scope):
     """smart.p2p_fwd: [[device ip, its port], …] — this node's wg/awg devices where P2P leaves by its own address. `scope`:
     ("direct", strict subnets) → every device outside them, ("iface", the Direct records' subnets) → those inside, None →
     none. One per device: its primary target here, else the first by interface name (two would be one duplicate
-    `addr . port` key, which refuses the node's whole table). Sorted; cached on the roster's mark and the scope."""
+    `addr . port` key, which refuses the node's whole table). One per port, the holder's (K2): of the devices on this node
+    with that port — any target kind, forwarded here or not — the one that does not yield it (`p2p_yield`), else the
+    lowest id. Sorted; cached on the roster's mark and the scope."""
     if not scope:
         return []
     hit = _P2P_FWD.get(node_id)
     if mark is not None and hit and hit[0] == (mark, scope):
         return hit[1]
-    nets, out = [ipaddress.ip_network(x, strict=False) for x in scope[1]], []
-    for p in (roster.get("peers") or {}).values():
-        port = p.get("p2p_port") if isinstance(p, dict) else None
+    nets, rows, owner = [ipaddress.ip_network(x, strict=False) for x in scope[1]], [], {}
+    for pid, p in _peers_on(roster, node_id):
+        port = p.get("p2p_port")
+        if type(port) is not int:
+            continue
+        k = (node_id in _p2p_yields(p), pid)
+        if port not in owner or k < owner[port]:
+            owner[port] = k
         ts = []
-        for t in (p.get("targets") or []) if type(port) is int else []:
+        for t in (p.get("targets") or []):
             if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):
                 continue                                      # (the node first: an address is parsed only for its own)
             with contextlib.suppress(ValueError, TypeError):
@@ -9587,8 +9758,8 @@ def p2p_fwd_for_node(mark, roster, node_id, scope):
                 if a.version == 4 and any(a in n for n in nets) == (scope[0] == "iface"):
                     ts.append((_fp_role(t) != "primary", str(t.get("iface") or ""), a))
         if ts:
-            out.append((min(ts)[2], port))
-    out = [[str(a), q] for a, q in sorted(out)]
+            rows.append((min(ts)[2], port, k))
+    out = [[str(a), q] for a, q, k in sorted(rows) if owner[q] == k]
     if mark is not None:
         _P2P_FWD[node_id] = ((mark, scope), out)
     return out
@@ -9619,7 +9790,7 @@ def cut_off_for_node(roster, node_id, snap):
     if not any(live.values()):
         return {}
     users, nowv, out = roster.get("users") or {}, int(time.time()), {}
-    for p in (roster.get("peers") or {}).values():
+    for _k, p in _peers_on(roster, node_id):
         if not isinstance(p, dict) or not p.get("pubkey") or not access_cut(p, users.get(p.get("user_id")) or {}, nowv):
             continue
         for t in p.get("targets") or []:
@@ -9638,7 +9809,7 @@ def _who_here(roster, node_id, snap):
     sharing and device access use, so an unvouched build is never a source. `why` is empty for a device the node can tell
     apart, else `keyless_sources`' reason. Blocked and expired devices are left out, as `desired_for_node` leaves them out."""
     users, nowv, idx, here = roster.get("users") or {}, int(time.time()), None, {}
-    for pid, p in (roster.get("peers") or {}).items():
+    for pid, p in _peers_on(roster, node_id):
         if not isinstance(p, dict):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -9785,7 +9956,7 @@ def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
     users = roster.get("users") or {}
     nowv = int(time.time())
     out = {}
-    for p in (roster.get("peers") or {}).values():
+    for _k, p in _peers_on(roster, node_id):
         if not isinstance(p, dict) or not p.get("wdtt_password"):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -9863,7 +10034,7 @@ def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
     exc = {i: _ar_except_index(roster, r["app_routing_except"]) for i, r in insts.items()
            if isinstance(r, dict) and r.get("app_routing_except") and str(r.get("line") or CSQTT_DEFAULT_LINE) != CSQTT_DEFAULT_LINE}
     out = {}
-    for pid, p in (roster.get("peers") or {}).items():
+    for pid, p in _peers_on(roster, node_id):
         if not isinstance(p, dict) or not p.get("csqtt_password"):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -12761,6 +12932,8 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
         # copying them would make B compute a desired set for nodes it does not have.
         moved = dict(p)
         moved["targets"] = mine
+        moved.pop("p2p_yield", None)    # this panel's own (K2): its node ids mean nothing there, and an older panel would
+                                        # compare it and refuse a peer it already holds — the far panel works out its own
         peers[pid] = moved
         uid = p.get("user_id")
         if uid and uid in (roster.get("users") or {}):
@@ -26138,7 +26311,7 @@ def api(method, path, qs, body, deps):
             _hp_at = os.path.getmtime(_hpf)              # no timestamp in the file → use its mtime for the timeout
         _mstat = _APPLY["status"] or {}
         _mgrace = int(_mstat.get("grace_until") or 0) > int(time.time())   # a just-confirmed move still gracing out (old address kept alive) → an instant undo is still possible
-        _roster = roster_load(roster_path)               # load ONCE per /api/state — reused by the "roster" key AND nodes_view's ghost ref-walk (was 2 reads/poll)
+        _roster = roster_view(roster_path)[0]            # the shared parse (P2): the "roster" key and nodes_view's walk
         return 200, {"ok": True, "data": {
             "host_proc": _proc_view(_hp, _hp_at),        # this panel host is mid re-install (UI tag); times out → "failed" → clears
             "host_proc_err": _hp_err,                    # failed-state log tail for the appbar error popup
@@ -33825,6 +33998,8 @@ class Handler(BaseHTTPRequestHandler):
         # length: on a keep-alive connection the next response is then read from the wrong offset — silent,
         # intermittent, and on the path the SPA, /api/v1 and /metrics all share. Passing the encoded payload
         # in keeps the two in step by construction; never pass a length alongside it.
+        if _ROSTER_GUARD:                                # the gates: did this request write the shared roster? (P2)
+            _roster_guard_check()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         if encoding:
@@ -34723,8 +34898,9 @@ class Handler(BaseHTTPRequestHandler):
         if reconcile_mesh(nodes, Handler.deps.get("node_snaps") or {}, Handler.deps):
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
-        _rmark = roster_mark(Handler.deps["roster_path"])   # BEFORE the read: a save racing it is never cached as current
-        roster = roster_load(Handler.deps["roster_path"])
+        # The shared parsed roster (P2): READ-ONLY. Each writer below takes roster_own() first, and the rest of the request
+        # reads that copy. `_rmark` was taken before the read: a save racing it is never cached as current.
+        roster, _rmark = roster_view(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
@@ -34814,7 +34990,7 @@ class Handler(BaseHTTPRequestHandler):
             if _rep0.get("onboarded") and "onboarded" in _rep0:
                 _owned = {(pp.get("pubkey") or "").strip()
                           for pp in (roster.get("peers") or {}).values() if isinstance(pp, dict)}
-                _adopted = 0
+                _adopted, _bk = 0, None
                 for _pr in (_rep0.get("peers") or []):
                     _pk = str((_pr or {}).get("public_key") or "").strip()
                     if not _pk or _pk in _owned or not no_ctrl(_pk):
@@ -34824,6 +35000,8 @@ class Handler(BaseHTTPRequestHandler):
                         _pid = gen_id()
                     # `type` resolved by the NODE, not by the name — the same call /api/peers/adopt makes
                     # for this exact peer, so an imported one is indistinguishable from a hand-adopted one.
+                    roster = roster_own(Handler.deps["roster_path"], roster)   # (P2: never the shared view)
+                    _bk = p2p_book(roster) if _bk is None else _bk   # one port book for the whole import (K2)
                     _p = peer_set(roster, _pid, {
                         "pubkey": _pk, "psk": str(_pr.get("preshared_key") or "").strip(), "user_id": None,
                         "title": (str(_pr.get("name") or "").strip() or "adopted")[:60],
@@ -34831,7 +35009,7 @@ class Handler(BaseHTTPRequestHandler):
                                      "type": iface_kind(Handler.deps, nodes,
                                                         Handler.deps.get("node_snaps") or {}, nid, _ifn),
                                      "ip": str(_pr.get("allowed_ips") or "").split(",")[0].split("/")[0].strip()}],
-                    }, int(time.time()))
+                    }, int(time.time()), book=_bk)
                     _adopted += 1
                     ev_append(Handler.deps["roster_path"], "peer", _pid,
                               "Imported peer from an onboarded interface", peer_label(roster, _p),
@@ -35227,6 +35405,7 @@ class Handler(BaseHTTPRequestHandler):
                         _pf["disabled"] = True
                     with contextlib.suppress(Exception):
                         _pf["expiry"] = int(_pmeta.get("expires_at") or 0)
+                    roster = roster_own(Handler.deps["roster_path"], roster)   # (P2: never the shared view)
                     _pp = peer_set(roster, _ppid, _pf, int(time.time()))
                     _took += 1
                     ev_append(Handler.deps["roster_path"], "peer", _ppid,
@@ -35286,6 +35465,7 @@ class Handler(BaseHTTPRequestHandler):
                             _f["disabled"] = True
                         with contextlib.suppress(Exception):
                             _f["expiry"] = int(_meta.get("expires_at") or 0)
+                        roster = roster_own(Handler.deps["roster_path"], roster)   # (P2: never the shared view)
                         _p = peer_set(roster, _pid, _f, int(time.time()))
                         _imported += 1
                         ev_append(Handler.deps["roster_path"], "peer", _pid,
@@ -35436,6 +35616,7 @@ class Handler(BaseHTTPRequestHandler):
                         _f["disabled"] = True
                     with contextlib.suppress(Exception):
                         _f["expiry"] = int(_meta.get("expires_at") or 0)
+                    roster = roster_own(Handler.deps["roster_path"], roster)   # (P2: never the shared view)
                     _p = peer_set(roster, _pid, _f, int(time.time()))
                     _cimp += 1
                     ev_append(Handler.deps["roster_path"], "peer", _pid,
@@ -35466,7 +35647,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _ca.get("ok") and _cif:
                     _have = {(p.get("pubkey") or "").strip(): pid
                              for pid, p in (roster.get("peers") or {}).items() if isinstance(p, dict)}
-                    _new = 0
+                    _new, _bk = 0, None
                     for _pr in (_ca.get("peers") or []):
                         _pk = str((_pr or {}).get("publickey") or "").strip()
                         if not _pk or not no_ctrl(_pk):
@@ -35482,7 +35663,9 @@ class Handler(BaseHTTPRequestHandler):
                                 _pid = gen_id()
                             _f["user_id"] = None
                             _new += 1
-                        _p = peer_set(roster, _pid, _f, int(time.time()))
+                        roster = roster_own(Handler.deps["roster_path"], roster)   # (P2: never the shared view)
+                        _bk = p2p_book(roster) if _bk is None else _bk   # one port book for the whole import (K2)
+                        _p = peer_set(roster, _pid, _f, int(time.time()), book=_bk)
                         ev_append(Handler.deps["roster_path"], "peer", _pid,
                                   "Imported peer from an adopted container", peer_label(roster, _p),
                                   nid + "/" + _cif)
@@ -35959,9 +36142,9 @@ class Handler(BaseHTTPRequestHandler):
         # ⚠️ AFTER BOTH MIRRORS (T-17 interfaces, T-18 WDTT/csqtt, above). The guard reads the node RECORD, so the pass run
         # before them left an interface or instance the node reported for the first time out of `dev_reach`: open for its
         # first sync (DEVICE-ACCESS §11.2 F5). The users the T-18 mirror imports are in `roster` by now too.
-        _peers_all = [q for q in (roster.get("peers") or {}).values() if isinstance(q, dict)]
-        _routes_any = snap is not None and any(q.get("routes") for q in _peers_all)
-        _share_any = _routes_any and any(q.get("routes") and net_restricted(q) for q in _peers_all)
+        _peers_here = [q for _k, q in _peers_on(roster, nid)]   # P3 (a network carried on another node is not this one's)
+        _routes_any = snap is not None and any(q.get("routes") for q in _peers_here)
+        _share_any = _routes_any and any(q.get("routes") and net_restricted(q) for q in _peers_here)
         # ⚠️ PROMOTION IS PART OF THE GATE, not just of the table. dev_reach_guarded() is empty when every interface is an
         # explicit Everyone, and that used to end it — so the node that most needs promotion, a single-interface Everyone
         # node, was sent no dev_reach at all and a private device there was reachable by everyone.
@@ -36619,8 +36802,8 @@ class Handler(BaseHTTPRequestHandler):
             # So: this node's targets come from the bundle, every other node's are kept, and the clash test
             # asks the question that actually matters — is this the same peer, or a different one wearing
             # the same id?
-            def _no_targets(rec):   # (the torrent port too: each panel gives its own — ours is kept below)
-                return {k: v for k, v in (rec or {}).items() if k not in ("targets", "p2p_port")}
+            def _no_targets(rec):   # (the torrent port and its yields too: each panel gives its own — ours are kept below)
+                return {k: v for k, v in (rec or {}).items() if k not in ("targets", "p2p_port", "p2p_yield")}
             clash = []
             for k, v in ((b.get("users") or {}) if isinstance(b.get("users"), dict) else {}).items():
                 cur_u = roster["users"].get(k)
@@ -36647,7 +36830,7 @@ class Handler(BaseHTTPRequestHandler):
                     kept = [t for t in (cur_p.get("targets") or [])
                             if isinstance(t, dict) and t.get("node") != a_nid]
                     roster["peers"][pid] = {**pr, "targets": kept + list(pr.get("targets") or []),
-                                            **({"p2p_port": cur_p["p2p_port"]} if "p2p_port" in cur_p else {})}
+                                            **{k: cur_p[k] for k in ("p2p_port", "p2p_yield") if k in cur_p}}
                 np += 1
             p2p_ports_fill(roster, first=_had)                  # an arriving port this panel already gave out is reassigned
             roster_save(deps["roster_path"], roster)

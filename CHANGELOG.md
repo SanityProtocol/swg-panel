@@ -26,13 +26,15 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Every device gets its incoming torrent port on a big fleet too.** A device's port was unique across the whole fleet,
   so past 10,000 devices with a WireGuard or AmneziaWG connection a device got none, without a word. Now each server
   has the 10,000 ports to itself, and a device's port is still the same on every server it is on. A device keeps its
-  port; in rare cases — once the panel has handed out 10,000 ports, or after a server is transferred in — it can change,
-  or stop being forwarded when no port is free. The subscription always shows the current port, the one to set in the
-  torrent client.
+  port. In rare cases — once the panel has handed out 10,000 ports, or after a server is transferred in — two devices on
+  one server can hold the same port: the one that held it there first keeps it, and the other gets a new port, free on
+  all its servers, or, when none is, is not forwarded on that server. The subscription shows the port only where it is
+  forwarded to that device — the one to set in the torrent client.
 - **The panel keeps up with more users.** Saving `users.json` at 10,000 users takes about 55 ms instead of about 385:
   the roster is serialised once, without indentation (a third smaller), for the file and its backup alike. The panel
   accepts 128 waiting connections instead of 5, so nodes reconnecting together after a panel restart are no longer
-  refused.
+  refused. A server's sync now reads only that server's devices, and the panel parses `users.json` once per change
+  instead of on every sync and every refresh of an open page: at 10,000 users a sync costs about half what it did.
 - **A busy node no longer runs out of room for connections.** Every connection through a node takes a place in the
   kernel's connection table, and a full table refuses new connections for every user at once. The kernel makes it small:
   8,192 places on a 1 GB server. The node now raises it to 65,536 places for each GB of RAM, and never lowers a larger

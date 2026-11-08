@@ -237,10 +237,11 @@ check("deterministic", P.net_share_for_node(R, "n1", nn["carry"]) == ns)
 _psrc = open(PANEL).read()
 check("the sync reply names `net_share` exactly once, behind that result",
       _psrc.count('"net_share":') == 1 and '**({"net_share": _nshare} if _nshare else {})' in _psrc)
-check("…and computes it only when some peer restricts a network",
-      '_share_any = _routes_any and any(q.get("routes") and net_restricted(q) for q in _peers_all)' in _psrc
+check("…and computes it only when some peer on the node restricts a network (1.8.12 Scale P3: one elsewhere is not its)",
+      '_share_any = _routes_any and any(q.get("routes") and net_restricted(q) for q in _peers_here)' in _psrc
       and '_nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []' in _psrc
-      and '_routes_any = snap is not None and any(q.get("routes") for q in _peers_all)' in _psrc)
+      and '_routes_any = snap is not None and any(q.get("routes") for q in _peers_here)' in _psrc
+      and '_peers_here = [q for _k, q in _peers_on(roster, nid)]' in _psrc)
 
 # ⚠️ "RESTRICTED" IS NOT "HAS A STORED SHARE". That was the question every reader in front of share_grants asked, and it is
 # right only while a share is the sole way to be restricted. Private is the other way — and the common one, because the

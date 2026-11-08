@@ -89,9 +89,9 @@ PLANTS = {   # name: (file, old text, planted text)
     "drain-pass":    ("node", '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone drop")',
                       '        L.append("    ct direction reply ct status dnat meta l4proto { tcp, udp } ip saddr . th sport @gone counter")'),
     "drain-stays":   ("node", '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now and k not in cur}', '        gone = {k: t for k, t in _P2PFWD["gone"].items() if t > now}'),
-    "fill-dup":      ("panel", "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1] and not any(v in on.get(n, ()) for n in ns):",
-                      "        if type(v) is int and P2P_PORT_POOL[0] <= v <= P2P_PORT_POOL[1]:"),
-    "fill-fleetwide": ("panel", " and not any(v in on.get(n, ()) for n in ns):", " and not any(v in s_ for s_ in on.values()):"),
+    "fill-dup":      ("panel", "        clash = {n for n in ns if v in on.get(n, ())} if ok else set()", "        clash = set()"),
+    "fill-fleetwide": ("panel", "        clash = {n for n in ns if v in on.get(n, ())} if ok else set()",
+                       "        clash = {n for n in ns if any(v in s_ for s_ in on.values())} if ok else set()"),
     "fill-todofleet": ("panel", "next(_p2p_free(roster, lambda x: any(x in on.get(n, ()) for n in ns)), None)",
                        "next(_p2p_free(roster, lambda x: any(x in s_ for s_ in on.values())), None)"),
     "take-fleetwide": ("panel", '            if k != pid and isinstance(q, dict) and "p2p_port" in q and any(n in nodes for n in _p2p_on(q))}',
@@ -99,19 +99,21 @@ PLANTS = {   # name: (file, old text, planted text)
     "take-fastfleet": ("panel", "        return x in here[0]\n", "        return True\n"),
     "nodes-wgonly":  ("panel", '    return (t.get("node") for t in (p.get("targets") or []) if isinstance(t, dict) and t.get("node"))',
                       '    return (t.get("node") for t in (p.get("targets") or []) if isinstance(t, dict) and t.get("node") and not _is_self_contained_target(t))'),
-    "set-noclash":   ("panel", "            and held in _p2p_held(roster, pid, ns) and (_free", "            and False and (_free"),
-    "set-newonly":   ("panel", "    if held is not None and (ns - _p2p_nodes(p) or (p2p_port_wanted(rec) and not p2p_port_wanted(p))) \\",
-                      "    if held is not None and (ns - _p2p_nodes(p)) \\"),
-    "set-dropnone":  ("panel", "            and held in _p2p_held(roster, pid, ns) and (_free := p2p_port_take(roster, pid, ns)):",
-                      "            and held in _p2p_held(roster, pid, ns) and ((_free := p2p_port_take(roster, pid, ns)) or True):"),
+    "set-noclash":   ("panel", "            clash = _p2p_clash(roster, pid, held, ns - was, book)", "            clash = set()"),
+    "set-newonly":   ("panel", "        if p2p_port_wanted(rec) and not p2p_port_wanted(p):\n            clash |= _p2p_clash(",
+                      "        if False:\n            clash |= _p2p_clash("),
+    "set-dropnone":  ("panel", "        if _free:\n            log(LOG_NOTICE, \"p2p: device %s's incoming torrent port %s is another",
+                      "        if True:\n            log(LOG_NOTICE, \"p2p: device %s's incoming torrent port %s is another"),
     "fill-nofull":   ("panel", "        x = None if any(f <= ns for f in full) else next(", "        x = None if False else next("),
-    "fill-first":    ("panel", "    for pid in sorted(peers, key=lambda k: (k not in first, k)):", "    for pid in sorted(peers):"),
+    "fill-first":    ("panel", "        return (k not in first, bool(_p2p_yields(q)), not (isinstance(q, dict) and p2p_port_wanted(q)), k)",
+                      "        return (bool(_p2p_yields(q)), not (isinstance(q, dict) and p2p_port_wanted(q)), k)"),
     "fill-fullrewrite": ("panel", '        if x != q.get("p2p_port"):\n', '        if True:\n'),
-    "fill-keyless":  ("panel", '        elif p2p_port_wanted(q):\n            todo.append((q, ns))', '        else:\n            todo.append((q, ns))'),
+    "fill-keyless":  ("panel", '        elif p2p_port_wanted(q):\n            todo.append((q, ns, v if ok else None, clash))',
+                      '        else:\n            todo.append((q, ns, v if ok else None, clash))'),
     "fill-noseed":   ("panel", '    if top is not None and roster.get("p2p_next") is None:', '    if False:'),
     "set-keyless":   ("panel", '    elif "p2p_port" not in rec and p2p_port_wanted(rec):     # a WDTT', '    elif "p2p_port" not in rec:     # a WDTT'),
-    "set-takeback":  ("panel", '    held, ns = rec.get("p2p_port"), _p2p_nodes(rec)\n',
-                      '    held, ns = rec.get("p2p_port"), _p2p_nodes(rec)\n    if not p2p_port_wanted(rec):\n        rec.pop("p2p_port", None)\n'),
+    "set-takeback":  ("panel", '    held, ns, was = rec.get("p2p_port"), _p2p_nodes(rec), _p2p_nodes(p)\n',
+                      '    held, ns, was = rec.get("p2p_port"), _p2p_nodes(rec), _p2p_nodes(p)\n    if not p2p_port_wanted(rec):\n        rec.pop("p2p_port", None)\n'),
     "lowest-first":  ("panel", '        nx = min(max([q.get("p2p_port") for q in', '        nx = lo or min(max([q.get("p2p_port") for q in'),
     "mark-ignored":  ("panel", '    if not (type(nx) is int and lo <= nx <= hi):', '    if True:'),
     "mark-still":    ("panel", '        _p2p_mark(roster, x)\n    return x', '        pass\n    return x'),
@@ -119,13 +121,38 @@ PLANTS = {   # name: (file, old text, planted text)
     "create-nokeep": ("panel", '                               keep=(_prev.get("desired_port"), _prev.get("listen_port"), (_prev.get("_lastcfg") or {}).get("listen_port")))',
                       '                               keep=())'),
     "fill-nostart":  ("panel", "        p2p_ports_at_start(_rp)", "        pass"),
-    "set-dropped":   ("panel", '"routes", "share", "private", "router", "p2p_port"):', '"routes", "share", "private", "router"):'),
+    "set-dropped":   ("panel", '"routes", "share", "private", "router", "p2p_port", "p2p_yield"):', '"routes", "share", "private", "router", "p2p_yield"):'),
+    # K2 (1.8.12 Scale): the holder-wins rule for a kept duplicate, the import-loop port book, transfers
+    "set-yielddropped": ("panel", '"routes", "share", "private", "router", "p2p_port", "p2p_yield"):', '"routes", "share", "private", "router", "p2p_port"):'),
+    "set-yieldall":  ("panel", "            clash = _p2p_clash(roster, pid, held, ns - was, book)", "            clash = _p2p_clash(roster, pid, held, ns, book)"),
+    "set-noyield":   ("panel", "            yl |= clash\n", "            pass\n"),
+    "set-yieldkept": ("panel", "    yl, clash = _p2p_yields(rec) & ns, set()", "    yl, clash = _p2p_yields(rec), set()"),
+    "set-flipany":   ("panel", "            clash |= _p2p_clash(roster, pid, held, ns & was, holders=True)", "            clash |= _p2p_clash(roster, pid, held, ns & was)"),
+    "fwd-pidonly":   ("panel", "        k = (node_id in _p2p_yields(p), pid)", "        k = (False, pid)"),
+    "fwd-all":       ("panel", "    out = [[str(a), q] for a, q, k in sorted(rows) if owner[q] == k]", "    out = [[str(a), q] for a, q, k in sorted(rows)]"),
+    "fwd-inscope":   ("panel", "    out = [[str(a), q] for a, q, k in sorted(rows) if owner[q] == k]",
+                      "    out = [[str(a), q] for a, q, k in sorted(rows) if min(k_ for _a, q_, k_ in rows if q_ == q) == k]"),
+    "fill-yieldsort": ("panel", "        return (k not in first, bool(_p2p_yields(q)), not (", "        return (k not in first, False, not ("),
+    "fill-wantedsort": ("panel", "        return (k not in first, bool(_p2p_yields(q)), not (isinstance(q, dict) and p2p_port_wanted(q)), k)",
+                        "        return (k not in first, bool(_p2p_yields(q)), k)"),
+    "fill-dropnone": ("panel", "            if v is not None:                                 # none free", "            if False:                                 # none free"),
+    "fill-noyieldmark": ("panel", "        y = sorted(clash)\n", "        y = []\n"),
+    "fill-keepyield": ("panel", '        if "p2p_yield" in q:\n            q.pop("p2p_yield")\n            changed = True\n', ""),
+    "book-stale":    ("panel", "    if book is not None:\n        _p2p_book_move(book, None, rec)\n", ""),
+    "book-nodel":    ("panel", "    if book is not None:\n        _p2p_book_move(book, p, None)", "    if False:\n        _p2p_book_move(book, p, None)"),
+    "book-unwired":  ("panel", "                    }, int(time.time()), book=_bk)", "                    }, int(time.time()))"),
+    "xfer-sent":     ("panel", '        moved.pop("p2p_yield", None)', '        pass'),
+    "xfer-clash":    ("panel", 'if k not in ("targets", "p2p_port", "p2p_yield")}', 'if k not in ("targets", "p2p_port")}'),
+    "xfer-merge":    ("panel", '**{k: cur_p[k] for k in ("p2p_port", "p2p_yield") if k in cur_p}}', '**{k: cur_p[k] for k in ("p2p_port",) if k in cur_p}}'),
+    "sub-noyield":   ("sub", '    if tg.get("node") in _p2p_yields(p) and _p2p_lost(peers, pid, port, tg.get("node")):', '    if False:'),
+    "sub-pidonly":   ("sub", "    return any((nid in _p2p_yields(q), qid) < (True, pid) for qid, q in (peers or {}).items()",
+                      "    return any(qid < pid for qid, q in (peers or {}).items()"),
     "set-noalloc":   ("panel", "        if _free:                                             # pool full", "        if False:                                             # pool full"),
     "wire-block":    ("panel", '    d = ((plan or {}).get("_p2pi") or {}).get("direct") if pol == "iface" else None',
                       '    d = ((plan or {}).get("_p2pi") or {}).get("direct") if pol == "iface" else ["0.0.0.0/0"]'),
     "wire-strict":   ("panel", '        return ("direct", tuple(sorted(x for x, ids in (mech or {}).items() if "torrents" in (ids or ()))))',
                       '        return ("direct", ())'),
-    "wire-both":     ("panel", "            out.append((min(ts)[2], port))", "            out += [(t_[2], port) for t_ in ts]"),
+    "wire-both":     ("panel", "            rows.append((min(ts)[2], port, k))", "            rows += [(t_[2], port, k) for t_ in ts]"),
     "wire-firstif":  ("panel", '                    ts.append((_fp_role(t) != "primary", str(t.get("iface") or ""), a))',
                       '                    ts.append((False, str(t.get("iface") or ""), a))'),
     "wire-keyless":  ("panel", '            if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):\n                continue                                      # (the node first',
@@ -599,6 +626,84 @@ def unit_checks(src, ok):
     ok(m.p2p_port_wanted({"targets": [{"type": "csqtt", "iface": "csqtt1"}, {"type": "wdtt", "iface": "wdtt0"}]}) is False
        and m.p2p_port_wanted({"targets": [{"type": "csqtt", "iface": "csqtt1"}, {"type": "awg", "iface": "awg0"}]}) is True
        and m.p2p_port_wanted({"targets": []}) is False, "[7] a port is wanted by a device with a wg/awg target only (review F38)")
+    # K2 (1.8.12 Scale): ONE holder-wins rule for a kept duplicate (`p2p_yield`) — peer_set, the fill, the wire and swg-sub
+    ok(fz["peers"]["d"].get("p2p_yield") == ["n2"], "[7] K2: a device that keeps a port held on a node it is put on yields it "
+       "there (scale-k1 F10) (%s)" % fz["peers"]["d"].get("p2p_yield"))
+    m.peer_set(fz, "d", {"title": "again"}, 0)
+    ok(fz["peers"]["d"].get("p2p_yield") == ["n2"] and fz["peers"]["d"]["p2p_port"] == 21000,
+       "[7] K2: an unrelated save keeps the port and the yield (%s)" % fz["peers"]["d"].get("p2p_yield"))
+    T = lambda n, ip: {"node": n, "iface": "wg0", "ip": ip, "type": "wg"}
+    hr = {"peers": {"ad": {"targets": [T("n1", "10.8.0.6"), T("n2", "10.7.0.2")], "p2p_port": 20005, "p2p_yield": ["n2"]},
+                    "zh": {"targets": [T("n2", "10.7.0.9")], "p2p_port": 20005}}}
+    f2, f1 = m.p2p_fwd_for_node(None, hr, "n2", ("direct", ())), m.p2p_fwd_for_node(None, hr, "n1", ("direct", ()))
+    ok(f2 == [["10.7.0.9", 20005]] and f1 == [["10.8.0.6", 20005]],
+       "[7] K2: on n2 the holder is forwarded, not the device that yields it there — though that one's address and id are "
+       "lower; on n1, where it holds the port, that device is (%s %s)" % (f2, f1))
+    hx = json.loads(json.dumps(hr)); hx["peers"]["zh"]["targets"] = [{"node": "n2", "iface": "csqtt1", "type": "csqtt"}]
+    ok(m.p2p_fwd_for_node(None, hx, "n2", ("direct", ())) == [],
+       "[7] K2: a csqtt-only holder keeps its port there too — the device that yields it is not forwarded over it (%s)"
+       % m.p2p_fwd_for_node(None, hx, "n2", ("direct", ())))
+    hg = json.loads(json.dumps(hr)); hg["peers"].pop("zh")
+    ok(m.p2p_fwd_for_node(None, hg, "n2", ("direct", ())) == [["10.7.0.2", 20005]],
+       "[7] K2: the holder gone, the device that yielded is forwarded there at once — a yield nobody holds against is none")
+    fy = json.loads(json.dumps(hr)); fy["p2p_next"] = 20006
+    m.p2p_ports_fill(fy)
+    ok(fy["peers"]["zh"]["p2p_port"] == 20005 and fy["peers"]["ad"].get("p2p_port") == 20006 and "p2p_yield" not in fy["peers"]["ad"],
+       "[7] K2: the fill lets the holder claim first (one that yields sorts after it) and, with a port free on all its nodes, "
+       "moves the other there, its yield gone (scale-k1 F11) (%s)" % fy["peers"])
+    cm = {"peers": {"aa": {"targets": [{"node": "A", "iface": "csqtt1", "type": "csqtt"}], "p2p_port": 20000},
+                    "mm": W2("A", p2p_port=20000)}, "p2p_next": 20001}
+    m.p2p_ports_fill(cm)
+    ok(cm["peers"]["mm"]["p2p_port"] == 20000 and cm["peers"]["aa"]["p2p_port"] == 20000 and cm["peers"]["aa"].get("p2p_yield") == ["A"]
+       and m.p2p_fwd_for_node(None, cm, "A", ("direct", ())) == [["10.8.0.9", 20000]],
+       "[7] K2: a csqtt-only device sharing a port with a forwarded one on its node (a transfer's) — whatever their ids the "
+       "forwarded one keeps it, and the csqtt-only one keeps its port and yields it there (%s)" % cm["peers"])
+    tf = {"peers": {"q%05d" % i: W2("n2", p2p_port=20000 + i) for i in range(10000)}, "p2p_next": 20000}
+    tf["peers"]["arr"] = W2("n2", p2p_port=20003)
+    m.p2p_ports_fill(tf, first={k for k in tf["peers"] if k != "arr"})
+    ok(tf["peers"]["arr"].get("p2p_port") == 20003 and tf["peers"]["arr"].get("p2p_yield") == ["n2"],
+       "[7] K2: a device transferred in onto a held port, none free, keeps its port and yields it there — it no longer loses "
+       "it everywhere (scale-k1 F23) (%s)" % {k: v for k, v in tf["peers"]["arr"].items() if k != "targets"})
+    st = {"peers": {"h": W2("N", p2p_port=20007), "x": {"targets": [T("N", "10.8.0.6"), T("Z", "10.6.0.6")], "p2p_port": 20007,
+                                                         "p2p_yield": ["N"]}}, "p2p_next": 20008}
+    m.peer_set(st, "h", {"targets": st["peers"]["h"]["targets"] + [T("M", "10.5.0.5")]}, 0)
+    ok(st["peers"]["h"]["p2p_port"] == 20007 and "p2p_yield" not in st["peers"]["h"],
+       "[7] K2: the holder put on another node keeps its port — a device yielding to it on a node it was already on is no "
+       "clash (%s)" % st["peers"]["h"])
+    m.peer_set(st, "x", {"targets": [T("Z", "10.6.0.6")]}, 0)
+    ok("p2p_yield" not in st["peers"]["x"] and st["peers"]["x"]["p2p_port"] == 20007,
+       "[7] K2: moved off the node where it yielded, a device keeps its port and the yield goes (%s)" % st["peers"]["x"])
+    cy = {"peers": {"c": {"targets": [{"node": "A", "iface": "csqtt1", "type": "csqtt"}], "p2p_port": 20000},
+                    "y": {"targets": [T("A", "10.8.0.7")], "p2p_port": 20000, "p2p_yield": ["A"]}}, "p2p_next": 20001}
+    m.peer_set(cy, "c", {"targets": cy["peers"]["c"]["targets"] + [T("A", "10.8.0.8")]}, 0)
+    ok(cy["peers"]["c"]["p2p_port"] == 20000 and "p2p_yield" not in cy["peers"]["c"],
+       "[7] K2: a csqtt-only device given its first wg target, on a node where another device yields its port to it, keeps the "
+       "port (%s)" % cy["peers"]["c"])
+
+    def imp(book):
+        """an import past the pool's wrap: one device moved off n1, then 300 new devices on n1 — with a book or without"""
+        r = {"peers": {"q%05d" % i: W2("n%d" % (i % 3), p2p_port=20000 + i) for i in range(10000)}, "p2p_next": 25002}
+        r["peers"]["e1"], r["peers"]["e2"] = W2("ne1", p2p_port=20050), W2("ne2", p2p_port=20050)
+        bk = m.p2p_book(r) if book else None
+        m.peer_set(r, "q05002", {"targets": W2("n0")["targets"]}, 0, book=bk)       # 25002, the next candidate, leaves n1
+        t0 = time.monotonic()
+        for i in range(300):
+            m.peer_set(r, "imp%03d" % i, {"targets": [T("n1", "10.4.%d.%d" % (i // 250, i % 250 + 2))]}, 0, book=bk)
+        for e in ("e1", "e2"):                    # one port on two nodes (past the wrap), each put on n1 in turn: the second
+            m.peer_set(r, e, {"targets": [T("n" + e, "10.3.0.2"), T("n1", "10.3.1.%d" % int(e[1]))]}, 0, book=bk)   # clashes
+        return r, time.monotonic() - t0
+    (rb, tb), (rn, _tn) = imp(True), imp(False)
+    ok(rb == rn and rb["peers"]["imp000"].get("p2p_port") == 25002 and rb["peers"]["e1"]["p2p_port"] == 20050
+       and rb["peers"]["e2"]["p2p_port"] != 20050,
+       "[7] K2: an import with a port book leaves the roster an import without one leaves (the first device takes the port "
+       "freed on n1; of two devices sharing a port put on n1, the second clashes with the first) (%s %s)"
+       % (rb["peers"]["imp000"].get("p2p_port"), [rb["peers"][e]["p2p_port"] for e in ("e1", "e2")]))
+    ok(tb < 1.0, "[7] K2: 300 devices imported past the wrap with a book: no pass over 10,000 devices each (%.2f s)" % tb)
+    ok('moved.pop("p2p_yield", None)' in src and 'if k not in ("targets", "p2p_port", "p2p_yield")}' in src
+       and '**{k: cur_p[k] for k in ("p2p_port", "p2p_yield") if k in cur_p}}' in src
+       and src.count("book=_bk)") == 2,
+       "[7] K2: p2p_yield is this panel's own — out of the transfer bundle and of its collision test, ours kept on a merge; "
+       "both import loops pass their book")
 
 
 def panel_checks(src, ok):
@@ -804,6 +909,22 @@ def sub_checks(src, psrc, ok):
         s_ = [i for i in ("wg0", "wg1") if S._p2p_fwd_of(peer, tg("n1", i), {"n1": {"p2p_fwd": rep}})]
         ip = {"wg0": "10.8.0.5", "wg1": "10.9.0.5"}
         ok(w == [[ip[s_[0]], 20004]] if len(s_) == 1 else False, "[11] the twin: the panel forwards the target the page names (%s | %s)" % (w, s_))
+    # K2: the holder rule, twinned — on the node where a device yields its port it shows none while the holder is there
+    T = lambda n, ip: {"node": n, "iface": "wg0", "ip": ip, "type": "wg"}
+    hr = {"ad": {"targets": [T("n1", "10.8.0.6"), T("n2", "10.7.0.2")], "p2p_port": 20005, "p2p_yield": ["n2"]},
+          "zh": {"targets": [T("n2", "10.7.0.9")], "p2p_port": 20005}}
+    dd = {n: {"p2p_fwd": {"wg0": {"addr": "45.67.89.%d" % k, "taken": []}}} for k, n in ((1, "n1"), (2, "n2"))}
+    got = [S._p2p_fwd_of(hr[pid], {"node": n, "iface": "wg0"}, dd, hr, pid) for pid, n in (("ad", "n2"), ("zh", "n2"), ("ad", "n1"))]
+    ok(got == [{}, {"p2p_port": 20005, "p2p_addr": "45.67.89.2"}, {"p2p_port": 20005, "p2p_addr": "45.67.89.1"}],
+       "[11] K2: where a device yields its port it shows none, the holder shows it, and on its own node it shows it (%s)" % got)
+    hg = {"ad": hr["ad"]}
+    ok(S._p2p_fwd_of(hr["ad"], {"node": "n2", "iface": "wg0"}, dd, hg, "ad") == {"p2p_port": 20005, "p2p_addr": "45.67.89.2"},
+       "[11] K2: the holder gone, it shows the port there again")
+    for peers in (hr, hg):
+        w = P.p2p_fwd_for_node(None, {"peers": peers}, "n2", ("direct", ()))
+        s_ = sorted(pid for pid in peers if S._p2p_fwd_of(peers[pid], {"node": "n2", "iface": "wg0"}, dd, peers, pid))
+        ok([a for a, _p in w] == [{"ad": "10.7.0.2", "zh": "10.7.0.9"}[x] for x in s_],
+           "[11] K2 twin: the device the panel forwards the port to on n2 is the one whose page shows it (%s | %s)" % (w, s_))
 
 
 def run_checks(psrc, nsrc, ssrc, which=None):

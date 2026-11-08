@@ -719,13 +719,30 @@ def torrents_allowed(nodes, describe, t):
     return True
 
 
-def _p2p_fwd_of(p, tg, describe):
+def _p2p_yields(p):
+    """The nodes where a device's port is another device's (`p2p_yield` — swg-panel-server's _p2p_yields, twinned)."""
+    v = p.get("p2p_yield") if isinstance(p, dict) else None
+    return {x for x in v if isinstance(x, str)} if isinstance(v, list) else set()
+
+
+def _p2p_lost(peers, pid, port, nid):
+    """Does device `pid`, which yields `port` on node `nid`, lose it there? The panel's holder rule (p2p_fwd_for_node),
+    twinned: of the devices on that node with that port, the one that does not yield it wins, else the lowest id."""
+    return any((nid in _p2p_yields(q), qid) < (True, pid) for qid, q in (peers or {}).items()
+               if qid != pid and isinstance(q, dict) and type(q.get("p2p_port")) is int and q["p2p_port"] == port
+               and any(isinstance(t, dict) and t.get("node") == nid for t in (q.get("targets") or ())))
+
+
+def _p2p_fwd_of(p, tg, describe, peers=None, pid=None):
     """{p2p_port, p2p_addr} — the device's incoming torrent port on this deployment — only where its node reports
-    forwarding this interface (swg-noded `p2p_fwd`), the port is not taken there, and this is the one target on that node
-    the panel forwards: its primary, else the first by interface name (the panel's p2p_fwd_for_node, twinned). {} else."""
+    forwarding this interface (swg-noded `p2p_fwd`), the port is not taken there, this is the one target on that node
+    the panel forwards: its primary, else the first by interface name, and the port is this device's there — not one it
+    yields to the device that held it first (the panel's p2p_fwd_for_node, twinned). {} else."""
     port, fw = p.get("p2p_port"), (describe.get(tg.get("node")) or {}).get("p2p_fwd") or {}
     e = fw.get(tg.get("iface"))
     if type(port) is not int or not isinstance(e, dict) or port in (e.get("taken") if isinstance(e.get("taken"), list) else ()):
+        return {}
+    if tg.get("node") in _p2p_yields(p) and _p2p_lost(peers, pid, port, tg.get("node")):   # (only a yielder can lose)
         return {}
     mine = min(((_role_of(t) != "primary", str(t.get("iface") or "")) for t in (p.get("targets") or [])
                 if isinstance(t, dict) and t.get("node") == tg.get("node") and str(t.get("iface") or "") in fw), default=None)
@@ -1005,7 +1022,7 @@ def read_data(state, token):
             for tg in tgts:   # torrents may leave by it → the page's client-setting line; absent otherwise (old pages ignore it)
                 if torrents_allowed(nodes, describe, tg):
                     tg["p2p"] = True
-                    tg.update(_p2p_fwd_of(p, tg, describe))
+                    tg.update(_p2p_fwd_of(p, tg, describe, roster.get("peers"), pid))
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
                           "disabled": bool(p.get("disabled")), "expired": _exp})
     # active peers first (A-Z by title, untitled by IP), then blocked/expired at the bottom (also A-Z). The sub page
