@@ -2133,6 +2133,8 @@ export const STR = {
   "set in Settings → Geo data providers → Blocking.": "задаётся в Настройки → Провайдеры гео-данных → Блокировки.",
   "Not a port or a port range (1-65535): {v1}": "Не порт и не диапазон портов (1-65535): {v1}",
   "Keep at least one port, or choose No exceptions.": "Оставьте хотя бы один порт или выберите «Без исключений».",
+  "No exceptions for the torrent filter needs a node update — until then this node keeps its built-in never-cut ports":
+    "Для «Без исключений» в фильтре торрентов ноду нужно обновить — до тех пор она оставляет встроенный список неотрезаемых портов",
   "Ports on the list: {v1} — encrypted torrents get through on them.": "Портов в списке: {v1} — на них зашифрованные торренты проходят.",
   "Too many entries — at most {v1}.": "Слишком много записей — не больше {v1}.",
   "Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты и адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",

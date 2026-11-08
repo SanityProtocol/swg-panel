@@ -8382,6 +8382,11 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=(), p
           "  set portok { typeof th dport; flags interval;%s }" % (" elements = { %s }" % portok if portok else ""),   # "" = No exceptions
           "  set priv { typeof ip daddr; flags interval; elements = { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, "
           "169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } }"]
+    # No exceptions takes the operator's list off what a FLAGGED source keeps — not off who gets flagged: the fan-out keeps the
+    # built-in list uncounted, or a game's relay pings (Steam 27000-27200, the measured false positive) would flag its player.
+    fan_shape = _P2P_SHAPE if portok else _P2P_SHAPE.replace("@portok", "@nocount")
+    if not portok:
+        L.append("  set nocount { typeof th dport; flags interval; elements = { %s } }" % _P2P_PORTOK)
     if nofan:                                                 # mesh link addresses: an onward-NAT arrival wears one, and flagging
         L.append("  set nofan { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(nofan))   # it would cut everyone behind that hop
     if strict:
@@ -8499,7 +8504,7 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=(), p
     L.append("    ct state new %s %s ip saddr != @flag ip saddr . ip daddr != @fanseen add @fanseen { ip saddr . ip daddr timeout 1m } "
              "meter p2pfan size 65535 { ip saddr limit rate over 30/minute burst 30 packets } "
              "add @flag { ip saddr timeout 10m } counter name fan_flag%s"
-             % (_P2P_SHAPE, nf, ' limit rate 6/minute log prefix "swg-p2p fan: " level info' if logged else ""))
+             % (fan_shape, nf, ' limit rate 6/minute log prefix "swg-p2p fan: " level info' if logged else ""))
     for who in whos:                                          # the packet that just crossed the threshold
         L.append("    ct state new %sip saddr @flag %s counter name dropped drop" % (who, _P2P_SHAPE))
     if routes:
@@ -14293,7 +14298,8 @@ def smart_status():
             "caps_keep": 1,                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
             "allow": 1,                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
             "p2pi": 1,                            # runs smart.p2p {action: iface} — each interface's own torrent choice (IFACE-P2P-PICK)
-            "ports": 1}                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
+            "ports": 1,                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
+            "portok_none": 1}                     # reads smart.p2p_portok "none" (No exceptions) — the node card says when it does not
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         # whether its way out is up — the last pass's answer, corrected on EVERY report by each device itself (sysfs + the

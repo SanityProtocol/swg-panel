@@ -14,6 +14,12 @@ earlier releases predate the changelog — see the git history. · Русски�
   it is on, a block, a cut or a routing change reaches a running connection within one pass (5 seconds) instead of on
   its next packet, and Top destinations and the internet lane are rougher. It turns itself off after a minute 20 points
   below its start, so a node that never reaches its start never runs it.
+- **The torrent filter can keep no exceptions.** "Ports the torrent filter never cuts" (Settings → Geo data providers →
+  Blocking, and per node in Filters & abuse) has a No exceptions choice: while a device is flagged, every connection it
+  makes to a port from 1024 up — its VPN, calls and games too — is treated like its torrents, cut or routed with them.
+  Who gets flagged does not change: game and call traffic still never counts toward a flag. A cleared list is still
+  refused, and now says to pick No exceptions instead. A node not yet updated keeps its built-in list, and its card
+  says so.
 
 ### Changed
 

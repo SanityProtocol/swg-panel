@@ -422,7 +422,8 @@ check("Force-DNS: a port Block is not a name's verdict for the sparing — only 
 
 # ── [6] the report ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] the report")
-check("smart_status says `ports` (the panel withholds port rules until it does)", '"ports": 1}' in src and "def smart_status" in src)
+check("smart_status says `ports` (the panel withholds port rules until it does)",
+      "def smart_status" in src and re.search(r'"ports": 1[,}]', src[src.index("def smart_status"):]) is not None)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "FAILED: %d" % len(FAILS)))
 if PLANT:

@@ -9,25 +9,34 @@ cut, fan-out count and flagged re-route uses; signatures never read it, so a tor
   THE NODE (the REAL swg-noded)
     [1] _p2p_portok — the port rules' own `_ports_spans`: canonical (merged, sorted); "none" (No exceptions, 1.8.12) → "";
         absent, empty, junk, out of range or past 32 entries → the built-in list — never "nothing exempt" by accident
-    [2] _ensure_p2p renders `set portok` from the wire; absent → the built-in list; "none" → the set with no elements
+    [2] _ensure_p2p renders `set portok` from the wire; absent → the built-in list; "none" → the set with no elements, and
+        the fan-out keeps the built-in list uncounted (`@nocount`) — No exceptions changes what a flagged source keeps, not
+        who gets flagged; any other list renders byte for byte as before (no @nocount)
     [3] reconcile_cascade hands `smart.p2p_portok` to _ensure_p2p
     [4] the built-in list is one list in three places: swg-noded, the panel, the SPA (and has 1194 + 51820)
     [5] on the real nft a merged list loads; on the real kernel (throwaway namespaces, `sudo -n`; SKIPPED without) a FLAGGED
         source's UDP flow to an exempt port leaves by the WAN, to a port next to it is cut, and a DHT query to the exempt
-        port is still dropped (dht counted); under "none" the empty set loads and the flow to that port is cut too
+        port is still dropped (dht counted); under "none" the empty set loads and the flow to that port is cut too, and
+        40 new destinations a minute on Steam's 27015 do not flag a source while 40 on 40000 do
   THE PANEL (a REAL panel process: temp state, scratch port, no auth; the node is played by POSTing /api/node/sync)
     [6] settings save — the port rules' grammar (`ports_clean`): stored merged and sorted; an en dash reads as a hyphen; the
         defaults, or null, store no key; a bad entry is refused by name, a 0 in a JSON list too (never dropped), digits
         that are not ASCII too; past 32 entries is refused saying so; empty TEXT is refused, naming No exceptions; an
         empty LIST is No exceptions, stored as []
-    [7] node save: its own list stored; [] stored (No exceptions); null clears it; a bad entry refused
+    [7] node save: its own list stored; [] stored as `p2p_portok_none` (never an empty list); null clears it; a bad entry
+        refused
     [8] the wire: on the defaults no key (the reply a fleet always got); a fleet list reaches every node; a node's own list
         reaches only that node; a node whose own list IS the built-in list gets no key even while the fleet's differs; a
         stored value that is not a list counts as absent; No exceptions is "none": a fleet [] reaches every node without its
-        own list, a node's own [] beats the fleet's list, a node's own list beats a fleet []
+        own list, a node's own [] beats the fleet's list, a node's own list beats a fleet []; a list stored beside the flag
+        (an older panel's later save) wins
     [9] /api/state carries both, [] included (the SPA reads them there; a node field not published is posted back empty)
-  THE RELEASED NODE
+    [12] the node card: a node sent "none" whose smart report lacks `portok_none` says it needs an update; with it, or on
+         a list, nothing; swg-noded's smart_status reports it
+  THE RELEASED NODE AND PANEL
     [10] `main`'s swg-noded reads "none" as its built-in list — a node not yet updated cuts less, never more
+    [11] `main`'s swg-panel-server (a rollback) on the node this panel stored as No exceptions: reads it as the fleet's list,
+         and the save its own SPA then makes goes through (a stored [] would come back as "" and be refused)
 
 Run: python3 tests/p2p_portok_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -50,6 +59,8 @@ PLANTS = {   # name: (file, old text, planted text)
                         '    ps = (lambda r: (r[0], r[1][:1]) if r else r)(_ports_spans({"proto": "both", "list": v.replace(" ", "")})) if isinstance(v, str) else None'),
     "node-hard":    ("node", '(" elements = { %s }" % portok if portok else "")', '(" elements = { %s }" % _P2P_PORTOK if portok else "")'),
     "node-none-builtin": ("node", '    if v == "none":\n        return ""\n', ''),
+    "fan-portok":   ("node", '    fan_shape = _P2P_SHAPE if portok else _P2P_SHAPE.replace("@portok", "@nocount")', '    fan_shape = _P2P_SHAPE'),
+    "node-nocap":   ("node", '            "portok_none": 1}', '            }'),
     "node-none-elements": ("node", '"  set portok { typeof th dport; flags interval;%s }" % (" elements = { %s }" % portok if portok else ""),',
                            '"  set portok { typeof th dport; flags interval; elements = { %s } }" % portok,'),
     "node-unread":  ("node", '                portok=(smart or {}).get("p2p_portok"),', '                portok=None,'),
@@ -66,20 +77,47 @@ PLANTS = {   # name: (file, old text, planted text)
     "panel-keepdefault": ("panel", '                if _pok == P2P_PORTOK_DEFAULT:\n                    cur.pop("p2p_portok", None)', '                if False:\n                    cur.pop("p2p_portok", None)'),
     "node-save-unwired": ("panel", '        if "p2p_portok" in body:                # this node\'s own never-cut ports', '        if False:                # this node\'s own never-cut ports'),
     "wire-always":  ("panel", '    return "none" if not eff else None if eff == P2P_PORTOK_DEFAULT else ", ".join(eff)', '    return "none" if not eff else ", ".join(eff)'),
-    "wire-fleetonly": ("panel", '    eff = own if isinstance(own, list) else fleet', '    eff = fleet'),
-    "wire-string":  ("panel", '    eff = own if isinstance(own, list) else fleet if isinstance(fleet, list) else P2P_PORTOK_DEFAULT',
-                     '    eff = own or fleet or P2P_PORTOK_DEFAULT'),
-    "wire-none-absent": ("panel", '    eff = own if isinstance(own, list) else fleet if isinstance(fleet, list) else P2P_PORTOK_DEFAULT',
-                         '    eff = own if isinstance(own, list) and own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT'),
+    "wire-fleetonly": ("panel", '    eff = own if own is not None else fleet', '    eff = fleet'),
+    "wire-string":  ("panel", '    return own if isinstance(own, list) and own else [] if', '    return own if own else [] if'),
+    "wire-none-absent": ("panel", '    eff = own if own is not None else fleet if isinstance(fleet, list) else P2P_PORTOK_DEFAULT',
+                         '    eff = own if own else fleet if isinstance(fleet, list) and fleet else P2P_PORTOK_DEFAULT'),
+    "node-none-aslist": ("panel", '                nodes[nid]["p2p_portok_none"] = True', '                nodes[nid]["p2p_portok"] = []'),
+    "flag-beats-list": ("panel", '    return own if isinstance(own, list) and own else [] if (c or {}).get("p2p_portok_none") is True else None',
+                        '    return [] if (c or {}).get("p2p_portok_none") is True else own if isinstance(own, list) and own else None'),
+    "issue-off":    ("panel", '    if portok_none and _srp is not None and not _srp.get("portok_none"):', '    if False:'),
+    "issue-unwired": ("panel", '                                portok_none=p2p_portok_wire(Handler.deps.get("panel_settings") or {}, c) == "none",\n', ''),
     "wire-none-token": ("panel", '    return "none" if not eff else None', '    return "" if not eff else None'),
     "wire-unwired": ("panel", '**({"p2p_portok": _pokw} if (_pokw := p2p_portok_wire(_ps, node)) else {}),', ''),
-    "unpublished":  ("panel", '                        "p2p_portok": c.get("p2p_portok") if isinstance(c.get("p2p_portok"), list) else None,\n', ''),
+    "unpublished":  ("panel", '                        "p2p_portok": node_portok(c),\n', ''),
 }
 
 
 def key(c):
     return (c * 43)[:43] + "="
 
+
+# [5] under No exceptions, the fan-out on the real kernel: 40 new destinations on Steam's 27015 (the built-in list, still
+# uncounted) do not flag the client; 40 on 40000 do. Prints FLAG27 / FLAG40 = whether 10.9.0.2 is in @flag after each.
+WIRE_FAN = base.WIRE.split("nft add element")[0] + r'''
+fl() { nft list set inet swg_p2p flag | grep -c "10.9.0.2"; }
+nsenter -t "$CPID" -n python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.2", 0))
+for i in range(40):
+    s.sendto(b"\x38" * 41, ("198.51.100.%d" % (10 + i), 27015))
+'
+sleep 0.3
+echo "FLAG27 $(fl)"
+nsenter -t "$CPID" -n python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.2", 0))
+for i in range(40):
+    s.sendto(b"\x38" * 41, ("198.51.100.%d" % (60 + i), 40000))
+'
+sleep 0.3
+echo "FLAG40 $(fl)"
+kill $CPID 2>/dev/null
+'''
 
 # [5] the namespace router of p2p_policy_selftest [25]: client 10.9.0.2, FLAGGED; a DHT get_peers to :1194, then three UDP
 # packets to :1194 and three to :1195; the WAN's postrouting counts what left. None = could not set up.
@@ -150,6 +188,10 @@ def node_checks(src, psrc, ok):
     tn = table("none")
     ok("set portok { typeof th dport; flags interval; }" in tn and "elements = {  }" not in tn,
        "[2] \"none\" → the set with no elements (%s)" % [ln.strip() for ln in tn.splitlines() if "set portok" in ln][:1])
+    fan = [ln for ln in tn.splitlines() if "meter p2pfan" in ln]
+    ok("set nocount { typeof th dport; flags interval; elements = { %s } }" % D in tn and fan and "th dport != @nocount" in fan[0],
+       "[2] under \"none\" the fan-out keeps the built-in list uncounted (@nocount): who gets flagged does not change")
+    ok("nocount" not in t1 and "nocount" not in t0, "[2] any other list renders as before — no @nocount")
     # [3]
     seen = []
     m2 = base.load(src)
@@ -171,6 +213,9 @@ def node_checks(src, psrc, ok):
     jl = json.loads(jm.group(1)) if jm else None
     ok(pl is not None and jl is not None and ", ".join(pl) == D and jl == pl and "1194" in pl and "51820" in pl,
        "[4] one built-in list in swg-noded, the panel and the SPA, with 1194 and 51820 (%s | %s | %s)" % (D, pl, jl))
+    # [12] the node says it reads "none"
+    ok("def smart_status" in src and re.search(r'"portok_none": 1[,}]', src[src.index("def smart_status"):]) is not None,
+       "[12] swg-noded's smart_status reports portok_none (the panel's node card reads it)")
     # [5]
     if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
         print("  SKIPPED [5] real nft / kernel — no `sudo -n` here")
@@ -193,6 +238,10 @@ def node_checks(src, psrc, ok):
     if out and "LEFT" in out:
         ok(out["LEFT"].split() == ["0", "0"] and out.get("DHT") == "1",
            "[5] under No exceptions a flagged source's flow to 1194 is cut too, DHT still caught (left %s, dht %s)" % (out["LEFT"], out.get("DHT")))
+    out = _wire(tn, WIRE_FAN)
+    if out and "FLAG40" in out:
+        ok(out.get("FLAG27") == "0" and out.get("FLAG40") == "1",
+           "[5] under No exceptions 40 new destinations on 27015 do not flag a source, 40 on 40000 do (%s / %s)" % (out.get("FLAG27"), out.get("FLAG40")))
 
 
 def released_checks(ok):
@@ -203,6 +252,68 @@ def released_checks(ok):
         return
     mo = base.load(r.stdout)
     ok(mo._p2p_portok("none") == mo._P2P_PORTOK, "[10] the released node reads \"none\" as its built-in list (%s)" % mo._p2p_portok("none"))
+
+
+STORED = {}   # what panel_checks left on disk for [11]
+
+
+def released_panel_checks(ok):
+    """[11] main's swg-panel-server — a panel rolled back to the last release — on the node record this panel stored for
+    No exceptions: the save its own SPA then makes (its nFields: a list joined to text, else null) must go through."""
+    r = subprocess.run(["git", "-C", ROOT, "show", "main:swg-panel-server"], capture_output=True, text=True)
+    if r.returncode != 0 or "def p2p_portok_clean" not in r.stdout:
+        print("  SKIPPED [11] no main:swg-panel-server with the never-cut list here")
+        return
+    if not STORED.get("n2_none"):
+        ok(False, "[11] panel_checks stored the node's No exceptions first")
+        return
+    tmp = tempfile.mkdtemp(prefix="p2p-portok-rel-")
+    server = os.path.join(tmp, "swg-panel-server")
+    open(server, "w", encoding="utf-8").write(r.stdout)
+    state = os.path.join(tmp, "state"); os.makedirs(state); stats = os.path.join(tmp, "stats"); os.makedirs(stats)
+    nodes, users = os.path.join(state, "nodes.json"), os.path.join(state, "users.json")
+    json.dump({"n2": dict(STORED["n2_none"], id="n2", name="node-b", ifaces={"wg0": {}})}, open(nodes, "w"))
+    json.dump({"version": 1, "users": {}, "peers": {}}, open(users, "w"))
+    fleet = os.path.join(tmp, "fleet.json")
+    json.dump({"nodes_path": nodes, "roster_path": users, "stats_dir": stats,
+               "panel_settings_path": os.path.join(state, "panel-settings.json")}, open(fleet, "w"))
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    log = open(os.path.join(tmp, "panel.log"), "w+")
+    proc = subprocess.Popen([sys.executable, server], stdout=log, stderr=subprocess.STDOUT,
+                            env={**os.environ, "SWG_PANEL_FLEET": fleet, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
+                                 "SWG_PANEL_PORT": str(port), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "",
+                                 "SWG_PANEL_TLS_KEY": "", "SWG_PANEL_STATE_TTL": "0"})
+
+    def req(path, data=None):
+        rq = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=json.dumps(data).encode() if data is not None else None,
+                                    headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(rq, timeout=30) as resp:
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+    try:
+        for _ in range(150):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:%d/healthz" % port, timeout=2); break
+            except Exception:
+                if proc.poll() is not None:
+                    ok(False, "[11] the released panel started (%s)" % open(log.name).read()[-400:]); return
+                time.sleep(0.1)
+        c, st = req("/api/state")
+        ns = (st.get("data") or st).get("nodes") or []
+        n2 = next((n for n in (ns.values() if isinstance(ns, dict) else ns) if n.get("id") == "n2"), {})
+        pok = n2.get("p2p_portok")
+        sent = ", ".join(pok) if isinstance(pok, list) else None          # what its SPA's nFields makes of it, posted with every save
+        c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": sent})
+        ok(c == 200, "[11] a rolled-back panel saves the node this panel set to No exceptions (it reads %r, posts %r: %s %s)"
+           % (pok, sent, c, str(r)[:100]))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except Exception:
+            proc.kill()
 
 
 def panel_checks(src, ok):
@@ -233,13 +344,13 @@ def panel_checks(src, ok):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
 
-    def snapshot():
-        return {"hostname": "n", "generated_at": int(time.time()), "noded_version": "t",
+    def snapshot(sr=None):
+        return {"hostname": "n", "generated_at": int(time.time()), "noded_version": "t", **({"smartroute": sr} if sr else {}),
                 "interfaces": {"wg0": {"peers": [], "meta": {"subnet": "10.8.0.0/24", "listen_port": 51820, "public_key": key("Z"),
                                                              "address": "10.8.0.1/24"}}}}
 
-    def wire(tok):
-        c, r = req("/api/node/sync", {"snapshot": snapshot()}, tok)
+    def wire(tok, sr=None):
+        c, r = req("/api/node/sync", {"snapshot": snapshot(sr)}, tok)
         return (r.get("smart") or {}).get("p2p_portok", "ABSENT") if c == 200 else "SYNC %s" % c
 
     def ps():
@@ -310,11 +421,26 @@ def panel_checks(src, ok):
         req("/api/nodes/update", {"id": "n2", "p2p_portok": "1194, 8443"})
         ok(wire(t2) == "1194, 8443" and wire(t1) == "none", "[8] a node's own list beats a fleet [] (%s | %s)" % (wire(t2), wire(t1)))
         c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": []})
-        ok(c == 200 and json.load(open(nodes))["n2"].get("p2p_portok") == [] and stnode("n2").get("p2p_portok") == [],
-           "[7] a node's own [] is stored, [9] and published (%s %s)" % (c, stnode("n2").get("p2p_portok")))
+        _nd2 = json.load(open(nodes))["n2"]
+        ok(c == 200 and _nd2.get("p2p_portok_none") is True and "p2p_portok" not in _nd2 and stnode("n2").get("p2p_portok") == [],
+           "[7] a node's own No exceptions is stored apart — p2p_portok_none, no list — [9] and published as [] (%s %s)" % (c, _nd2))
+        STORED["n2_none"] = dict(_nd2)
         req("/api/panel/settings", {"p2p_portok": "8443"})
         ok(wire(t2) == "none" and wire(t1) == "8443", "[8] a node's own [] beats the fleet's list (%s | %s)" % (wire(t2), wire(t1)))
-        req("/api/nodes/update", {"id": "n2", "p2p_portok": None})
+        # [12] the card: the node is sent "none" — said while its smart report lacks portok_none, never with it or on a list
+        _msg = "No exceptions for the torrent filter needs a node update"
+        wire(t2, {"mode": "kernel", "src": 1}); wire(t1, {"mode": "kernel", "src": 1})
+        _i2, _i1 = " ".join(stnode("n2").get("issues") or []), " ".join(stnode("n1").get("issues") or [])
+        ok(_msg in _i2 and _msg not in _i1, "[12] a node sent \"none\" without portok_none in its report needs an update; one on a list does not (%s | %s)"
+           % (_msg in _i2, _msg in _i1))
+        wire(t2, {"mode": "kernel", "src": 1, "portok_none": 1})
+        ok(_msg not in " ".join(stnode("n2").get("issues") or []), "[12] …and with portok_none reported it is not said")
+        _nd = json.load(open(nodes)); _nd["n2"]["p2p_portok"] = ["8443"]; json.dump(_nd, open(nodes, "w"))
+        ok(wire(t2) == "8443", "[8] a list stored beside the flag (an older panel's later save) wins (%s)" % wire(t2))
+        _nd = json.load(open(nodes)); _nd["n2"].pop("p2p_portok", None); json.dump(_nd, open(nodes, "w"))
+        c, r = req("/api/nodes/update", {"id": "n2", "p2p_portok": None})
+        _nd2 = json.load(open(nodes))["n2"]
+        ok(c == 200 and "p2p_portok" not in _nd2 and "p2p_portok_none" not in _nd2, "[7] null clears No exceptions too (%s)" % _nd2)
         # [6] back to the defaults → no key
         c, r = req("/api/panel/settings", {"p2p_portok": None})
         ok(c == 200 and "p2p_portok" not in ps(), "[6] null stores no key (%s)" % ps().get("p2p_portok"))
@@ -335,9 +461,11 @@ def run_checks(psrc, nsrc):
         print(("  PASS " if cond else "  FAIL ") + what)
         if not cond:
             fails.append(what)
+    STORED.clear()
     node_checks(nsrc, psrc, ok)
     released_checks(ok)
     panel_checks(psrc, ok)
+    released_panel_checks(ok)
     return fails
 
 

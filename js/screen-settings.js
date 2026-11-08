@@ -2661,8 +2661,8 @@ export function PanelSettingsScreen() {
         fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
       if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
       if (!eq(e.p2p, o.p2p)) fl.push(T("torrents → {v1}", { v1: p2pLabel(e.p2p, e.exits || n.exits, n) }));
-      if (!eq(e.p2p_portok, o.p2p_portok)) fl.push(e.p2p_portok == null ? T("never-cut ports → the fleet's list")
-        : Array.isArray(e.p2p_portok) ? T("never-cut ports → no exceptions") : T("never-cut ports → {v1}", { v1: e.p2p_portok }));
+      if (!eq(e.p2p_portok, o.p2p_portok)) fl.push({ fleet: T("never-cut ports → the fleet's list"), none: T("never-cut ports → no exceptions"),
+        own: T("never-cut ports → {v1}", { v1: e.p2p_portok }) }[pokMode(e.p2p_portok)]);
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -5666,8 +5666,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
             ${p2pTargetHints(curRec, node, exits)}
             ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.")}</div>` : null}
           </div>
-          ${(() => { const fl = (Store.panelSettings || {}).p2p_portok;
-            const mode = v.p2p_portok == null ? "fleet" : Array.isArray(v.p2p_portok) ? "none" : "own";   // [] = No exceptions
+          ${(() => { const fl = (Store.panelSettings || {}).p2p_portok, mode = pokMode(v.p2p_portok);
             return html`<div class="field"><label>${T("Ports the torrent filter never cuts")}</label>
               <${Dropdown} value=${mode} onChange=${a => set({ p2p_portok: a === "own" ? (typeof v.p2p_portok === "string" ? v.p2p_portok : portokText(fl)) : a === "none" ? [] : null })}
                 options=${[{ value: "fleet", label: T("The fleet's list") }, { value: "own", label: T("This node's own list") }, { value: "none", label: T("No exceptions") }]}/>
@@ -5681,6 +5680,9 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
   </div>`;
 }
 
+// A node draft's never-cut choice: null = the fleet's list, [] = No exceptions, text = its own list as typed — the one reading
+// of the draft's shape (the dropdown and the change line both go through it).
+const pokMode = x => x == null ? "fleet" : Array.isArray(x) ? "none" : "own";
 // The cost of No exceptions — under both choices (fleet and node).
 const PORTOK_NONE_HINT = () => T("While a device is flagged, all of its connections to ports from 1024 up are treated like its torrents — its VPN, calls and games too.");
 // What a never-cut ports list cannot take, and the cost of a wide one (S11c) — under both inputs.

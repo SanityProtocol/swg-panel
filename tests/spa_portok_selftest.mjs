@@ -10,7 +10,8 @@
  *      node save, null = the fleet's; it counts in the Network section's dirty check; both fields carry the hints (bad entries, empty, the wide-list warning)
  *  [4] No exceptions (1.8.12, stored as []): portokNone / portokText read a stored list (the field keeps the defaults under
  *      it); the fleet's Dropdown sends [] and moving it is a change; it is re-read after a save; the node's third option is
- *      [] in the draft and on the wire, and its fleet line names the fleet's No exceptions; both say the cost
+ *      [] in the draft and on the wire, read by ONE helper (pokMode) for the dropdown and the change line, and its fleet
+ *      line names the fleet's No exceptions; both say the cost
  *
  * Run: node tests/spa_portok_selftest.mjs     --perturb-<name> plants one regression and expects RED (see PLANTS)
  */
@@ -42,6 +43,8 @@ const SRC_PLANTS = {   // [file under ROOT, old, new] — read as source
   "--perturb-none-no-reseed": ["js/screen-settings.js", "    setPokNone(portokNone(((Store.panelSettings) || {}).p2p_portok));\n", ""],
   "--perturb-node-none-field": ["js/screen-settings.js", "    p2p_portok: portokNone(n.p2p_portok) ? [] : Array.isArray", "    p2p_portok: Array.isArray"],
   "--perturb-node-none-option": ["js/screen-settings.js", ", { value: \"none\", label: T(\"No exceptions\") }]}/>\n              ${mode === \"own\"", "]}/>\n              ${mode === \"own\""],
+  "--perturb-pokmode-text": ["js/screen-settings.js", "const pokMode = x => x == null ? \"fleet\" : Array.isArray(x) ? \"none\" : \"own\";", "const pokMode = x => x == null ? \"fleet\" : x.length ? \"own\" : \"none\";"],
+  "--perturb-change-line": ["js/screen-settings.js", "}[pokMode(e.p2p_portok)]);", "}[\"own\"]);"],
   "--perturb-node-fleet-none": ["js/screen-settings.js", "${portokNone(fl) ? T(\"No exceptions\") : portokText(fl)}", "${portokText(fl)}"],
 };
 const MODE = [...Object.keys(PLANTS), ...Object.keys(SRC_PLANTS)].find(k => process.argv.includes(k));
@@ -115,10 +118,13 @@ console.log("\n[4] No exceptions (stored as [])");
   check("the node's draft holds [] for its No exceptions", s.includes("    p2p_portok: portokNone(n.p2p_portok) ? [] : Array.isArray"));
   check("…its third option is [] and the mode reads it back",
     s.includes(", { value: \"none\", label: T(\"No exceptions\") }]}/>\n              ${mode === \"own\"")
-    && s.includes("const mode = v.p2p_portok == null ? \"fleet\" : Array.isArray(v.p2p_portok) ? \"none\" : \"own\";")
+    && s.includes("mode = pokMode(v.p2p_portok);")
     && s.includes("a === \"none\" ? [] : null"));
   check("…its fleet line says when the fleet has no exceptions", s.includes("${portokNone(fl) ? T(\"No exceptions\") : portokText(fl)}"));
-  check("…and the change line names it", s.includes("Array.isArray(e.p2p_portok) ? T(\"never-cut ports → no exceptions\")"));
+  check("…and the change line names it, through the same reading", s.includes("none: T(\"never-cut ports → no exceptions\"),")
+    && s.includes("}[pokMode(e.p2p_portok)]);"));
+  check("one reading of the draft's shape: null = the fleet's, [] = No exceptions, text = its own",
+    s.includes("const pokMode = x => x == null ? \"fleet\" : Array.isArray(x) ? \"none\" : \"own\";"));
   check("both choices say the cost", s.split("${PORTOK_NONE_HINT()}").length - 1 === 2);
 }
 done(MODE);
