@@ -3071,20 +3071,21 @@ def roster_view(path):
 _ROSTER_BYTES = [None]              # {path, mark, rev, bytes, gz} — the roster as the newest /api/state named it (U1)
 
 
-def roster_bytes(path, view):
+def roster_bytes(path, view, pin=True):
     """GET /api/roster's body for `view` = roster_view(path) — the roster serialised ONCE per revision (1.8.12 Scale U1):
     the console's 5 s poll carried the whole roster in every /api/state (6 of its 12.9 MB at 10,000 users) though it only
     changes on a save; now /api/state names the revision (`roster_rev`) and the browser fetches the roster when that moves.
     The /api/state build fills the slot with the view it walks, so a ?rev= of that state finds the same roster — a tab
-    never pairs one moment's nodes with a later roster (a peer deleted in between would read as an orphan). No lock: two
-    builders race only when the revision moves, and both are right."""
+    never pairs one moment's nodes with a later roster (a peer deleted in between would read as an orphan). Only that build
+    pins (`pin`): an ask the slot does not answer gets the current roster without moving the pin, which the still-memoized
+    state names (scale-k4 F6). No lock: two state builds race only when the revision moves, and both are right."""
     r, m = view
     c = _ROSTER_BYTES[0]
     if c is None or m is None or (c["path"], c["mark"]) != (path, m):
         rev = "0" if m is None else hashlib.sha1(repr(m).encode()).hexdigest()[:16]
         c = {"path": path, "mark": m, "rev": rev, "gz": None,
              "bytes": json.dumps({"ok": True, "rev": rev, "data": r}).encode()}
-        if m is not None:                            # no file: nothing to key it on, read each time (as roster_view)
+        if pin and m is not None:                    # no file: nothing to key it on, read each time (as roster_view)
             _ROSTER_BYTES[0] = c
     return c
 
@@ -34156,7 +34157,7 @@ class Handler(BaseHTTPRequestHandler):
         c = _ROSTER_BYTES[0]                # the slot the newest /api/state filled; the request's rev is compared, never echoed
         if c is None or c["path"] != rp or c["rev"] != (parse_qs(u.query).get("rev") or [""])[0]:
             try:
-                c = roster_bytes(rp, roster_view(rp))
+                c = roster_bytes(rp, roster_view(rp), pin=False)
             except Exception as e:
                 return self._send(500, {"ok": False, "error": str(e), "code": "internal"})
         return self._send_state_bytes(c)

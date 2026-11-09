@@ -11,7 +11,8 @@ pins the roster it walked, so a tab never pairs one moment's nodes with a later 
     [3] gzip: Content-Encoding gzip, inflating to the plain body
     [4] a save moves the revision, and the new roster holds the record
     [5] the pin: a state read, then a save, then ?rev=<the state's> gives the state's roster (no new record); a bare
-        /api/roster and an unknown rev give the current one; the body's rev is the roster's, never the request's
+        /api/roster and an unknown rev give the current one; the body's rev is the roster's, never the request's; and
+        those asks do not move the pin (scale-k4 F6) — only an /api/state build does
 
 Run: python3 tests/roster_rev_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -32,6 +33,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "stuck":     ('        if c is None or c["path"] != rp or c["rev"] != (parse_qs(u.query).get("rev") or [""])[0]:', '        if c is None:'),
     "echo":      ('             "bytes": json.dumps({"ok": True, "rev": rev, "data": r}).encode()}',
                   '             "bytes": json.dumps({"ok": True, "rev": "0", "data": r}).encode()}'),
+    "pinall":    ('                c = roster_bytes(rp, roster_view(rp), pin=False)', '                c = roster_bytes(rp, roster_view(rp))'),
     "nogzip":    ('            if path == "/api/roster":      # the roster of the revision /api/state named (`?rev=`), else the current one (U1)\n'
                   '                return self._send_roster(u)',
                   '            if path == "/api/roster":      # the roster of the revision /api/state named (`?rev=`), else the current one (U1)\n'
@@ -144,6 +146,9 @@ def run_checks(src):
             ok(c == 200 and isinstance(cur.get("rev"), str) and cur.get("rev") not in (rev, rev2, "nonesuch")
                and uid3 in ((cur.get("data") or {}).get("users") or {}),
                "[5] /api/roster%s gives the current roster, labelled with its own rev (%r)" % (q, cur.get("rev")))
+        c, again = req("/api/roster?rev=" + str(rev2))
+        ok(again.get("rev") == rev2 and uid3 not in ((again.get("data") or {}).get("users") or {}),
+           "[5] …and those asks did not move the pin: ?rev= the state's revision still gives the state's roster (F6)")
         c, st3 = req("/api/state")
         ok((st3.get("data") or {}).get("roster_rev") == cur.get("rev"), "[5] …the revision the next state names")
         ok(proc.poll() is None, "[*] the panel is still up (SWG_ROSTER_GUARD: no reader wrote the shared roster)")

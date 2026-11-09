@@ -224,7 +224,7 @@ try:
     MINT = {}                                   # (iface, password) -> ip: what a csqtt / WDTT server mints, as its read-back says
 
     def roster():
-        return (must(call("GET", "/api/state"), "state").get("data") or {}).get("roster", {}).get("peers", {})
+        return (must(call("GET", "/api/roster"), "roster").get("data") or {}).get("peers", {})   # (SCALE-PLAN K4: not in /api/state)
     def snapshot():
         now = int(time.time()); peers = roster(); ifs = {}; back = {"csqtt": {}, "wdtt": {}}
         for ifn, (net, port) in IFACES.items():

@@ -18,13 +18,14 @@
  *   poll       (K4, U1) the roster rides /api/roster, fetched only when the revision /api/state names moves: the same
  *              revision fetches nothing and keeps the SAME object (K3's memos key on it); a failed fetch fails the poll and
  *              keeps roster, identity and revision, and the next poll asks again; a state with no revision keeps the roster;
- *              a mutation's poll fetches the saved roster BEFORE the apply() that drops its done patch (no flicker).
+ *              a mutation's poll fetches the saved roster BEFORE the apply() that drops its done patch (no flicker); two
+ *              polls asking for one revision share one fetch, and an older fetch landing late never replaces a newer roster.
  *
  * FlowMap2's per-render memos need a DOM and are checked in a browser (the card), not here.
  *
  * Run: node tests/spa_scale_selftest.mjs          (0 = pass)
  *      --plant NAME   applies one plant and expects RED (exit 0 = it went red)
- *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied
+ *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied nojoin noorder
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -49,10 +50,13 @@ const PLANTS = {   // name: [file, anchor, replacement]
     "    for (const t of p.targets) { total.set(t.node, (total.get(t.node) || 0) + 1); if (t.online) on.add(t.node); }"],
   revfirst: ["js/store.js", "    if (typeof d.roster_rev === \"string\" && d.roster_rev !== this._rosterRev) {\n",
     "    if (typeof d.roster_rev === \"string\" && d.roster_rev !== this._rosterRev) {\n      this._rosterRev = d.roster_rev;\n"],
-  late: ["js/store.js", "      roster = r.data; this._rosterRev = r.rev;", "      this._rosterRev = r.rev; setTimeout(() => { this._server.roster = r.data; });"],
+  late: ["js/store.js", "this._rosterGot = q.seq; this._rosterRev = r.rev; roster = r.data; }",
+    "this._rosterGot = q.seq; this._rosterRev = r.rev; setTimeout(() => { this._server.roster = r.data; }); }"],
   everypoll: ["js/store.js", "d.roster_rev !== this._rosterRev) {", "true) {"],
-  copy: ["js/store.js", "    let roster = this._server.roster;", "    let roster = structuredClone(this._server.roster);"],
-  emptied: ["js/store.js", "    let roster = this._server.roster;", "    let roster = { version: 1, users: {}, peers: {} };"],
+  copy: ["js/store.js", "roster: roster || this._server.roster,", "roster: structuredClone(roster || this._server.roster),"],
+  emptied: ["js/store.js", "roster: roster || this._server.roster,", "roster: roster || { version: 1, users: {}, peers: {} },"],
+  nojoin: ["js/store.js", "if (!q || q.rev !== d.roster_rev) q = this._rosterReq =", "q = this._rosterReq ="],
+  noorder: ["js/store.js", "if (q.seq > this._rosterGot) {", "if (true) {"],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
 const written = [];
@@ -240,8 +244,10 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   const state = async () => ({ ok: true, data: { roster_rev: rev, nodes: f.nodes, snapshots: {}, describe: {}, panel_settings: {} } });
   A.events = async () => null;
   A.state = state;
+  const hold = {};   // rev → the resolvers of its fetches, held open until the check releases them all
   A.roster = async r => {
     calls.push(r);
+    if (r in hold) await new Promise(res => { hold[r].push(res); });
     const x = fail; fail = "";
     if (x === "throw") throw new Error("network");
     if (x === "notok") return { ok: false, error: "boom" };
@@ -286,6 +292,24 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   try { await poll(); } finally { PS.apply = ap; }
   check("a mutation's poll: every apply() sees the saved record — no flicker", seen.length > 0 && seen.every(x => x === "SAVED")
         && PS.roster === serve.c && !PS.pending.m1, { seen });
+  // overlapping polls (scale-k4 F4): two asking for one revision share one fetch, and both end on the same object
+  rev = "d"; serve.d = mk(); hold.d = [];
+  const n0 = calls.length, pa = PS.poll(), pb = PS.poll();
+  await tick(); await tick();
+  hold.d.forEach(f => f());
+  await Promise.allSettled([pa, pb]); await tick();
+  check("two polls asking for one revision share one fetch", calls.length === n0 + 1 && PS.roster === serve.d && PS._rosterRev === "d",
+        { fetches: calls.length - n0, rev: PS._rosterRev });
+  // an older fetch landing after a newer one was applied (scale-k4 F3): the newer roster stays
+  rev = "e"; serve.e = mk(); hold.e = [];
+  const pe = PS.poll();
+  await tick(); await tick();
+  rev = "f"; serve.f = mk();
+  await poll();
+  hold.e.forEach(f => f());
+  await Promise.allSettled([pe]); await tick();
+  check("an older roster landing late never replaces a newer one", PS.roster === serve.f && PS._rosterRev === "f",
+        { rev: PS._rosterRev, isF: PS.roster === serve.f, isE: PS.roster === serve.e });
 }
 
 if (PLANT) done(true, PLANT);

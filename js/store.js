@@ -313,20 +313,26 @@ export const Store = {
   // reconcile.js.
   _server: { roster: { version: 1, users: {}, peers: {} }, nodes: [] },   // pristine, last fetched
   _rosterRev: null,                                                        // the revision _server.roster is
+  _rosterReq: null, _rosterSeq: 0, _rosterGot: 0,                          // the fetch in flight; fetches started / applied
   async poll() {
     const [s, ev] = await Promise.all([api.state(), api.events().catch(() => null)]);
     const d = (s && s.data) || {};
     // Fetched BEFORE apply(): a mutation's own poll must see its record before apply() drops the done patch. A failed
     // fetch fails the poll, as a failed /api/state does — nothing applied, the last roster kept (its identity too: K3's
     // memos key on it) and its revision unrecorded, so the next poll asks again. An unchanged revision keeps the SAME
-    // object; a state without one (an error reply) keeps the held roster.
-    let roster = this._server.roster;
+    // object; a state without one (an error reply) keeps the held roster. Polls overlap (the interval's, a mutation's, a
+    // tab coming back): one asking for the revision already in flight joins that fetch, and a reply that lands after a
+    // LATER-started fetch was applied is dropped — an older roster never replaces a newer one (scale-k4 F3 F4).
+    let roster = null;
     if (typeof d.roster_rev === "string" && d.roster_rev !== this._rosterRev) {
-      const r = await api.roster(d.roster_rev);
-      if (!r || !r.ok || typeof r.rev !== "string" || !r.data) throw new Error("roster");   // i18n-keys: never displayed
-      roster = r.data; this._rosterRev = r.rev;
+      let q = this._rosterReq;
+      if (!q || q.rev !== d.roster_rev) q = this._rosterReq = { rev: d.roster_rev, seq: ++this._rosterSeq, p: api.roster(d.roster_rev) };
+      let r;
+      try { r = await q.p; } finally { if (this._rosterReq === q) this._rosterReq = null; }
+      if (!r || !r.ok || typeof r.rev !== "string" || !r.data) throw new Error(T("request failed"));
+      if (q.seq > this._rosterGot) { this._rosterGot = q.seq; this._rosterRev = r.rev; roster = r.data; }
     }
-    this._server = { roster, nodes: d.nodes || [] };
+    this._server = { roster: roster || this._server.roster, nodes: d.nodes || [] };   // (read after the await: a newer one may be in)
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
     // How far ahead of the PANEL this browser's clock reads — every age the SPA measures or prints is read on the

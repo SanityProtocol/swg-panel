@@ -61,7 +61,7 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
                        "            _roster_guard_check()\n", ""),
     "reader-writes":  ("        u = users.get(p.get(\"user_id\")) or {}\n        # BLOCKED access",
                        "        u = users.setdefault(p.get(\"user_id\") or \"-\", {})\n        # BLOCKED access"),
-    "state-load":     ("        _roster = roster_view(roster_path)[0]", "        _roster = roster_load(roster_path)"),
+    "state-load":     ("        _roster = _rview[0]\n", "        _roster = roster_load(roster_path)\n"),
 }
 
 
