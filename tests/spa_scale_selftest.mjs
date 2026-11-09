@@ -26,7 +26,12 @@
  *
  * Run: node tests/spa_scale_selftest.mjs          (0 = pass)
  *      --plant NAME   applies one plant and expects RED (exit 0 = it went red)
+ *   seats      (K6, T1) the target picker's "n / cap" on a turn server's row: every peer with a target there, blocked ones
+ *              too, once however its targets repeat — the panel's create door's count — recounted when the roster object
+ *              changes (a save), the cap the node view's; no cap → nothing shown.
+ *
  *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied join errorder noorder
+ *              seatmemo seattwice
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -59,6 +64,9 @@ const PLANTS = {   // name: [file, anchor, replacement]
     "      const r = await (this._j && this._j.rev === d.roster_rev ? this._j.p : (this._j = { rev: d.roster_rev, p: api.roster(d.roster_rev) }).p);"],
   errorder: ["js/store.js", "    if (s && s.ok) this._pollApplied = seq;", "    this._pollApplied = seq;"],
   noorder: ["js/store.js", "    if (seq < this._pollApplied) return;\n", ""],
+  seatmemo: ["js/model.js", "if (Store.roster !== _seatR) {", "if (_seatR === undefined || !Store.roster) {"],
+  seattwice: ["js/model.js", "for (const k of new Set(((p && p.targets) || []).filter(Boolean).map(t => t.node + \"|\" + t.iface)))",
+    "for (const k of ((p && p.targets) || []).filter(Boolean).map(t => t.node + \"|\" + t.iface))"],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
 const written = [];
@@ -75,7 +83,7 @@ function load(file) {
   return sibling(file, src.replace(p[1], p[2]), "plant");
 }
 
-let OLD, V, PSM, PS, O, Store;
+let OLD, V, PSM, PS, O, Store, MOD;
 try {
   let oldSrc;
   try { oldSrc = execFileSync("git", ["-C", ROOT, "show", PRE_K3 + ":js/views.js"], { encoding: "utf8", maxBuffer: 1 << 26 }); }
@@ -83,6 +91,7 @@ try {
   OLD = await sibling("js/views.js", oldSrc, "prek3");
   V = await load("js/views.js");
   O = await load("js/screen-overview.js");
+  MOD = await load("js/model.js");
   PSM = await load("js/store.js"); PS = PSM.Store;                               // the (planted) store: lookups + apply + poll
   Store = (await import(pathToFileURL(path.join(ROOT, "js/store.js")).href)).Store;   // the one both views copies read
 } finally {
@@ -345,6 +354,24 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   hold.k.forEach(f2 => f2()); await Promise.allSettled([pk]); await tick();
   check("an error reply does not drop an earlier poll that brings a good state", PS.roster === serve.k && PS.versions.tag === "k"
         && PS.nodes.length === f.nodes.length, { state: PS.versions.tag, nodes: PS.nodes.length });
+}
+
+// ── seats (K6, T1) ────────────────────────────────────────────────────────────────────────────────────────────────────────
+{
+  const r1 = { version: 1, users: {}, peers: {
+    a: { targets: [{ node: "n1", iface: "csqtt1" }, { node: "n2", iface: "csqtt1" }] },
+    b: { disabled: true, targets: [{ node: "n1", iface: "csqtt1" }] },
+    c: { targets: [{ node: "n1", iface: "wg0" }, null] },
+    d: { targets: [{ node: "n1", iface: "csqtt1" }, { node: "n1", iface: "csqtt1" }] } } };   // a hand-edited duplicate: once
+  Store.nodes = [{ id: "n1", turn_cap: { csqtt1: 248 } }, { id: "n2" }];
+  Store.roster = r1;
+  const s1 = MOD.turnSeats("n1", "csqtt1");
+  check("a turn server's seats: every peer with a target there, a blocked one too, a duplicate target once",
+        s1 && s1.n === 3 && s1.cap === 248, s1);
+  check("no cap known → nothing to show", MOD.turnSeats("n2", "csqtt1") === null && MOD.turnSeats("n9", "csqtt1") === null);
+  Store.roster = structuredClone(r1); delete Store.roster.peers.b;   // a save: a new roster object
+  const s2 = MOD.turnSeats("n1", "csqtt1");
+  check("a new roster object is counted again", s2 && s2.n === 2, s2);
 }
 
 if (PLANT) done(true, PLANT);

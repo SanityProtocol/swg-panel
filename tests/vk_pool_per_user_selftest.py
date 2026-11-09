@@ -30,11 +30,11 @@ def check(name, cond, detail=""):
 D = tempfile.mkdtemp(prefix="vkpool-")
 if PERTURB:
     src = open(SERVER).read()
-    old = "picks = _vk_pool_pick_many(ps, _vk_pool_per_user(ps), _vk_pool_counts(roster))"
+    old = "picks = _vk_pool_pick_many(ps, _vk_pool_per_user(ps), _vk_pool_counts(roster, deps.get(\"node_snaps\")))"
     if src.count(old) != 1:
         print("ANCHOR MISSING OR NOT UNIQUE — this run would FALSE-PASS"); sys.exit(1)
     SERVER = os.path.join(D, "swg-panel-server")
-    open(SERVER, "w").write(src.replace(old, "picks = _vk_pool_pick_many(ps, 1, _vk_pool_counts(roster))"))
+    open(SERVER, "w").write(src.replace(old, "picks = _vk_pool_pick_many(ps, 1, _vk_pool_counts(roster, deps.get(\"node_snaps\")))"))
 for d in ("state", "conf", "stats"):
     os.makedirs(os.path.join(D, d))
 json.dump({"nodes_path": D + "/state/nodes.json", "roster_path": D + "/state/users.json",

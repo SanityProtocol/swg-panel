@@ -13,7 +13,7 @@ import { esc, tkey, V, BASE, seen, panelNowS, configErrors, orderedTargets, isPr
 import { Store, api, bus, useStore } from "./store.js";
 import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
-import { targetType, routerCapable, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
+import { targetType, routerCapable, iTypeOf, kindOf, turnSeats, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
@@ -219,6 +219,17 @@ export function TargetFrontBadge({ node, iface, peer, dim }) {
   <//>`;
 }
 
+// "n / cap" on a turn server's row (Scale T1): how many users it holds of the addresses it can give. Red when full — the
+// panel then refuses one more there, naming the server; the picker never blocks the tick itself (another tab may free one).
+function seatChip(t) {
+  const st = t.missing ? null : turnSeats(t.node, t.iface);
+  if (!st) return null;
+  const full = st.n >= st.cap;
+  return html`<span class=${"topt-cap" + (full ? " full" : "")} title=${full
+    ? T("Full — every address this server can give is taken. Put this user on another instance, or add one.")
+    : T("{v1} of {v2} addresses taken", { v1: st.n, v2: st.cap })}>${st.n} / ${st.cap}</span>`;
+}
+
 // Reusable (node,iface) picker with per-target IP allocation. `exclude` is a Set of tkeys
 // to hide (interfaces a user is already on); `onChange` receives the chosen target list
 // [{node,iface,ip,ipHint}]. Used by the create-peer, create-user and add-peers flows.
@@ -284,6 +295,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
   return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
     const ity = t.missing ? (t.type || "wg") : iTypeOf(t.node, t.iface);   // wg | awg | wdtt (a WDTT iface isn't in `describe`, so key off the name via iTypeOf)
+    const chip = isSelfContainedKind(ity) ? seatChip(t) : null;   // a turn server's "n / cap", ticked or not
     return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "") + (t.missing ? " missing" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
@@ -297,8 +309,9 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
           // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
           // target is seeded straight from the peer, so it never went through toggle and rendered an editable
           // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
-          ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto IP")}</span>`
-          : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || T("address")} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
+          ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto IP")}${chip}</span>`
+          : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || T("address")} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>`
+            : (chip ? html`<span class="topt-ip faint">${chip}</span>` : null))}
         ${/* a phone shows no title: the reason goes under the field (MOBILE-PLAN hook 5) */""}
         ${s && isMobile() && s.ip && !V.ipv4(s.ip) ? html`<span class="hint err topt-err">${T("not a valid IPv4 address")}</span>` : null}
         ${(s && !t.missing) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${s.opts} onSave=${v => setOpts(k, v)} readOnly=${!!s.existing}/>` : null}

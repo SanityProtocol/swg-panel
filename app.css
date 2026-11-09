@@ -912,6 +912,11 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
 .targetopt .topt-right > .topt-ip:last-child{margin-right:38px}   /* no gear on this row (a self-contained server, or its
    config not loaded yet): keep the gear's 28 + gap, so the address column does not jump */
 .targetopt .topt-right .topt-ip.faint{padding-left:2px}   /* "auto" is a word in the address column, starting where the boxes do */
+/* a turn server's seats ("12 / 249") at the right end of its address column — the word "auto IP" keeps its place on the left,
+   the gear's slot after it stays empty, so no column moves. Red when the server has no address left (Scale T1). */
+.targetopt .topt-ip.faint:has(.topt-cap){display:inline-flex;align-items:center;gap:6px}
+.topt-cap{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.topt-cap.full{color:var(--dangling);font-weight:700}
 .targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
 .targetopt .topt-ip[readonly]{color:var(--ink-2);text-align:right;font-family:var(--mono)}
 /* Per-deployment settings (DNS/MTU/routing) live behind this gear — see TargetSettingsSheet. It sits after the
