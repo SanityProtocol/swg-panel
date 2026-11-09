@@ -19292,9 +19292,8 @@ PANEL_SETTINGS_DEFAULTS = {
     # contradicted each other). Turning it back on only un-hides: it never re-opens a private network on your behalf.
     # The fleet list in Settings → Network stays visible either way — it is where the switch lives.
     "show_node_lans": True,
-    # Settings → Network: nodes gzip the snapshot they post every sync (docs/SCALE-PLAN.md N3) — ~1/3 of the bytes for a
-    # few ms of node CPU, for a panel whose inbound bandwidth is thin or metered. Off: every reply as before (no key).
-    "node_gzip": False,
+    # Settings → Network → Node uploads (`node_gzip`, docs/SCALE-PLAN.md N3) is deliberately NOT defaulted here: off is
+    # ABSENT from stored and returned settings (as scan_allow), so a fleet that never turns it on reads byte-identical.
     # SCAN-GUARD-PLAN: the port-scan guard's never-flag allowlist (scan_allow) is deliberately NOT defaulted here — an
     # unset allowlist must be ABSENT from stored/returned settings, not an empty list, so a fleet that never sets one
     # reads byte-identical to the build before the feature (small-fleets-feel-nothing). It is stored only when non-empty.
@@ -26572,8 +26571,11 @@ def api(method, path, qs, body, deps):
             cur["history_resolution"] = _hr if _hr in LEDGER_STEPS else LEDGER_STEP_DEFAULT
         if "show_node_lans" in incoming:
             cur["show_node_lans"] = incoming["show_node_lans"] is not False    # default is on; only an explicit false turns it off
-        if "node_gzip" in incoming:                                            # default off; only an explicit true turns it on
-            cur["node_gzip"] = incoming["node_gzip"] is True
+        if "node_gzip" in incoming:     # nodes gzip their snapshots (SCALE-PLAN N3): stored only while on — off is no key
+            if incoming["node_gzip"] is True:
+                cur["node_gzip"] = True
+            else:
+                cur.pop("node_gzip", None)
         if "scan_allow" in incoming:          # SCAN-GUARD-PLAN: source IPs/CIDRs the scan-sweep guard never flags (our own fleet
             # management sweeps the fleet the same way malware sweeps the internet — measured 2026-10-10). A list, or a
             # string split on commas/whitespace. Normalised to IPv4 CIDRs; the unparseable and the dangerously broad are
@@ -36457,7 +36459,7 @@ class Handler(BaseHTTPRequestHandler):
                                 **({"fast_lane": node["fast_lane"]}       # the fast lane's start (D3), only when not 70
                                    if node.get("fast_lane", FAST_LANE_DEFAULT) != FAST_LANE_DEFAULT else {}),
                                 # SCALE-PLAN N3: gzip the next snapshots — only while the setting is on (off: no key)
-                                **({"gz_sync": True} if (Handler.deps.get("panel_settings") or {}).get("node_gzip") is True
+                                **({"gz_sync": True} if _ps.get("node_gzip") is True
                                    else {})})
 
     def _node_goodbye(self):

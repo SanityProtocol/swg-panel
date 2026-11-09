@@ -6,10 +6,10 @@
 Now reconcile stops STARTING ops once RECONCILE_BUDGET_S has passed since its own start; the rest is counted in `deferred`
 and the next pass (which skips its sleep) takes them — the panel re-sends the whole desired set every sync.
 
-  [1] Under the budget nothing changes: the real reconcile against a17e56e0's (the code before N1) on 200 random interfaces —
+  [1] Under the budget nothing changes: the real reconcile against a17e56e0's (the code before N1) on 300 random interfaces —
       adds, strays, retirements, AllowedIPs / PSK / endpoint drift, stale mesh links, a .conf naming an old endpoint, agent
-      failures and `peer_exists` — the same agent calls in the same order, the same result, the same mesh-eps.json, over two
-      passes each; `deferred` 0.
+      failures and `peer_exists` — the same agent calls in the same order, the same result, the same mesh-eps.json; `deferred`
+      0. One pass each: from the second on, a failed remove or an unconfirmed AllowedIPs now backs off, by design — [7].
   [2] Budget 0: no op starts; `deferred` counts the ops due (a PSK bounce — remove + add — is one); no error; no backoff
       step (an op not started is not a failure).
   [3] A budget that runs out mid-interface: the removes come first, and once they are cut none of that interface's adds
@@ -17,6 +17,9 @@ and the next pass (which skips its sleep) takes them — the panel re-sends the 
   [4] A pair is never split: PSK bounces cut by the budget leave remove + add pairs only.
   [5] A deferred persist-peer-endpoint is asked again the next pass (its once-per-change marker is not set).
   [6] Progress: with the default budget every pass starts at least one op (the budget counts from reconcile's own start).
+  [7] Ops that fail every pass back off (card scale-k5 F1): failing removes on the first interface stop spending each
+      pass's budget, so another interface's retirement runs within a few passes; a set-peer-allowed the datapath never reads
+      back is not re-applied the next pass, and a new wanted value is applied at once.
 
 Hermetic: the agent and the interface read are stubbed; nothing shells out.
 
@@ -26,6 +29,7 @@ Run: python3 tests/reconcile_budget_selftest.py   (0 = pass)
      deferr      a deferred op counted as an error
      passstart   the budget counted as if the pass had already spent 10 s before reconcile
      psknobudget the PSK bounce ignores the budget
+     rmnobackoff a failed stray remove is retried every pass (no backoff) — it holds the budget for ever
 """
 import importlib.machinery, importlib.util, json, os, random, shutil, subprocess, sys, tempfile, time, hashlib
 
@@ -52,6 +56,12 @@ PLANTS = {
         res["errors"].append("deferred")
         return False'''),
     "passstart": ("    _end = time.monotonic() + budget\n", "    _end = time.monotonic() + budget - 10\n"),
+    "rmnobackoff": ('''                rk = "rm|" + iface + "|" + pk
+                if not _op_ready(rk):
+                    res["errors"].append(f"remove {pk[:8]}: retrying later (repeated failure)")''',
+                    '''                rk = "rm|" + iface + "|" + pk
+                if False:
+                    res["errors"].append(f"remove {pk[:8]}: retrying later (repeated failure)")'''),
     "psknobudget": ('''                            res["errors"].append(f"psk {pk[:8]}: retrying later (repeated failure)")
                         elif go():''', '''                            res["errors"].append(f"psk {pk[:8]}: retrying later (repeated failure)")
                         elif True:'''),
@@ -158,12 +168,12 @@ def scenario(rnd):
 # ── [1] the differential ──────────────────────────────────────────────────────────────────────────────────────────────
 print("[1] under the budget, reconcile is a17e56e0's")
 rnd, bad, ops_seen = random.Random(1912), [], 0
-for i in range(200):
+for i in range(300):
     live, confs, eps, desired, remove = scenario(rnd)
     fail = rnd.choice([0, 0, 15])
     wn, wo = World(live, confs, eps, fail), World(live, confs, eps, fail)
     cn, sn = wn.bind(N, "new"); co, so = wo.bind(O, "old")
-    for pas in (1, 2):
+    for pas in (1,):
         rn = N.reconcile(cn, desired, "/a", False, remove)
         ro = O.reconcile(co, desired, "/a", False, remove)
         d = rn.pop("deferred", None)
@@ -172,7 +182,7 @@ for i in range(200):
             bad.append((i, pas, wn.calls[:3], wo.calls[:3], rn, ro, d))
         ops_seen += len(wn.calls)
         wn.calls, wo.calls = [], []
-check("[1] 200 random nodes × 2 passes: the same agent calls, result and mesh-eps.json; nothing deferred",
+check("[1] 300 random nodes: the same agent calls, result and mesh-eps.json; nothing deferred",
       not bad, bad[:1])
 check("[1] …and the scenarios really drove ops (agent calls seen: %d)" % ops_seen, ops_seen > 1000, ops_seen)
 
@@ -245,6 +255,39 @@ cfg, _sd = w.bind(N, "progress")
 r = N.reconcile(cfg, {"wg0": adds}, "/a", False, {})
 check("[6] every add started, nothing deferred", len(w.calls) == 6 and r["deferred"] == 0, (len(w.calls), r))
 check("[6] the budget is 10 s", N.RECONCILE_BUDGET_S == 10, N.RECONCILE_BUDGET_S)
+
+# ── [7] what fails every pass backs off ─────────────────────────────────────────────────────────────────────────────
+print("\n[7] ops that fail every pass stop holding the budget")
+bad = [{"public_key": key(random.Random(500 + j)), "preshared_key": None, "endpoint": None, "allowed_ips": "10.9.3.%d/32" % j,
+        "last_handshake": 0, "rx_bytes": 0, "tx_bytes": 0} for j in range(6)]
+gone = {"public_key": key(random.Random(600)), "preshared_key": None, "endpoint": None, "allowed_ips": "10.9.4.2/32",
+        "last_handshake": 0, "rx_bytes": 0, "tx_bytes": 0}
+w = World({"wg0": ({"cmd": ["wg"]}, bad), "awg2": ({"cmd": ["awg"], "onboarded": True}, [gone])}, {}, {}, sleep=0.05)
+cfg, _sd = w.bind(N, "starve")
+_base = N.run_agent
+N.run_agent = lambda a, s, payload: ((w.calls.append(json.dumps(payload, sort_keys=True)), time.sleep(0.05),
+                                      {"ok": False, "error": "disk full"})[2] if payload.get("iface") == "wg0"
+                                     else _base(a, s, payload))   # a failing op takes its time too
+retired = None
+for pas in range(1, 6):
+    N.reconcile(cfg, {"wg0": [], "awg2": []}, "/a", False, {"awg2": [gone["public_key"]]}, budget=0.2)
+    if any(json.loads(c)["iface"] == "awg2" for c in w.calls):
+        retired = pas
+        break
+check("[7] six removes failing on wg0 do not hold the budget: awg2's retirement runs by the 3rd pass",
+      retired is not None and retired <= 3, (retired, len(w.calls)))
+k = key(random.Random(700))
+lv = [{"public_key": k, "preshared_key": None, "endpoint": None, "allowed_ips": "10.9.5.2/32", "last_handshake": 0,
+       "rx_bytes": 0, "tx_bytes": 0}]
+w = World({"wg0": ({"cmd": ["wg"]}, lv)}, {}, {})
+cfg, _sd = w.bind(N, "allowed")
+want = {"wg0": [{"public_key": k, "allowed_ips": "10.9.5.2/32,10.9.6.0/24"}]}
+N.reconcile(cfg, want, "/a", False, {}); n1 = len(w.calls)
+N.reconcile(cfg, want, "/a", False, {}); n2 = len(w.calls) - n1
+check("[7] an AllowedIPs the datapath never reads back is applied once, then backed off (not every pass)",
+      n1 == 1 and n2 == 0, (n1, n2))
+N.reconcile(cfg, {"wg0": [{"public_key": k, "allowed_ips": "10.9.5.2/32,10.9.7.0/24"}]}, "/a", False, {})
+check("[7] …and a new wanted value is applied at once", len(w.calls) - n1 - n2 == 1, len(w.calls))
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n%s" % ("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), ", ".join(FAILS))))

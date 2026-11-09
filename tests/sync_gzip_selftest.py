@@ -12,8 +12,8 @@ Settings → Network → Node uploads → Compress (`node_gzip`, off by default)
   THE NODE (the REAL swg-noded _sync_post)
     [4] it compresses only after a reply asked for it, and stops when a reply no longer does
     [5] a compressed POST answered 4xx is sent again plain in the same pass, and once that one goes through compression stays
-        off (else every pass would post twice); a 4xx the plain one shares (a revoked token) latches nothing; no answer at
-        all (0) is not retried plain
+        off (else every pass would post twice); only a refusal OF THE COMPRESSION counts (400 "bad body", 413, 415, 401
+        bad_signature) — a revoked token, a 429, a bad snapshot are not retried plain and latch nothing; nor is no answer (0)
   THE CONSOLE (js/screen-settings.js, the settings idiom's halves — as panel_tz_selftest [5])
     [6] the switch's state starts from the stored setting, the Save carries it, the Network arm of glDirty sees it, a
         switch-only change reaches the confirm list; its words have Russian
@@ -24,6 +24,7 @@ Run: python3 tests/sync_gzip_selftest.py   (0 = pass)
      flagoff    the flag is sent while the setting is off
      noretry    a refused compressed POST is not retried plain
      nolatch    compression is not latched off after a refusal
+     anyfourxx  any 4xx counts as a refused compression (a revoked token posts twice a pass; a 429 latches it off)
      spadirty   the Network arm of glDirty does not see the switch (Save stays grey)
      spasave    the Save payload does not carry it
 """
@@ -45,11 +46,13 @@ def check(name, cond, detail=""):
 PANEL_PLANTS = {
     "nocap": ("                raw = d.decompress(raw, MAX_SYNC_BODY)\n                if d.unconsumed_tail:",
               "                raw = d.decompress(raw)\n                if False:"),
-    "flagoff": ('''**({"gz_sync": True} if (Handler.deps.get("panel_settings") or {}).get("node_gzip") is True''',
+    "flagoff": ('''**({"gz_sync": True} if _ps.get("node_gzip") is True''',
                 '''**({"gz_sync": True} if True'''),
 }
 NODED_PLANTS = {
-    "noretry": ("    if gz and 400 <= status < 500:\n", "    if False:\n"),
+    "noretry": ("    if gz and _gz_refused(status, reply):\n", "    if False:\n"),
+    "anyfourxx": ('    return status in (413, 415) or (status == 400 and err == "bad body") or (status == 401 and code == "bad_signature")',
+                  "    return 400 <= status < 500"),
     "nolatch": ('            _SYNC_GZ["refused"] = True\n', '            pass\n'),
 }
 SPA_PLANTS = {
@@ -184,6 +187,9 @@ try:
     c, _ = req("/api/panel/settings", {"node_gzip": False})
     _c, r = N.post_json(URL, TOK, {"snapshot": snapshot()}, PANEL)
     check("[3] off again: the key is gone", "gz_sync" not in r, r.get("gz_sync"))
+    _ps = json.load(open(os.path.join(state, "panel-settings.json")))
+    check("[3] …and off is stored as no key at all (a fleet that never turns it on reads as before)", "node_gzip" not in _ps,
+          _ps.get("node_gzip"))
 
     print("\n[4] the node follows the reply")
     seen = []
@@ -201,11 +207,11 @@ try:
     req("/api/panel/settings", {"node_gzip": True})
     calls = []
 
-    def proxy(status_gz):
+    def proxy(status_gz, body=None):
         def f(url, tok, obj, panel, **kw):
             calls.append(kw.get("gz", False))
             if kw.get("gz"):
-                return status_gz, {"error": "refused"}
+                return status_gz, dict(body or {"error": "bad body"})
             return real(url, tok, obj, panel, **kw)
         return f
     N.post_json = proxy(400)
@@ -216,10 +222,22 @@ try:
     calls.clear()
     N._sync_post(URL, PANEL, snapshot(), ""); N._sync_post(URL, PANEL, snapshot(), "")
     check("[5] …and from then on plain only (one POST a pass), though the reply still asks", calls == [False, False], calls)
+    for st, body, what in ((413, {"error": "too large"}, "413"), (415, {"error": "x"}, "415"),
+                           (401, {"error": "bad request signature (mismatch)", "code": "bad_signature"}, "401 bad_signature")):
+        N.post_json = proxy(st, body); N._SYNC_GZ.update(on=True, refused=False); calls.clear()
+        st2, _r, _f = N._sync_post(URL, PANEL, snapshot(), "")
+        check("[5] %s to the compressed POST is a refused compression: retried plain, latched" % what,
+              calls == [True, False] and st2 == 200 and N._SYNC_GZ["refused"] is True, (calls, st2, N._SYNC_GZ))
     N.post_json = lambda url, tok, obj, panel, **kw: (calls.append(kw.get("gz", False)), (401, {"error": "invalid node token"}))[1]
     N._SYNC_GZ.update(on=True, refused=False); calls.clear()
     N._sync_post(URL, PANEL, snapshot(), "")
-    check("[5] a 401 both ways latches nothing", calls == [True, False] and N._SYNC_GZ["refused"] is False, (calls, N._SYNC_GZ))
+    check("[5] a revoked token (401, not bad_signature) is not retried plain and latches nothing",
+          calls == [True] and N._SYNC_GZ["refused"] is False, (calls, N._SYNC_GZ))
+    for st, body in ((429, {"error": "slow down"}), (400, {"error": "bad snapshot", "code": "bad_snapshot"})):
+        N.post_json = proxy(st, body); N._SYNC_GZ.update(on=True, refused=False); calls.clear()
+        N._sync_post(URL, PANEL, snapshot(), "")
+        check("[5] %d %s is not about compression: not retried plain, nothing latched" % (st, body["error"]),
+              calls == [True] and N._SYNC_GZ["refused"] is False, (calls, N._SYNC_GZ))
     N.post_json = proxy(0)
     N._SYNC_GZ.update(on=True, refused=False); calls.clear()
     N._sync_post(URL, PANEL, snapshot(), "")
