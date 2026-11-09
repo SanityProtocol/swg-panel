@@ -19,13 +19,14 @@
  *              revision fetches nothing and keeps the SAME object (K3's memos key on it); a failed fetch fails the poll and
  *              keeps roster, identity and revision, and the next poll asks again; a state with no revision keeps the roster;
  *              a mutation's poll fetches the saved roster BEFORE the apply() that drops its done patch (no flicker); two
- *              polls asking for one revision share one fetch, and an older fetch landing late never replaces a newer roster.
+ *              polls asking for one revision share one fetch (not one that stalled 5 s ago), and a poll overtaken by a
+ *              later-started one applies nothing — what is on screen is one poll's state and roster, the newest started.
  *
  * FlowMap2's per-render memos need a DOM and are checked in a browser (the card), not here.
  *
  * Run: node tests/spa_scale_selftest.mjs          (0 = pass)
  *      --plant NAME   applies one plant and expects RED (exit 0 = it went red)
- *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied nojoin noorder
+ *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied nojoin joinstale noorder
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -50,13 +51,13 @@ const PLANTS = {   // name: [file, anchor, replacement]
     "    for (const t of p.targets) { total.set(t.node, (total.get(t.node) || 0) + 1); if (t.online) on.add(t.node); }"],
   revfirst: ["js/store.js", "    if (typeof d.roster_rev === \"string\" && d.roster_rev !== this._rosterRev) {\n",
     "    if (typeof d.roster_rev === \"string\" && d.roster_rev !== this._rosterRev) {\n      this._rosterRev = d.roster_rev;\n"],
-  late: ["js/store.js", "this._rosterGot = q.seq; this._rosterRev = r.rev; roster = r.data; }",
-    "this._rosterGot = q.seq; this._rosterRev = r.rev; setTimeout(() => { this._server.roster = r.data; }); }"],
+  late: ["js/store.js", "      roster = r.data; rev = r.rev;", "      rev = r.rev; setTimeout(() => { this._server.roster = r.data; });"],
   everypoll: ["js/store.js", "d.roster_rev !== this._rosterRev) {", "true) {"],
   copy: ["js/store.js", "roster: roster || this._server.roster,", "roster: structuredClone(roster || this._server.roster),"],
   emptied: ["js/store.js", "roster: roster || this._server.roster,", "roster: roster || { version: 1, users: {}, peers: {} },"],
-  nojoin: ["js/store.js", "if (!q || q.rev !== d.roster_rev) q = this._rosterReq =", "q = this._rosterReq ="],
-  noorder: ["js/store.js", "if (q.seq > this._rosterGot) {", "if (true) {"],
+  nojoin: ["js/store.js", "if (!q || q.rev !== d.roster_rev || Date.now() - q.at > 5000)", "if (true)"],
+  joinstale: ["js/store.js", "if (!q || q.rev !== d.roster_rev || Date.now() - q.at > 5000)", "if (!q || q.rev !== d.roster_rev)"],
+  noorder: ["js/store.js", "    if (seq < this._pollApplied) return;\n", ""],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
 const written = [];
@@ -241,13 +242,17 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   };
   let rev = "a", fail = "";
   const serve = { a: mk() }, calls = [];
-  const state = async () => ({ ok: true, data: { roster_rev: rev, nodes: f.nodes, snapshots: {}, describe: {}, panel_settings: {} } });
+  // `versions.tag` names the state a poll applied, so a check can see that a poll's state and roster are one pair
+  const state = async () => ({ ok: true, data: { roster_rev: rev, nodes: f.nodes, snapshots: {}, describe: {}, panel_settings: {},
+                                                 versions: { tag: rev } } });
   A.events = async () => null;
   A.state = state;
   const hold = {};   // rev → the resolvers of its fetches, held open until the check releases them all
+  const stall = new Set(), stalled = [];   // a rev whose NEXT fetch stalls (a dead request), and those stalled
   A.roster = async r => {
     calls.push(r);
     if (r in hold) await new Promise(res => { hold[r].push(res); });
+    if (stall.has(r)) { stall.delete(r); await new Promise(res => stalled.push(res)); }   // this one fetch only
     const x = fail; fail = "";
     if (x === "throw") throw new Error("network");
     if (x === "notok") return { ok: false, error: "boom" };
@@ -310,6 +315,33 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   await Promise.allSettled([pe]); await tick();
   check("an older roster landing late never replaces a newer one", PS.roster === serve.f && PS._rosterRev === "f",
         { rev: PS._rosterRev, isF: PS.roster === serve.f, isE: PS.roster === serve.e });
+  check("⚠️ …and that late poll applies nothing — not its older state under the newer roster (F10)", PS.versions.tag === "f",
+        { state: PS.versions.tag });
+  // the later-STARTED poll's pair wins even when its roster is the older one (a pinned revision, F9): roster and state agree
+  rev = "h"; serve.h = mk(); hold.h = [];
+  const ph = PS.poll();
+  await tick(); await tick();
+  rev = "i"; serve.i = mk(); hold.i = [];
+  const pi = PS.poll();
+  await tick(); await tick();
+  hold.i.forEach(f2 => f2()); await Promise.allSettled([pi]); await tick();
+  hold.h.forEach(f2 => f2()); await Promise.allSettled([ph]); await tick();
+  check("the later-started poll's pair is on screen, roster and state from one moment", PS.roster === serve.i && PS._rosterRev === "i"
+        && PS.versions.tag === "i", { rev: PS._rosterRev, state: PS.versions.tag });
+  // a stalled fetch (F11): a poll 5 s later does not wait on it — it fetches afresh and applies
+  rev = "j"; serve.j = mk(); stall.add("j");
+  const pj = PS.poll();
+  await tick(); await tick();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 6000;
+  let late;
+  try { late = await Promise.race([PS.poll().then(() => "done", e => "threw " + e), new Promise(r2 => setTimeout(r2, 300, "waited"))]); }
+  finally { Date.now = realNow; }
+  await tick();
+  check("a poll does not wait on a fetch that stalled 5 s ago: it asks again and applies", late === "done" && PS.roster === serve.j
+        && PS._rosterRev === "j", { late, rev: PS._rosterRev });
+  stalled.forEach(f2 => f2()); await Promise.allSettled([pj]); await tick();
+  check("…and the stalled reply, landing at last, changes nothing", PS.roster === serve.j && PS.versions.tag === "j");
 }
 
 if (PLANT) done(true, PLANT);
