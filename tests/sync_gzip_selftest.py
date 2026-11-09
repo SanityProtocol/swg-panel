@@ -11,9 +11,9 @@ Settings → Network → Node uploads → Compress (`node_gzip`, off by default)
     [3] on: the reply carries `gz_sync: true`; off again: the key is gone
   THE NODE (the REAL swg-noded _sync_post)
     [4] it compresses only after a reply asked for it, and stops when a reply no longer does
-    [5] a compressed POST answered 4xx is sent again plain in the same pass, and once that one goes through compression stays
-        off (else every pass would post twice); only a refusal OF THE COMPRESSION counts (400 "bad body", 413, 415, 401
-        bad_signature) — a revoked token, a 429, a bad snapshot are not retried plain and latch nothing; nor is no answer (0)
+    [5] against a REAL HTTP door (its replies read by the real post_json — card scale-k5 F12): any 4xx to a compressed POST
+        — a panel's JSON 400 "bad body", a proxy's HTML 403, a 401 bad_signature — is sent again plain in the same pass, and
+        compression is held off for an hour, then tried again; no answer at all (0) and a 503 are not retried plain
   THE CONSOLE (js/screen-settings.js, the settings idiom's halves — as panel_tz_selftest [5])
     [6] the switch's state starts from the stored setting, the Save carries it, the Network arm of glDirty sees it, a
         switch-only change reaches the confirm list; its words have Russian
@@ -23,13 +23,13 @@ Run: python3 tests/sync_gzip_selftest.py   (0 = pass)
      nocap      the inflate is not capped
      flagoff    the flag is sent while the setting is off
      noretry    a refused compressed POST is not retried plain
-     nolatch    compression is not latched off after a refusal
-     anyfourxx  any 4xx counts as a refused compression (a revoked token posts twice a pass; a 429 latches it off)
+     nohold     compression is not held off after a refusal (every pass would post twice)
      spadirty   the Network arm of glDirty does not see the switch (Save stays grey)
      spasave    the Save payload does not carry it
 """
 import gzip, http.client, importlib.machinery, importlib.util, json, os, socket, subprocess, sys, tempfile, time
-import urllib.error, urllib.request
+import threading, urllib.error, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -50,10 +50,8 @@ PANEL_PLANTS = {
                 '''**({"gz_sync": True} if True'''),
 }
 NODED_PLANTS = {
-    "noretry": ("    if gz and _gz_refused(status, reply):\n", "    if False:\n"),
-    "anyfourxx": ('    return status in (413, 415) or (status == 400 and err == "bad body") or (status == 401 and code == "bad_signature")',
-                  "    return 400 <= status < 500"),
-    "nolatch": ('            _SYNC_GZ["refused"] = True\n', '            pass\n'),
+    "noretry": ("    if gz and 400 <= status < 500:\n", "    if False:\n"),
+    "nohold": ('        _SYNC_GZ["off_until"] = time.monotonic() + SYNC_GZ_HOLD_S\n', '        pass\n'),
 }
 SPA_PLANTS = {
     "spadirty": (" || nodeGz !== (ps.node_gzip === true) || normScanAllow", " || normScanAllow"),
@@ -195,7 +193,7 @@ try:
     seen = []
     real = N.post_json
     N.post_json = lambda url, tok, obj, panel, **kw: (seen.append(kw.get("gz", False)), real(url, tok, obj, panel, **kw))[1]
-    N._SYNC_GZ.update(on=False, refused=False)
+    N._SYNC_GZ.update(on=False, off_until=0.0)
     req("/api/panel/settings", {"node_gzip": True})
     N._sync_post(URL, PANEL, snapshot(), ""); N._sync_post(URL, PANEL, snapshot(), "")
     check("[4] plain until a reply asks, then compressed", seen == [False, True], seen)
@@ -203,45 +201,53 @@ try:
     seen.clear(); N._sync_post(URL, PANEL, snapshot(), ""); N._sync_post(URL, PANEL, snapshot(), "")
     check("[4] a reply without the flag turns it off", seen == [True, False], seen)
 
-    print("\n[5] a refused compressed POST")
-    req("/api/panel/settings", {"node_gzip": True})
-    calls = []
+    print("\n[5] a refused compressed POST, through a real HTTP door")
+    N.post_json = real
+    DOOR = {"gz": (400, "application/json", b'{"error": "bad body"}'), "seen": []}
 
-    def proxy(status_gz, body=None):
-        def f(url, tok, obj, panel, **kw):
-            calls.append(kw.get("gz", False))
-            if kw.get("gz"):
-                return status_gz, dict(body or {"error": "bad body"})
-            return real(url, tok, obj, panel, **kw)
-        return f
-    N.post_json = proxy(400)
-    N._SYNC_GZ.update(on=True, refused=False)
-    st, rep, _f = N._sync_post(URL, PANEL, snapshot(), "")
-    check("[5] a 400 to the compressed POST: sent again plain, in the same pass, and answered", calls == [True, False] and st == 200,
-          (calls, st))
-    calls.clear()
-    N._sync_post(URL, PANEL, snapshot(), ""); N._sync_post(URL, PANEL, snapshot(), "")
-    check("[5] …and from then on plain only (one POST a pass), though the reply still asks", calls == [False, False], calls)
-    for st, body, what in ((413, {"error": "too large"}, "413"), (415, {"error": "x"}, "415"),
-                           (401, {"error": "bad request signature (mismatch)", "code": "bad_signature"}, "401 bad_signature")):
-        N.post_json = proxy(st, body); N._SYNC_GZ.update(on=True, refused=False); calls.clear()
-        st2, _r, _f = N._sync_post(URL, PANEL, snapshot(), "")
-        check("[5] %s to the compressed POST is a refused compression: retried plain, latched" % what,
-              calls == [True, False] and st2 == 200 and N._SYNC_GZ["refused"] is True, (calls, st2, N._SYNC_GZ))
-    N.post_json = lambda url, tok, obj, panel, **kw: (calls.append(kw.get("gz", False)), (401, {"error": "invalid node token"}))[1]
-    N._SYNC_GZ.update(on=True, refused=False); calls.clear()
-    N._sync_post(URL, PANEL, snapshot(), "")
-    check("[5] a revoked token (401, not bad_signature) is not retried plain and latches nothing",
-          calls == [True] and N._SYNC_GZ["refused"] is False, (calls, N._SYNC_GZ))
-    for st, body in ((429, {"error": "slow down"}), (400, {"error": "bad snapshot", "code": "bad_snapshot"})):
-        N.post_json = proxy(st, body); N._SYNC_GZ.update(on=True, refused=False); calls.clear()
-        N._sync_post(URL, PANEL, snapshot(), "")
-        check("[5] %d %s is not about compression: not retried plain, nothing latched" % (st, body["error"]),
-              calls == [True] and N._SYNC_GZ["refused"] is False, (calls, N._SYNC_GZ))
-    N.post_json = proxy(0)
-    N._SYNC_GZ.update(on=True, refused=False); calls.clear()
-    N._sync_post(URL, PANEL, snapshot(), "")
-    check("[5] no answer at all (0) is not retried plain", calls == [True], calls)
+    class Door(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            gz = (self.headers.get("Content-Encoding") or "") == "gzip"
+            DOOR["seen"].append("gz" if gz else "plain")
+            code, ctype, body = DOOR["gz"] if gz else (200, "application/json", b'{"desired": {}, "gz_sync": true}')
+            self.send_response(code); self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    door = ThreadingHTTPServer(("127.0.0.1", 0), Door)
+    threading.Thread(target=door.serve_forever, daemon=True).start()
+    DURL = "http://127.0.0.1:%d/api/node/sync" % door.server_address[1]
+
+    def one(answer):
+        DOOR["gz"], DOOR["seen"] = answer, []
+        N._SYNC_GZ.update(on=True, off_until=0.0)
+        st, _r, _f = N._sync_post(DURL, PANEL, snapshot(), "")
+        return st, list(DOOR["seen"])
+    for what, answer in (("a panel's JSON 400 \"bad body\" (one from before N3)", (400, "application/json", b'{"error": "bad body"}')),
+                         ("a proxy's HTML 403 page", (403, "text/html", b"<html><title>403 Forbidden</title></html>")),
+                         ("a 401 bad_signature (a body rewritten on the way)",
+                          (401, "application/json", b'{"error": "bad request signature (mismatch)", "code": "bad_signature"}')),
+                         ("a 415", (415, "text/plain", b"unsupported"))):
+        st, seen = one(answer)
+        check("[5] %s: sent again plain in the same pass, answered" % what, seen == ["gz", "plain"] and st == 200, (seen, st))
+        check("[5] …and compression held off for about an hour", 3500 < N._SYNC_GZ["off_until"] - time.monotonic() <= 3600,
+              N._SYNC_GZ["off_until"] - time.monotonic())
+    DOOR["seen"] = []
+    N._sync_post(DURL, PANEL, snapshot(), ""); N._sync_post(DURL, PANEL, snapshot(), "")
+    check("[5] the next passes post once each, uncompressed, though the reply still asks", DOOR["seen"] == ["plain", "plain"],
+          DOOR["seen"])
+    N._SYNC_GZ["off_until"] = time.monotonic() - 1; DOOR["gz"], DOOR["seen"] = (200, "application/json", b'{"desired": {}}'), []
+    N._sync_post(DURL, PANEL, snapshot(), "")
+    check("[5] an hour on, it compresses again (the reply asked)", DOOR["seen"] == ["gz"], DOOR["seen"])
+    st, seen = one((503, "application/json", b'{"ok": false, "code": "busy"}'))
+    check("[5] a 503 (a busy panel) is not retried plain", seen == ["gz"] and st == 503, (seen, st))
+    door.shutdown(); door.server_close()
+    N._SYNC_GZ.update(on=True, off_until=0.0)
+    st, _r, _f = N._sync_post(DURL, PANEL, snapshot(), "")
+    check("[5] no answer at all (0) is not retried plain, and holds nothing", st == 0 and N._SYNC_GZ["off_until"] == 0.0,
+          (st, N._SYNC_GZ))
     N.post_json = real
 
     print("\n[6] the console's switch")
