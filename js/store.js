@@ -72,6 +72,7 @@ export const api = {
   login(b) { return this.post("/api/login", b); },
   logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },
+  roster(rev) { return this.get("/api/roster?rev=" + encodeURIComponent(rev)); },   // the roster of the revision /api/state named
   events(limit) { return this.get("/api/events?limit=" + (limit || 15)); },
   eventDelete(eid) { return this.post("/api/events/delete", { eid }); },
   eventsClear() { return this.post("/api/events/clear", {}); },
@@ -306,13 +307,26 @@ export const Store = {
     setInterval(() => { if (document.visibilityState !== "hidden") this.poll().catch(() => {}); }, 5000);
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") this.poll().catch(() => {}); });
   },
-  // One round trip: /api/state bundles roster + nodes (incl. health_history) + per-node
-  // interface meta + raw snapshots. Status is still derived in the browser via reconcile.js.
+  // /api/state bundles nodes (incl. health_history) + per-node interface meta + raw snapshots, and NAMES the roster's
+  // revision; the roster itself comes from /api/roster only when that moves (SCALE-PLAN K4: it was 6 of the 12.9 MB every
+  // poll moved and parsed at 10,000 users, and it changes only on a save). Status is still derived in the browser via
+  // reconcile.js.
   _server: { roster: { version: 1, users: {}, peers: {} }, nodes: [] },   // pristine, last fetched
+  _rosterRev: null,                                                        // the revision _server.roster is
   async poll() {
     const [s, ev] = await Promise.all([api.state(), api.events().catch(() => null)]);
     const d = (s && s.data) || {};
-    this._server = { roster: d.roster || { version: 1, users: {}, peers: {} }, nodes: d.nodes || [] };
+    // Fetched BEFORE apply(): a mutation's own poll must see its record before apply() drops the done patch. A failed
+    // fetch fails the poll, as a failed /api/state does — nothing applied, the last roster kept (its identity too: K3's
+    // memos key on it) and its revision unrecorded, so the next poll asks again. An unchanged revision keeps the SAME
+    // object; a state without one (an error reply) keeps the held roster.
+    let roster = this._server.roster;
+    if (typeof d.roster_rev === "string" && d.roster_rev !== this._rosterRev) {
+      const r = await api.roster(d.roster_rev);
+      if (!r || !r.ok || typeof r.rev !== "string" || !r.data) throw new Error("roster");   // i18n-keys: never displayed
+      roster = r.data; this._rosterRev = r.rev;
+    }
+    this._server = { roster, nodes: d.nodes || [] };
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
     // How far ahead of the PANEL this browser's clock reads — every age the SPA measures or prints is read on the

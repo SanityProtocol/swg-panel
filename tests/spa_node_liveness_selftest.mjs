@@ -112,7 +112,7 @@ try {
     const pNow = nowS() - panelBehindS;
     St.api.state = async () => ({ ok: true, data: {
       panel_now: pNow,
-      roster: roster(),
+      roster_rev: "r1",                    // the roster rides /api/roster, fetched when this revision moves (SCALE-PLAN K4)
       nodes: [{ id: "n1", name: "node-one", status: "online", last_seen: pNow }],
       // ⚠️ AND THE NODE'S OWN CLOCK IS AN HOUR BEHIND THE PANEL'S — a remote box without NTP. Its sync arrived
       // just now (`last_seen`), which is the only thing that says it is alive. With the snapshot's own timestamp
@@ -122,6 +122,7 @@ try {
       describe: {}, panel_settings: {},
     } });
     St.api.events = async () => null;
+    St.api.roster = async rev => ({ ok: true, rev, data: roster() });
     await St.Store.poll();
     check("a poll measures how far this browser reads from the panel", Math.abs(U0.clock.skewMs - panelBehindS * S_TO_MS) <= 5000,
       { skewMs: U0.clock.skewMs, expected: panelBehindS * S_TO_MS });
@@ -201,10 +202,11 @@ try {
     const St = await load("js/store.js");
     const U0 = await import(pathToFileURL(path.join(ROOT, "js/util.js")).href);
     const good = nowS() - 60;
-    const reply = pn => ({ ok: true, data: { panel_now: pn, roster: roster(),
+    const reply = pn => ({ ok: true, data: { panel_now: pn, roster_rev: "r1",
       nodes: [{ id: "n1", name: "node-one", status: "online", last_seen: good }], snapshots: snap(good),
       describe: {}, panel_settings: {} } });
     St.api.events = async () => null;
+    St.api.roster = async rev => ({ ok: true, rev, data: roster() });
     St.api.state = async () => reply(good);
     await St.Store.poll();
     const sane = U0.clock.skewMs;

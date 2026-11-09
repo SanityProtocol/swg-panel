@@ -37,7 +37,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   refused. A server's sync now reads only that server's devices, and syncs and refreshes of an open page share one
   parsed `users.json` until it changes, instead of each parsing it again: at 10,000 users a sync costs about half what
   it did. The console no longer freezes for seconds on a big fleet: at 10,000 users the Overview's longest pause on a
-  mid-range laptop is about 0.4 s instead of 4, the Users list's 0.2 s instead of 1.9.
+  mid-range laptop is about 0.4 s instead of 4, the Users list's 0.2 s instead of 1.9. An open console no longer
+  downloads the whole user list every 5 seconds, only when something in it has changed: at 10,000 users each refresh
+  carries about half the data, and most are answered in milliseconds instead of about half a second.
 - **A busy node no longer runs out of room for connections.** Every connection through a node takes a place in the
   kernel's connection table, and a full table refuses new connections for every user at once. The kernel makes it small:
   8,192 places on a 1 GB server. The node now raises it to 65,536 places for each GB of RAM, and never lowers a larger

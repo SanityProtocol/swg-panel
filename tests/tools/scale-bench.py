@@ -5,8 +5,9 @@ A REAL swg-panel-server on temp state, pinned to one core (taskset), plain HTTP,
 panel's own user_set/peer_set (so the roster is shaped exactly as the panel writes it): users with one or two devices each,
 wg0 + awg0 on every node, a csqtt 2.5 and a WDTT instance on every node (turn users ~10 % of devices), a few blocked and
 expired users, ~5 % of identities on two nodes, one big node. The nodes are played by POSTing /api/node/sync with synthetic
-snapshots every 5 s (~60 % of peers online, counters moving); operator tabs poll /api/state with gzip every 5 s; an operator
-clicks create user → create device → block over HTTP every 5 s.
+snapshots every 5 s (~60 % of peers online, counters moving); operator tabs poll /api/state with gzip every 5 s, and
+/api/roster when its revision moves, as the SPA does; an operator clicks create user → create device → block over HTTP
+every 5 s (--click-every: each click saves the roster, so every tab fetches it again).
 
   A1  panel CPU, steady (own + children, % of the pinned core)
   A2  panel RSS (start / end / max of the steady window)
@@ -26,7 +27,8 @@ clicks create user → create device → block over HTTP every 5 s.
 
 A3, A4 and the poll cover the whole loaded period: the steady window and, with --browser, the browser pass (the load runs on;
 the browser is one of the three tabs). What the rig does not play: the nodes never bring up the mesh links the panel asks for
-(their cost grows with nodes, not users), and the synthetic tabs poll /api/state only (the SPA also reads events and traffic).
+(their cost grows with nodes, not users), and the synthetic tabs poll /api/state + /api/roster only (the SPA also reads events
+and traffic).
 
 Run:   python3 tests/tools/scale-bench.py                                  # 200x5, 10000x20, 15000x20; 120 s steady each
        python3 tests/tools/scale-bench.py --sizes 10000x20 --duration 60 --browser --converge 2500
@@ -325,10 +327,19 @@ def tab_loop(port, rec, stop, offset, sizes):
     if stop.wait(offset):
         return
     nxt = time.monotonic()
+    rev = None                                   # as the SPA polls (js/store.js): the roster only when its revision moved
     while not stop.is_set():
         try:
             st, data, ms = http_req(port, "GET", "/api/state", None, {"Accept-Encoding": "gzip"})
             if st == 200:
+                want = json.loads(gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data)["data"].get("roster_rev")
+                if isinstance(want, str) and want != rev:
+                    rst, rdata, rms = http_req(port, "GET", "/api/roster?rev=" + want, None, {"Accept-Encoding": "gzip"})
+                    if rst == 200:
+                        rev = json.loads(gzip.decompress(rdata) if rdata[:2] == b"\x1f\x8b" else rdata)["rev"]
+                        ms += rms; data += rdata
+                    else:
+                        rec.fail("state", "roster http%d" % rst)
                 rec.add("state", ms)
                 sizes.append(len(data))
             else:
@@ -352,12 +363,12 @@ def post(port, path, obj, rec, key):
         return 0, {}
 
 
-def click_loop(port, fleet, rec, stop):
+def click_loop(port, fleet, rec, stop, every=SYNC_EVERY):
     k = 0
     small = fleet.nids[1:] if fleet.big else fleet.nids
     nxt = time.monotonic() + 1.0
     while not stop.wait(max(0.0, nxt - time.monotonic())):
-        nxt += SYNC_EVERY
+        nxt += every
         k += 1
         _st, r = post(port, "/api/users/create", {"name": "bench%05d" % k}, rec, "click")
         uid = (r.get("data") or {}).get("id")
@@ -559,7 +570,7 @@ def run_size(P, users, nodes, args, core):
             [t.start() for t in ts]; [t.join() for t in ts]
             time.sleep(2)
 
-        # steady window: nodes @5 s, 3 tabs @5 s, a click every 5 s
+        # steady window: nodes @5 s, 3 tabs @5 s, a click every --click-every s
         sizes = []
         for i, n in enumerate(fleet.nids):
             threads.append(threading.Thread(target=node_loop, args=(port, sims[n], tok[n], rec, stop, SYNC_EVERY * i / nodes), daemon=True))
@@ -568,7 +579,7 @@ def run_size(P, users, nodes, args, core):
             threads.append(threading.Thread(target=tab_loop, args=(port, rec, stop, 1.3 * i + 0.4, sizes), daemon=True))
         [t.start() for t in threads]
         time.sleep(10)                                         # warm: every node synced, every tab polled
-        click = threading.Thread(target=click_loop, args=(port, fleet, rec, stop), daemon=True)
+        click = threading.Thread(target=click_loop, args=(port, fleet, rec, stop, args.click_every), daemon=True)
         click.start(); threads.append(click)
         rec.lat.pop("sync", None); rec.lat.pop("state", None)
         c0, w0 = proc_cpu(proc.pid), time.time()
@@ -663,6 +674,8 @@ def main():
     ap.add_argument("--window", type=float, default=30.0, help="browser: the measured window, seconds")
     ap.add_argument("--converge", type=int, default=0, help="A8: converge a node to N peers (0 = skip)")
     ap.add_argument("--core", type=int, default=(os.cpu_count() or 1) - 1)
+    ap.add_argument("--click-every", type=float, default=SYNC_EVERY,
+                    help="seconds between operator clicks; each saves the roster, so the tabs refetch it (default 5)")
     ap.add_argument("--json")
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()

@@ -183,10 +183,11 @@ def panel_checks(src, ok):
         ok(got2 == ["10.8.0.40/32"], "[2] n2: only its own — not 10.8.0.2, a different device there (%s)" % got2)
 
         # [4] the SPA's source
-        c, st = req("/api/state")
-        sp = (((st.get("data") or st).get("roster") or {}).get("peers") or {})
+        c, st = req("/api/state")                 # the SPA reads the roster of the revision /api/state names (U1)
+        c, ro = req("/api/roster?rev=" + str(((st.get("data") or {}).get("roster_rev"))))
+        sp = ((ro.get("data") or {}).get("peers") or {})
         ok((sp.get("pa") or {}).get("router") is True and "router" not in (sp.get("pb") or {}),
-           "[4] /api/state carries the mark (%s)" % {k: (v or {}).get("router") for k, v in sp.items()})
+           "[4] /api/roster carries the mark (%s)" % {k: (v or {}).get("router") for k, v in sp.items()})
     finally:
         proc.terminate()
         try:

@@ -3068,6 +3068,27 @@ def roster_view(path):
     return c[2], c[1]
 
 
+_ROSTER_BYTES = [None]              # {path, mark, rev, bytes, gz} — the roster as the newest /api/state named it (U1)
+
+
+def roster_bytes(path, view):
+    """GET /api/roster's body for `view` = roster_view(path) — the roster serialised ONCE per revision (1.8.12 Scale U1):
+    the console's 5 s poll carried the whole roster in every /api/state (6 of its 12.9 MB at 10,000 users) though it only
+    changes on a save; now /api/state names the revision (`roster_rev`) and the browser fetches the roster when that moves.
+    The /api/state build fills the slot with the view it walks, so a ?rev= of that state finds the same roster — a tab
+    never pairs one moment's nodes with a later roster (a peer deleted in between would read as an orphan). No lock: two
+    builders race only when the revision moves, and both are right."""
+    r, m = view
+    c = _ROSTER_BYTES[0]
+    if c is None or m is None or (c["path"], c["mark"]) != (path, m):
+        rev = "0" if m is None else hashlib.sha1(repr(m).encode()).hexdigest()[:16]
+        c = {"path": path, "mark": m, "rev": rev, "gz": None,
+             "bytes": json.dumps({"ok": True, "rev": rev, "data": r}).encode()}
+        if m is not None:                            # no file: nothing to key it on, read each time (as roster_view)
+            _ROSTER_BYTES[0] = c
+    return c
+
+
 def roster_own(path, roster):
     """A roster this request may write: `roster` itself, unless it is the shared view — then a fresh load, which the request
     reads from there on. The caller holds _api_lock, so the copy holds what the view held."""
@@ -26349,11 +26370,12 @@ def api(method, path, qs, body, deps):
             _hp_at = os.path.getmtime(_hpf)              # no timestamp in the file → use its mtime for the timeout
         _mstat = _APPLY["status"] or {}
         _mgrace = int(_mstat.get("grace_until") or 0) > int(time.time())   # a just-confirmed move still gracing out (old address kept alive) → an instant undo is still possible
-        _roster = roster_view(roster_path)[0]            # the shared parse (P2): the "roster" key and nodes_view's walk
+        _rview = roster_view(roster_path)                # the shared parse (P2): nodes_view's walk, and the roster's revision
+        _roster = _rview[0]
         return 200, {"ok": True, "data": {
             "host_proc": _proc_view(_hp, _hp_at),        # this panel host is mid re-install (UI tag); times out → "failed" → clears
             "host_proc_err": _hp_err,                    # failed-state log tail for the appbar error popup
-            "roster": _roster,                           # {version, users, peers}
+            "roster_rev": roster_bytes(roster_path, _rview)["rev"],   # the roster itself: GET /api/roster?rev= this (U1)
             "nodes": nodes_view(_roster),                # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
@@ -28215,9 +28237,6 @@ def api(method, path, qs, body, deps):
             out[tier] = {"n": m.get("n", 0), "sample": sample}
         return 200, {"ok": True, "data": {"cat": cat, "label": catalog_label(cat),
                                           "provider": catalog_provider_label(cat.split(":", 1)[0]), "tiers": out}}
-
-    if method == "GET" and path == "/api/roster":
-        return 200, {"ok": True, "data": roster_load(roster_path)}
 
     if method == "GET" and path == "/api/account":
         creds = deps.get("auth")
@@ -34132,6 +34151,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_state_bytes(c)
         return self._send(code, obj)   # an error build isn't cached
 
+    def _send_roster(self, u):
+        rp = self.deps["roster_path"]
+        c = _ROSTER_BYTES[0]                # the slot the newest /api/state filled; the request's rev is compared, never echoed
+        if c is None or c["path"] != rp or c["rev"] != (parse_qs(u.query).get("rev") or [""])[0]:
+            try:
+                c = roster_bytes(rp, roster_view(rp))
+            except Exception as e:
+                return self._send(500, {"ok": False, "error": str(e), "code": "internal"})
+        return self._send_state_bytes(c)
+
     def _send_state_bytes(self, c):
         """The memoized state, compressed if the client asked for it.
 
@@ -36951,6 +36980,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             if path == "/api/state":       # the hot poll path — served from the short-TTL memo
                 return self._send_state()
+            if path == "/api/roster":      # the roster of the revision /api/state named (`?rev=`), else the current one (U1)
+                return self._send_roster(u)
             if path == "/api/logs/live":   # the log viewer's poll: memory only, never api() (it parses the node store)
                 code, obj = live_api_get(parse_qs(u.query), self.deps)
                 return self._send_state_bytes({"bytes": json.dumps(obj).encode(), "gz": None}) if code == 200 else self._send(code, obj)

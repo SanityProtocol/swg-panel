@@ -15,11 +15,16 @@
  *   apply      with no patch pending the screens read the fetched objects themselves (no clone); a pending patch writes a
  *              clone, never the fetched copy, and the next apply without it shows the fetched value again.
  *
+ *   poll       (K4, U1) the roster rides /api/roster, fetched only when the revision /api/state names moves: the same
+ *              revision fetches nothing and keeps the SAME object (K3's memos key on it); a failed fetch fails the poll and
+ *              keeps roster, identity and revision, and the next poll asks again; a state with no revision keeps the roster;
+ *              a mutation's poll fetches the saved roster BEFORE the apply() that drops its done patch (no flicker).
+ *
  * FlowMap2's per-render memos need a DOM and are checked in a browser (the card), not here.
  *
  * Run: node tests/spa_scale_selftest.mjs          (0 = pass)
  *      --plant NAME   applies one plant and expects RED (exit 0 = it went red)
- *      plants: order self atuser mapkey clonenever clonealways twice
+ *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -42,6 +47,12 @@ const PLANTS = {   // name: [file, anchor, replacement]
   twice: ["js/screen-overview.js",
     "    for (const t of p.targets) { seen.add(t.node); if (t.online) on.add(t.node); }\n    for (const n of seen) total.set(n, (total.get(n) || 0) + 1);",
     "    for (const t of p.targets) { total.set(t.node, (total.get(t.node) || 0) + 1); if (t.online) on.add(t.node); }"],
+  revfirst: ["js/store.js", "    if (typeof d.roster_rev === \"string\" && d.roster_rev !== this._rosterRev) {\n",
+    "    if (typeof d.roster_rev === \"string\" && d.roster_rev !== this._rosterRev) {\n      this._rosterRev = d.roster_rev;\n"],
+  late: ["js/store.js", "      roster = r.data; this._rosterRev = r.rev;", "      this._rosterRev = r.rev; setTimeout(() => { this._server.roster = r.data; });"],
+  everypoll: ["js/store.js", "d.roster_rev !== this._rosterRev) {", "true) {"],
+  copy: ["js/store.js", "    let roster = this._server.roster;", "    let roster = structuredClone(this._server.roster);"],
+  emptied: ["js/store.js", "    let roster = this._server.roster;", "    let roster = { version: 1, users: {}, peers: {} };"],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
 const written = [];
@@ -58,7 +69,7 @@ function load(file) {
   return sibling(file, src.replace(p[1], p[2]), "plant");
 }
 
-let OLD, V, PS, O, Store;
+let OLD, V, PSM, PS, O, Store;
 try {
   let oldSrc;
   try { oldSrc = execFileSync("git", ["-C", ROOT, "show", PRE_K3 + ":js/views.js"], { encoding: "utf8", maxBuffer: 1 << 26 }); }
@@ -66,7 +77,7 @@ try {
   OLD = await sibling("js/views.js", oldSrc, "prek3");
   V = await load("js/views.js");
   O = await load("js/screen-overview.js");
-  PS = (await load("js/store.js")).Store;                                         // the (planted) store: lookups + apply
+  PSM = await load("js/store.js"); PS = PSM.Store;                               // the (planted) store: lookups + apply + poll
   Store = (await import(pathToFileURL(path.join(ROOT, "js/store.js")).href)).Store;   // the one both views copies read
 } finally {
   for (const f of written) { try { fs.unlinkSync(f); } catch (_) { /* gone */ } }
@@ -212,6 +223,69 @@ console.log("\n[4] apply() — a clone only while a patch is pending");
   PS.apply();
   check("the next apply without it shows the fetched value again", PS.roster.users[uid].name === was && PS.roster === PS._server.roster,
         { name: PS.roster.users[uid].name });
+}
+
+console.log("\n[8] the poll — the roster rides /api/roster, fetched only when its revision moves (K4, U1)");
+{
+  const A = PSM.api, f = fleet(), uid = Object.keys(f.rUsers)[0];
+  const mk = () => {
+    const r = { version: 1, users: {}, peers: {}, groups: f.groups };
+    for (const [k, u] of Object.entries(f.rUsers)) r.users[k] = { ...u };
+    for (const p of f.peers) r.peers[p.id] = { user_id: p.unassigned ? null : p.user_id, title: p.title, pubkey: "k" + p.id,
+                                               targets: p.targets.map(t => ({ node: t.node, iface: t.iface, ip: t.ip })) };
+    return r;
+  };
+  let rev = "a", fail = "";
+  const serve = { a: mk() }, calls = [];
+  const state = async () => ({ ok: true, data: { roster_rev: rev, nodes: f.nodes, snapshots: {}, describe: {}, panel_settings: {} } });
+  A.events = async () => null;
+  A.state = state;
+  A.roster = async r => {
+    calls.push(r);
+    const x = fail; fail = "";
+    if (x === "throw") throw new Error("network");
+    if (x === "notok") return { ok: false, error: "boom" };
+    return { ok: true, rev: r, data: serve[r] };
+  };
+  const tick = () => new Promise(res => setTimeout(res, 0));
+  const poll = async () => {   // a poll that must succeed: a throw is a failed check, not a crash
+    try { await PS.poll(); } catch (e) { check("a poll that should succeed succeeds", false, String((e && e.message) || e)); }
+    await tick();
+  };
+  PS.pending = {}; PS._rosterRev = null;
+  await poll();
+  check("a revision not held is fetched once, by the revision the state named",
+        calls.length === 1 && calls[0] === "a" && PS.roster === serve.a && PS._rosterRev === "a", { calls, rev: PS._rosterRev });
+  const first = PS.roster;
+  await poll(); await poll();
+  check("the same revision: no fetch, and the screens keep the SAME roster object", calls.length === 1 && PS.roster === first,
+        { calls: calls.length, same: PS.roster === first });
+  rev = "b"; serve.b = mk();
+  for (const how of ["throw", "notok"]) {
+    fail = how;
+    let threw = false;
+    try { await PS.poll(); } catch (_) { threw = true; }
+    await tick();
+    check("a failed fetch (" + how + ") fails the poll and keeps the roster, its identity and its revision",
+          threw && PS.roster === first && PS._rosterRev === "a", { threw, same: PS.roster === first, rev: PS._rosterRev });
+  }
+  await poll();
+  check("…and the next poll fetches it", PS.roster === serve.b && PS._rosterRev === "b", { rev: PS._rosterRev });
+  const held = PS.roster, n = calls.length;
+  A.state = async () => ({ ok: false, error: "internal" });
+  await poll();
+  check("a state reply without a revision keeps the held roster", PS.roster === held && calls.length === n,
+        { same: PS.roster === held, users: Object.keys(PS.roster.users || {}).length });
+  A.state = state;
+  // a mutation: its patch is done, the save moved the revision; the poll must bring the saved record in before apply()
+  // drops the patch — every apply() of that poll shows it
+  rev = "c"; serve.c = mk(); serve.c.users[uid].name = "SAVED";
+  PS.pending.m1 = { done: true, apply: s2 => { s2.roster.users[uid].name = "SAVED"; } };
+  const seen = [], ap = PS.apply;
+  PS.apply = function () { ap.call(this); seen.push(this.roster.users[uid].name); };
+  try { await poll(); } finally { PS.apply = ap; }
+  check("a mutation's poll: every apply() sees the saved record — no flicker", seen.length > 0 && seen.every(x => x === "SAVED")
+        && PS.roster === serve.c && !PS.pending.m1, { seen });
 }
 
 if (PLANT) done(true, PLANT);
