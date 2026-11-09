@@ -2097,6 +2097,7 @@ export function PanelSettingsScreen() {
   const logMbPDirty = () => logMbP !== String(ps.log_mb_panel || 100);
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
   const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
+  const [nodeGz, setNodeGz] = useState(ps.node_gzip === true);   // SCALE-PLAN N3: nodes gzip their sync snapshots
   // Scan-guard never-flag list (SCAN-GUARD-PLAN): source IPs/ranges the port-scan guard skips — our own fleet
   // management reaches many servers the way a scanner does. One per line; a bare IP is normalised to /32, matching
   // the server, so an unedited field reads clean against the stored list.
@@ -2512,6 +2513,7 @@ export function PanelSettingsScreen() {
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
         show_node_lans: showLans,
+        node_gzip: nodeGz,
         scan_allow: normScanAllow(scanAllow),
         block_allow: normBlockAllow(blockAllow),
         // only when changed; the defaults → null (no key). The text as typed, so the panel names what it cannot take
@@ -2636,6 +2638,7 @@ export function PanelSettingsScreen() {
     // Two changes share this section, so the line names the one that actually moved rather than reporting
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
+    if (nodeGz !== (ps.node_gzip === true)) out.push(nodeGz ? T("Node uploads — compressed") : T("Node uploads — sent uncompressed"));
     if (normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) out.push(T("Port-scan guard — trusted sources updated"));
     if (nbDirty()) out.push(T("Never-block list updated"));
     if (pokDirty()) out.push(pokNone ? T("Ports the torrent filter never cuts → no exceptions") : T("Ports the torrent filter never cuts — updated"));
@@ -2820,7 +2823,7 @@ const sectionLabel = k => ({
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
     sec === "logs" ? (logDirty() || logMbPDirty()) :
-    sec === "mesh" ? (showLans !== (ps.show_node_lans !== false) || normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) :
+    sec === "mesh" ? (showLans !== (ps.show_node_lans !== false) || nodeGz !== (ps.node_gzip === true) || normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) :
     sec === "links" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -3649,6 +3652,11 @@ const sectionLabel = k => ({
           <div class="seclabel lanfleet-head"><span>${T("Trusted sources")}</span></div>
           <p class="hint" style="margin:0 0 8px">${T("Addresses the port-scan guard never flags. A management box that reaches many servers looks like a scanner to it — name it here to leave it alone. One IP or range a line; a bare IP means that one host. Everything else is still checked.")}</p>
           <textarea class="ta" rows="3" spellcheck="false" autocomplete="off" placeholder="10.0.0.0/24&#10;198.51.100.7" value=${scanAllow} onInput=${e => setScanAllow(e.target.value)}></textarea>
+          ${/* SCALE-PLAN N3: fleet-wide, off by default — what every node sends this panel each sync */""}
+          <div class="seclabel lanfleet-head"><span>${T("Node uploads")}</span>
+            <span class="lanfleet-sw"><span>${T("Compress")}</span><${Switch} on=${nodeGz} onChange=${v => setNodeGz(v)}
+              title=${T("Nodes gzip the state they send each sync")}/></span></div>
+          <p class="hint" style="margin:0">${T("Each node sends its state to the panel every few seconds. Compressed, that is about a third of the bytes, for a little CPU on the node. Worth it when the panel's inbound traffic is limited or paid for. Nodes older than this panel send it uncompressed.")}</p>
         </div>` : null}
         <div class="setfoot">
           ${section === "access"

@@ -120,7 +120,7 @@ def observe(t, nr=0, state="active", reply=None, rc=0, stopped=False, expire=Tru
     `reply` overrides the host's stdout (for the could-not-look cases); rc=126 means host_sh could not reach."""
     CLK.t = 1_000_000.0 + t
     out = "" if rc else (reply if reply is not None else "%s=%s=%s\n" % (SVC, state, nr))
-    N.host_sh = lambda cmd, timeout=90: Out(out, rc)
+    N.host_sh = lambda cmd, timeout=90, **kw: Out(out, rc)
     if expire:
         N._TURN_RUN["at"] = 0.0
     tps = [{"service": SVC, "listen": "10.0.0.1:56004", **({"stopped": True} if stopped else {})}]

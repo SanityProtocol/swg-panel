@@ -469,8 +469,8 @@ case "$1" in
     i="$2"; pk="$4"; shift 4
     case "$1" in
       remove) grep -v "^$pk	" "$D/$i.peers" > "$D/$i.tmp"; mv "$D/$i.tmp" "$D/$i.peers";;
-      allowed-ips) [ "$3" = preshared-key ] && cat >/dev/null
-        printf '%s\t(none)\t(none)\t%s\t0\t0\t0\toff\n' "$pk" "$2" >> "$D/$i.peers";;
+      allowed-ips) psk='(none)'; [ "$3" = preshared-key ] && psk=$(cat)   # kept, as wg does: a later pass reads no drift
+        printf '%s\t%s\t(none)\t%s\t0\t0\t0\toff\n' "$pk" "$psk" "$2" >> "$D/$i.peers";;
     esac; exit 0;;
 esac
 exit 0

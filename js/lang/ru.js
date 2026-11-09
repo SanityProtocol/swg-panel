@@ -2147,6 +2147,12 @@ export const STR = {
     "для имён сайтов из списка «Не блокировать» нужно обновить ноду — пока списки блокировок здесь их по-прежнему блокируют (адреса уже работают)",
   "Mesh links — {v1}": "Связи в меше — {v1}",
   "Node local networks — hidden, and closed on every node": "Локальные сети нод — скрыты и закрыты на всех нодах",
+  "Node uploads — compressed": "Отправка с нод — со сжатием",
+  "Node uploads — sent uncompressed": "Отправка с нод — без сжатия",
+  "Node uploads": "Отправка с нод",
+  "Compress": "Сжимать",
+  "Nodes gzip the state they send each sync": "Ноды сжимают (gzip) состояние, которое отправляют при каждой синхронизации",
+  "Each node sends its state to the panel every few seconds. Compressed, that is about a third of the bytes, for a little CPU on the node. Worth it when the panel's inbound traffic is limited or paid for. Nodes older than this panel send it uncompressed.": "Каждая нода отправляет панели своё состояние раз в несколько секунд. Со сжатием это примерно треть байтов ценой небольшой нагрузки на процессор ноды. Имеет смысл, если входящий трафик панели ограничен или платный. Ноды старше этой панели отправляют без сжатия.",
   "Status timing": "Тайминги статусов",
   // budget-ok: field <label>, own line
   "Node stale after (s)": "Нода считается молчащей через (с)",

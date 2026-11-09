@@ -21,6 +21,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   refused, and now says to pick No exceptions instead. A node not yet updated keeps its built-in list, and its card
   says so.
 
+- **Nodes can compress what they send the panel.** Settings → Network → Node uploads → Compress (off by default):
+  each node gzips the state it sends every few seconds, about a third of the bytes for a few milliseconds of its CPU —
+  for a panel whose inbound traffic is limited or paid for. A node older than the panel sends it uncompressed, and a
+  node whose compressed uploads are refused on the way (a proxy that rewrites them) falls back to uncompressed by itself.
+
 ### Changed
 
 - **Every device gets its incoming torrent port on a big fleet too.** A device's port was unique across the whole fleet,
@@ -44,6 +49,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   kernel's connection table, and a full table refuses new connections for every user at once. The kernel makes it small:
   8,192 places on a 1 GB server. The node now raises it to 65,536 places for each GB of RAM, and never lowers a larger
   value you set; on a Docker node the installer and the update do it on the host. The node page warns from 80 % full.
+- **A node taking on thousands of peers at once no longer reads offline.** It used to apply every new peer before it
+  reported again — 2,500 peers were one stretch of minutes on a small server, so the panel showed the node offline and
+  sent its offline webhook. It now applies peers for at most 10 seconds at a time, reports, and goes straight on; the
+  peers arrive just as fast.
 - **Traffic statistics no longer slow a busy node down.** Top destinations, the internet lane and Traffic by exit were
   counted by firewall rules that every forwarded packet read, one copy for each client subnet and category: up to 1,450
   rules a packet on a node with 11 subnets, most of the CPU a packet cost. They are one rule per category now, and above

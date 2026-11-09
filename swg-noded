@@ -1365,7 +1365,7 @@ def _is_read(args):
         return bool(words) and words[0] == "list" and "-f" not in rest
     if prog in ("iptables", "ip6tables"):                   # a write's flag wins: a rule's own values never make it a read
         return not any(a in _WRITE_IPTABLES for a in rest) and any(a in _READ_IPTABLES for a in rest)
-    if prog in ("iptables-save", "ip6tables-save", "ss", "cat", "ping"):   # ping: the mesh probes' thread, every few seconds
+    if prog in ("iptables-save", "ip6tables-save", "ss", "cat", "ping", "modinfo"):   # ping: the mesh probes' thread, every few seconds
         return True
     if prog == "systemctl":
         return bool(words or rest) and (words[0] if words else rest[0]) in _READ_SYSTEMCTL or rest[:1] == ["--version"]
@@ -1376,13 +1376,14 @@ def _is_read(args):
     return False
 
 
-def run(args, input_text=None, timeout=20, env=None):
+def run(args, input_text=None, timeout=20, env=None, read=False):
     # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
     # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
     # instead of taking down the sync loop). Same for a timeout. A spawn that is not a read forgets the pass's reads
     # (_is_read) — after it ran, so every read made after the write is fresh. A read already under way on the main thread
     # when another thread's write lands may still be kept: as if it had been made just before the write, which the next
-    # pass reads afresh.
+    # pass reads afresh. `read`: the caller's word that a command the classifier cannot see into (a shell batch) only reads
+    # (SCALE-PLAN C1) — a write that relies on it would be followed by stale reads, so only a batch of reads ever passes it.
     global _RUN_INFLIGHT, _RUN_SPAWNS
     with _RUN_LOCK:
         _RUN_INFLIGHT += 1
@@ -1396,7 +1397,7 @@ def run(args, input_text=None, timeout=20, env=None):
     finally:
         with _RUN_LOCK:
             _RUN_INFLIGHT -= 1
-        if _PASS and not _is_read(args):
+        if _PASS and not (read or _is_read(args)):
             _PASS.clear()
 
 
@@ -1608,6 +1609,38 @@ def _pin_malformed(fp):
     return bool(fp) and not re.fullmatch(r"[0-9a-f]{64}", fp)
 
 
+# The panel's "Compress node uploads" (docs/SCALE-PLAN.md N3): `on` follows its last 200 reply (`gz_sync`); `refused` is set
+# once a compressed snapshot was refused and the plain one went through, for the life of this process (see the sync loop).
+_SYNC_GZ = {"on": False, "refused": False}
+
+
+def _sync_post(url, panel, snap, use_ip):
+    """The pass's snapshot POST → (status, reply, the bound source IP that could not reach the panel, else "").
+    A bound source that cannot reach the panel is retried unbound. Compressed while the panel's last reply asked for it."""
+    gz = _SYNC_GZ["on"] and not _SYNC_GZ["refused"]
+    failed = ""
+    status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, source_ip=use_ip,
+                              peer=_PANEL_PEER, gz=gz)   # what we actually reach the panel BY — the networks guard's input
+    if status == 0 and use_ip:
+        failed = use_ip
+        status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, peer=_PANEL_PEER, gz=gz)
+    if gz and 400 <= status < 500:
+        # ⚠️ A COMPRESSED BODY REFUSED IS SENT AGAIN PLAIN, IN THIS PASS. Only a 200 reply can turn compression off, so a
+        # node whose compressed bodies are refused (a panel rolled back, a proxy that rewrites bodies) would otherwise never
+        # hear it. And when the plain one goes through, compression stays off for this process: its reply still asks for
+        # it, and every pass would post the snapshot twice. A restart tries again.
+        st0 = status
+        status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel,
+                                  source_ip="" if failed else use_ip, peer=_PANEL_PEER)
+        if status == 200:
+            _SYNC_GZ["refused"] = True
+            log(LOG_WARNING, "compressed node uploads were refused (HTTP %s); this node sends them plain until it restarts",
+                st0)
+    if status == 200:
+        _SYNC_GZ["on"] = reply.get("gz_sync") is True
+    return status, reply, failed
+
+
 def post_json(url, token, obj, panel, timeout=20, source_ip="", peer=None, gz=False):
     """POST JSON to the panel. TLS posture comes from `panel`:
          fingerprint set -> pin sha256 (verified during the handshake, before any
@@ -1617,7 +1650,7 @@ def post_json(url, token, obj, panel, timeout=20, source_ip="", peer=None, gz=Fa
     `source_ip` (optional) binds the local source IP for the connection (the node's "panel connection IP"
     role); callers fall back to unbound on failure so a bad IP can't cut the node off from the panel.
     `peer` (optional dict) gets `addr` = the address the connection actually reached — see `_PANEL_PEER`.
-    `gz` sends the body gzip-compressed (the live log lines).
+    `gz` sends the body gzip-compressed (the live log lines; the snapshot while the panel asks for it).
     Returns (status, dict). status 0 means the request never completed."""
     body = json.dumps(obj).encode()
     if gz:
@@ -1691,7 +1724,8 @@ def _read_units_live(svcs):
         return {}
     cmd = "; ".join("printf '@@SWG@@%s\\n' " + shlex.quote(s) + "; cat " + shlex.quote(_turn_unit_path(s)) + " 2>/dev/null"
                     for s in svcs)
-    out = host_sh(cmd, probe=True).stdout or ""    # a missing unit file is an answer, not a failure
+    # read=True: printf and cat only — keep it so, or the pass's cached reads go stale after it (run(), SCALE-PLAN C1)
+    out = host_sh(cmd, probe=True, read=True).stdout or ""    # a missing unit file is an answer, not a failure
     res = {}; cur = None; buf = []
     for ln in out.splitlines():
         if ln.startswith("@@SWG@@"):
@@ -2075,7 +2109,8 @@ def _attach_turn_running(tps):
         cmd = "for s in " + " ".join(shlex.quote(s) for s in sorted(svcs)) + \
               "; do printf '%s=%s=%s\\n' \"$s\" \"$(systemctl is-active \"$s\" 2>/dev/null)\" " \
               "\"$(systemctl show -p NRestarts --value \"$s\" 2>/dev/null)\"; done"
-        for ln in (host_sh(cmd).stdout or "").splitlines():
+        # read=True: systemctl is-active / show only — keep it so (run(), SCALE-PLAN C1)
+        for ln in (host_sh(cmd, read=True).stdout or "").splitlines():
             s, _, rest = ln.partition("=")
             state, _, nr = rest.partition("=")
             state, nr = state.strip(), nr.strip()
@@ -19595,10 +19630,27 @@ def reap_orphan_nat(node_cfg):
     return gone
 
 
-def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
+# How long one pass may keep STARTING peer ops (docs/SCALE-PLAN.md N1). One op is a `swg-agent` spawn, ~45 ms on a laptop and
+# ~135 ms on a 1-vCPU box, so 2,500 new peers were one pass of 112 s to minutes: no snapshot was posted meanwhile and the panel
+# read the node offline (30 s) and fired its webhook. Past the budget the rest waits for the next pass — the panel sends the
+# whole desired set every time, and keeps a retirement until the key is gone — which follows at once (a cut pass skips its
+# sleep). Measured from reconcile's own start, never the pass's: a pass that spent its time elsewhere still starts ops.
+RECONCILE_BUDGET_S = 10
+
+
+def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None, budget=RECONCILE_BUDGET_S):
     """Apply the panel's desired peer set. Only ever called on a valid sync reply."""
-    res = {"added": 0, "removed": 0, "errors": []}
+    res = {"added": 0, "removed": 0, "errors": [], "deferred": 0}
     remove_by_iface = remove_by_iface or {}
+    _end = time.monotonic() + budget
+
+    def go():
+        """May the next op START? Asked once before each op (a remove + add pair is one), after its own backoff
+        bookkeeping: an op not started is counted in `deferred` — never an error, never a backoff step."""
+        if time.monotonic() < _end:
+            return True
+        res["deferred"] += 1
+        return False
     # last DESIRED endpoint we pushed per peer — so an operator changing a node's ingress IP re-dials existing
     # links (the panel sends the new endpoint; we apply it once), without fighting WireGuard's roaming (we key
     # on the desired value, not the live/roamed one). iface|pubkey -> endpoint.
@@ -19626,7 +19678,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
         # EXPLICIT retirements from the panel (a key it rotated/deleted) FIRST — removed even on an
         # add-only interface, and before the add below so the replacement key can take the freed IP.
         for pk in remove_by_iface.get(iface, []):
-            if pk in current and pk not in desired:
+            if pk in current and pk not in desired and go():
                 r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
                 if r.get("ok"):
                     res["removed"] += 1; current.discard(pk)
@@ -19640,6 +19692,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
         # ADD-ONLY interface keeps what it is merely not sent (it removes only `remove`, above) — see _add_only.
         if not _add_only(iface, ic):
             for pk in current - set(desired):
+                if not go():
+                    continue
                 r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
                 if r.get("ok"):
                     res["removed"] += 1; current.discard(pk)
@@ -19654,7 +19708,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 # /32 ↔ 0.0.0.0/0, or an exit gains a forwarded subnet). reconcile otherwise skips
                 # present peers, so apply the diff surgically (this is risk R1).
                 want_a = _norm_allowed(p.get("allowed_ips", ""))
-                if want_a and live_allowed.get(pk) is not None and live_allowed[pk] != want_a:
+                if want_a and live_allowed.get(pk) is not None and live_allowed[pk] != want_a and go():
                     r = run_agent(agent, sudo, {"op": "set-peer-allowed", "iface": iface,
                                                 "public_key": pk, "allowed_ips": p.get("allowed_ips", "")})
                     if r.get("ok"):
@@ -19685,7 +19739,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                         _op_cfg_changed(kk, hashlib.sha256(want_psk.encode()).hexdigest()[:12])
                         if not _op_ready(kk):
                             res["errors"].append(f"psk {pk[:8]}: retrying later (repeated failure)")
-                        else:
+                        elif go():
                             run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
                             r = run_agent(agent, sudo, {"op": "add-peer", "iface": iface, "public_key": pk,
                                                         "allowed_ips": p.get("allowed_ips", ""),
@@ -19718,7 +19772,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                         applied_ep[ek] = want_ep; ep_dirty = True
                     elif not _op_ready("redial|" + ek):             # a re-dial that keeps failing → back off, don't churn
                         res["errors"].append(f"endpoint {pk[:8]}: retrying later (repeated failure)")
-                    else:
+                    elif go():
                         _mkadd = lambda: {"op": "add-peer", "iface": iface, "public_key": pk,
                                           "allowed_ips": p.get("allowed_ips", ""),
                                           "preshared_key": p.get("preshared_key", "none"),
@@ -19735,7 +19789,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                             _op_ok("redial|" + ek); applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
                         else:
                             _op_fail("redial|" + ek); res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
-                elif want_ep and live_hs.get(pk) and (time.time() - live_hs[pk]) > MESH_STALE_S and _op_ready("stale|" + ek):
+                elif (want_ep and live_hs.get(pk) and (time.time() - live_hs[pk]) > MESH_STALE_S and _op_ready("stale|" + ek)
+                      and go()):
                     # SILENT-MESH-DEATH heal: a dial-out mesh peer that HANDSHOOK before but has been stale past
                     # MESH_STALE_S is stuck — the remote's ingress moved (NAT rebind / IP change / DPI) and WG,
                     # dialing a fixed endpoint, never recovers. Bounce it (re-resolves a hostname endpoint on
@@ -19766,6 +19821,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 if want_ep and _EP_CONF.get(ek) != want_ep:
                     conf_ep = _conf_peer_endpoints(_conf_text(node_cfg, iface)).get(pk)
                     if conf_ep is not None and conf_ep != want_ep:
+                        if not go():
+                            continue                              # _EP_CONF left as it was: asked again next pass
                         r = run_agent(agent, sudo, {"op": "persist-peer-endpoint", "iface": iface, "public_key": pk,
                                                     "endpoint": want_ep})
                         if r.get("ok"):
@@ -19778,6 +19835,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
             _op_cfg_changed(akey, (p.get("allowed_ips", ""), str(p.get("endpoint") or ""), p.get("preshared_key", "none")))  # a corrected desired config → drop the backoff, retry now
             if not _op_ready(akey):                                  # repeatedly rejected AND config unchanged → in backoff; don't re-spawn the agent
                 res["errors"].append(f"add {pk[:8]}: retrying later (repeated failure)")
+                continue
+            if not go():
                 continue
             r = run_agent(agent, sudo, {
                 "op": "add-peer", "iface": iface, "public_key": pk,
@@ -21340,7 +21399,7 @@ def _unit_states(units):
     return out
 
 
-def host_sh(cmd, timeout=90, probe=False):
+def host_sh(cmd, timeout=90, probe=False, read=False):
     """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
     --pid=host helper through the mounted docker socket — nsenter into PID 1 so the command runs in
     the host's namespaces (its filesystem + systemd).
@@ -21348,7 +21407,7 @@ def host_sh(cmd, timeout=90, probe=False):
     Returns rc=126 without trying when there is no way to reach the host (see _host_sh_available).
     126 is deliberately distinct from the 125 docker itself returns and from a command's own 127:
     callers that today read an empty stdout as "the host has nothing" can tell "could not look"
-    apart from "looked and found none"."""
+    apart from "looked and found none". `read`: see run() — the caller's word that `cmd` only reads."""
     if not _host_sh_available():
         if not _HOST_SH_CAP["warned"]:
             _HOST_SH_CAP["warned"] = True
@@ -21381,7 +21440,7 @@ def host_sh(cmd, timeout=90, probe=False):
         args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network", "none", "--entrypoint", "nsenter",
                 HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", _wrapped]
     try:
-        r = run(args, timeout=timeout)
+        r = run(args, timeout=timeout, **({"read": True} if read else {}))   # only when said: a stub of run() keeps its shape
     except Exception as e:                              # e.g. 'docker' not found, or a timeout
         log(LOG_ERR, "host_sh EXC: " + str(e) + " :: " + cmd[:160])
         class _R:                                       # synthesize a failed result so callers see it
@@ -26745,6 +26804,7 @@ def main():
         with contextlib.suppress(Exception):
             conntrack_size()                        # raise only; one file read a pass once it holds (SCALE-PLAN N2)
         _relay_plan, _relay_sync_ok = None, False   # the relay watchdog runs below whatever happens in between
+        _deferred = 0                               # peer ops reconcile left for the next pass (N1): no sleep then
         snap = None                                 # …and the fast lane: a pass that raised reads as no snapshot, not the last
         if t0 - last_verify_t >= VERIFY_EVERY_S:    # periodic drift heal: force the next routing pass to re-assert
             _force_reverify(); last_route_sig = None   # (drop sig-markers + un-gate the routing reconcile this cycle)
@@ -26754,11 +26814,9 @@ def main():
             report_update_result(panel)             # a declarative rebuild finished while we were restarting — say how it went
             snap = build_snapshot(node_cfg, online_max, last_samples)
             use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
-            status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, source_ip=use_ip,
-                                      peer=_PANEL_PEER)   # what we actually reach the panel BY — the networks guard's input
-            if status == 0 and use_ip:              # fail-safe: a bound source couldn't reach the panel → retry unbound + stop binding that IP
-                bad_pip = use_ip
-                status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, peer=_PANEL_PEER)
+            status, reply, _failed_ip = _sync_post(url, panel, snap, use_ip)
+            if _failed_ip:                          # fail-safe: a bound source couldn't reach the panel → stop binding that IP
+                bad_pip = _failed_ip
             if status == 200:                       # adopt the panel-chosen connection IP (persist; reset bad-flag if it changed)
                 want_pip = ((reply.get("node_egress") or {}).get("panel_ip") or "").strip()
                 if want_pip != panel_ip:
@@ -26922,6 +26980,7 @@ def main():
                 r = reconcile(node_cfg, reconcile_net_share(node_cfg, net_filter_desired(node_cfg, reply["desired"]),
                                                             reply.get("net_share"), _shr),
                               agent, sudo, reply.get("remove"))
+                _deferred = r.get("deferred", 0)
                 # …and the imported exits' own dial sources, from what reconcile_exits just reported: the
                 # endpoint is only known after registration, so this reads the LIVE record rather than the
                 # panel's request.
@@ -27108,11 +27167,14 @@ def main():
         with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the
             _busy = bool(_TURN_JOBS)                 # panel actually SEES the "updating" phase (else a sub-interval
         _iv = 1.0 if _busy else interval            # download finishes entirely between two 5s posts → pending→updated)
+        if _deferred:                               # a cut reconcile (N1): the next pass follows at once — convergence is not
+            _iv = 0                                 # slowed by the interval, and a snapshot goes out between its slices
         if _LOOP["n"] == 1:                         # the first pass is the rest of startup (a failed sync still ends here)
             _release_startup_memory()
         with contextlib.suppress(Exception):        # what the pass cost: its processes, its own CPU, its children's
-            log(LOG_DEBUG, "pass %d: routing=%s, %d spawns, own %d ms, children %d ms", _LOOP["n"], _routing_why,
-                _RUN_SPAWNS - _acct[2], (time.process_time() - _acct[0]) * 1000, (_children_cpu_s() - _acct[1]) * 1000)
+            log(LOG_DEBUG, "pass %d: routing=%s, %d spawns, own %d ms, children %d ms%s", _LOOP["n"], _routing_why,
+                _RUN_SPAWNS - _acct[2], (time.process_time() - _acct[0]) * 1000, (_children_cpu_s() - _acct[1]) * 1000,
+                ", %d peer ops deferred" % _deferred if _deferred else "")
         time.sleep(max(0.5, _iv - (time.time() - t0)))
 
 

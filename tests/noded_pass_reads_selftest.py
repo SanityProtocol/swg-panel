@@ -15,6 +15,8 @@ not a known read clears it.
       inventory's turn proxies are one `load_turn_proxies`.
   [4] The WDTT / csqtt units: one `systemctl show` for all of them, read like `is-active` (same words), and a unit outside the
       set — or a batch that could not be read — asked on its own; the verifies that wait for a unit still poll it fresh.
+      The turn proxies' two shell batches (unit files; is-active + NRestarts) are reads by their caller's word (run's
+      `read`), so a pass that runs them keeps its dumps (SCALE-PLAN C1).
   [5] Relay: `systemctl --version` asked once per process (a timeout asked again), docker's answer kept a minute on success
       only, the slice's cgroup path kept while it exists and looked for again once the relay wants it.
 
@@ -28,6 +30,8 @@ Run: python3 tests/noded_pass_reads_selftest.py   (0 = pass)
      threadcache  another thread's read is cached
      keep127      a missing tool's answer is cached
      verifycached _csqtt_verify asks the cache (its wait would never see the unit come up)
+     readignored  run() ignores its caller's `read` (SCALE-PLAN C1: the turn proxies' batches clear the pass's reads)
+     modinfo      `modinfo` is taken for a write
 """
 import importlib.machinery, importlib.util, os, re, subprocess, sys, tempfile, threading, time, types
 
@@ -46,7 +50,7 @@ def check(name, cond, detail=""):
 
 PLANTS = {
     "nopass": ("    if hit is not None and hit[0] == _LOOP[\"n\"]:", "    if hit is not None:"),
-    "noclear": ("        if _PASS and not _is_read(args):\n            _PASS.clear()", "        pass"),
+    "noclear": ("        if _PASS and not (read or _is_read(args)):\n            _PASS.clear()", "        pass"),
     "iptany": ("        return not any(a in _WRITE_IPTABLES for a in rest) and any(a in _READ_IPTABLES for a in rest)",
                "        return any(a in _READ_IPTABLES for a in rest)"),
     "nftadd": ("        return bool(words) and words[0] == \"list\" and \"-f\" not in rest",
@@ -57,6 +61,8 @@ PLANTS = {
     "keep127": ("    if keep_failures or getattr(v, \"returncode\", 0) not in (124, 126, 127):", "    if True:"),
     "verifycached": ('''        if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip() == "active":''',
                      '''        if _unit_active(_csqtt_svc(iface)) == "active":'''),
+    "readignored": ("        if _PASS and not (read or _is_read(args)):", "        if _PASS and not _is_read(args):"),
+    "modinfo": ('"ss", "cat", "ping", "modinfo"):', '"ss", "cat", "ping"):'),
 }
 if PLANT:
     a, b = PLANTS[PLANT]
@@ -91,7 +97,7 @@ READS = [["ip", "-4", "-o", "addr", "show"], ["ip", "-d", "link", "show", "wgx-1
          ["systemctl", "show", "-p", "ControlGroup", "--value", "swg-relay.slice"], ["systemctl", "is-active", "--quiet", "u"],
          ["ipset", "list", "-name"], ["docker", "ps", "--format", "x"], ["docker", "inspect", "-f", "x", "c"],
          ["sh", "-c", "ip -4 route show default 2>/dev/null"], ["sh", "-c", "systemctl is-active x 2>/dev/null"],
-         ["sudo", "-n", "sh", "-c", "wg show x dump"]] + [
+         ["sudo", "-n", "sh", "-c", "wg show x dump"], ["modinfo", "-F", "version", "amneziawg"]] + [
          HELPER + ["sh", "-c", "export PATH=/run/current-system/sw/bin:$PATH\nsystemctl is-active x 2>/dev/null"]]
 WRITES = [["ip", "route", "replace", "default", "dev", "x", "table", "7001"], ["ip", "rule", "add", "from", "10.0.0.0/24", "lookup", "7001"],
           ["ip", "rule", "del", "pref", "7000"], ["ip", "link", "del", "swg_x"], ["ip", "-4", "-force", "-batch", "-"],
@@ -189,6 +195,16 @@ check("[3] the reconciler's dumps of one interface are one read (the pass's `sho
 N.run(["/opt/swg-agent/swg-agent"])                                   # an agent op
 N._iface_dump(CFG, "wg1")
 check("[3] …and an agent op between them makes it a fresh read", sum("dump" in c for c in CALLS) == 2, CALLS)
+N.TURN_MANAGE_ON = True
+N._TURN_RUN["at"] = 0.0
+N.turn_unit_dir(); N._iface_dump(CFG, "wg1")       # the unit dir's one write-probe a process makes, then the pass's dump
+CALLS.clear(); N._iface_dump(CFG, "wg1")
+N._read_units_live(["vk-turn-proxy-a"]); N._attach_turn_running([{"service": "vk-turn-proxy-a"}])
+N._iface_dump(CFG, "wg1")
+check("[3] the turn proxies' unit and state batches ran (shell batches the classifier cannot see into)",
+      any("@@SWG@@" in c for c in CALLS) and any("NRestarts" in c for c in CALLS), CALLS)
+check("[3] …and the dump read before them is still the pass's (their caller says they read: C1)",
+      sum("dump" in c for c in CALLS) == 0, CALLS)
 CALLS.clear()
 N._node_addrs(); N._node_addrs()
 check("[3] `ip -4 addr` once for the snapshot's readers", sum("addr" in c for c in CALLS) == 1, CALLS)
