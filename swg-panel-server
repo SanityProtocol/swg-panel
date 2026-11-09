@@ -3718,7 +3718,14 @@ def turn_cap(kind, inst):
     return _WDTT_POOL if fork in _WDTT_POOL_FORKS else None
 
 
-def turn_full(nodes, roster, t):
+def turn_run_cap(kind, rec, snap, iface):
+    """turn_cap of an instance as it RUNS: a csqtt server's pool is its running line's (_csqtt_run_line — during a pending
+    or failed switch the record names the line asked for), whatever else the record says."""
+    rec = rec if isinstance(rec, dict) else {}
+    return turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)) if kind == "csqtt" else rec)
+
+
+def turn_full(nodes, snaps, roster, t):
     """The refusal for one new target on a wdtt / csqtt instance that has no address left for it, else None. Counted:
     every peer with a target there, blocked and expired included — their passwords are shipped, so they keep their
     addresses (csqtt 2.5 holds one per password; WDTT and 2.1 one per device, from its first connect). One rule for
@@ -3726,7 +3733,7 @@ def turn_full(nodes, roster, t):
     kind, nid, ifn = t.get("type"), t.get("node"), t.get("iface")
     if kind not in ("wdtt", "csqtt"):
         return None
-    cap = turn_cap(kind, ((nodes.get(nid) or {}).get(kind) or {}).get(ifn))
+    cap = turn_run_cap(kind, ((nodes.get(nid) or {}).get(kind) or {}).get(ifn), (snaps or {}).get(nid), ifn)
     if cap is None:
         return None
     used = sum(1 for _pid, p in _peers_on(roster, nid)
@@ -3999,25 +4006,18 @@ def _vk_pool_live(ps):
     return [e for e in _vk_pool_list(ps) if not e["dead"]]
 
 
-def _vk_pool_counts(roster, snaps):
+def _vk_pool_counts(roster, snaps, who=None):
     """How many users each pool URL serves right now. The pool exists to spread call capacity, so this is what
     "pick one for them" should be steered by.
 
     A holder counts when the user is not blocked or expired AND has no device yet (users are created first and given
     devices after — leaving them out stacked users created back to back on one link), or has a device that is not cut
     off and offers wdtt, csqtt or turn (peer_sub_sources' test: a turn-proxy's config bakes the user's links as much as a
-    csqtt one). A blocked user, or one whose devices are all plain WireGuard, carries no call load (1.8.12 Scale T4)."""
+    csqtt one). A blocked user, or one whose devices are all plain WireGuard, carries no call load (1.8.12 Scale T4).
+    `who`, a set, receives the users counted — the cascade moves its own counts only for them."""
     users = (roster or {}).get("users") or {}
     nowv = int(time.time())
-    # peer_sub_sources' own "turn" test (a proxy on that node forwards to the interface's listen port), worked out once
-    # per call for every node rather than once per device: 27 → a few ms at 10,000 users with a proxy on every node.
-    fronted = set()
-    for nid, snap in (snaps or {}).items():
-        cps = {_port_of(str(tp.get("connect") or "")) for tp in ((snap or {}).get("turn_proxies") or []) if isinstance(tp, dict)}
-        for ifn, e in ((snap or {}).get("interfaces") or {}).items():
-            lp = ((e or {}).get("meta") or {}).get("listen_port") if isinstance(e, dict) else None
-            if lp and str(lp) in cps:
-                fronted.add((nid, ifn))
+    fronted = {}                        # (node, iface) → _turn_fronts, asked once a call, not once a device (27 → 13 ms at 10,000)
     has_dev, serves = set(), set()
     for p in ((roster or {}).get("peers") or {}).values():
         uid = p.get("user_id") if isinstance(p, dict) else None
@@ -4028,7 +4028,12 @@ def _vk_pool_counts(roster, snaps):
         if uid in serves:
             continue
         for t in (p.get("targets") or ()):
-            if isinstance(t, dict) and (t.get("type") in ("wdtt", "csqtt") or (t.get("node"), t.get("iface")) in fronted):
+            if not isinstance(t, dict):
+                continue
+            k = (t.get("node"), t.get("iface"))
+            if k not in fronted:
+                fronted[k] = t.get("type") not in ("wdtt", "csqtt") and _turn_fronts((snaps or {}).get(k[0]), k[1])
+            if t.get("type") in ("wdtt", "csqtt") or fronted[k]:
                 if not access_cut(p, u, nowv):
                     serves.add(uid)
                 break
@@ -4036,6 +4041,8 @@ def _vk_pool_counts(roster, snaps):
     for uid, u in users.items():
         if not isinstance(u, dict) or (uid in has_dev and uid not in serves) or access_cut({}, u, nowv):
             continue
+        if who is not None:
+            who.add(uid)
         for url in (u.get("vk_links") or []):
             n[url] = n.get(url, 0) + 1
     return n
@@ -4089,7 +4096,7 @@ def _vk_pool_index(ps):
     return {e["id"]: e for e in pool}, [e for e in pool if not e["dead"]]
 
 
-def _vk_user_sync(u, ps, counts=None, pool=None):
+def _vk_user_sync(u, ps, counts=None, pool=None, counted=True):
     """Bring ONE user's links back in step with the pool. Returns True when anything changed.
 
     Three cases, and the operator asked for all three to be automatic:
@@ -4127,9 +4134,9 @@ def _vk_user_sync(u, ps, counts=None, pool=None):
         repl = _vk_pool_pick(ps, exclude_urls=links, counts=counts, live=live)
         if repl:
             links.append(repl["url"]); mapped[repl["id"]] = repl["url"]
-            if counts is not None:                                    # the cascade tracks its own handiwork
-                counts[repl["url"]] = counts.get(repl["url"], 0) + 1
-        if counts is not None:
+            if counts is not None and counted:                        # the cascade tracks its own handiwork — for a user
+                counts[repl["url"]] = counts.get(repl["url"], 0) + 1    # _vk_pool_counts counts (T4), as every other pick
+        if counts is not None and counted:
             counts[old_url] = max(0, counts.get(old_url, 0) - 1)
     if changed:
         seen = set(); links = [x for x in links if not (x in seen or seen.add(x))]
@@ -4144,10 +4151,11 @@ def _vk_pool_cascade(roster, ps, snaps):
     every holder in the same request rather than waiting for someone to open their profile. The pool is read ONCE
     here: with no size limit, a read per user is users × links under the lock."""
     n = 0
-    counts = _vk_pool_counts(roster, snaps)
+    who = set()
+    counts = _vk_pool_counts(roster, snaps, who)
     pool = _vk_pool_index(ps)
-    for u in (roster.get("users") or {}).values():
-        if isinstance(u, dict) and _vk_user_sync(u, ps, counts=counts, pool=pool):
+    for uid, u in (roster.get("users") or {}).items():
+        if isinstance(u, dict) and _vk_user_sync(u, ps, counts=counts, pool=pool, counted=uid in who):
             n += 1
     return n
 
@@ -4672,11 +4680,19 @@ def peer_sub_sources(peer, snaps):
             out.append(ty)
         if ty in ("wdtt", "csqtt") or "turn" in out:
             continue
-        snap = (snaps or {}).get(t.get("node")) or {}
-        lp = (((snap.get("interfaces") or {}).get(t.get("iface")) or {}).get("meta") or {}).get("listen_port")
-        if lp and any(_port_of(tp.get("connect")) == str(lp) for tp in (snap.get("turn_proxies") or []) if isinstance(tp, dict)):
+        if _turn_fronts((snaps or {}).get(t.get("node")), t.get("iface")):
             out.append("turn")
     return [s for s in SUB_SOURCES if s in out]
+
+
+def _turn_fronts(snap, iface):
+    """Does a turn-proxy on this node forward to `iface` (its connect port is the interface's listen port, by the node's
+    report)? The one test for a "turn" source — the subscription's (peer_sub_sources) and the VK pool's load (T4)."""
+    snap = snap if isinstance(snap, dict) else {}
+    e = (snap.get("interfaces") or {}).get(iface)
+    lp = ((e.get("meta") or {}).get("listen_port") if isinstance(e, dict) else None)
+    return bool(lp) and any(_port_of(str(tp.get("connect") or "")) == str(lp)
+                            for tp in (snap.get("turn_proxies") or []) if isinstance(tp, dict))
 
 
 def clean_sub_hide(raw, peer, snaps):
@@ -10491,24 +10507,32 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # password that asked and got none (2.5: none at all; otherwise bound to a device but holding none). Under WDTT and 2.1
     # a password not yet connected holds none either, so only a FULL pool with someone waiting is said. The cap is the
     # running line's. Any other shape is no report — this runs inside the /api/state loop.
+    _tnow = int(time.time())
     for _tk in ("wdtt", "csqtt"):
+        _recs = c.get(_tk) if isinstance(c.get(_tk), dict) else {}
         for e in (snap.get(_tk) or []):
             if not isinstance(e, dict):
                 continue
-            _ti = ((c.get(_tk) or {}).get(e.get("iface")) if isinstance(c.get(_tk), dict) else None) or {}
-            _ti = _ti if isinstance(_ti, dict) else {}
-            _tl = str(e.get("line") or _ti.get("line") or CSQTT_DEFAULT_LINE)
-            _cap = turn_cap(_tk, dict(_ti, line=_tl))
+            _ti = _recs.get(e.get("iface"))
+            # the server as it RUNS: its own row's fork, subnet, RAW and line over the panel's record — a record not mirrored
+            # yet has none, and a qWDTT read as amurcanov would be "full" four addresses early (raw_port "" = RAW off)
+            _tr = dict(_ti if isinstance(_ti, dict) else {}, **{k: e[k] for k in ("fork", "wg_addr", "raw_port", "line")
+                                                                if isinstance(e.get(k), str) and (e[k] or k == "raw_port")})
+            _tl = str(_tr.get("line") or CSQTT_DEFAULT_LINE)
+            _cap = turn_cap(_tk, _tr)
             _pw, _dv = e.get("passwords"), e.get("devices")
             if _cap is None or not isinstance(_pw, dict):
                 continue
             _pw = [x for x in _pw.values() if isinstance(x, dict)]
+            # a blocked or expired user's password is cut off, not waiting for an address
+            _live = [x for x in _pw if not x.get("is_deactivated")
+                     and not (isinstance(x.get("expires_at"), (int, float)) and 0 < x["expires_at"] <= _tnow)]
             if _tk == "csqtt" and _tl != CSQTT_DEFAULT_LINE:            # 2.5: the password holds the address
                 _use = sum(1 for x in _pw if x.get("ip"))
-                _wait = sum(1 for x in _pw if not x.get("ip"))
+                _wait = sum(1 for x in _live if not x.get("ip"))
             else:
                 _use = sum(1 for x in (_dv.values() if isinstance(_dv, dict) else ()) if isinstance(x, dict) and x.get("ip"))
-                _wait = sum(1 for x in _pw if x.get("device_id") and not x.get("ip"))
+                _wait = sum(1 for x in _live if x.get("device_id") and not x.get("ip"))
             if _wait and _use >= _cap:
                 issues.append(perr("{v1}: {v2} users can't connect — all {v3} addresses are in use",
                                    v1=str(e.get("iface") or "?"), v2=str(_wait), v3=str(_cap)))
@@ -26396,7 +26420,7 @@ def api(method, path, qs, body, deps):
                         # each turn instance's address pool, for the target picker's "n / cap" (Scale T1) — only on a node
                         # that has one, so a fleet without turn servers gets the state it got before
                         **({"turn_cap": _tcap} if (_tcap := {i: _tcn for k, m in (("wdtt", _w), ("csqtt", _c)) for i, ov in m.items()
-                                                             if (_tcn := turn_cap(k, ov)) is not None}) else {}),
+                                                             if (_tcn := turn_run_cap(k, ov, snap, i)) is not None}) else {}),
                         "ghost_ifaces": _ghost_ifaces(c, snap, _refmap.get(nid), online)})   # lost KEYLESS ifaces (no _lastcfg) → recreate-fresh + rekey, not restore (online-gated)
         return out
 
@@ -29597,7 +29621,7 @@ def api(method, path, qs, body, deps):
         if uid and uid not in roster["users"]:
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
         for t in targets:
-            full = turn_full(nodes, roster, t)
+            full = turn_full(nodes, snaps, roster, t)
             if full:
                 return 409, {"ok": False, **full, "code": "turn_full"}
         psk = (body.get("psk") or gen_psk()) if keyed else ""   # PSK is panel-owned; auto-mint when the client omits one
@@ -29650,7 +29674,7 @@ def api(method, path, qs, body, deps):
         if any(t["node"] == target["node"] and t["iface"] == target["iface"] for t in p["targets"]):
             return 409, {"ok": False, "error": "peer already has a target on that node/interface",
                          "code": "exists"}
-        full = turn_full(nodes, roster, target)
+        full = turn_full(nodes, snaps, roster, target)
         if full:
             return 409, {"ok": False, **full, "code": "turn_full"}
         # ⚠️ A PEER WITH NO KEY YET (every deployment csqtt / WDTT) GETS ONE WITH ITS FIRST WIREGUARD DEPLOYMENT, minted in the browser
@@ -32698,6 +32722,10 @@ def api(method, path, qs, body, deps):
         pid = gen_id()
         while pid in roster["peers"]:
             pid = gen_id()
+        for t in tgts:                                   # the pool check of /api/peers/create, for this API-only door too
+            full = turn_full(nodes, snaps, roster, t)
+            if full:
+                return 409, {"ok": False, **full, "code": "turn_full"}
         fields = {"user_id": uid or None, "title": title, "pubkey": "", "psk": "",
                   "targets": tgts, "csqtt_password": gen_csqtt_password()}
         if vk_hash:
@@ -32864,6 +32892,10 @@ def api(method, path, qs, body, deps):
         pid = gen_id()
         while pid in roster["peers"]:
             pid = gen_id()
+        for t in tgts:                                   # the pool check of /api/peers/create, for this API-only door too
+            full = turn_full(nodes, snaps, roster, t)
+            if full:
+                return 409, {"ok": False, **full, "code": "turn_full"}
         fields = {"user_id": uid or None, "title": title, "pubkey": "", "psk": "",
                   "targets": tgts, "wdtt_password": gen_wdtt_password()}
         if vk_hash:

@@ -3675,7 +3675,7 @@ export const STR = {
   "{v1}: not running": "{v1}: не запущен",
   // «перезапусков: N» — the count after a colon, so it never has to agree with a noun (3 перезапуска / 5 перезапусков)
   "{v1}: crash-looping — {v2} restarts in {v3} min": "{v1}: падает по кругу — перезапусков за {v3} мин: {v2}",
-  "{v1}: {v2} users can't connect — all {v3} addresses are in use": "{v1}: не могут подключиться пользователей: {v2} — заняты все {v3} адресов",
+  "{v1}: {v2} users can't connect — all {v3} addresses are in use": "{v1}: не могут подключиться пользователей: {v2} — заняты все адреса (их {v3})",
   "{v1} on {v2} is full — {v3} of {v4} users. Put this one on another instance, or add one.": "{v1} на {v2} заполнен — пользователей {v3} из {v4}. Подключите этого к другому экземпляру или добавьте новый.",
   "Full — every address this server can give is taken. Put this user on another instance, or add one.": "Заполнен — все адреса, которые может выдать этот сервер, заняты. Подключите пользователя к другому экземпляру или добавьте новый.",
   "{v1} of {v2} addresses taken": "Занято адресов: {v1} из {v2}",

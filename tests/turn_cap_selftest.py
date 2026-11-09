@@ -11,9 +11,14 @@
   [4] _node_issues: a full pool with someone waiting → the line; full and nobody waiting, or waiting below the pool → none;
       2.1 and WDTT read through their devices; the cap is the RUNNING line's (the snapshot's), not the stored one; a
       malformed report raises nothing
+  [2] also: the API-only doors /api/csqtt-peer/create and /api/wdtt-peer/create refuse as well (card scale-k6 F1); a
+      csqtt server's pool is its RUNNING line's (the node's report) — a switch to 2.5 pending or failed on a 2.1 server
+      keeps 249 (F2)
+  [4] also: the cap from the server's own row (a qWDTT the panel has no record of is 253, not WDTT's 249 — F3); a blocked
+      or expired user's password without an address is not "waiting" (F4)
   [5] the VK pool's load (T4): a blocked user, an expired one, a user whose devices are all plain WireGuard or all cut off
       → not counted; a user with no device yet, a csqtt one, a WireGuard one behind a turn-proxy, one with a blocked device
-      beside a live turn one → counted
+      beside a live turn one → counted; the cascade moves its counts only for counted users (F5)
 
 Run: python3 tests/turn_cap_selftest.py
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -30,10 +35,18 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "gt":         ("    if used < cap:\n        return None\n", "    if used <= cap:\n        return None\n"),
     "blocked":    ("    used = sum(1 for _pid, p in _peers_on(roster, nid)\n               if any(",
                    "    used = sum(1 for _pid, p in _peers_on(roster, nid)\n               if not p.get(\"disabled\") and any("),
-    "addtarget":  ("        full = turn_full(nodes, roster, target)\n        if full:\n", "        full = None\n        if full:\n"),
+    "addtarget":  ("        full = turn_full(nodes, snaps, roster, target)\n        if full:\n", "        full = None\n        if full:\n"),
     "issuebelow": ("            if _wait and _use >= _cap:\n", "            if _wait:\n"),
-    "storedline": ("            _tl = str(e.get(\"line\") or _ti.get(\"line\") or CSQTT_DEFAULT_LINE)\n",
-                   "            _tl = str(_ti.get(\"line\") or CSQTT_DEFAULT_LINE)\n"),
+    "storedline": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\")"),
+    "recordfork": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"line\",)"),
+    "waitcut":    ("                _wait = sum(1 for x in _live if not x.get(\"ip\"))\n", "                _wait = sum(1 for x in _pw if not x.get(\"ip\"))\n"),
+    "recordline": ("    return turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)) if kind == \"csqtt\" else rec)",
+                   "    return turn_cap(kind, rec)"),
+    "csqdoor":    ("            full = turn_full(nodes, snaps, roster, t)\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"csqtt_password\"",
+                   "            full = None\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"csqtt_password\""),
+    "wdttdoor":   ("            full = turn_full(nodes, snaps, roster, t)\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"wdtt_password\"",
+                   "            full = None\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"wdtt_password\""),
+    "cascadecount": ("counted=uid in who)", "counted=True)"),
     "capkey":     ("**({\"turn_cap\": _tcap} if", "**({\"turn_caps\": _tcap} if"),
     "t4old":      ("        if not isinstance(u, dict) or (uid in has_dev and uid not in serves) or access_cut({}, u, nowv):\n",
                    "        if not isinstance(u, dict):\n"),
@@ -84,6 +97,7 @@ def run_checks(src):
         json.dump({"n1": {"id": "n1", "name": "node-a", "ifaces": {},
                           "csqtt": {"csqtt1": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "line": "2.5"}},
                           "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "wg_addr": "10.66.70.1/24", "fork": "amurcanov"},
+                                   "wdtt2": {"listen": "0.0.0.0:58000", "wg_addr": "10.66.72.1/24", "fork": "ildarmaga"},
                                    "wdtt9": {"listen": "0.0.0.0:57000", "wg_addr": "10.66.71.1/24", "fork": "mystery"}}},
                    "n2": {"id": "n2", "name": "node-b", "ifaces": {}}}, open(nodes_p, "w"))
         users, peers = {}, {}
@@ -98,6 +112,10 @@ def run_checks(src):
             pid = "q%03d" % i
             peers[pid] = {"id": pid, "user_id": None, "title": "", "pubkey": "", "psk": "", "wdtt_password": "wq%05dxxxxxxxxxx" % i,
                           "targets": [{"node": "n1", "iface": "wdtt9", "ip": "", "type": "wdtt"}]}
+        for i in range(249):                     # a WDTT server holding its pool
+            pid = "f%03d" % i
+            peers[pid] = {"id": pid, "user_id": None, "title": "", "pubkey": "", "psk": "", "wdtt_password": "wf%05dxxxxxxxxxx" % i,
+                          "targets": [{"node": "n1", "iface": "wdtt2", "ip": "", "type": "wdtt"}]}
         peers["w1"] = {"id": "w1", "user_id": None, "title": "", "pubkey": "", "psk": "", "wdtt_password": "ww00001xxxxxxxxxx",
                        "targets": [{"node": "n1", "iface": "wdtt1", "ip": "", "type": "wdtt"}]}
         json.dump({"version": 1, "users": users, "peers": peers}, open(users_p, "w"))
@@ -141,6 +159,10 @@ def run_checks(src):
             ok(code == 409 and r.get("code") == "turn_full", "[2] a create with a free server beside the full one is refused whole", (code, r))
             code, r = req("/api/peers/add-target", {"peer_id": "w1", "target": {"node": "n1", "iface": "csqtt1"}})
             ok(code == 409 and r.get("code") == "turn_full", "[2] add-target onto the full server is refused", (code, r))
+            code, r = req("/api/csqtt-peer/create", {"node": "n1", "iface": "csqtt1"})
+            ok(code == 409 and r.get("code") == "turn_full", "[2] the API-only /api/csqtt-peer/create refuses too (F1)", (code, r))
+            code, r = req("/api/wdtt-peer/create", {"node": "n1", "iface": "wdtt2"})
+            ok(code == 409 and r.get("code") == "turn_full", "[2] the API-only /api/wdtt-peer/create refuses too (F1)", (code, r))
             ok(open(users_p, "rb").read() == before, "[2] nothing written by a refusal")
             code, r = req("/api/peers/create", {"targets": [{"node": "n1", "iface": "wdtt9"}]})
             ok(code == 200, "[2] a server on a fork the table does not know is never refused (301 there)", (code, r))
@@ -149,7 +171,7 @@ def run_checks(src):
 
             code, st = req("/api/state")
             nv = {n.get("id"): n for n in ((st.get("data") or {}).get("nodes") or [])}
-            ok((nv.get("n1") or {}).get("turn_cap") == {"csqtt1": 248, "wdtt1": 249},
+            ok((nv.get("n1") or {}).get("turn_cap") == {"csqtt1": 248, "wdtt1": 249, "wdtt2": 249},
                "[3] the node view carries each known pool", (nv.get("n1") or {}).get("turn_cap"))
             ok("n2" in nv and "turn_cap" not in nv["n2"], "[3] no key on a node without a turn server")
         finally:
@@ -160,6 +182,12 @@ def run_checks(src):
                 proc.kill()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    nd = {"n1": {"name": "node-a", "csqtt": {"csqtt1": {"line": "2.5"}}}}
+    ro = {"peers": {"p%d" % i: {"targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}]} for i in range(248)}}
+    tq = {"node": "n1", "iface": "csqtt1", "type": "csqtt"}
+    ok(P.turn_full(nd, {}, ro, tq) is not None and P.turn_full(nd, {"n1": {"csqtt": [{"iface": "csqtt1", "line": "2.1"}]}}, ro, tq) is None,
+       "[2] the pool is the RUNNING line's: record 2.5 with no report → full at 248; the node still runs 2.1 → room (F2)")
 
     print("[4] the node's own report")
 
@@ -175,6 +203,9 @@ def run_checks(src):
        "[4] 2.5: one waiting below the pool → nothing")
     ok(issues({"csqtt": {"csqtt1": {}}}, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": dict(full25, x={"ip": ""})}]}),
        "[4] the RUNNING line decides (stored 2.1, the node runs 2.5)")
+    ok(not issues(c25, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": dict(
+           full25, x={"ip": "", "is_deactivated": True}, y={"ip": "", "expires_at": NOW - 5})}]}),
+       "[4] a blocked or expired user's password with no address is not waiting (F4)")
     devs = {"d%d" % i: {"ip": "10.66.70.%d" % (i + 2)} for i in range(249)}
     pw21 = {"p%d" % i: {"device_id": "d%d" % i, "ip": "10.66.70.%d" % (i + 2)} for i in range(249)}
     ok(issues({"wdtt": {"wdtt1": {"fork": "amurcanov"}}},
@@ -183,6 +214,11 @@ def run_checks(src):
     ok(not issues({"wdtt": {"wdtt1": {"fork": "amurcanov"}}},
                   {"wdtt": [{"iface": "wdtt1", "passwords": dict(pw21, y={"device_id": "", "ip": ""}), "devices": devs}]}),
        "[4] WDTT: a password never connected is not waiting")
+    ok(not issues({}, {"wdtt": [{"iface": "wdtt7", "fork": "qwdtt", "wg_addr": "10.66.70.1/24", "raw_port": "",
+                                 "passwords": dict(pw21, x={"device_id": "dx", "ip": ""}), "devices": devs}]})
+       and issues({}, {"wdtt": [{"iface": "wdtt7", "fork": "amurcanov", "wg_addr": "10.66.70.1/24",
+                                 "passwords": dict(pw21, x={"device_id": "dx", "ip": ""}), "devices": devs}]}),
+       "[4] the cap from the server's own row: a qWDTT /24 the panel has no record of has 4 left at 249 (F3)")
     ok(issues({"csqtt": {"csqtt1": {}}}, {"csqtt": [{"iface": "csqtt1", "line": "2.1", "passwords": dict(pw21, x={"device_id": "dx", "ip": ""}), "devices": devs}]}),
        "[4] csqtt 2.1 through its devices")
     try:
@@ -216,12 +252,29 @@ def run_checks(src):
         "f": {"user_id": "proxied", "targets": [tg("n1", "awg1", "awg")]},
         "g": {"user_id": "mixed", "disabled": True, "targets": [tg("n1", "wdtt1", "wdtt")]},
         "h": {"user_id": "mixed", "targets": [tg("n1", "wdtt1", "wdtt")]}}}
+    for k, u in roster["users"].items():
+        u["name"] = k
     snaps = {"n1": {"interfaces": {"wg0": {"meta": {"listen_port": 51820}}, "awg1": {"meta": {"listen_port": 51821}}},
                     "turn_proxies": [{"service": "tp1", "connect": "127.0.0.1:51821"}]}}
     got = P._vk_pool_counts(roster, snaps)
     ok(not any(got.get(L[i]) for i in (0, 1, 2, 3)), "[5] blocked, expired, plain-WireGuard-only, all-devices-cut users are not load", got)
     ok(all(got.get(L[i]) == 1 for i in (4, 5, 6, 7)),
        "[5] a user with no device yet, a csqtt one, a WireGuard one behind a turn-proxy, a blocked device beside a live turn one count", got)
+    calls, real = [], P._vk_user_sync
+    def spy(u, ps, counts=None, pool=None, counted=True):
+        calls.append((u.get("name"), counted))
+        return real(u, ps, counts=counts, pool=pool, counted=counted)
+    P._vk_user_sync = spy
+    try:
+        P._vk_pool_cascade(roster, {}, snaps)
+    finally:
+        P._vk_user_sync = real
+    flag = dict(calls)
+    ok(flag.get("blocked") is False and flag.get("wgonly") is False and flag.get("csq") is True and flag.get("nodev") is True,
+       "[5] the cascade moves its counts only for counted users (F5)", calls)
+    before = {"x": 3}
+    real({"vk_links": [L[9]], "vk_pool": {"gone": L[9]}}, {"vk_pool": [{"id": "e1", "url": L[8]}]}, counts=before, counted=False)
+    ok(before == {"x": 3}, "[5] …and a user not counted leaves the counts alone", before)
     return fails
 
 
