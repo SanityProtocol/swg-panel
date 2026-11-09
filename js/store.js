@@ -313,7 +313,7 @@ export const Store = {
   // reconcile.js.
   _server: { roster: { version: 1, users: {}, peers: {} }, nodes: [] },   // pristine, last fetched
   _rosterRev: null,                                                        // the revision _server.roster is
-  _rosterReq: null, _pollSeq: 0, _pollApplied: 0,                          // the fetch in flight; polls started / the last applied
+  _pollSeq: 0, _pollApplied: 0,                                            // polls started / the last one applied
   async poll() {
     const seq = ++this._pollSeq;
     const [s, ev] = await Promise.all([api.state(), api.events().catch(() => null)]);
@@ -322,21 +322,18 @@ export const Store = {
     // fetch fails the poll, as a failed /api/state does — nothing applied, the last roster kept (its identity too: K3's
     // memos key on it) and its revision unrecorded, so the next poll asks again. An unchanged revision keeps the SAME
     // object; a state without one (an error reply) keeps the held roster. Polls overlap (the interval's, a mutation's, a
-    // tab coming back): one asking for the revision a fetch started < 5 s ago is getting joins it (an older one may have
-    // stalled — it is not waited on, scale-k4 F11), and a poll that lands after a LATER-started poll was applied applies
-    // nothing — its state and roster are an older pair, and a newer pair is already on screen (scale-k4 F3 F4 F9 F10).
+    // tab coming back): each waits only on its own requests — never on another poll's fetch, which may have stalled
+    // (scale-k4 F14) — and a poll that lands after a LATER-started poll was applied applies nothing: its state and roster
+    // are an older pair, and a newer pair is already on screen (F3 F9 F10). Only a good state takes its place in that
+    // order, so an error reply never drops an earlier poll that brings a good one (F15).
     let roster = null, rev = null;
     if (typeof d.roster_rev === "string" && d.roster_rev !== this._rosterRev) {
-      let q = this._rosterReq;
-      if (!q || q.rev !== d.roster_rev || Date.now() - q.at > 5000)
-        q = this._rosterReq = { rev: d.roster_rev, at: Date.now(), p: api.roster(d.roster_rev) };
-      let r;
-      try { r = await q.p; } finally { if (this._rosterReq === q) this._rosterReq = null; }
+      const r = await api.roster(d.roster_rev);
       if (!r || !r.ok || typeof r.rev !== "string" || !r.data) throw new Error(T("request failed"));
       roster = r.data; rev = r.rev;
     }
     if (seq < this._pollApplied) return;
-    this._pollApplied = seq;
+    if (s && s.ok) this._pollApplied = seq;
     if (roster) this._rosterRev = rev;
     this._server = { roster: roster || this._server.roster, nodes: d.nodes || [] };
     this.describe = d.describe || {};

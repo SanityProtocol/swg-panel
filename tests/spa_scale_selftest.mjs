@@ -18,15 +18,15 @@
  *   poll       (K4, U1) the roster rides /api/roster, fetched only when the revision /api/state names moves: the same
  *              revision fetches nothing and keeps the SAME object (K3's memos key on it); a failed fetch fails the poll and
  *              keeps roster, identity and revision, and the next poll asks again; a state with no revision keeps the roster;
- *              a mutation's poll fetches the saved roster BEFORE the apply() that drops its done patch (no flicker); two
- *              polls asking for one revision share one fetch (not one that stalled 5 s ago), and a poll overtaken by a
- *              later-started one applies nothing — what is on screen is one poll's state and roster, the newest started.
+ *              a mutation's poll fetches the saved roster BEFORE the apply() that drops its done patch (no flicker); a
+ *              poll never waits on another poll's (stalled) fetch; a poll overtaken by a later-started one applies nothing —
+ *              what is on screen is one poll's state and roster, the newest started — and an error reply takes no place.
  *
  * FlowMap2's per-render memos need a DOM and are checked in a browser (the card), not here.
  *
  * Run: node tests/spa_scale_selftest.mjs          (0 = pass)
  *      --plant NAME   applies one plant and expects RED (exit 0 = it went red)
- *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied nojoin joinstale noorder
+ *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied join errorder noorder
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -55,8 +55,9 @@ const PLANTS = {   // name: [file, anchor, replacement]
   everypoll: ["js/store.js", "d.roster_rev !== this._rosterRev) {", "true) {"],
   copy: ["js/store.js", "roster: roster || this._server.roster,", "roster: structuredClone(roster || this._server.roster),"],
   emptied: ["js/store.js", "roster: roster || this._server.roster,", "roster: roster || { version: 1, users: {}, peers: {} },"],
-  nojoin: ["js/store.js", "if (!q || q.rev !== d.roster_rev || Date.now() - q.at > 5000)", "if (true)"],
-  joinstale: ["js/store.js", "if (!q || q.rev !== d.roster_rev || Date.now() - q.at > 5000)", "if (!q || q.rev !== d.roster_rev)"],
+  join: ["js/store.js", "      const r = await api.roster(d.roster_rev);",
+    "      const r = await (this._j && this._j.rev === d.roster_rev ? this._j.p : (this._j = { rev: d.roster_rev, p: api.roster(d.roster_rev) }).p);"],
+  errorder: ["js/store.js", "    if (s && s.ok) this._pollApplied = seq;", "    this._pollApplied = seq;"],
   noorder: ["js/store.js", "    if (seq < this._pollApplied) return;\n", ""],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
@@ -297,51 +298,53 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   try { await poll(); } finally { PS.apply = ap; }
   check("a mutation's poll: every apply() sees the saved record — no flicker", seen.length > 0 && seen.every(x => x === "SAVED")
         && PS.roster === serve.c && !PS.pending.m1, { seen });
-  // overlapping polls (scale-k4 F4): two asking for one revision share one fetch, and both end on the same object
-  rev = "d"; serve.d = mk(); hold.d = [];
-  const n0 = calls.length, pa = PS.poll(), pb = PS.poll();
+  // overlapping polls each wait only on their own fetch (scale-k4 F14): one asking for the revision another poll's stalled
+  // fetch is getting — a save's refresh, say — asks for it itself, applies, and the stalled reply changes nothing
+  rev = "d"; serve.d = mk(); stall.add("d");
+  const pd = PS.poll();
   await tick(); await tick();
-  hold.d.forEach(f => f());
-  await Promise.allSettled([pa, pb]); await tick();
-  check("two polls asking for one revision share one fetch", calls.length === n0 + 1 && PS.roster === serve.d && PS._rosterRev === "d",
-        { fetches: calls.length - n0, rev: PS._rosterRev });
-  // an older fetch landing after a newer one was applied (scale-k4 F3): the newer roster stays
+  const second = await Promise.race([PS.poll().then(() => "done", e => "threw " + e), new Promise(r2 => setTimeout(r2, 300, "waited"))]);
+  await tick();
+  check("a poll never waits on another poll's stalled fetch: it asks for the roster itself and applies", second === "done"
+        && PS.roster === serve.d && PS._rosterRev === "d", { second, rev: PS._rosterRev });
+  stalled.splice(0).forEach(f2 => f2());
+  const [pdr] = await Promise.allSettled([pd]); await tick();
+  check("…and the stalled poll, landing at last, settles and changes nothing", pdr.status === "fulfilled" && PS.roster === serve.d
+        && PS.versions.tag === "d", { status: pdr.status, state: PS.versions.tag });
+  // an older poll landing after a newer one was applied (scale-k4 F3): the newer roster stays
   rev = "e"; serve.e = mk(); hold.e = [];
   const pe = PS.poll();
   await tick(); await tick();
   rev = "f"; serve.f = mk();
   await poll();
-  hold.e.forEach(f => f());
+  hold.e.forEach(f2 => f2());
   await Promise.allSettled([pe]); await tick();
   check("an older roster landing late never replaces a newer one", PS.roster === serve.f && PS._rosterRev === "f",
         { rev: PS._rosterRev, isF: PS.roster === serve.f, isE: PS.roster === serve.e });
   check("⚠️ …and that late poll applies nothing — not its older state under the newer roster (F10)", PS.versions.tag === "f",
         { state: PS.versions.tag });
-  // the later-STARTED poll's pair wins even when its roster is the older one (a pinned revision, F9): roster and state agree
-  rev = "h"; serve.h = mk(); hold.h = [];
-  const ph = PS.poll();
+  // the later-STARTED poll's pair wins even when its roster is the OLDER one (a pinned revision, F9 F17): the earlier poll
+  // names the newer revision and lands first; the later poll names the older one and lands after — it wins, with its state
+  rev = "h"; serve.h = mk(); serve.i = mk(); rev = "i"; hold.h = []; hold.i = [];
+  const pNewer = PS.poll();                 // started first, names the newer revision i
   await tick(); await tick();
-  rev = "i"; serve.i = mk(); hold.i = [];
-  const pi = PS.poll();
+  rev = "h";
+  const pOlder = PS.poll();                 // started later, names the older revision h (as a pinned slot answers)
   await tick(); await tick();
-  hold.i.forEach(f2 => f2()); await Promise.allSettled([pi]); await tick();
-  hold.h.forEach(f2 => f2()); await Promise.allSettled([ph]); await tick();
-  check("the later-started poll's pair is on screen, roster and state from one moment", PS.roster === serve.i && PS._rosterRev === "i"
-        && PS.versions.tag === "i", { rev: PS._rosterRev, state: PS.versions.tag });
-  // a stalled fetch (F11): a poll 5 s later does not wait on it — it fetches afresh and applies
-  rev = "j"; serve.j = mk(); stall.add("j");
-  const pj = PS.poll();
+  hold.i.forEach(f2 => f2()); await Promise.allSettled([pNewer]); await tick();
+  hold.h.forEach(f2 => f2()); await Promise.allSettled([pOlder]); await tick();
+  check("the later-started poll's pair is on screen even with the older roster: roster and state from one moment",
+        PS.roster === serve.h && PS._rosterRev === "h" && PS.versions.tag === "h", { rev: PS._rosterRev, state: PS.versions.tag });
+  // an error reply takes no place in the order (F15): an earlier poll with a good state, landing after it, still applies
+  rev = "k"; serve.k = mk(); hold.k = [];
+  const pk = PS.poll();
   await tick(); await tick();
-  const realNow = Date.now;
-  Date.now = () => realNow() + 6000;
-  let late;
-  try { late = await Promise.race([PS.poll().then(() => "done", e => "threw " + e), new Promise(r2 => setTimeout(r2, 300, "waited"))]); }
-  finally { Date.now = realNow; }
-  await tick();
-  check("a poll does not wait on a fetch that stalled 5 s ago: it asks again and applies", late === "done" && PS.roster === serve.j
-        && PS._rosterRev === "j", { late, rev: PS._rosterRev });
-  stalled.forEach(f2 => f2()); await Promise.allSettled([pj]); await tick();
-  check("…and the stalled reply, landing at last, changes nothing", PS.roster === serve.j && PS.versions.tag === "j");
+  A.state = async () => ({ ok: false, error: "internal" });
+  await poll();
+  A.state = state;
+  hold.k.forEach(f2 => f2()); await Promise.allSettled([pk]); await tick();
+  check("an error reply does not drop an earlier poll that brings a good state", PS.roster === serve.k && PS.versions.tag === "k"
+        && PS.nodes.length === f.nodes.length, { state: PS.versions.tag, nodes: PS.nodes.length });
 }
 
 if (PLANT) done(true, PLANT);
