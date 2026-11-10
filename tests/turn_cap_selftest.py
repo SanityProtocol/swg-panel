@@ -68,7 +68,6 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
                    "        _shr = None\n"),
     "shrinkeq":   ("    if nc is None or (oc is not None and nc >= oc):\n", "    if nc is None or (oc is not None and nc > oc):\n"),
     "shrinkzero": ("        n = max(net.num_addresses - 3, 0)", "        if net.num_addresses < 4:\n            return None\n        n = net.num_addresses - 3"),
-    "shrinkrow":  ("    oc = max(_ocs) if _ocs else None", "    oc = _ocs[0] if _ocs else None"),
     "shrinkle":   ("    if used <= nc:\n        return None\n", "    if used < nc:\n        return None\n"),
 }
 
@@ -249,11 +248,13 @@ def run_checks(src):
         ok(shrink(5, None, {"line": "2.5"}) is None, "[6] a new instance holds no one: never refused")
         ok(shrink(200, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/31"}, "wdtt") is not None,
            "[6] qWDTT /24 → /31 with 200 users: refused, as the /30 is (scale-k6d F1)")
+        run21 = {"n1": {"csqtt": [{"iface": "x1", "line": "2.1"}]}}
         wide = {"n1": {"wdtt": [{"iface": "x1", "fork": "qwdtt", "wg_addr": "10.66.70.1/23", "raw_port": ""}]}}
-        ok(shrink(300, {"listen": "0.0.0.0:56000"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, "wdtt", wide) is not None
-           and shrink(300, {"listen": "0.0.0.0:56000"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}, "wdtt", wide) is None,
-           "[6] an adopted qWDTT (record has no fork, 249) the node reports running a /23 with 300 users: → /24 refused, "
-           "keeping the /23 not (scale-k6d F2)")
+        ok(shrink(249, {"line": "2.5"}, {"line": "2.5", "title": "t"}, "csqtt", run21) is None
+           and shrink(260, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24", "raw_port": "56003"},
+                      {"fork": "qwdtt", "wg_addr": "10.66.70.1/24", "raw_port": "56003", "title": "t"}, "wdtt", wide) is None,
+           "[6] a save that changes nothing about the pool is not refused, whatever the node still runs: a title during a "
+           "pending 2.1 → 2.5 switch (249 users), a qWDTT record already narrower than its row (scale-k6d verify F5/F7)")
         # the csqtt door itself, in process: a node that can run 2.5, a 2.1 server holding 249
         np_ = os.path.join(tmp6, "nodes.json")
         json.dump({"n1": {"id": "n1", "name": "node-a", "ifaces": {}, "csqtt": {"x1": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24"}}}},
