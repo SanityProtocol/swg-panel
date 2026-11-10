@@ -23,6 +23,10 @@
       is said (F1); a node row whose iface is not a string is no report (F31); [2] a csqtt pool is the smaller of the
       record's line and the running one (F9); [5] a dead link's uncounted holders spread over the pool by their own count,
       the counted ones pick by the load alone (F3); the gate's own requests skip any proxy (F15)
+  [6] (scale-k6b F30) a save that makes a running pool smaller than its users is refused (409 turn_shrink, nothing written):
+      /api/wdtt/set moving an unknown fork's 301 users to amurcanov's 249; a title edit of a full server, a pool that grows
+      and a pool that still holds everyone go through; csqtt 2.1 → 2.5 with 249 users refused, with 248 not; a server already
+      over its pool from before K6 is never refused an edit that does not shrink it
 
 Run: python3 tests/turn_cap_selftest.py
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -37,8 +41,8 @@ PSRC = open(PANEL, encoding="utf-8").read()
 
 PLANTS = {   # name: (old text, planted text) — all in the panel
     "gt":         ("    if used < cap:\n        return None\n", "    if used <= cap:\n        return None\n"),
-    "blocked":    ("    used = sum(1 for _pid, p in _peers_on(roster, nid)\n               if any(",
-                   "    used = sum(1 for _pid, p in _peers_on(roster, nid)\n               if not p.get(\"disabled\") and any("),
+    "blocked":    ("    return sum(1 for _pid, p in _peers_on(roster, nid)\n               if any(",
+                   "    return sum(1 for _pid, p in _peers_on(roster, nid)\n               if not p.get(\"disabled\") and any("),
     "addtarget":  ("        full = turn_full(nodes, snaps, roster, target)\n        if full:\n", "        full = None\n        if full:\n"),
     "issuebelow": ("            if _wait and _use >= _cap:\n", "            if _wait:\n"),
     "storedline": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\")"),
@@ -59,6 +63,11 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "t4old":      ("        if not isinstance(u, dict) or (uid in has_dev and uid not in serves) or access_cut({}, u, nowv):\n",
                    "        if not isinstance(u, dict):\n"),
     "t4nodev":    ("(uid in has_dev and uid not in serves)", "(uid not in serves)"),
+    "shrinkwdtt": ("        _shr = turn_shrink(nodes, snaps, roster_path, nid, iface, \"wdtt\", _existing, inst)\n", "        _shr = None\n"),
+    "shrinkcsq":  ("        _shr = turn_shrink(nodes, snaps, roster_path, nid, iface, \"csqtt\", _cur, inst)\n",
+                   "        _shr = None\n"),
+    "shrinkeq":   ("    if nc is None or (oc is not None and nc >= oc):\n", "    if nc is None or (oc is not None and nc > oc):\n"),
+    "shrinkle":   ("    if used <= nc:\n        return None\n", "    if used < nc:\n        return None\n"),
 }
 
 NOW = int(time.time())
@@ -178,6 +187,16 @@ def run_checks(src):
             code, r = req("/api/peers/create", {"targets": [{"node": "n1", "iface": "wdtt1"}]})
             ok(code == 200, "[2] a server with room takes one", (code, r))
 
+            print("[6] a save that shrinks a pool")
+            nb, ub = open(nodes_p, "rb").read(), open(users_p, "rb").read()
+            code, r = req("/api/wdtt/set", {"node": "n1", "iface": "wdtt9", "fork": "amurcanov"})
+            ok(code == 409 and r.get("code") == "turn_shrink" and "wdtt9 on node-a holds 301 users" in (r.get("error") or "")
+               and "249 addresses. Move 52 of them" in (r.get("error") or ""),
+               "[6] /api/wdtt/set: an unknown fork's 301 users onto amurcanov's 249 → refused, naming how many to move", (code, r))
+            ok(open(nodes_p, "rb").read() == nb and open(users_p, "rb").read() == ub, "[6] nothing written by the refusal")
+            code, r = req("/api/wdtt/set", {"node": "n1", "iface": "wdtt2", "title": "full one"})
+            ok(code == 200, "[6] a title edit of a FULL server goes through (its pool does not shrink)", (code, r))
+
             code, st = req("/api/state")
             nv = {n.get("id"): n for n in ((st.get("data") or {}).get("nodes") or [])}
             ok((nv.get("n1") or {}).get("turn_cap") == {"csqtt1": 248, "wdtt1": 249, "wdtt2": 249},
@@ -203,6 +222,43 @@ def run_checks(src):
        "[2] the RUNNING line counts: record 2.1, the node runs 2.5 (a switch back pending) → full at 248 (F2)")
     ok(P.turn_full(nd, run("2.1"), ro, tq) is not None,
        "[2] …and the record's: record 2.5, the node still runs 2.1 (the switch pending) → full at 248, so the user admitted now has an address once it lands (F9)")
+
+    print("[6] turn_shrink in process")
+    tmp6 = tempfile.mkdtemp(prefix="turn-shrink-")
+    try:
+        rp = os.path.join(tmp6, "users.json")
+        def shrink(n_users, old, new, kind="csqtt", snaps=None):
+            json.dump({"version": 1, "users": {}, "peers": {"p%d" % i: {"targets": [{"node": "n1", "iface": "x1", "type": kind}]}
+                                                            for i in range(n_users)}}, open(rp, "w"))
+            return P.turn_shrink({"n1": {"name": "node-a"}}, snaps or {}, rp, "n1", "x1", kind, old, new)
+        ok(shrink(249, {"line": "2.1"}, {"line": "2.5"}) is not None and shrink(248, {"line": "2.1"}, {"line": "2.5"}) is None,
+           "[6] csqtt 2.1 → 2.5: 249 users refused, 248 go through")
+        ok(shrink(249, {"line": "2.5"}, {"line": "2.5", "title": "t"}) is None,
+           "[6] a server already over its pool (249 on a 2.5, from before K6): an edit that does not shrink it is not refused")
+        ok(shrink(300, {"line": "2.5"}, {"line": "2.1"}) is None and shrink(300, {"listen": "0.0.0.0:46000"}, {"line": "2.5"}) is not None
+           and shrink(10, {"listen": "0.0.0.0:46000"}, {"line": "2.5"}) is None,
+           "[6] a pool that grows is not refused; a new pool under the users is, one over them is not")
+        ok(shrink(260, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23", "raw_port": "56003"}, "wdtt") is not None
+           and shrink(253, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, "wdtt") is None
+           and shrink(254, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, "wdtt") is not None,
+           "[6] qWDTT: RAW on over a /23 with 260 users refused; /23 → /24 refused past 253, not at it")
+        ok(shrink(5, None, {"line": "2.5"}) is None, "[6] a new instance holds no one: never refused")
+        # the csqtt door itself, in process: a node that can run 2.5, a 2.1 server holding 249
+        np_ = os.path.join(tmp6, "nodes.json")
+        json.dump({"n1": {"id": "n1", "name": "node-a", "ifaces": {}, "csqtt": {"x1": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24"}}}},
+                  open(np_, "w"))
+        shrink(249, None, None)                          # writes the roster: 249 peers on x1
+        deps = {"fleet": {}, "nodes_path": np_, "roster_path": rp, "stats_dir": tmp6, "panel_settings": {},
+                "node_snaps": {"n1": {"csqtt_lines": ["2.1", "2.5"], "csqtt": [{"iface": "x1", "line": "2.1"}]}}}
+        nb = open(np_, "rb").read()
+        try:
+            code, r = P.api("POST", "/api/csqtt/set", {}, {"node": "n1", "iface": "x1", "line": "2.5"}, deps)
+        except Exception as e:
+            code, r = 0, {"error": repr(e)}
+        ok(code == 409 and r.get("code") == "turn_shrink" and open(np_, "rb").read() == nb,
+           "[6] /api/csqtt/set 2.1 → 2.5 on a server holding 249: refused, nothing written", (code, r))
+    finally:
+        shutil.rmtree(tmp6, ignore_errors=True)
 
     print("[4] the node's own report")
 
