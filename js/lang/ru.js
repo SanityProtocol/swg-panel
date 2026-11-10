@@ -3680,7 +3680,7 @@ export const STR = {
   "Full — every address this server can give is taken. Put this user on another instance, or add one.": "Заполнен — все адреса, которые может выдать этот сервер, заняты. Подключите пользователя к другому экземпляру или добавьте новый.",
   "{v1} of {v2} addresses taken": "Занято адресов: {v1} из {v2}",
   "Full — every address this server can give is taken.": "Заполнен — все адреса, которые может выдать этот сервер, заняты.",
-  "{v1} on {v2} holds {v3} users, and these settings give it {v4} addresses. Move {v5} of them to another instance first.": "На {v1} ({v2}) пользователей: {v3}, а с этими настройками у него будет адресов: {v4}. Сначала перенесите на другой экземпляр пользователей: {v5}.",
+  "With these settings {v1} on {v2} is too small — users: {v3}, addresses: {v4}. Move {v5} of them to another instance first.": "С этими настройками {v1} ({v2}) слишком мал — пользователей: {v3}, адресов: {v4}. Сначала перенесите на другой экземпляр пользователей: {v5}.",
   "the address clients dial ({v1}) is no longer on this node — new turn-proxies are created with it and will fail to start": "адрес, на который подключаются клиенты ({v1}), больше не принадлежит этой ноде — новые turn-прокси создаются с ним и не смогут запуститься",
   "the address clients dial ({v1}) is not on this node — fine behind NAT that forwards it here; otherwise clients cannot reach this node": "адрес, на который подключаются клиенты ({v1}), не принадлежит этой ноде — за NAT, который пробрасывает его сюда, это нормально; иначе клиенты не могут подключиться к этой ноде",
   "{v1} {v2} is bound to {v3}, which is no longer on this node": "{v1} {v2} привязан к {v3} — этого адреса больше нет на ноде",

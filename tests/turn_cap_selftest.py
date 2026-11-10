@@ -67,6 +67,8 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "shrinkcsq":  ("        _shr = turn_shrink(nodes, snaps, roster_path, nid, iface, \"csqtt\", _cur, inst)\n",
                    "        _shr = None\n"),
     "shrinkeq":   ("    if nc is None or (oc is not None and nc >= oc):\n", "    if nc is None or (oc is not None and nc > oc):\n"),
+    "shrinkzero": ("        n = max(net.num_addresses - 3, 0)", "        if net.num_addresses < 4:\n            return None\n        n = net.num_addresses - 3"),
+    "shrinkrow":  ("    oc = max(_ocs) if _ocs else None", "    oc = _ocs[0] if _ocs else None"),
     "shrinkle":   ("    if used <= nc:\n        return None\n", "    if used < nc:\n        return None\n"),
 }
 
@@ -98,6 +100,9 @@ def run_checks(src):
     ok(tc("wdtt", {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}) == 253 and tc("wdtt", {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}) == 509
        and tc("wdtt", {"fork": "qwdtt", "wg_addr": "10.66.70.1/23", "raw_port": "56010"}) == 253,
        "[1] qWDTT: every host but its own (/24 253, /23 509), RAW on caps it at its /24's 253")
+    ok(tc("wdtt", {"fork": "qwdtt", "wg_addr": "10.66.70.1/30"}) == 1 and tc("wdtt", {"fork": "qwdtt", "wg_addr": "10.66.70.1/31"}) == 0
+       and tc("wdtt", {"fork": "qwdtt", "wg_addr": "10.66.70.1/32"}) == 0,
+       "[1] qWDTT /30 gives 1; a /31 or /32 gives none — a known 0, not an unknown pool (scale-k6d F1)")
     ok(tc("csqtt", {}) == 249 and tc("csqtt", {"line": "2.1"}) == 249 and tc("csqtt", {"line": "2.5"}) == 248,
        "[1] csqtt 2.1 249, 2.5 248")
     ok(tc("wdtt", {"fork": "mystery"}) is None and tc("csqtt", {"line": "9.9"}) is None
@@ -190,8 +195,7 @@ def run_checks(src):
             print("[6] a save that shrinks a pool")
             nb, ub = open(nodes_p, "rb").read(), open(users_p, "rb").read()
             code, r = req("/api/wdtt/set", {"node": "n1", "iface": "wdtt9", "fork": "amurcanov"})
-            ok(code == 409 and r.get("code") == "turn_shrink" and "wdtt9 on node-a holds 301 users" in (r.get("error") or "")
-               and "249 addresses. Move 52 of them" in (r.get("error") or ""),
+            ok(code == 409 and r.get("code") == "turn_shrink" and "wdtt9 on node-a is too small — users: 301, addresses: 249. Move 52 of them" in (r.get("error") or ""),
                "[6] /api/wdtt/set: an unknown fork's 301 users onto amurcanov's 249 → refused, naming how many to move", (code, r))
             ok(open(nodes_p, "rb").read() == nb and open(users_p, "rb").read() == ub, "[6] nothing written by the refusal")
             code, r = req("/api/wdtt/set", {"node": "n1", "iface": "wdtt2", "title": "full one"})
@@ -243,6 +247,13 @@ def run_checks(src):
            and shrink(254, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, "wdtt") is not None,
            "[6] qWDTT: RAW on over a /23 with 260 users refused; /23 → /24 refused past 253, not at it")
         ok(shrink(5, None, {"line": "2.5"}) is None, "[6] a new instance holds no one: never refused")
+        ok(shrink(200, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/31"}, "wdtt") is not None,
+           "[6] qWDTT /24 → /31 with 200 users: refused, as the /30 is (scale-k6d F1)")
+        wide = {"n1": {"wdtt": [{"iface": "x1", "fork": "qwdtt", "wg_addr": "10.66.70.1/23", "raw_port": ""}]}}
+        ok(shrink(300, {"listen": "0.0.0.0:56000"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/24"}, "wdtt", wide) is not None
+           and shrink(300, {"listen": "0.0.0.0:56000"}, {"fork": "qwdtt", "wg_addr": "10.66.70.1/23"}, "wdtt", wide) is None,
+           "[6] an adopted qWDTT (record has no fork, 249) the node reports running a /23 with 300 users: → /24 refused, "
+           "keeping the /23 not (scale-k6d F2)")
         # the csqtt door itself, in process: a node that can run 2.5, a 2.1 server holding 249
         np_ = os.path.join(tmp6, "nodes.json")
         json.dump({"n1": {"id": "n1", "name": "node-a", "ifaces": {}, "csqtt": {"x1": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24"}}}},

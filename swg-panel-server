@@ -3711,11 +3711,19 @@ def turn_cap(kind, inst):
             net = ipaddress.ip_network(str(inst.get("wg_addr") or ""), strict=False)
         except ValueError:
             return None
-        if net.version != 4 or net.prefixlen > 30:
+        if net.version != 4:
             return None
-        n = net.num_addresses - 3                    # network, broadcast, the server's own
+        n = max(net.num_addresses - 3, 0)            # network, broadcast, the server's own — a /31 or /32 has none to give
         return min(n, 253) if inst.get("raw_port") else n   # RAW gives each peer an address of its own /24 too
     return _WDTT_POOL if fork in _WDTT_POOL_FORKS else None
+
+
+def _turn_running(rec, e):
+    """A wdtt / csqtt server as it RUNS: its node row's fork, subnet, RAW and line over the panel's record — a record not
+    mirrored yet has none, and a qWDTT read as amurcanov would be "full" four addresses early (raw_port "" = RAW off)."""
+    rec = rec if isinstance(rec, dict) else {}
+    e = e if isinstance(e, dict) else {}
+    return dict(rec, **{k: e[k] for k in ("fork", "wg_addr", "raw_port", "line") if isinstance(e.get(k), str) and (e[k] or k == "raw_port")})
 
 
 def turn_run_cap(kind, rec, snap, iface):
@@ -3761,13 +3769,18 @@ def turn_shrink(nodes, snaps, roster_path, nid, ifn, kind, old, new):
     if not isinstance(old, dict) or not old:
         return None
     nc = turn_cap(kind, new)
-    oc = turn_run_cap(kind, old, (snaps or {}).get(nid), ifn)
+    # the pool it has now: the record's (for csqtt with the line it runs), or what its node reports running when that is
+    # wider — an adopted qWDTT whose record has no fork reads 249 while it serves a /23 (scale-k6d F2)
+    _snap = (snaps or {}).get(nid) or {}
+    _row = next((e for e in (_snap.get(kind) or []) if isinstance(e, dict) and e.get("iface") == ifn), None)
+    _ocs = [c for c in (turn_run_cap(kind, old, _snap, ifn), turn_cap(kind, _turn_running(old, _row)) if _row else None) if c is not None]
+    oc = max(_ocs) if _ocs else None
     if nc is None or (oc is not None and nc >= oc):
         return None
     used = turn_users(roster_view(roster_path)[0], nid, ifn)   # the shared read-only view: no parse when it is current
     if used <= nc:
         return None
-    return perr("{v1} on {v2} holds {v3} users, and these settings give it {v4} addresses. Move {v5} of them to another "
+    return perr("With these settings {v1} on {v2} is too small — users: {v3}, addresses: {v4}. Move {v5} of them to another "
                 "instance first.", v1=ifn, v2=(nodes.get(nid) or {}).get("name") or nid, v3=str(used), v4=str(nc),
                 v5=str(used - nc))
 
@@ -10552,10 +10565,7 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
             if not isinstance(e, dict) or not isinstance(e.get("iface"), str):
                 continue
             _ti = _recs.get(e["iface"])
-            # the server as it RUNS: its own row's fork, subnet, RAW and line over the panel's record — a record not mirrored
-            # yet has none, and a qWDTT read as amurcanov would be "full" four addresses early (raw_port "" = RAW off)
-            _tr = dict(_ti if isinstance(_ti, dict) else {}, **{k: e[k] for k in ("fork", "wg_addr", "raw_port", "line")
-                                                                if isinstance(e.get(k), str) and (e[k] or k == "raw_port")})
+            _tr = _turn_running(_ti, e)   # the server as it RUNS
             _tl = str(_tr.get("line") or CSQTT_DEFAULT_LINE)
             _cap = turn_cap(_tk, _tr)
             _pw, _dv = e.get("passwords"), e.get("devices")
