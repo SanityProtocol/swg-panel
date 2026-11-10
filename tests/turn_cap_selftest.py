@@ -19,6 +19,10 @@
   [5] the VK pool's load (T4): a blocked user, an expired one, a user whose devices are all plain WireGuard or all cut off
       → not counted; a user with no device yet, a csqtt one, a WireGuard one behind a turn-proxy, one with a blocked device
       beside a live turn one → counted; the cascade moves its counts only for counted users (F5)
+  card scale-k6b: [4] WDTT under -fixed-config (device_id always "") — a full pool with a live password holding no address
+      is said (F1); a node row whose iface is not a string is no report (F31); [2] a csqtt pool is the smaller of the
+      record's line and the running one (F9); [5] a dead link's uncounted holders spread over the pool by their own count,
+      the counted ones pick by the load alone (F3); the gate's own requests skip any proxy (F15)
 
 Run: python3 tests/turn_cap_selftest.py
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -39,14 +43,18 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "issuebelow": ("            if _wait and _use >= _cap:\n", "            if _wait:\n"),
     "storedline": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\")"),
     "recordfork": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"line\",)"),
-    "waitcut":    ("                _wait = sum(1 for x in _live if not x.get(\"ip\"))\n", "                _wait = sum(1 for x in _pw if not x.get(\"ip\"))\n"),
-    "recordline": ("    return turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)) if kind == \"csqtt\" else rec)",
-                   "    return turn_cap(kind, rec)"),
+    "waitcut":    ("            _wait = sum(1 for x in _live if not x.get(\"ip\"))\n", "            _wait = sum(1 for x in _pw if not x.get(\"ip\"))\n"),
+    "waitdevid":  ("            _wait = sum(1 for x in _live if not x.get(\"ip\"))\n", "            _wait = sum(1 for x in _live if x.get(\"device_id\") and not x.get(\"ip\"))\n"),
+    "recordline": ("turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)))) if c is not None]", "turn_cap(kind, rec)) if c is not None]"),
+    "runonly":    ("(turn_cap(kind, rec), turn_cap(kind, dict(rec, line=", "(None, turn_cap(kind, dict(rec, line="),
+    "ifacehash":  ("            if not isinstance(e, dict) or not isinstance(e.get(\"iface\"), str):\n                continue\n            _ti = _recs.get(e[\"iface\"])",
+                   "            if not isinstance(e, dict):\n                continue\n            _ti = _recs.get(e.get(\"iface\"))"),
     "csqdoor":    ("            full = turn_full(nodes, snaps, roster, t)\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"csqtt_password\"",
                    "            full = None\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"csqtt_password\""),
     "wdttdoor":   ("            full = turn_full(nodes, snaps, roster, t)\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"wdtt_password\"",
                    "            full = None\n            if full:\n                return 409, {\"ok\": False, **full, \"code\": \"turn_full\"}\n        fields = {\"user_id\": uid or None, \"title\": title, \"pubkey\": \"\", \"psk\": \"\",\n                  \"targets\": tgts, \"wdtt_password\""),
-    "cascadecount": ("counted=uid in who)", "counted=True)"),
+    "cascadecount": ("else _vk_user_sync(u, ps, counts=spread, pool=pool))", "else _vk_user_sync(u, ps, counts=counts, pool=pool, also=spread))"),
+    "nospread":   ("else _vk_user_sync(u, ps, counts=spread, pool=pool))", "else _vk_user_sync(u, ps, counts=dict(counts), pool=pool))"),
     "capkey":     ("**({\"turn_cap\": _tcap} if", "**({\"turn_caps\": _tcap} if"),
     "t4old":      ("        if not isinstance(u, dict) or (uid in has_dev and uid not in serves) or access_cut({}, u, nowv):\n",
                    "        if not isinstance(u, dict):\n"),
@@ -54,6 +62,7 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
 }
 
 NOW = int(time.time())
+NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # a desktop proxy in the env must not see 127.0.0.1
 
 
 def load(src):
@@ -133,7 +142,7 @@ def run_checks(src):
             r = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=json.dumps(data).encode() if data is not None else None,
                                        headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(r, timeout=30) as resp:
+                with NOPROXY.open(r, timeout=30) as resp:
                     return resp.status, json.loads(resp.read() or b"{}")
             except urllib.error.HTTPError as e:
                 return e.code, json.loads(e.read() or b"{}")
@@ -152,7 +161,7 @@ def run_checks(src):
             ok(code == 200, "[2] the 248th user on a csqtt 2.5 server is taken", (code, r))
             before = open(users_p, "rb").read()
             code, r = req("/api/peers/create", {"targets": [{"node": "n1", "iface": "csqtt1"}]})
-            ok(code == 409 and r.get("code") == "turn_full" and "csqtt1 on node-a is full — 248 of 248 users" in (r.get("error") or "")
+            ok(code == 409 and r.get("code") == "turn_full" and "csqtt1 on node-a is full — users: 248 of 248" in (r.get("error") or "")
                and r.get("error_key", "").startswith("{v1} on {v2} is full"),
                "[2] the 249th is refused, naming the server and the count", (code, r))
             code, r = req("/api/peers/create", {"targets": [{"node": "n1", "iface": "wdtt1"}, {"node": "n1", "iface": "csqtt1"}]})
@@ -186,8 +195,14 @@ def run_checks(src):
     nd = {"n1": {"name": "node-a", "csqtt": {"csqtt1": {"line": "2.5"}}}}
     ro = {"peers": {"p%d" % i: {"targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}]} for i in range(248)}}
     tq = {"node": "n1", "iface": "csqtt1", "type": "csqtt"}
-    ok(P.turn_full(nd, {}, ro, tq) is not None and P.turn_full(nd, {"n1": {"csqtt": [{"iface": "csqtt1", "line": "2.1"}]}}, ro, tq) is None,
-       "[2] the pool is the RUNNING line's: record 2.5 with no report → full at 248; the node still runs 2.1 → room (F2)")
+    nd21 = {"n1": {"name": "node-a", "csqtt": {"csqtt1": {"line": "2.1"}}}}
+    run = lambda ln: {"n1": {"csqtt": [{"iface": "csqtt1", "line": ln}]}}
+    ok(P.turn_full(nd, {}, ro, tq) is not None and P.turn_full(nd21, {}, ro, tq) is None and P.turn_full(nd21, run("2.1"), ro, tq) is None,
+       "[2] record 2.5 with no report → full at 248; record 2.1 running 2.1 → room at 248")
+    ok(P.turn_full(nd21, run("2.5"), ro, tq) is not None,
+       "[2] the RUNNING line counts: record 2.1, the node runs 2.5 (a switch back pending) → full at 248 (F2)")
+    ok(P.turn_full(nd, run("2.1"), ro, tq) is not None,
+       "[2] …and the record's: record 2.5, the node still runs 2.1 (the switch pending) → full at 248, so the user admitted now has an address once it lands (F9)")
 
     print("[4] the node's own report")
 
@@ -196,11 +211,13 @@ def run_checks(src):
     c25 = {"csqtt": {"csqtt1": {"line": "2.5"}}}
     full25 = {"pw%d" % i: {"ip": "10.66.67.%d" % (i + 3)} for i in range(248)}
     ok(issues(c25, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": dict(full25, x={"ip": ""}), "devices": {}}]})
-       == ["{v1}: {v2} users can't connect — all {v3} addresses are in use"], "[4] 2.5: full, one waiting → the line")
+       == ["{v1}: all {v3} addresses are in use — users who can't connect: {v2}"], "[4] 2.5: full, one waiting → the line")
     ok(not issues(c25, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": full25, "devices": {}}]}),
        "[4] 2.5: full, nobody waiting → nothing")
     ok(not issues(c25, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": {"a": {"ip": "10.66.67.3"}, "b": {"ip": ""}}}]}),
        "[4] 2.5: one waiting below the pool → nothing")
+    ok(not issues(c25, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": dict(list(full25.items())[:247], x={"ip": ""})}]}),
+       "[4] 2.5: 248 passwords, one still without an address while one is free → nothing")
     ok(issues({"csqtt": {"csqtt1": {}}}, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": dict(full25, x={"ip": ""})}]}),
        "[4] the RUNNING line decides (stored 2.1, the node runs 2.5)")
     ok(not issues(c25, {"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": dict(
@@ -211,9 +228,18 @@ def run_checks(src):
     ok(issues({"wdtt": {"wdtt1": {"fork": "amurcanov"}}},
               {"wdtt": [{"iface": "wdtt1", "passwords": dict(pw21, x={"device_id": "dx", "ip": ""}, y={"device_id": "", "ip": ""}), "devices": devs}]}),
        "[4] WDTT through its devices: 249 held, one bound and refused → the line")
+    fdevs = {"pw:f%d" % i: {"ip": "10.66.70.%d" % (i + 2)} for i in range(249)}
+    fpw = {"f%d" % i: {"device_id": "", "ip": "10.66.70.%d" % (i + 2)} for i in range(249)}
+    ok(issues({"wdtt": {"wdtt1": {"fork": "amurcanov"}}},
+              {"wdtt": [{"iface": "wdtt1", "passwords": dict(fpw, y={"device_id": "", "ip": ""}), "devices": fdevs}]}),
+       "[4] WDTT under -fixed-config (device_id never set): 249 held, a live password with none → the line (F1)")
     ok(not issues({"wdtt": {"wdtt1": {"fork": "amurcanov"}}},
-                  {"wdtt": [{"iface": "wdtt1", "passwords": dict(pw21, y={"device_id": "", "ip": ""}), "devices": devs}]}),
-       "[4] WDTT: a password never connected is not waiting")
+                  {"wdtt": [{"iface": "wdtt1", "passwords": dict(fpw, y={"device_id": "", "ip": "", "is_deactivated": True}), "devices": fdevs}]}),
+       "[4] WDTT: a blocked password with none is not waiting")
+    del fdevs["pw:f0"]; fpw["f0"]["ip"] = ""
+    ok(not issues({"wdtt": {"wdtt1": {"fork": "amurcanov"}}},
+                  {"wdtt": [{"iface": "wdtt1", "passwords": dict(fpw, y={"device_id": "", "ip": ""}), "devices": fdevs}]}),
+       "[4] WDTT: below the pool (248 held), passwords not yet connected → nothing")
     ok(not issues({}, {"wdtt": [{"iface": "wdtt7", "fork": "qwdtt", "wg_addr": "10.66.70.1/24", "raw_port": "",
                                  "passwords": dict(pw21, x={"device_id": "dx", "ip": ""}), "devices": devs}]})
        and issues({}, {"wdtt": [{"iface": "wdtt7", "fork": "amurcanov", "wg_addr": "10.66.70.1/24",
@@ -223,11 +249,12 @@ def run_checks(src):
        "[4] csqtt 2.1 through its devices")
     try:
         bad = [{"csqtt": [{"iface": "csqtt1", "line": "2.5", "passwords": ["x"]}]}, {"csqtt": ["junk", {"iface": "csqtt1", "passwords": {"a": "s"}}]},
-               {"wdtt": [{"iface": "wdtt1", "passwords": {"a": {"device_id": "d", "ip": ""}}, "devices": ["x"]}]}]
+               {"wdtt": [{"iface": "wdtt1", "passwords": {"a": {"device_id": "d", "ip": ""}}, "devices": ["x"]}]},
+               {"wdtt": [{"iface": ["wdtt1"], "passwords": {}}]}, {"csqtt": [{"iface": {"x": 1}, "line": "2.5", "passwords": {}}]}]
         for b in bad:
             issues({"csqtt": {"csqtt1": {}}, "wdtt": {"wdtt1": "junk"}}, b)
             issues({"csqtt": "junk"}, b)
-        ok(True, "[4] a malformed report raises nothing")
+        ok(True, "[4] a malformed report raises nothing (an iface that is a list or a dict too — F31)")
     except Exception as e:
         ok(False, "[4] a malformed report raises nothing", repr(e))
 
@@ -261,20 +288,34 @@ def run_checks(src):
     ok(all(got.get(L[i]) == 1 for i in (4, 5, 6, 7)),
        "[5] a user with no device yet, a csqtt one, a WireGuard one behind a turn-proxy, a blocked device beside a live turn one count", got)
     calls, real = [], P._vk_user_sync
-    def spy(u, ps, counts=None, pool=None, counted=True):
-        calls.append((u.get("name"), counted))
-        return real(u, ps, counts=counts, pool=pool, counted=counted)
+    def spy(u, ps, counts=None, pool=None, also=None):
+        calls.append((u.get("name"), id(counts), id(also) if also is not None else None))
+        return real(u, ps, counts=counts, pool=pool, also=also)
     P._vk_user_sync = spy
     try:
         P._vk_pool_cascade(roster, {}, snaps)
     finally:
         P._vk_user_sync = real
-    flag = dict(calls)
-    ok(flag.get("blocked") is False and flag.get("wgonly") is False and flag.get("csq") is True and flag.get("nodev") is True,
-       "[5] the cascade moves its counts only for counted users (F5)", calls)
-    before = {"x": 3}
-    real({"vk_links": [L[9]], "vk_pool": {"gone": L[9]}}, {"vk_pool": [{"id": "e1", "url": L[8]}]}, counts=before, counted=False)
-    ok(before == {"x": 3}, "[5] …and a user not counted leaves the counts alone", before)
+    flag = {n: (c, a) for n, c, a in calls}
+    load_id, spread_id = flag.get("csq", (0, 0))
+    ok(spread_id and flag.get("nodev") == (load_id, spread_id) and flag.get("blocked") == (spread_id, None)
+       and flag.get("wgonly") == (spread_id, None),
+       "[5] the cascade: a counted user picks by the load and moves it and the spread; one not counted the spread alone (F5, F3)", calls)
+    a, b = {"x": 3}, {"x": 3}
+    real({"vk_links": [L[9]], "vk_pool": {"gone": L[9]}}, {"vk_pool": [{"id": "e1", "url": L[8]}]}, counts=a, also=b)
+    ok(a == b == {"x": 3, L[8]: 1, L[9]: 0}, "[5] _vk_user_sync moves both counts it is given", (a, b))
+    # a dead link's 6 blocked holders spread over the two live links, on top of the load: before F3 all six stacked on B
+    A, B, E = L[0], L[1], L[2]
+    ro3 = {"users": {}, "peers": {}}
+    for i in range(2):
+        ro3["users"]["c%d" % i] = {"name": "c%d" % i, "vk_links": [A], "vk_pool": {"a": A}}
+        ro3["peers"]["pc%d" % i] = {"user_id": "c%d" % i, "targets": [tg("n1", "csqtt1", "csqtt")]}
+    for i in range(6):
+        ro3["users"]["b%d" % i] = {"name": "b%d" % i, "disabled": True, "vk_links": [E], "vk_pool": {"e": E}}
+    ps3 = {"vk_pool": [{"id": "a", "url": A}, {"id": "b", "url": B}, {"id": "e", "url": E, "dead": True}]}
+    P._vk_pool_cascade(ro3, ps3, {})
+    onb = sum(1 for i in range(6) if ro3["users"]["b%d" % i]["vk_links"] == [B])
+    ok(onb == 4, "[5] a dead link's 6 uncounted holders spread over A (load 2) and B (load 0): 4 on B, 2 on A (F3)", onb)
     return fails
 
 

@@ -3719,17 +3719,21 @@ def turn_cap(kind, inst):
 
 
 def turn_run_cap(kind, rec, snap, iface):
-    """turn_cap of an instance as it RUNS: a csqtt server's pool is its running line's (_csqtt_run_line — during a pending
-    or failed switch the record names the line asked for), whatever else the record says."""
+    """turn_cap of an instance for the door and the picker. A csqtt server's pool is the smaller of its running line's
+    (_csqtt_run_line) and its record's: during a pending or failed switch the record names the line asked for, and a user
+    admitted now must still have an address once the switch lands (2.1 → 2.5 is 249 → 248)."""
     rec = rec if isinstance(rec, dict) else {}
-    return turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)) if kind == "csqtt" else rec)
+    if kind != "csqtt":
+        return turn_cap(kind, rec)
+    caps = [c for c in (turn_cap(kind, rec), turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)))) if c is not None]
+    return min(caps) if caps else None
 
 
 def turn_full(nodes, snaps, roster, t):
     """The refusal for one new target on a wdtt / csqtt instance that has no address left for it, else None. Counted:
-    every peer with a target there, blocked and expired included — their passwords are shipped, so they keep their
-    addresses (csqtt 2.5 holds one per password; WDTT and 2.1 one per device, from its first connect). One rule for
-    create and add-target; the node's own report of a full pool is _node_issues'."""
+    every peer with a target there, blocked and expired included — their seat is kept, so unblocking one always finds an
+    address (some WDTT forks free a deactivated password's device; the seat stays the user's here). One rule for every
+    door that adds a target; the node's own report of a full pool is _node_issues'."""
     kind, nid, ifn = t.get("type"), t.get("node"), t.get("iface")
     if kind not in ("wdtt", "csqtt"):
         return None
@@ -3740,7 +3744,7 @@ def turn_full(nodes, snaps, roster, t):
                if any(isinstance(x, dict) and x.get("node") == nid and x.get("iface") == ifn for x in (p.get("targets") or ())))
     if used < cap:
         return None
-    return perr("{v1} on {v2} is full — {v3} of {v4} users. Put this one on another instance, or add one.",
+    return perr("{v1} on {v2} is full — users: {v3} of {v4}. Put this one on another instance, or add one.",
                 v1=ifn, v2=(nodes.get(nid) or {}).get("name") or nid, v3=str(used), v4=str(cap))
 
 
@@ -4096,7 +4100,7 @@ def _vk_pool_index(ps):
     return {e["id"]: e for e in pool}, [e for e in pool if not e["dead"]]
 
 
-def _vk_user_sync(u, ps, counts=None, pool=None, counted=True):
+def _vk_user_sync(u, ps, counts=None, pool=None, also=None):
     """Bring ONE user's links back in step with the pool. Returns True when anything changed.
 
     Three cases, and the operator asked for all three to be automatic:
@@ -4134,10 +4138,12 @@ def _vk_user_sync(u, ps, counts=None, pool=None, counted=True):
         repl = _vk_pool_pick(ps, exclude_urls=links, counts=counts, live=live)
         if repl:
             links.append(repl["url"]); mapped[repl["id"]] = repl["url"]
-            if counts is not None and counted:                        # the cascade tracks its own handiwork — for a user
-                counts[repl["url"]] = counts.get(repl["url"], 0) + 1    # _vk_pool_counts counts (T4), as every other pick
-        if counts is not None and counted:
-            counts[old_url] = max(0, counts.get(old_url, 0) - 1)
+            for d in (counts, also):                                  # the cascade tracks its own handiwork
+                if d is not None:
+                    d[repl["url"]] = d.get(repl["url"], 0) + 1
+        for d in (counts, also):
+            if d is not None:
+                d[old_url] = max(0, d.get(old_url, 0) - 1)
     if changed:
         seen = set(); links = [x for x in links if not (x in seen or seen.add(x))]
         u["vk_links"] = links
@@ -4149,13 +4155,20 @@ def _vk_user_sync(u, ps, counts=None, pool=None, counted=True):
 def _vk_pool_cascade(roster, ps, snaps):
     """Run _vk_user_sync over every user. Called whenever the pool changes, so an edit or a mark-dead reaches
     every holder in the same request rather than waiting for someone to open their profile. The pool is read ONCE
-    here: with no size limit, a read per user is users × links under the lock."""
+    here: with no size limit, a read per user is users × links under the lock.
+
+    Two counts (1.8.12 Scale T4): `counts` is the load _vk_pool_counts reads — a counted user picks by it and moves it;
+    `spread` is that load plus every move made here, which a user it does not count (blocked, expired, WireGuard only)
+    picks by and moves alone. So a dead link's uncounted holders spread over the pool, as before T4, without steering the
+    users who do carry load away from links that carry none."""
     n = 0
     who = set()
     counts = _vk_pool_counts(roster, snaps, who)
+    spread = dict(counts)
     pool = _vk_pool_index(ps)
     for uid, u in (roster.get("users") or {}).items():
-        if isinstance(u, dict) and _vk_user_sync(u, ps, counts=counts, pool=pool, counted=uid in who):
+        if isinstance(u, dict) and (_vk_user_sync(u, ps, counts=counts, pool=pool, also=spread) if uid in who
+                                    else _vk_user_sync(u, ps, counts=spread, pool=pool)):
             n += 1
     return n
 
@@ -10500,20 +10513,21 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
                                v3=max(1, -(-_for // 60)) if isinstance(_for, int) else 1))
         elif tp.get("running") is False:
             issues.append(perr("{v1}: not running", v1=(tp.get("service") or "turn-proxy")))
-    # A TURN SERVER WITH NO ADDRESS LEFT FOR SOMEONE WHO ASKED (1.8.12 Scale T1). The create door refuses a user past the
-    # pool (turn_full), but a password used on a second device, an import, a transfer, the server's own devices, or an
-    # instance already past it at the update get by — so the node's own store says it. In use = the addresses it holds
-    # (csqtt 2.5: one a password, from its arrival; WDTT and 2.1: one a device, from its first connect); waiting = a
-    # password that asked and got none (2.5: none at all; otherwise bound to a device but holding none). Under WDTT and 2.1
-    # a password not yet connected holds none either, so only a FULL pool with someone waiting is said. The cap is the
+    # A TURN SERVER WITH NO ADDRESS LEFT FOR SOMEONE (1.8.12 Scale T1). The doors refuse a user past the pool (turn_full),
+    # but an import, a transfer, the server's own devices, a pool made smaller (subnet, fork, line, RAW), or an instance
+    # already past it at the update get by — so the node's own store says it. In use = the addresses it holds (csqtt 2.5:
+    # one a password, from its arrival; WDTT and 2.1: one a device, from its first connect); waiting = a live password
+    # holding none. Under WDTT and 2.1 a password not yet connected holds none either, and under -fixed-config (every fork
+    # the panel runs) its device_id stays empty, so "asked" cannot be told from "not yet" — but once the pool is FULL a
+    # password without an address cannot get one, so only a full pool with such a password is said. The cap is the
     # running line's. Any other shape is no report — this runs inside the /api/state loop.
     _tnow = int(time.time())
     for _tk in ("wdtt", "csqtt"):
         _recs = c.get(_tk) if isinstance(c.get(_tk), dict) else {}
         for e in (snap.get(_tk) or []):
-            if not isinstance(e, dict):
+            if not isinstance(e, dict) or not isinstance(e.get("iface"), str):
                 continue
-            _ti = _recs.get(e.get("iface"))
+            _ti = _recs.get(e["iface"])
             # the server as it RUNS: its own row's fork, subnet, RAW and line over the panel's record — a record not mirrored
             # yet has none, and a qWDTT read as amurcanov would be "full" four addresses early (raw_port "" = RAW off)
             _tr = dict(_ti if isinstance(_ti, dict) else {}, **{k: e[k] for k in ("fork", "wg_addr", "raw_port", "line")
@@ -10523,18 +10537,20 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
             _pw, _dv = e.get("passwords"), e.get("devices")
             if _cap is None or not isinstance(_pw, dict):
                 continue
+            _v25 = _tk == "csqtt" and _tl != CSQTT_DEFAULT_LINE              # 2.5: the password holds the address
+            if len(_pw if _v25 else (_dv if isinstance(_dv, dict) else ())) < _cap:
+                continue                                               # cannot be full: most servers end here
             _pw = [x for x in _pw.values() if isinstance(x, dict)]
             # a blocked or expired user's password is cut off, not waiting for an address
             _live = [x for x in _pw if not x.get("is_deactivated")
                      and not (isinstance(x.get("expires_at"), (int, float)) and 0 < x["expires_at"] <= _tnow)]
-            if _tk == "csqtt" and _tl != CSQTT_DEFAULT_LINE:            # 2.5: the password holds the address
+            if _v25:
                 _use = sum(1 for x in _pw if x.get("ip"))
-                _wait = sum(1 for x in _live if not x.get("ip"))
             else:
-                _use = sum(1 for x in (_dv.values() if isinstance(_dv, dict) else ()) if isinstance(x, dict) and x.get("ip"))
-                _wait = sum(1 for x in _live if x.get("device_id") and not x.get("ip"))
+                _use = sum(1 for x in _dv.values() if isinstance(x, dict) and x.get("ip"))
+            _wait = sum(1 for x in _live if not x.get("ip"))
             if _wait and _use >= _cap:
-                issues.append(perr("{v1}: {v2} users can't connect — all {v3} addresses are in use",
+                issues.append(perr("{v1}: all {v3} addresses are in use — users who can't connect: {v2}",
                                    v1=str(e.get("iface") or "?"), v2=str(_wait), v3=str(_cap)))
     for ifn in _missing_ifaces(c, snap, ivk_pub):
         issues.append(perr("{v1}: interface missing on the node (restore available)", v1=ifn))
@@ -29398,7 +29414,8 @@ def api(method, path, qs, body, deps):
         # A new user starts with `vk_pool_per_user` links from the pool (default 3) when there are any, so an
         # operator who has filled the pool never has to remember this step. Personal links are added on top, in Manage.
         ps = deps.get("panel_settings") or {}
-        picks = _vk_pool_pick_many(ps, _vk_pool_per_user(ps), _vk_pool_counts(roster, deps.get("node_snaps")))
+        _npick = _vk_pool_per_user(ps)       # no pool, or 0 a user: no count at all (2.4 ms at 10,000 users, under _api_lock)
+        picks = _vk_pool_pick_many(ps, _npick, _vk_pool_counts(roster, deps.get("node_snaps"))) if _npick and _vk_pool_live(ps) else []
         if picks:
             u["vk_links"] = [e["url"] for e in picks]
             u["vk_link"] = picks[0]["url"]

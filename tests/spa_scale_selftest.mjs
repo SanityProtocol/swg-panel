@@ -64,7 +64,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
     "      const r = await (this._j && this._j.rev === d.roster_rev ? this._j.p : (this._j = { rev: d.roster_rev, p: api.roster(d.roster_rev) }).p);"],
   errorder: ["js/store.js", "    if (s && s.ok) this._pollApplied = seq;", "    this._pollApplied = seq;"],
   noorder: ["js/store.js", "    if (seq < this._pollApplied) return;\n", ""],
-  seatmemo: ["js/model.js", "if (Store.roster !== _seatR) {", "if (_seatR === undefined || !Store.roster) {"],
+  seatmemo: ["js/model.js", "  const r = Store.roster;\n", "  const r = Store.roster && (globalThis.__seatR = globalThis.__seatR || Store.roster);\n"],
   seattwice: ["js/model.js", "for (const k of new Set(((p && p.targets) || []).filter(Boolean).map(t => t.node + \"|\" + t.iface)))",
     "for (const k of ((p && p.targets) || []).filter(Boolean).map(t => t.node + \"|\" + t.iface))"],
 };

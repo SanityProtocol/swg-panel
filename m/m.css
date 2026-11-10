@@ -517,8 +517,8 @@ html[data-ui="m"] {
   & .targetpick > .targetopt { min-width: 0; }
   & .targetopt { flex-wrap: wrap; row-gap: 8px; column-gap: 8px; padding: 8px 10px; }
   & .targetopt::after { content: ""; order: 3; flex: 1 0 100%; height: 0; }
-  & .targetopt:not(:has(.topt-right > :not(.tg))) { flex-wrap: nowrap; }
-  & .targetopt:not(:has(.topt-right > :not(.tg)))::after { display: none; }
+  & .targetopt:not(:has(.topt-right > :not(.tg, .topt-seat))) { flex-wrap: nowrap; }
+  & .targetopt:not(:has(.topt-right > :not(.tg, .topt-seat)))::after { display: none; }
   & .targetopt .topt-main { order: 1; flex: 1 1 0; min-width: 0; min-height: 32px; }
   & .targetopt .nm { flex: 0 1 auto; width: auto; }
   & .targetopt .topt-right, & .targetopt .topt-right.hasprim { display: contents; }
@@ -528,6 +528,8 @@ html[data-ui="m"] {
   & .targetopt .topt-right > .topt-ip { order: 5; flex: 1 1 0; width: auto; min-width: 0; margin: 0; min-height: 36px; }
   & .targetopt .topt-right > .topt-ip:last-child { margin-right: 0; }
   & .targetopt .topt-right > .topt-gear { order: 6; width: 36px; height: 36px; }
+  /* an unticked turn server's "n / cap" alone is a tag-like word: it stays on the first line, after the type tag (K6) */
+  & .targetopt .topt-right > .topt-ip.topt-seat { order: 2; flex: none; min-height: 0; }
   & .targetopt .box { width: 20px; height: 20px; }
   & .targetopt .topt-right > .topt-err { order: 7; flex: 1 0 100%; margin: -2px 0 0; font-size: 12.5px; }
 

@@ -57,8 +57,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   users — 249 on WDTT and csqtt 2.1, 248 on csqtt 2.5, the size of its subnet on qWDTT — and the user past it used to be
   created as usual and then could not connect. The interface list in New peer and Peer targets now shows each server's
   users against that number (red when full), and the panel refuses one more there, naming the server. Blocked and expired
-  users count, since they keep their addresses. A server that filled up some other way — a config used on two devices, an
-  import, a transfer — gets a line on its node card: how many users are waiting for an address.
+  users count: their seat is kept, so unblocking one always finds an address. A server that filled up some other way — an
+  import, a transfer, a smaller subnet or another csqtt version — gets a line on its node card: how many users cannot get
+  an address.
 - **New users are spread over the VK call links by the users each link really serves.** A link's load used to count
   every user holding it; now blocked and expired users, and users whose devices are all plain WireGuard or AmneziaWG
   with no turn-proxy in front, no longer count. A user with no device yet still does, so users created one after

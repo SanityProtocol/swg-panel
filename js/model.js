@@ -232,18 +232,21 @@ export function turnProxiesFor(node, iface) {
 // A turn server's seats for the target picker's "n / cap" (1.8.12 Scale T1): `cap` is the address pool the panel knows for
 // it (the node view's `turn_cap`), `n` every peer with a target there — blocked and expired too, as the panel's create door
 // counts them (swg-panel-server turn_full), which is the rule; this only shows it. null when the pool is not known.
-// Counted once per roster object: it stays the same until the next save (K4).
-let _seatR, _seatN = new Map();
+// Counted once per roster object: it stays the same until the next save (K4). Weakly held, so a replaced roster is freed.
+const _seatMemo = new WeakMap();
 export function turnSeats(node, iface) {
   const cap = (((Store.nodes || []).find(n => n.id === node) || {}).turn_cap || {})[iface];
   if (typeof cap !== "number") return null;
-  if (Store.roster !== _seatR) {
-    _seatR = Store.roster; _seatN = new Map();
-    for (const p of Object.values((_seatR && _seatR.peers) || {}))
+  const r = Store.roster;
+  let m = r && typeof r === "object" ? _seatMemo.get(r) : null;
+  if (!m) {
+    m = new Map();
+    for (const p of Object.values((r && r.peers) || {}))
       for (const k of new Set(((p && p.targets) || []).filter(Boolean).map(t => t.node + "|" + t.iface)))
-        _seatN.set(k, (_seatN.get(k) || 0) + 1);
+        m.set(k, (m.get(k) || 0) + 1);
+    if (r && typeof r === "object") _seatMemo.set(r, m);
   }
-  return { n: _seatN.get(node + "|" + iface) || 0, cap };
+  return { n: m.get(node + "|" + iface) || 0, cap };
 }
 // a node is "stale" when its last snapshot is older than the staleness window (reconcile.js) — we can't
 // trust any live state then, so cross-reference badges grey out (don't claim "active" on a node gone dark).

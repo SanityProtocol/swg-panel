@@ -30,7 +30,7 @@ def check(name, cond, detail=""):
 D = tempfile.mkdtemp(prefix="vkpool-")
 if PERTURB:
     src = open(SERVER).read()
-    old = "picks = _vk_pool_pick_many(ps, _vk_pool_per_user(ps), _vk_pool_counts(roster, deps.get(\"node_snaps\")))"
+    old = "picks = _vk_pool_pick_many(ps, _npick, _vk_pool_counts(roster, deps.get(\"node_snaps\")))"
     if src.count(old) != 1:
         print("ANCHOR MISSING OR NOT UNIQUE — this run would FALSE-PASS"); sys.exit(1)
     SERVER = os.path.join(D, "swg-panel-server")
