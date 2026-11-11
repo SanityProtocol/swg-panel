@@ -206,9 +206,14 @@ export function stableOrder(freezeKey, items, idOf, cmp) {
   const pos = new Map(frozen.map((id, i) => [id, i]));
   // Each row's id and frozen slot once, not four idOf calls a compare (1.8.12 Scale K7b L3: ~150 ms a poll on Peers at
   // 10,000 devices, 4× CPU throttle). Known rows keep their frozen slot; new rows sort live, after the known ones.
-  const rs = items.map(it => { const id = idOf(it); return { it, id, at: pos.has(id) ? pos.get(id) : Infinity }; });
+  let fresh = false;                                         // a row the freeze has not seen
+  const rs = items.map(it => {
+    const id = idOf(it), at = pos.get(id);
+    if (at === undefined) fresh = true;
+    return { it, id, at: at === undefined ? Infinity : at };
+  });
   rs.sort((a, b) => a.at !== b.at ? a.at - b.at : cmp(a.it, b.it));
-  if (items.length !== frozen.length || rs.some(r => r.at === Infinity)) _orderFreeze[freezeKey] = rs.map(r => r.id);
+  if (items.length !== frozen.length || fresh) _orderFreeze[freezeKey] = rs.map(r => r.id);
   return rs.map(r => r.it);
 }
 export function sortPeerRows(rows, sort, dir, freeze) {

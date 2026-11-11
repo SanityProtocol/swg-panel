@@ -3061,8 +3061,9 @@ def roster_view(path, repair=True):
     read, so a save racing it moves the mark and the next call reads again. Read-only: see _RosterView.
     `repair=False` — the traffic ledger, on a sync thread OUTSIDE _api_lock (1.8.12 Scale K7b L1: it parsed the file itself
     after every save, a second ~170 ms on the sync that met the save): read as load_json reads, never roster_load's recovery
-    write; a file that is not a dict publishes nothing and gives (None, mark) — the next repairing reader (a sync's apply,
-    under the lock) recovers it."""
+    write; a read that is not a dict publishes nothing and gives (None, mark). The next repairing reader (a sync's apply,
+    under the lock) then publishes what roster_load makes of it: a file that does not parse, recovered from its backup; JSON
+    that parses but is not a dict (a hand edit), an EMPTY roster — which this caller then reads, as every reader does."""
     c, m = _ROSTER_VIEW[0], roster_mark(path)
     if c is None or m is None or c[:2] != (path, m):
         with _ROSTER_VIEW_LOCK:
@@ -24922,8 +24923,8 @@ class TrafficLedger:
         corrupt primary by writing, and this runs on a sync thread outside _api_lock. It runs before the sync's apply, so
         after a save the apply finds the view this read published: one parse a save, not two (1.8.12 Scale K7b L1)."""
         r = roster_view(self.roster_path, repair=False)[0]
-        if not isinstance(r, dict) or not isinstance(r.get("peers"), dict):
-            return                                             # unreadable right now: keep the old map, try at the next sync
+        if r is None:                                          # not a dict right now (it did not parse): keep the old map, try
+            return                                             # at the next sync. A view is normalised — users and peers dicts
         claims, deploys, owners, titles = {}, set(), {}, {}
         for pid, p in r["peers"].items():
             if not isinstance(p, dict):
@@ -24944,7 +24945,7 @@ class TrafficLedger:
         self.diag["ambiguous"] = len(amb)
         self.map = {k: next(iter(v)) for k, v in claims.items() if len(v) == 1}
         self.owners, self.titles, self.deploys = owners, titles, deploys
-        us = r.get("users") if isinstance(r.get("users"), dict) else {}
+        us = r["users"]
         self.onames = {uid: str(u.get("name") or "")[:64] for uid, u in us.items() if isinstance(u, dict)}
         if self.fresh:                                         # the new ledger's first map: every deployment that exists now
             self.imports, self.fresh = set(deploys), False     # holds history nothing has counted — each is imported once, at

@@ -24,7 +24,7 @@ a write there would reach every node's next sync, and a peer dropped from a desi
   [8] the traffic ledger reads the view (K7b L1): after a save, its ingest and the sync's own read parse users.json ONCE
       together and its map holds the save; on a corrupt file it writes nothing (no recovery outside _api_lock) and keeps its
       map, and once a repairing read has recovered the file the next ingest maps it; a non-dict read without repair is
-      never published
+      never published; JSON that is not a dict is read empty once the apply has published it, as by every reader
 
 Run: python3 tests/roster_view_selftest.py      (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -489,6 +489,13 @@ def run_checks(src, old_src, which="all", rounds=200):
         got, gm = P.roster_view(lp, repair=False)
         ok(got is None and gm == P.roster_mark(lp) and P._ROSTER_VIEW[0][:2] != (lp, gm),
            "[8] a non-dict read without repair publishes nothing")
+        L.ingest("n1", snap, now=NOW + 20, mono=20.0)            # JSON, not a dict (a hand edit): the sync that meets it
+        kept = ("n1", "wg0", key(9)) in L.map
+        P.roster_view(lp)                                         # its apply reads it as every reader does: an empty roster
+        L.ingest("n1", snap, now=NOW + 25, mono=25.0)
+        ok(kept and not L.map and L.mark == P.roster_mark(lp),
+           "[8] JSON that is not a dict: the ledger keeps its map on the sync that meets it, then reads the empty roster the "
+           "apply published, as every reader does (scale-k7b F1, accepted in the plan's review)")
     except Caught:
         pass
     finally:
