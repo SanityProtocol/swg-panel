@@ -44,7 +44,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   it did. The console no longer freezes for seconds on a big fleet: at 10,000 users the Overview's longest pause on a
   mid-range laptop is about 0.4 s instead of 4, the Users list's 0.2 s instead of 1.9. An open console no longer
   downloads the whole user list every 5 seconds, only when something in it has changed: at 10,000 users each refresh
-  carries about half the data, and most are answered in milliseconds instead of about half a second.
+  carries about half the data, and most are answered in milliseconds instead of about half a second. The first sync
+  after a change no longer reads `users.json` twice — the traffic history now uses the copy the sync reads: at 10,000
+  users that sync takes about 250 ms instead of 420. The Peers screen pauses about 0.2 s instead of 0.35 at 10,000
+  devices.
 - **A busy node no longer runs out of room for connections.** Every connection through a node takes a place in the
   kernel's connection table, and a full table refuses new connections for every user at once. The kernel makes it small:
   8,192 places on a 1 GB server. The node now raises it to 65,536 places for each GB of RAM, and never lowers a larger

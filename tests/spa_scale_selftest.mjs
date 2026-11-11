@@ -30,8 +30,14 @@
  *              too, once however its targets repeat — the panel's create door's count — recounted when the roster object
  *              changes (a save), the cap the node view's; no cap → nothing shown.
  *
+ *   online     (K7b, L2) the online rows — onlineUserRows / onlinePeerRows — read a node's peers from one bucket per recon.peers
+ *              array: on 200 random fleets, for every node, null, "" and a node nobody is on, every interface and null, the
+ *              rows equal the pre-K3 code's (both functions were unchanged since); the array replaced on the same recon is read.
+ *   order      (K7b, L3) stableOrder works each row's id out once: over a sequence of calls on one key — rows added, removed,
+ *              re-keyed, the input shuffled, sort-key ties — every output equals the pre-K3 code's, call by call.
+ *
  *      plants: order self atuser mapkey clonenever clonealways twice revfirst late everypoll copy emptied join errorder noorder
- *              seatmemo seattwice
+ *              seatmemo seattwice onlinekey onlinetwice onlineoffline frozenignored
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -67,6 +73,11 @@ const PLANTS = {   // name: [file, anchor, replacement]
   seatmemo: ["js/model.js", "  const r = Store.roster;\n", "  const r = Store.roster && (globalThis.__seatR = globalThis.__seatR || Store.roster);\n"],
   seattwice: ["js/model.js", "for (const k of new Set(((p && p.targets) || []).filter(Boolean).map(t => t.node + \"|\" + t.iface)))",
     "for (const k of ((p && p.targets) || []).filter(Boolean).map(t => t.node + \"|\" + t.iface))"],
+  onlinekey: ["js/views.js", "function onlineAt(nodeId) {\n  const peers = Store.recon.peers || [];\n  let idx = _onlineAt.get(peers);\n  if (!idx) {\n    idx = new Map();\n    for (const p of peers) for (const t of p.targets) if (t.online) {\n      const a = idx.get(t.node);\n      if (!a) idx.set(t.node, [p]);\n      else if (a[a.length - 1] !== p) a.push(p);           // once a peer, however many of its targets are online there\n    }\n    _onlineAt.set(peers, idx);\n  }\n  return idx.get(nodeId) || [];\n}\n",
+    "function onlineAt(nodeId) {\n  const peers = Store.recon.peers || [];\n  let idx = _onlineAt.get(Store.recon);\n  if (!idx) {\n    idx = new Map();\n    for (const p of peers) for (const t of p.targets) if (t.online) {\n      const a = idx.get(t.node);\n      if (!a) idx.set(t.node, [p]);\n      else if (a[a.length - 1] !== p) a.push(p);           // once a peer, however many of its targets are online there\n    }\n    _onlineAt.set(Store.recon, idx);\n  }\n  return idx.get(nodeId) || [];\n}\n"],
+  onlinetwice: ["js/views.js", "      else if (a[a.length - 1] !== p) a.push(p);", "      else a.push(p);"],
+  onlineoffline: ["js/views.js", "    for (const p of peers) for (const t of p.targets) if (t.online) {", "    for (const p of peers) for (const t of p.targets) {"],
+  frozenignored: ["js/views.js", "  rs.sort((a, b) => a.at !== b.at ? a.at - b.at : cmp(a.it, b.it));", "  rs.sort((a, b) => cmp(a.it, b.it));"],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
 const written = [];
@@ -372,6 +383,60 @@ console.log("\n[8] the poll — the roster rides /api/roster, fetched only when 
   Store.roster = structuredClone(r1); delete Store.roster.peers.b;   // a save: a new roster object
   const s2 = MOD.turnSeats("n1", "csqtt1");
   check("a new roster object is counted again", s2 && s2.n === 2, s2);
+}
+
+// ── online rows (K7b, L2) ─────────────────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[9] online rows — a node's peers from one bucket per recon.peers array, the rows the pre-K3 code built");
+{
+  const dress = f => {   // the fields the rows read, as reconcile leaves them: online, name, a handshake age with ties
+    for (const p of f.peers) {
+      p.online = p.targets.some(t => t.online); p.name = p.unassigned ? "" : (f.rUsers[p.user_id] || {}).name;
+      p.lastHandshakeAge = pick([null, 5, 5, 30, 120]);
+    }
+    return f;
+  };
+  const NS = [...NODES, null, "", "n9"], IS = [...IFS, null, "wg9"];
+  const rowsOf = VV => JSON.stringify([NS.map(n => VV.onlineUserRows(n)), NS.map(n => IS.map(i => VV.onlinePeerRows(n, i)))]);
+  let bad = null, shown = 0;
+  for (let r = 0; r < 200 && !bad; r++) {
+    const f = dress(fleet());
+    install(Store, f);
+    const order = r % 2 ? [V, OLD] : [OLD, V], got = {};
+    for (const VV of order) got[VV === V ? "new" : "old"] = rowsOf(VV);
+    if (got.old !== got.new) bad = { round: r, old: got.old.slice(0, 300), new: got.new.slice(0, 300) };
+    shown += V.onlineUserRows("n1").length;
+  }
+  check("onlineUserRows / onlinePeerRows equal the pre-K3 code for every node, null, \"\", a stranger, every iface, 200 fleets", !bad, bad);
+  check("…and the fleets were not trivial (people online on n1)", shown > 200, { shown });
+  const f = dress(fleet());
+  install(Store, f);
+  V.onlineUserRows("n1"); V.onlinePeerRows("n2", null);         // the buckets are built for this array
+  Store.recon.peers = f.peers.map(p => ({ ...p, targets: p.targets.map(t => ({ ...t, online: !t.online })) }));
+  check("⚠️ recon.peers replaced on the same recon: the rows come from the new array", rowsOf(V) === rowsOf(OLD));
+}
+
+// ── stableOrder (K7b, L3) ─────────────────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[10] stableOrder — each row's id once, the order the pre-K3 code kept, call by call");
+{
+  let bad = null, calls = 0, moved = 0;
+  const cmp = (a, b) => a.k - b.k;                                // ties on purpose: stability decides them
+  for (let r = 0; r < 200 && !bad; r++) {
+    let items = [], next = 0;
+    for (let i = Math.floor(rnd() * 30); i > 0; i--) items.push({ id: "r" + next++, k: Math.floor(rnd() * 5) });
+    const key = "k7b|" + r;
+    for (let c = 0; c < 12 && !bad; c++) {
+      const a = OLD.stableOrder(key, items.slice(), x => x.id, cmp).map(x => x.id).join(",");
+      const b = V.stableOrder(key, items.slice(), x => x.id, cmp).map(x => x.id).join(",");
+      calls++;
+      if (a !== b) bad = { round: r, call: c, old: a, new: b };
+      if (a !== items.slice().sort(cmp).map(x => x.id).join(",")) moved++;   // the freeze held a row off its live slot
+      items = items.filter(() => rnd() > 0.15).map(x => rnd() < 0.3 ? { ...x, k: Math.floor(rnd() * 5) } : x);
+      for (let i = Math.floor(rnd() * 4); i > 0; i--) items.push({ id: "r" + next++, k: Math.floor(rnd() * 5) });
+      if (rnd() < 0.4) items.reverse();
+    }
+  }
+  check("stableOrder equals the pre-K3 code over 200 sequences of 12 calls (added, removed, re-keyed, shuffled rows)", !bad, bad);
+  check("…and the freeze mattered (rows held off their live slot)", moved > calls / 4, { calls, moved });
 }
 
 if (PLANT) done(true, PLANT);

@@ -2985,7 +2985,12 @@ STATE_FUTURE = {}     # {"file": …, "found": N, "known": N} when state came fr
 
 
 def roster_load(path):
-    r = load_critical(path, {})
+    return _roster_norm(path, load_critical(path, {}))
+
+
+def _roster_norm(path, r):
+    """users.json as parsed → the roster every reader sees (a non-dict reads empty; a newer schema is noted once). Shared by
+    roster_load and roster_view's read without recovery (the traffic ledger's), so a view has one shape whoever built it."""
     if not isinstance(r, dict):
         r = {}
     _v = r.get("version")
@@ -3050,16 +3055,27 @@ def _roster_guard_check():
         os._exit(70)
 
 
-def roster_view(path):
+def roster_view(path, repair=True):
     """(roster, its mark) — users.json parsed ONCE per change and shared by every READER (1.8.12 Scale P2): each sync and each
     /api/state build parsed the whole file (51 ms at 10,000 users). Keyed by the path and roster_mark(), taken BEFORE the
-    read, so a save racing it moves the mark and the next call reads again. Read-only: see _RosterView."""
+    read, so a save racing it moves the mark and the next call reads again. Read-only: see _RosterView.
+    `repair=False` — the traffic ledger, on a sync thread OUTSIDE _api_lock (1.8.12 Scale K7b L1: it parsed the file itself
+    after every save, a second ~170 ms on the sync that met the save): read as load_json reads, never roster_load's recovery
+    write; a file that is not a dict publishes nothing and gives (None, mark) — the next repairing reader (a sync's apply,
+    under the lock) recovers it."""
     c, m = _ROSTER_VIEW[0], roster_mark(path)
     if c is None or m is None or c[:2] != (path, m):
         with _ROSTER_VIEW_LOCK:
             c, m = _ROSTER_VIEW[0], roster_mark(path)
             if c is None or m is None or c[:2] != (path, m):
-                v = _RosterView(roster_load(path))
+                if repair:
+                    r = roster_load(path)
+                else:
+                    r = load_json(path, None)
+                    if not isinstance(r, dict):
+                        return None, m
+                    r = _roster_norm(path, r)
+                v = _RosterView(r)
                 if _ROSTER_GUARD:
                     v.digest = _roster_digest(v)
                 c = (path, m, v)
@@ -24902,9 +24918,10 @@ class TrafficLedger:
 
     def _rebuild(self, mark, now):
         """The (node, iface, credential) → pid map from the roster's targets, and the slot diff. Runs only when the roster
-        changed. Read with load_json, never roster_load — that one repairs a corrupt primary by writing, and this runs on
-        a sync thread outside _api_lock."""
-        r = load_json(self.roster_path, None)
+        changed. Read from the shared view without recovery (repair=False), never roster_load's way — that one repairs a
+        corrupt primary by writing, and this runs on a sync thread outside _api_lock. It runs before the sync's apply, so
+        after a save the apply finds the view this read published: one parse a save, not two (1.8.12 Scale K7b L1)."""
+        r = roster_view(self.roster_path, repair=False)[0]
         if not isinstance(r, dict) or not isinstance(r.get("peers"), dict):
             return                                             # unreadable right now: keep the old map, try at the next sync
         claims, deploys, owners, titles = {}, set(), {}, {}

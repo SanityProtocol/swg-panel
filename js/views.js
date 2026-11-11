@@ -204,13 +204,12 @@ export function stableOrder(freezeKey, items, idOf, cmp) {
   const frozen = _orderFreeze[freezeKey];
   if (!frozen) { const s = items.slice().sort(cmp); _orderFreeze[freezeKey] = s.map(idOf); return s; }
   const pos = new Map(frozen.map((id, i) => [id, i]));
-  const s = items.slice().sort((a, b) => {
-    const ai = pos.has(idOf(a)) ? pos.get(idOf(a)) : Infinity;   // known rows keep their frozen slot
-    const bi = pos.has(idOf(b)) ? pos.get(idOf(b)) : Infinity;   // new rows sort live, after the known ones
-    return ai !== bi ? ai - bi : cmp(a, b);
-  });
-  if (items.length !== frozen.length || items.some(it => !pos.has(idOf(it)))) _orderFreeze[freezeKey] = s.map(idOf);
-  return s;
+  // Each row's id and frozen slot once, not four idOf calls a compare (1.8.12 Scale K7b L3: ~150 ms a poll on Peers at
+  // 10,000 devices, 4× CPU throttle). Known rows keep their frozen slot; new rows sort live, after the known ones.
+  const rs = items.map(it => { const id = idOf(it); return { it, id, at: pos.has(id) ? pos.get(id) : Infinity }; });
+  rs.sort((a, b) => a.at !== b.at ? a.at - b.at : cmp(a.it, b.it));
+  if (items.length !== frozen.length || rs.some(r => r.at === Infinity)) _orderFreeze[freezeKey] = rs.map(r => r.id);
+  return rs.map(r => r.it);
 }
 export function sortPeerRows(rows, sort, dir, freeze) {
   const key = PEER_SORT[sort] || PEER_SORT.status;
@@ -907,11 +906,29 @@ export function orphCount(nodeId, iface) {
   return (Store.recon.orphans || []).filter(o => o.node === nodeId && (iface == null || o.iface === iface)).length;
 }
 
+// Per node, the peers with an online target there, in recon order — one pass per recon.peers ARRAY (1.8.12 Scale K7b L2):
+// every online tag on screen walked the whole fleet twice, once a node (~50–70 ms a poll at 10,000 devices, 4× throttle).
+// Keyed on the array, not the recon: a gate replaces recon.peers on the same recon object.
+const _onlineAt = new WeakMap();
+function onlineAt(nodeId) {
+  const peers = Store.recon.peers || [];
+  let idx = _onlineAt.get(peers);
+  if (!idx) {
+    idx = new Map();
+    for (const p of peers) for (const t of p.targets) if (t.online) {
+      const a = idx.get(t.node);
+      if (!a) idx.set(t.node, [p]);
+      else if (a[a.length - 1] !== p) a.push(p);           // once a peer, however many of its targets are online there
+    }
+    _onlineAt.set(peers, idx);
+  }
+  return idx.get(nodeId) || [];
+}
+
 export function onlineUserRows(nodeId) {
   const m = {};
-  (Store.recon.peers || []).forEach(p => {
-    const isOn = nodeId ? p.targets.some(t => t.node === nodeId && t.online) : p.online;
-    if (!isOn) return;
+  (nodeId ? onlineAt(nodeId) : (Store.recon.peers || [])).forEach(p => {
+    if (!nodeId && !p.online) return;                       // a node's bucket holds only peers online there
     const id = p.unassigned ? "_un" : ("u" + p.user_id);
     if (!m[id]) m[id] = { name: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")), count: 0, unassigned: !!p.unassigned, lastAge: null, uid: p.user_id || null };
     m[id].count++;
@@ -928,7 +945,7 @@ export function onlineUserCount(rows) { return (rows || []).reduce((a, r) => a +
 // online PEERS on an interface (or the whole node when iface == null, or the whole fleet when nodeId == null)
 export function onlinePeerRows(nodeId, iface) {
   const onT = (t) => (nodeId == null || t.node === nodeId) && (iface == null || t.iface === iface) && t.online;
-  return (Store.recon.peers || []).filter(p => p.targets.some(onT))
+  return (nodeId == null ? (Store.recon.peers || []) : onlineAt(nodeId)).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
       return { title: p.title || p.name || T("(peer)"), user: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")),
                ip: t.ip || "", iface: t.iface, unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })

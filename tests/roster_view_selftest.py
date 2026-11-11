@@ -21,6 +21,10 @@ a write there would reach every node's next sync, and a peer dropped from a desi
       (scale-k2 F10)
   [7] whole sync replies: the pre-K2 handler and this one, in process, on the same state and snapshots (one with a T-18
       import, for the copy-on-write wiring) — byte for byte
+  [8] the traffic ledger reads the view (K7b L1): after a save, its ingest and the sync's own read parse users.json ONCE
+      together and its map holds the save; on a corrupt file it writes nothing (no recovery outside _api_lock) and keeps its
+      map, and once a repairing read has recovered the file the next ingest maps it; a non-dict read without repair is
+      never published
 
 Run: python3 tests/roster_view_selftest.py      (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -38,9 +42,9 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "view-nomark":    ("    if c is None or m is None or c[:2] != (path, m):\n        with _ROSTER_VIEW_LOCK:",
                        "    if c is None or m is None:\n        with _ROSTER_VIEW_LOCK:"),
     "view-markafter": ("            c, m = _ROSTER_VIEW[0], roster_mark(path)\n            if c is None or m is None or c[:2] != (path, m):\n"
-                       "                v = _RosterView(roster_load(path))",
+                       "                if repair:\n                    r = roster_load(path)",
                        "            c, m = _ROSTER_VIEW[0], roster_mark(path)\n            if c is None or m is None or c[:2] != (path, m):\n"
-                       "                v = _RosterView(roster_load(path)); m = roster_mark(path)"),
+                       "                if repair:\n                    r = roster_load(path); m = roster_mark(path)"),
     "own-noswap":     ("    return roster_load(path) if isinstance(roster, _RosterView) else roster", "    return roster"),
     "own-t18":        ('                    roster = roster_own(Handler.deps["roster_path"], roster)   # (P2: never the shared view)\n'
                        '                    _pp = peer_set(', '                    _pp = peer_set('),
@@ -61,6 +65,10 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
                        "            _roster_guard_check()\n", ""),
     "reader-writes":  ("        u = users.get(p.get(\"user_id\")) or {}\n        # BLOCKED access",
                        "        u = users.setdefault(p.get(\"user_id\") or \"-\", {})\n        # BLOCKED access"),
+    "ledger-parse":   ("        r = roster_view(self.roster_path, repair=False)[0]", "        r = load_json(self.roster_path, None)"),
+    "ledger-repair":  ("        r = roster_view(self.roster_path, repair=False)[0]", "        r = roster_view(self.roster_path)[0]"),
+    "peek-publish":   ("                    if not isinstance(r, dict):\n                        return None, m\n                    r = _roster_norm(path, r)",
+                       "                    r = _roster_norm(path, r)"),
     "state-load":     ("        _roster = _rview[0]\n", "        _roster = roster_load(roster_path)\n"),
 }
 
@@ -438,6 +446,49 @@ def run_checks(src, old_src, which="all", rounds=200):
         finally:
             time.time = real_time
         ok(not diff and n >= 6, "[7] %d sync replies over 6 fleets (the last imports): byte for byte (%s)" % (n, diff[:3]))
+
+        print("[8] the traffic ledger reads the shared view")
+        lp = os.path.join(tmp, "ledger", "users.json")
+        os.makedirs(os.path.dirname(lp))
+        P.roster_save(lp, {"version": 1, "users": {"u1": {"id": "u1"}}, "peers": {"p1": {
+            "id": "p1", "user_id": "u1", "pubkey": key(1), "psk": "", "targets": [{"node": "n1", "iface": "wg0", "ip": "", "type": "wg"}]}}})
+        L = P.TrafficLedger()
+        L.start({"roster_path": lp, "panel_settings": {}}, now=NOW, writer=False)
+        snap = {"interfaces": {"wg0": {"peers": [{"public_key": key(1), "rx_bytes": 10, "tx_bytes": 10}]}}}
+        L.ingest("n1", snap, now=NOW, mono=0.0)
+        cp = P.roster_load(lp)
+        cp["peers"]["p9"] = {"id": "p9", "user_id": "u1", "pubkey": key(9), "psk": "",
+                             "targets": [{"node": "n1", "iface": "wg0", "ip": "", "type": "wg"}]}
+        P.roster_save(lp, cp)
+        reads, real_lj, real_lc = [], P.load_json, P.load_critical
+        P.load_json = lambda p_, d_: (reads.append(p_), real_lj(p_, d_))[1]
+        P.load_critical = lambda p_, d_, valid=None: (reads.append(p_), real_lc(p_, d_, valid))[1]
+        try:
+            L.ingest("n1", snap, now=NOW + 5, mono=5.0)          # a sync's history phase: the ledger, first
+            view, _vm = P.roster_view(lp)                         # then its apply
+        finally:
+            P.load_json, P.load_critical = real_lj, real_lc
+        ok(reads.count(lp) == 1 and ("n1", "wg0", key(9)) in L.map and "p9" in view["peers"],
+           "[8] after a save the ledger and the sync parse users.json once together, and the map holds the save (%d reads)"
+           % reads.count(lp))
+        good_map = dict(L.map)
+        with open(lp, "w") as f:                                  # corrupt in place (a backup of the save exists)
+            f.write('{"version": 1, "peers": {')
+        st0, b0 = os.stat(lp), open(lp, "rb").read()
+        L.ingest("n1", snap, now=NOW + 10, mono=10.0)
+        st1 = os.stat(lp)
+        ok(open(lp, "rb").read() == b0 and (st1.st_ino, st1.st_mtime_ns) == (st0.st_ino, st0.st_mtime_ns) and L.map == good_map
+           and L.mark != P.roster_mark(lp),
+           "[8] a corrupt users.json: the ledger writes nothing and keeps its map")
+        P.roster_view(lp)                                         # the apply's read, under the lock: recovers the file
+        L.ingest("n1", snap, now=NOW + 15, mono=15.0)
+        ok(json.loads(open(lp).read())["peers"].get("p9") is not None and L.mark == P.roster_mark(lp)
+           and ("n1", "wg0", key(9)) in L.map, "[8] once a repairing read recovered it, the next ingest maps the recovered roster")
+        with open(lp, "w") as f:
+            f.write("[1, 2]")
+        got, gm = P.roster_view(lp, repair=False)
+        ok(got is None and gm == P.roster_mark(lp) and P._ROSTER_VIEW[0][:2] != (lp, gm),
+           "[8] a non-dict read without repair publishes nothing")
     except Caught:
         pass
     finally:
