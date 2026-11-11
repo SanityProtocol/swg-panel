@@ -390,7 +390,7 @@ N._ensure_smart_xtstring = lambda host_entries, *a, **k: (_seen.setdefault("xt",
 for stub in ("_smart_geo_refresh", "_smart_load_cidrs", "_panel_list_refresh", "_ensure_doh_block", "_ensure_mech_block",
              "_ensure_p2p", "_ensure_sni_router", "reconcile_catk_chain", "_dnsmasq_refill", "_ensure_smart_dnsmasq"):
     setattr(N, stub, lambda *a, **k: None)
-N._smart_domain_refresh = lambda cats, res: ({}, {})
+N._smart_domain_refresh = lambda cats, res, **kw: ({}, {})
 N._ksni_src_ok = lambda: True
 N.run = lambda args, **kw: CP()
 for ents, want in (([E("custom_b", "block"), E("custom_d", "direct"), X("custom_x"), E("all", "direct")], True),

@@ -2600,6 +2600,8 @@ SNI_MAP_PATH = "/var/lib/swg-noded/sni-map.json"   # domain→category map swg-n
 SNI_PATTERNS_PATH = "/var/lib/swg-noded/sni-patterns.json"   # the panel's pattern buckets for swg-sni, {kind:{cat:[operand]}} — its OWN file
 SNI_BLOCKS_PATH = "/var/lib/swg-noded/sni-blocks.json"       # per-source verdicts for swg-sni (D1) — absent when no Block exists
 SNI_SETS_PATH = "/var/lib/swg-noded/sni-sets.json"           # {category: when its learned set was created} — see _CATL_GEN
+SNI_FILES_KEY = "~files"        # the map's key for lists swg-sni reads from their files (K9) — MUST match swg-sni's FILES_KEY
+SNI_FILE_MIN = 1 << 20          # a pulled list this big or bigger goes to swg-sni by path (see _Pulled)
 # WHEN EACH LEARNED SET WAS MADE, so swg-sni can forget what it wrote into one that no longer exists. swg-sni keeps a
 # "written" cache per (address, category) and writes an address again only once that entry is half a learn-TTL old. A
 # category whose rule is turned off loses its `catl_` set (the reaper), and when the rule comes back the set is recreated
@@ -6972,7 +6974,7 @@ def _zone_label_ok(d):
     return bool(_ZLABEL_RE.match(d)) and d not in _RESERVED_ZONE
 
 
-_DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list): reuse the parsed list while the .doms file is unchanged
+_DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list, zones) — or, for a list read by file (K9), (sig, None, zones, has names)
 _DOMTIER_CACHE = {}   # {"v": (input-signature, fully-enriched {cat:[domain]})}: skip the union+sort when inputs are unchanged
 _DNSMASQ_BUILD = {"n": 0}   # cycles since the domain tier went active — drives the periodic self-heal rebuild
 
@@ -7051,10 +7053,58 @@ def _forcedns_admit(cats, res):
     return admitted
 
 
-def _smart_domain_refresh(cats, res):
+class _Pulled:
+    """A big pulled list under Hybrid SNI, held as its FILE rather than its names (docs/SCALE-PLAN.md K9). A 1.2 M-name
+    block list cost this process ~260 MB held as a list (peak ~600 with its rebuild) and swg-sni ~330 MB more as a dict;
+    swg-sni now answers from the file itself (FILES_KEY), so nothing here keeps the names. Made only for a file with names
+    whose order and lines _doms_file_ok checked, and FRESH on every enrichment, never cached: _never_block_adjust writes
+    `inline` and `cut` on it. Iterating it yields what the list would have held — the panel's own names for the category,
+    then the file's `_DOM_RE` names not under `cut` — streamed, so a reader that walks names (the shadows, Never-block)
+    gets every one and holds none."""
+    __slots__ = ("path", "inline", "cut")
+
+    def __init__(self, path, inline=(), cut=()):
+        self.path, self.inline, self.cut = path, list(inline), set(cut)
+
+    def __iter__(self):
+        yield from self.inline
+        with open(self.path, "rb") as f:
+            for raw in f:
+                d = raw.strip().decode("ascii", "replace")
+                if _DOM_RE.match(d) and not (self.cut and _nb_under(d, self.cut)):
+                    yield d
+
+
+def _doms_file_ok(path):
+    """(has names, zones) when the file can be read by swg-sni's binary search — every line in byte order, ASCII, no
+    surrounding whitespace or `\r`, each dotted line a `_DOM_RE` name and each dotless one a zone-shaped label — else None
+    (then the list is parsed and goes inline, as before). One streaming pass that keeps only the zones, as the parse does."""
+    zones, has, prev = [], False, b""
+    with open(path, "rb") as f:
+        for raw in f:
+            ln = raw[:-1] if raw.endswith(b"\n") else raw
+            if ln < prev or not ln.isascii() or ln != ln.strip():
+                return None
+            prev = ln
+            d = ln.decode()
+            if "." in d:
+                if not _DOM_RE.match(d):
+                    return None
+                has = True
+            elif _ZLABEL_RE.match(d):
+                if _zone_label_ok(d):
+                    zones.append(d)
+            else:
+                return None
+    return has, zones
+
+
+def _smart_domain_refresh(cats, res, files=False):
     """Return ({cat: domain-list}, {cat: zone-label-list}) parsed from each cat's panel-pulled <cat>.doms cache.
     A cat with no pulled file (a custom_<hash> rule, whose domains come inline from the panel) is skipped.
     Cheap: the parsed split is memoized per file signature, so an unchanged .doms is never re-read.
+    `files` (Hybrid SNI only): a file of SNI_FILE_MIN or more that _doms_file_ok passes comes back as a `_Pulled` — its
+    names never read into memory; the signature carries the mode, so an engine switch re-reads.
 
     TWO buckets, because the engines downstream are not interchangeable — see _zone_label_ok above. Dotted
     names go to `domains`, which every engine reads; bare labels are ZONES and go where the panel's own
@@ -7078,10 +7128,20 @@ def _smart_domain_refresh(cats, res):
             except OSError:
                 continue                                       # no cache yet → nothing to return for this cat
             sig = (int(st.st_mtime), st.st_size)
+            byfile = files and st.st_size >= SNI_FILE_MIN
+            if byfile:
+                sig += ("file",)
             cached = _DOM_CACHE.get(cat)
             if cached and cached[0] == sig:                    # file unchanged → reuse the parsed split (skip the big read+regex)
                 doms, zones = cached[1], cached[2]
+                if doms is None:                               # read by file: a fresh _Pulled each time (see the class)
+                    doms = [_Pulled(path)] if cached[3] else []
+            elif byfile and (chk := _doms_file_ok(path)) is not None:
+                _DOM_CACHE[cat] = (sig, None, chk[1], chk[0])
+                doms, zones = ([_Pulled(path)] if chk[0] else []), chk[1]
             else:
+                if byfile:
+                    log(LOG_WARNING, "sni: %s.doms is not in byte order or not clean — its names are held in memory", cat)
                 doms, zones = [], []
                 for _raw in open(path).read().splitlines():
                     _d = _raw.strip()
@@ -7091,7 +7151,7 @@ def _smart_domain_refresh(cats, res):
                         zones.append(_d)
                 _DOM_CACHE[cat] = (sig, doms, zones)
             if doms:
-                out[cat] = doms
+                out[cat] = doms[0] if isinstance(doms[0], _Pulled) else doms
             if zones:
                 zout[cat] = zones
         except Exception as e:
@@ -7630,6 +7690,13 @@ def _never_block_adjust(domains, pats, allow, engine):
     hit = {}                                                   # candidate → {category listing it}, after the cut
     for c in list(domains):
         lst = domains[c] or []
+        if str(c).startswith(_NB_UNION) and isinstance(lst, _Pulled):   # read by file (K9): its inline part is cut here, the
+            lst.inline = [d for d in lst.inline if not _nb_under(d, allow)]   # file's by swg-sni through `cut`
+            lst.cut = set(allow)
+            for d in lst:                                      # streamed, the cut applied — what the list's `keep` holds
+                if d in cand:
+                    hit.setdefault(d, set()).add(c)
+            continue
         if str(c).startswith(_NB_UNION):
             keep = []
             for d in lst:
@@ -7697,6 +7764,9 @@ def _never_block_adjust(domains, pats, allow, engine):
         for c in (ladder(a) or {NEVER_BLOCK_CAT}):
             add.setdefault(c, []).append(a)
     for c, names in add.items():
+        if isinstance(domains.get(c), _Pulled):
+            domains[c].inline = domains[c].inline + names      # a _Pulled is this pass's own (fresh, never cached)
+            continue
         domains[c] = list(domains.get(c) or []) + names        # a copy: never append to a list some cache holds
 
 
@@ -13062,7 +13132,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _host_cats = [c for c in _host_cats if c in _admit]
     else:
         _SMART_MODE.pop("fill_gate", None)                     # gate only governs the dnsmasq fill; clear when not in it
-    _fetched, _fetched_z = _smart_domain_refresh(_host_cats, res)
+    _fetched, _fetched_z = _smart_domain_refresh(_host_cats, res, files=(host_engine == "sni_user"))
     # The panel's pattern buckets, TRANSPOSED to {kind: {cat: [operand]}} — the shape both readers want, and
     # the shape that makes a new kind a change in one engine rather than a new channel. The panel ships them
     # cat-first because that is how it walks rules and how `domains`/`cidrs` are keyed; the transpose is here,
@@ -13097,7 +13167,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         domains = _dt[1]                                       # inputs unchanged → reuse enriched dict (skip union+sort)
     else:
         for cat, fl in _fetched.items():
-            domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
+            if isinstance(fl, _Pulled):                        # read by file (Hybrid SNI, K9): the panel's own names beside it
+                fl.inline = sorted(set(domains.get(cat) or []))
+                domains[cat] = fl
+            else:
+                domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
         _never_block_adjust(domains, _pats, _nb_allow, host_engine)   # before the cache: an unchanged pass reuses the adjusted map
         _DOMTIER_CACHE["v"] = (dom_sig, domains)
     # A more specific name must not take a host away from rules for other devices (_smart_shadows): the shadow sets are
@@ -14083,7 +14157,17 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
         _SNI_MAP_LAST["n"] += 1                                # …and once in 60 passes (~5 min) regardless: an edit the stat
         if not (map_key is not None and _st and _SNI_MAP_LAST["key"] == map_key and _SNI_MAP_LAST["stat"] == _st   # cannot see heals
                 and _SNI_MAP_LAST["n"] % 60):
-            newmap = json.dumps({c: sorted(d) for c, d in (domains or {}).items() if d}, sort_keys=True)
+            _inl, _fls = {}, {}
+            for c, d in (domains or {}).items():
+                if isinstance(d, _Pulled):                     # swg-sni reads it from its file (K9): the path, never the names
+                    _fls[c] = dict({"path": d.path}, **({"cut": sorted(d.cut)} if d.cut else {}))
+                    if d.inline:
+                        _inl[c] = sorted(d.inline)
+                elif d:
+                    _inl[c] = sorted(d)
+            if _fls:
+                _inl[SNI_FILES_KEY] = _fls
+            newmap = json.dumps(_inl, sort_keys=True)
             old = ""
             with contextlib.suppress(OSError):
                 with open(SNI_MAP_PATH) as f: old = f.read()

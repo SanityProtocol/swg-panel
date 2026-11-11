@@ -43,7 +43,9 @@ Env:  SWG_SNI_QUEUE, SWG_SNI_MAP, SWG_SNI_TABLE (flags win).
 import argparse
 import atexit
 import collections
+import contextlib
 import json
+import mmap
 import os
 import re
 import socket
@@ -456,6 +458,50 @@ if set(SNI_TIER1) & set(SNI_TIER2):
                      % ", ".join(sorted(set(SNI_TIER1) & set(SNI_TIER2))))
 
 
+# A BIG PULLED LIST IS READ FROM ITS FILE, NOT HELD (docs/SCALE-PLAN.md K9). swg-noded names it in the map under this key
+# — {category: {"path": …, "cut": [name, …]}} — instead of writing its names: a 1.2 M-name block list cost this process
+# ~330 MB as a dict (peak ~940 at the daily refresh) and costs nothing as a mapped file, clean page cache. The file is the
+# panel's own sorted output (swg-noded checks the order before naming it), so rung 1 asks it by binary search. `~` cannot
+# begin a category (swg-noded NEVER_BLOCK_CAT); an older build skips the key's dict value in _index and refuses fewer names.
+FILES_KEY = "~files"                                   # MUST match swg-noded's SNI_FILES_KEY
+# The expression swg-noded keeps a pulled name by (_DOM_RE). A file line answers only a suffix that passes it, so whatever
+# version of the file is mapped, a line swg-noded would have dropped never answers.
+_DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+
+def _in_sorted(mm, key):
+    """True when the byte-sorted, newline-separated `mm` holds the line `key` exactly. A binary search over bytes: the line
+    around the midpoint, compared whole. An unsorted file can only make it MISS (a hit is an exact line), never answer
+    wrongly."""
+    lo, hi = 0, len(mm)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        ls = mm.rfind(b"\n", lo, mid) + 1 or lo
+        le = mm.find(b"\n", ls)
+        if le < 0:
+            le = len(mm)
+        line = mm[ls:le]
+        if line == key:
+            return True
+        if line < key:
+            lo = le + 1
+        else:
+            hi = ls
+    return False
+
+
+def _nb_under(d, names):
+    """True when `d` or one of its parents is in `names` — swg-noded's _nb_under: a file's `cut` drops exactly the lines the
+    Never-block list cut out of an inline union."""
+    while True:
+        if d in names:
+            return True
+        i = d.find(".")
+        if i < 0:
+            return False
+        d = d[i + 1:]
+
+
 def _mtime(path):
     """A file's mtime, or None when it is not there. `None` is a VALUE here, not an error: an absent input
     file is the empty set, and it has to compare equal to itself so a missing file is not re-read for ever."""
@@ -591,6 +637,7 @@ class Classifier:
     bsrc, barr, bsel, nolearn, bmark, blocks_path, blocks_mtime = (), (), {}, frozenset(), 0, None, None
     quiet = frozenset()                                # categories learned WITHOUT the first-hit reset (see _reload)
     sets_path, sets_mtime, set_gen = None, None, {}
+    file_want, files = (), ()                          # no list read by file (K9) — the same reason as above
 
     def __init__(self, map_path, table, reset_mark=0, learn_ttl=3600):
         self.map_path = map_path
@@ -601,6 +648,8 @@ class Classifier:
         self.map_mtime = None                          # each file is stat-gated and PARSED on its own — see _reload
         self.pat_mtime = None
         self.dom2cat = {}                              # exact domain → [category, ...] — see _reload
+        self.file_want = []                            # [(category, path, cut)] named by the map's FILES_KEY
+        self.files = []                                # [(category, path, cut, mmap or None, stamp)] — see _remap
         self.pats = _empty_pats()                      # kind → Tier-1 {operand: [cat]} / Tier-2 [(operand, [cat])]
         # Derived from --map, like blk_path below: swg-noded writes both into the same directory, so a node
         # whose swg-noded and swg-sni are updated a moment apart never has to agree about a new flag.
@@ -635,6 +684,7 @@ class Classifier:
         mt = _mtime(self.map_path)
         if mt is None:                                 # no map ⇒ this node routes nothing through us at all
             self.dom2cat = {}; self.pats = _empty_pats()
+            self.file_want = []; self._remap()
             self.map_mtime = self.pat_mtime = self.blocks_mtime = None
             self.bsrc, self.barr, self.bsel, self.nolearn, self.bmark = [], [], {}, frozenset(), 0
             self.quiet = frozenset()
@@ -643,10 +693,21 @@ class Classifier:
             self.map_mtime = mt
             try:
                 with open(self.map_path) as f:
-                    self.dom2cat = _index(json.load(f))   # {category: [domain, ...]}
-                say(LOG_INFO, "swg-sni: loaded %d domains", len(self.dom2cat))
+                    data = json.load(f)                # {category: [domain, ...], FILES_KEY: {category: {path, cut}}}
+                fl = data.pop(FILES_KEY, None) if isinstance(data, dict) else None
+                self.dom2cat = _index(data)
+                want = []
+                for c, e in sorted((fl if isinstance(fl, dict) else {}).items()):
+                    try:
+                        want.append((str(c), str(e["path"]), frozenset(str(x) for x in e.get("cut") or ())))
+                    except Exception:
+                        continue                       # a malformed entry: that list refuses nothing (fewer, never more)
+                self.file_want = want
+                say(LOG_INFO, "swg-sni: loaded %d domains%s", len(self.dom2cat),
+                    " + %d list%s by file" % (len(want), "" if len(want) == 1 else "s") if want else "")
             except Exception as e:
                 say(LOG_ERR, "swg-sni: map reload failed: %s", e)
+        self._remap()                                  # the files on their own stamps: a list refresh changes the file, not the map
         pmt = _mtime(self.pat_path)
         if pmt != self.pat_mtime:
             self.pat_mtime = pmt
@@ -699,6 +760,53 @@ class Classifier:
                     self.seen = {k: v for k, v in self.seen.items() if k[1] not in gone}
                 say(LOG_INFO, "swg-sni: learned sets recreated for %s — their addresses are written again", ", ".join(sorted(gone)))
             self.set_gen = gen
+
+    def _remap(self):
+        """Map each list the map names by file, re-mapping one whose (inode, mtime, size) moved. swg-noded's pull writes a
+        temp file and renames it, so a mapping stays valid until it is dropped here. Missing, empty or unreadable → no names
+        for it (fewer refused, never more); its stamp is kept so it is not retried every tick. Runs on the packet thread,
+        as _match does, so a re-map never races a lookup. ⚠️ A file truncated IN PLACE under the mapping raises SIGBUS:
+        nothing of swg's writes one so (docs/SCALE-PLAN.md K9 Round 3); a hand edit that does kills this process, the
+        queue's bypass fails open and swg-noded relaunches it."""
+        old = {e[1]: e for e in self.files}
+        out = []
+        for cat, path, cut in self.file_want:
+            try:
+                st = os.stat(path); stamp = (st.st_ino, st.st_mtime_ns, st.st_size)
+            except OSError:
+                stamp = None
+            e = old.get(path)
+            if e and e[4] == stamp:
+                out.append((cat, path, cut, e[3], stamp))
+                continue
+            mm = None
+            if stamp and stamp[2]:
+                try:
+                    with open(path, "rb") as f:
+                        st = os.fstat(f.fileno()); stamp = (st.st_ino, st.st_mtime_ns, st.st_size)
+                        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) if st.st_size else None
+                except (OSError, ValueError) as ex:
+                    say(LOG_ERR, "swg-sni: %s: cannot map %s: %s", cat, path, ex)
+            if mm is not None:
+                say(LOG_INFO, "swg-sni: %s read from %s (%d bytes)", cat, path, stamp[2])
+            out.append((cat, path, cut, mm, stamp))
+        keep = {id(e[3]) for e in out}
+        for e in self.files:
+            if e[3] is not None and id(e[3]) not in keep:
+                with contextlib.suppress(Exception):
+                    e[3].close()
+        self.files = out
+
+    def _file_cats(self, s):
+        """The categories whose mapped list holds the suffix `s` exactly — not under that list's `cut` — as a set."""
+        got = set()
+        if not _DOM_RE.match(s):
+            return got
+        b = s.encode("ascii")
+        for cat, _p, cut, mm, _st in self.files:
+            if mm is not None and cat not in got and not (cut and _nb_under(s, cut)) and _in_sorted(mm, b):
+                got.add(cat)
+        return got
 
     def _match(self, host):
         """Which categories claim this hostname — EVERY one the winning operand belongs to (usually one), or
@@ -765,7 +873,12 @@ class Classifier:
         name = host.strip(".")                         # `yandex.ru.` is a valid FQDN — a trailing dot is not a label
         labels = name.split(".")
         for k in range(len(labels) - 1):               # need ≥2 labels; try progressively broader suffixes
-            cats = self.dom2cat.get(".".join(labels[k:]))
+            s = ".".join(labels[k:])
+            cats = self.dom2cat.get(s)
+            if self.files:                             # a list read from its file answers the same rung (K9): the union of
+                got = self._file_cats(s)               # every category holding the suffix, sorted as the map's keys are
+                if got:
+                    return tuple(sorted(got.union(cats or ())))
             if cats:
                 return cats
         # ── Tier 1: label-anchored, O(1) whatever the operand count ──

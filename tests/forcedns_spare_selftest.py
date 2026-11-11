@@ -247,7 +247,7 @@ N._ensure_smart_dnsmasq = lambda domains, smart_e, res, unchanged=False, zones=N
 N._dnsmasq_refill = lambda res: None
 N._smart_geo_refresh = lambda *a, **k: None
 N._smart_load_cidrs = lambda *a, **k: None
-N._smart_domain_refresh = lambda cats, res: ({}, {})
+N._smart_domain_refresh = lambda cats, res, **kw: ({}, {})
 N._panel_list_refresh = lambda *a, **k: None
 N._ensure_doh_block = lambda *a, **k: None
 N._ensure_mech_block = lambda *a, **k: None

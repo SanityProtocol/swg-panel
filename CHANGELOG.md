@@ -56,6 +56,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   reported again — 2,500 peers were one stretch of minutes on a small server, so the panel showed the node offline and
   sent its offline webhook. It now applies peers for at most 10 seconds at a time, reports, and goes straight on; the
   peers arrive just as fast.
+- **A big block list no longer eats a Hybrid SNI node's memory.** A pulled hostname list of a megabyte or more is no
+  longer copied into the node's memory twice: the SNI reader looks names up in the list file itself. A node with a
+  1.2-million-name block list held about 580 MB for it, nearly twice that for a moment at the daily list refresh; the
+  names now stay in the file. What is routed or blocked does not change. Force-DNS and Kernel SNI
+  still load the names, as they need them.
 - **A full WDTT or csqtt server says so instead of failing in silence.** Each one has a fixed number of addresses for its
   users — 249 on WDTT and csqtt 2.1, 248 on csqtt 2.5, the size of its subnet on qWDTT — and the user past it used to be
   created as usual and then could not connect. The interface list in New peer and Peer targets now shows each server's
