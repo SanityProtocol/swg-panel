@@ -24923,8 +24923,10 @@ class TrafficLedger:
         corrupt primary by writing, and this runs on a sync thread outside _api_lock. It runs before the sync's apply, so
         after a save the apply finds the view this read published: one parse a save, not two (1.8.12 Scale K7b L1)."""
         r = roster_view(self.roster_path, repair=False)[0]
-        if r is None:                                          # not a dict right now (it did not parse): keep the old map, try
-            return                                             # at the next sync. A view is normalised — users and peers dicts
+        if r is None:                                          # no roster read right now (missing, did not parse, or JSON that is
+            return                                             # not a dict): keep the old map, try at the next sync — the apply
+        #                                                        publishes what roster_load makes of it (roster_view's docstring).
+        #                                                        A view is normalised: users and peers are dicts.
         claims, deploys, owners, titles = {}, set(), {}, {}
         for pid, p in r["peers"].items():
             if not isinstance(p, dict):
