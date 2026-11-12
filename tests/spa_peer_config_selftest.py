@@ -63,10 +63,11 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-freshkeep the new key is never kept                                                  → RED [11]
        --perturb-addwhy   a refused deployment is a bare "(add)"                                      → RED [11]
        --perturb-freshref a retry mints a second key                                                  → RED [11]
-       --perturb-nofile   the Deploy's QR configs are never filed in the session                      → RED [13]
+       --perturb-nofile   a minted key's QR configs are never filed in the session (also on "changed") → RED [13]
        --perturb-stalepeer Targets opens on the caller's copy of the peer, not the live one            → RED [13]
        --perturb-lostkeep a key a lost Deploy took is dropped when the next one is refused "changed"   → RED [13]
-       --perturb-changedfile …and its QR config is not kept in the session (store_configs off loses it) → RED [13]
+       --perturb-srcfile  a keyed peer's new deployment gets no session QR config (srcConf path)       → RED [13]
+       --perturb-warnlive the "no fresh QR" warning reads the live key, not the sheet's (F59)           → RED [11]
        --perturb-sendkey  the sheet sends no key unless it minted one (another tab's rotation unseen)  → RED [13]
        --perturb-novault  the unlock is offered with no vault                                         → RED [12]
        --perturb-need     the unlock is hidden with store_configs off                                 → RED [12]
@@ -113,13 +114,14 @@ PERTURBS = {
     "freshref": [("js/sheets-crud.js", "    const fresh = freshKey.current || (", "    const fresh = (")],
     "firstkey": [("swg-panel-server", '            fields.update(pubkey=nk, psk=psk or gen_psk())', '            return 400, {"ok": False, "error": "planted", "code": "bad_request"}')],
     "keyguard": [("swg-panel-server", '    if nk and p.get("pubkey") and nk != p["pubkey"]:', "    if False:")],
-    "nofile": [("js/sheets-crud.js", '        if (holds.has(k + " " + sent[k])) (Store.sessionConfigs', "        if (false) (Store.sessionConfigs")],
+    "nofile": [("js/sheets-crud.js", "        if (m && !isSelfContainedKind(targetType(t))) (Store.sessionConfigs", "        if (false) (Store.sessionConfigs")],
+    "srcfile": [("js/sheets-crud.js", "    } else if (r.ok && held && confs[held]) Object.assign(", "    } else if (false) Object.assign(")],
+    "warnlive": [("js/sheets-crud.js", "&& !srcConf && !freshKey.current && peer.pubkey ? html`", "&& !srcConf && !freshKey.current && (Store.peer(peer.id) || peer).pubkey ? html`")],
     "stalepeer": [("js/sheets-crud.js", "  peer = Store.peer(peer.id) || peer;\n  const child", "  const child")],
     "lostkeep": [("js/sheets-crud.js", '    const held = (r.data && r.data.pubkey) || "";', '    const held = (r.ok && r.data && r.data.pubkey) || "";')],
-    "freshwarn": [("js/sheets-crud.js", "&& !srcConf && !freshKey.current && (Store.peer(peer.id) || peer).pubkey ? html`", "&& !srcConf && !freshKey.current ? html`")],
+    "freshwarn": [("js/sheets-crud.js", "&& !srcConf && !freshKey.current && peer.pubkey ? html`", "&& !srcConf && !freshKey.current ? html`")],
     "freshkeep": [("js/sheets-crud.js", "    if (keep && !fresh.kept) {", "    if (false) {")],
     "sendkey": [("js/sheets-crud.js", "...(sheetKey ? { pubkey: sheetKey } : {})", "...(fresh && keyedAdd ? { pubkey: sheetKey } : {})")],
-    "changedfile": [("js/sheets-crud.js", "    if (r.ok || keep) {", "    if (r.ok) {")],
     "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
     "keyless": [("js/sheets-crud.js", "${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf && !freshKey.current &&", "${added.length && !srcConf && !freshKey.current &&")],
     "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
@@ -670,6 +672,11 @@ try:
         addresses_in()
         must(call("POST", "/api/peers/add-target", {"peer_id": pid, "target": {"node": NID, "iface": "awg1", "ip": "10.8.0.97"},   # another tab, first
                                                     "pubkey": base64.b64encode(os.urandom(32)).decode()}), "the other tab's add")
+        ev("store", "await S.Store.poll(); return 1;")
+        has = ev("store", "return !!(S.Store.peer(%s) || {}).pubkey;" % json.dumps(pid))
+        tick("awg2"); tick("awg2"); addresses_in()           # a render after the poll (the sheet re-reads the store on its own renders)
+        check("[11] the store holds the other tab's key now", bool(has), has)
+        check("[11] the poll brings the other tab's key: still no \"no fresh QR\" warning — this sheet mints its own (F59)", not tab.ev(WARN), tab.ev(WARN))
         tab.ev(ACT + ".click()")
         m = formmsg_done()
         check("[11] another tab deployed it first (with a key): refused, and the sheet says to reopen", "changed since you opened it" in m and "reopen" in m, m)
@@ -743,14 +750,30 @@ try:
         formmsg_done()
         tab.ev("window.fetch = window.__fetch; 1")
         k1 = roster()[pid].get("pubkey")
-        tick("awg1")                             # the draft changes before the second Deploy
+        tick("awg2"); tick("awg1")               # the draft changes before the second Deploy: awg1 instead of awg2
         addresses_in()
         tab.ev(ACT + ".click()")
         until("(() => { const m = document.querySelector('.overlay.show .formmsg'); return !!m && m.textContent.includes('reopen'); })()", 20, "the changed answer")
         check("[13] a lost Deploy took the key, the next (changed draft) is refused \"changed\": the key it took is still kept",
               bool(k1) and roster()[pid].get("pubkey") == k1 and stored(pid), [k1, roster()[pid].get("pubkey")])
         sc = ev("store", "return (S.Store.sessionConfigs[%s] || {})[%s] || '';" % (json.dumps(k1 or ""), json.dumps(NID + "|awg2")))
-        check("[13] …and its QR config for what the panel holds, in the session (any store_configs)", "PrivateKey" in (sc or ""), sc)
+        ip2 = next((t["ip"] for t in roster()[pid]["targets"] if t["iface"] == "awg2"), "?")
+        check("[13] …and its QR config for what the panel holds (awg2, which this draft no longer has), in the session (F49, F56)",
+              "PrivateKey" in (sc or "") and ("Address = %s/32" % ip2) in (sc or ""), sc)
+        close_all()
+        uid, pid = new_peer("srckey", ["awg1"])
+        k0 = roster()[pid].get("pubkey")
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))   # first, a Deploy on its own key
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg2")
+        addresses_in()
+        watch_toasts()
+        tab.ev(ACT + ".click()")
+        until("window.__toasts.some(t => t.startsWith('Peer targets updated'))", 10, "the keyed peer's Deploy")
+        ipw = next((t["ip"] for t in roster()[pid]["targets"] if t["iface"] == "awg2"), "?")
+        sc = ev("store", "return (S.Store.sessionConfigs[%s] || {})[%s] || '';" % (json.dumps(k0 or ""), json.dumps(NID + "|awg2")))
+        check("[13] a keyed peer's new deployment: its QR config in the session, from the key it has, at the stored address",
+              ("Address = %s/32" % ipw) in (sc or "") and "PrivateKey" in (sc or ""), sc)
         close_all()
         uid, pid = new_peer("rotated", ["awg1"])
         reload()

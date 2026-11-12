@@ -29919,7 +29919,7 @@ def api(method, path, qs, body, deps):
         if (set(have) == ({key(x) for x in lists["base"]} - gone) | {key(x) for x in lists["add"]}
                 and all(same(have[key(x)], x) and clean_overrides(have[key(x)].get("overrides")) == clean_overrides(x.get("overrides"))
                         for x in lists["add"])
-                and all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["address"])   # never a keyless one
+                and all(key(x) in have and ipof(x) and ipof(have[key(x)]) == ipof(x) for x in lists["address"])   # never a keyless one (stored with none)
                 and (not nk or p.get("pubkey") == nk)):
             return 200, {"ok": True, "data": p}
         # Base: the interfaces the sheet opened with. Another tab added or removed one, or a reopen read the store from before

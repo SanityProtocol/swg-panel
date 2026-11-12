@@ -21,7 +21,7 @@ stored peer and writes all of it or nothing. The panel's own api(), in process, 
   [11] a network refusal names the keyed add that takes it, not a keyless one beside it (F10)
   [12] removals retire every key in one nodes.json write (F12)
   [13] the verify round and F42: the sheet's key after another tab rotated it → key_changed; an address edit on a keyless
-      deployment is never "done" (F51); a key with a newline, a non-string peer_id → 400 (F52, F54); an add at another
+      deployment is never "done", an empty address included (F51, F58); a key with a newline, a non-string peer_id → 400 (F52, F54); an add at another
       peer's IPv6 address written differently → exists (F53)
 
 Run: python3 tests/peer_targets_move_selftest.py   (0 = pass)
@@ -39,6 +39,7 @@ Run: python3 tests/peer_targets_move_selftest.py   (0 = pass)
      keyguard    a key other than the peer's is taken                 [10]
      netkeyless  a network refusal names a keyless add                 [11]
      donekeyless an address edit on a keyless deployment counts as done [13]
+     doneempty   an empty-address edit on a keyless deployment is done [13]
      keynl       a key with a trailing newline passes                 [13]
      addrtext    addresses compared as text                           [13]
 """
@@ -57,8 +58,9 @@ PLANTS = {
     "addrtaken": ('        if addr_taken(roster, pid, target["node"], target["iface"], _ip):\n', '        if False:\n'),
     "keytype": ('        if not (_str(nk, True) and _str(psk, True)) or any(k and not _WG_KEY_RE.fullmatch(k) for k in (nk, psk)):\n', '        if False:\n'),
     "keyguard": ('    if nk and p.get("pubkey") and nk != p["pubkey"]:\n', '    if False:\n'),
-    "donekeyless": ('                and all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["address"])',
+    "donekeyless": ('                and all(key(x) in have and ipof(x) and ipof(have[key(x)]) == ipof(x) for x in lists["address"])',
                     '                and all(key(x) in have and same(have[key(x)], x) for x in lists["address"])'),
+    "doneempty": ('and all(key(x) in have and ipof(x) and ipof(have[key(x)])', 'and all(key(x) in have and ipof(have[key(x)])'),
     "keynl": ("any(k and not _WG_KEY_RE.fullmatch(k) for k in (nk, psk))", "any(k and not _WG_KEY_RE.match(k) for k in (nk, psk))"),
     "addrtext": ('                if a == ip or (":" in a and norm(a) == want):', '                if a == ip:'),
     "netkeyless": ('next(t["iface"] for t in adds if t["node"] == nid and not is_keyless_kind(t["type"]))', 'next(t["iface"] for t in adds if t["node"] == nid)'),
@@ -316,6 +318,8 @@ try:
     f = b.get("fails") or [{}]
     check("[13] an address edit on a keyless deployment: refused, not \"done\"", c == 409 and b.get("code") == "refused"
           and f[0].get("op") == "address" and files() == before, (c, b))
+    c, b = door({"peer_id": "w", "base": [N("wdtt7")], "address": [{"node": "n1", "iface": "wdtt7", "ip": ""}]})
+    check("[13] …an empty address on it: refused too, not \"done\" (F58)", c == 409 and b.get("code") == "refused" and files() == before, (c, b))
     for what, extra in (("a pubkey with a trailing newline", {"peer_id": "q", "base": [N("wdtt7")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.8"}],
                                                               "pubkey": K("Q") + "\n"}),
                         ("a list peer_id", {"peer_id": ["a"], "base": [N("awg1")]})):

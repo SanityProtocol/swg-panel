@@ -566,8 +566,7 @@ export function AddTargetSheet({ peer, back, child }) {
       const target = { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" };
       const ov = o ? configOverrides(o, info) : {};
       if (Object.keys(ov).length) target.overrides = ov;
-      if (fresh) file(fresh.keys.pub, t, clientConf(peer, target, info, fresh.keys.priv, fresh.psk));   // the QR the kept key rebuilds later
-      else if (srcConf) { const s = parseFullConf(srcConf);
+      if (srcConf && !fresh) { const s = parseFullConf(srcConf);   // a minted key's configs are built from the panel's answer, below
         file(peer.pubkey, t, buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: o ? String(o.dns).split(",").map(x => x.trim()).filter(Boolean) : s.dns, mtu: o ? (String(o.mtu).trim() || 1280) : s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: o ? (String(o.allowed).trim() || "0.0.0.0/0, ::/0") : s.allowed, keepalive: o ? String(o.keepalive).trim() : s.keepalive })); }
       return target;
     });
@@ -587,18 +586,18 @@ export function AddTargetSheet({ peer, back, child }) {
     // The key is decided by the answer, the QR by the address: a config is filed, and a minted key kept, exactly when the peer the
     // panel answered with holds that key (k6c F18 — a lost answer's retry is answered with the peer as it stands). "changed" carries
     // the peer too: an earlier Deploy whose answer was lost may have taken this sheet's key before the draft changed, and that key is
-    // kept even though this Deploy is refused — the sheet that reopens has no other copy of it: its QR configs for what the peer holds
-    // go into the session (whatever store_configs is, F49), and the key is published once, to the user the answer names (F50).
+    // kept even though this Deploy is refused — the sheet that reopens has no other copy of it. Its QR configs go into the session
+    // (whatever store_configs is, F49), built from the peer the panel answered with, not this draft: the earlier lost Deploy may have
+    // written another one (F56). The key is published to the user the answer names (F50), once it has been (F57: a failed publish is
+    // tried again by the next Deploy; a skipped unlock is queued by subPublishOrPrompt itself).
     const held = (r.data && r.data.pubkey) || "";
     const keep = fresh && held === fresh.keys.pub;
-    if (r.ok || keep) {
-      const holds = new Set(((r.data && r.data.targets) || []).map(t => tkey(t.node, t.iface) + " " + String(t.ip || "").split("/")[0]));
-      const sent = {}; add.concat(address).forEach(t => { sent[tkey(t.node, t.iface)] = t.ip; });
-      for (const [k, conf] of Object.entries(confs[held] || {}))
-        if (holds.has(k + " " + sent[k])) (Store.sessionConfigs[held] = Store.sessionConfigs[held] || {})[k] = conf;
-    }
+    if (keep) {
+      for (const t of r.data.targets || []) { const m = Store.ifaceMeta(t.node, t.iface);
+        if (m && !isSelfContainedKind(targetType(t))) (Store.sessionConfigs[held] = Store.sessionConfigs[held] || {})[tkey(t.node, t.iface)] = clientConf(r.data, t, m, fresh.keys.priv, fresh.psk); }
+    } else if (r.ok && held && confs[held]) Object.assign(Store.sessionConfigs[held] = Store.sessionConfigs[held] || {}, confs[held]);
     // kept as a new peer's key is. A locked vault asks first, in a sheet over this one that closes before this one does.
-    if (keep && !fresh.kept) { fresh.kept = true; await subPublishOrPrompt(r.data.user_id || null, peer.id, fresh.keys.priv, fresh.psk); }
+    if (keep && !fresh.kept) { if (!(await subPublishOrPrompt(r.data.user_id || null, peer.id, fresh.keys.priv, fresh.psk))) fresh.kept = true; }
     if (!r.ok) {
       // refused → nothing was written, every reason said; changed / key_changed → the panel's "reopen it"; a lost answer → the
       // error, and Deploy again is safe (the panel answers a change already made as done).
@@ -656,7 +655,7 @@ export function AddTargetSheet({ peer, back, child }) {
               with no config, and rotating breaks a working client in every one but the last. Saving loses nothing (the peer's
               blob covers a new target), and the next step is the QR card's: it tells a locked vault, a failed read and a
               sealed config apart. A keyless target has no key or QR to miss, and a peer with no key yet gets one on Save. */""}
-        ${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf && !freshKey.current && (Store.peer(peer.id) || peer).pubkey ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
+        ${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf && !freshKey.current && peer.pubkey ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
             ? T("This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated.")
             : T("store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.")}</span></div>` : null}
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>
