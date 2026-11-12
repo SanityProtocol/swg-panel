@@ -92,6 +92,18 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **SNI mode says so when another program holds its packet queue.** The SNI classifier never checked that the kernel gave
+  it the queue: with another program on queue 0 (an intrusion-prevention tool, a leftover reader) it saw no traffic,
+  routed and blocked nothing by name, and the node still reported it running. It now exits with a log line naming the
+  cause, the node card shows the SNI parser down, and the node tries again once a minute.
+- **One-click address changes on a Docker panel no longer fall back to a 10-second delay for good.** A request the panel
+  was still writing made the host's helper start back to back until systemd disabled its watch until the next reboot. The
+  helper now waits for the write in the same run.
+- **Top destinations under Kernel SNI.** A category's rate was counted twice when its address was both in its IP list and
+  learned by name (a 210 KB/s download read about 430), a provider category showed as two rows, one with a raw id, and
+  the rate refreshed every 5–10 seconds instead of every 5. Each category is one row with its name now; where both
+  engines see it, the larger of the two counts. Provider categories also read by name in the ranged views.
+- **A deleted node's live chart file is removed** with it; the panel's next start removes those left by earlier removals.
 - **The Protection card no longer shows a burst of torrents every time a node restarts.** A node's first report after a
   restart arrives before it has read its torrent guard, and the panel took the missing count for zero: the next report's
   lifetime count then read as one 5-second burst, hundreds of thousands of torrents an hour on the card at every restart

@@ -81,8 +81,18 @@ export const capFirst = s => (typeof s === "string" && s && !/[A-Z]/.test(s)) ? 
 // A block-list category (the blku_* union or a blk:* source) — rides the smart chain for its drop verdict but is
 // NOT a routing destination, so it's excluded from the destination stats (Top destinations / flow map).
 export const isBlockCat = c => /^blku?[_:]/i.test(String(c));
+// The node keys a destination counter by the SANITISED id (`mc:cloudflare` → `mc_cloudflare`, as nft names it; the rings
+// too), which loses the provider form the label is made from. Mapped back through the in-use catalog cats /api/state already
+// carries (smart_caps' keys), once per that object (K8 D3).
+let _rawOf = { caps: null, map: null };
+const rawCatOf = c => {
+  const caps = Store.smartCaps || {};
+  if (_rawOf.caps !== caps) _rawOf = { caps, map: Object.fromEntries(Object.keys(caps).filter(isProviderCat).map(k => [k.toLowerCase().replace(/[^a-z0-9]/g, "_"), k])) };
+  return _rawOf.map[c] || c;
+};
 export function catLabelOf(c) {   // built-in label · custom-list title (keyed by the list's id AND name, so whichever the node emits resolves to the human title) · inline custom → "Custom" · else the id
   if (c === "uncat") return T("Uncategorised");
+  c = rawCatOf(c);
   const lt = {};
   (Store.panelSettings?.custom_lists || []).forEach(l => { if (l && l.title) { if (l.id) lt[l.id] = l.title; if (l.name) lt[l.name] = l.title; } });
   if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c]));   // provider list → humanised (country names etc.)

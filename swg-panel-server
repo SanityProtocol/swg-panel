@@ -6754,6 +6754,7 @@ def node_remove(deps, nid):
         roster_save(deps["roster_path"], roster)
     (deps.get("node_snaps") or {}).pop(nid, None)
     (deps.get("node_seen") or {}).pop(nid, None)
+    (deps.get("live_samples") or {}).pop(nid, None)
     with contextlib.suppress(Exception):  # its dial-in exits' router keys go with it, and the key they were sealed under
         drop_sub_blobs(deps, sub_exit_bucket(nid))
         _esc = load_sub_escrow(deps)
@@ -6765,6 +6766,8 @@ def node_remove(deps, nid):
             os.unlink(os.path.join(sd, sf))
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(sd, f"health-{nid}.rrd"))
+        with contextlib.suppress(OSError):    # the LIVE chart's buffer, mirrored each sync (K8 D4: it outlived every removal)
+            os.unlink(os.path.join(sd, f"live-{nid}.json"))
     ev_append(deps["roster_path"], "node", nid, "Removed node", nm)
     # ⚠️ SAY WHOSE ROUTING THIS CHANGED. Rewriting an interface's egress is a traffic change on a node the
     # operator did not touch, so it is reported per node rather than folded into the removal line — the one
@@ -39019,6 +39022,15 @@ def main():
         _lb = load_json(os.path.join(Handler.deps["stats_dir"], f"live-{_nid}.json"), None)
         if isinstance(_lb, list) and _lb:
             Handler.deps["live_samples"][_nid] = [tuple(s) for s in _lb if isinstance(s, (list, tuple)) and len(s) >= 6][-LIVE_MAX:]
+    # …and a LIVE buffer whose node is gone goes (K8 D4): node_remove unlinks it now, but older builds never did, and a sync
+    # in flight at the removal can write it once more. Only against a store that read non-empty — an unreadable nodes.json
+    # must not take every node's LIVE chart.
+    if Handler.deps["nodes"] and Handler.deps.get("stats_dir"):
+        with contextlib.suppress(OSError):
+            for _fn in os.listdir(Handler.deps["stats_dir"]):
+                if _fn.startswith("live-") and _fn.endswith(".json") and _fn[5:-5] not in Handler.deps["nodes"]:
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(Handler.deps["stats_dir"], _fn))
     # restore the offender first/last-seen map so ranged "who" bubbles survive a restart/update (mirrors offenders.json)
     _ofm = load_json(os.path.join(Handler.deps["stats_dir"], "offenders.json"), None)
     # The mirrors are 0640 (they carry PSKs and who did what); one an older build wrote 0644 is rewritten only when its

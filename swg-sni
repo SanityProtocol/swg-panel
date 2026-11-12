@@ -46,6 +46,7 @@ import argparse
 import atexit
 import collections
 import contextlib
+import errno
 import json
 import mmap
 import os
@@ -65,6 +66,8 @@ NFQNL_MSG_PACKET  = (NFNL_SUBSYS_QUEUE << 8) | 0    # kernel → us
 NFQNL_MSG_VERDICT = (NFNL_SUBSYS_QUEUE << 8) | 1    # us → kernel
 NFQNL_MSG_CONFIG  = (NFNL_SUBSYS_QUEUE << 8) | 2
 NLM_F_REQUEST = 0x01
+NLM_F_ACK = 0x04
+NLMSG_ERROR = 2                                     # the kernel's answer: struct nlmsgerr {int error; nlmsghdr}
 # config command / attribute ids
 NFQA_CFG_CMD, NFQA_CFG_PARAMS, NFQA_CFG_MASK, NFQA_CFG_FLAGS = 1, 2, 4, 5
 NFQNL_CFG_CMD_BIND = 1
@@ -85,11 +88,11 @@ def _nla(attr_type, payload):
     return struct.pack("=HH", ln, attr_type) + payload + b"\x00" * ((4 - ln % 4) % 4)
 
 
-def _msg(msg_type, res_id, *attrs):
+def _msg(msg_type, res_id, *attrs, flags=NLM_F_REQUEST, seq=0):
     """Wrap a nfnetlink message: nlmsghdr + nfgenmsg(family=AF_UNSPEC, ver=0, res_id BE) + attrs."""
     body = struct.pack("=BB", socket.AF_UNSPEC, 0) + struct.pack(">H", res_id) + b"".join(attrs)
     total = 16 + len(body)
-    hdr = struct.pack("=IHHII", total, msg_type, NLM_F_REQUEST, 0, 0)
+    hdr = struct.pack("=IHHII", total, msg_type, flags, seq, 0)
     return hdr + body
 
 
@@ -257,6 +260,10 @@ def _say_excepthook(et, ev, tb):
 sys.excepthook = _say_excepthook
 threading.excepthook = lambda a: _say_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
 
+class QueueRefused(Exception):
+    """The kernel refused the queue's BIND; args[0] is the errno (EPERM: another socket holds the queue)."""
+
+
 class NFQueue:
     """Minimal NFQUEUE reader over raw netlink. Bind a queue, receive full packets, ACCEPT them."""
 
@@ -265,9 +272,18 @@ class NFQueue:
         self.s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_NETFILTER)
         self.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
         self.s.bind((0, 0))
-        # bind the queue to this socket
+        # bind the queue to this socket — and READ THE ANSWER. Sent blind, a queue another process holds (an IPS, a stray
+        # reader) answered EPERM into a stream loop() skips: this logged "bound", saw no packet, and swg-noded reported the
+        # classifier alive (CPU re-qualification 1.8.9, register N1). Refused → the caller exits, so the unit and
+        # `sni_alive` tell the truth.
         cmd = struct.pack("=BB", NFQNL_CFG_CMD_BIND, 0) + struct.pack(">H", socket.AF_UNSPEC)
-        self.s.send(_msg(NFQNL_MSG_CONFIG, qnum, _nla(NFQA_CFG_CMD, cmd)))
+        self.s.send(_msg(NFQNL_MSG_CONFIG, qnum, _nla(NFQA_CFG_CMD, cmd), flags=NLM_F_REQUEST | NLM_F_ACK, seq=1))
+        err = self._answer(1)
+        if err:
+            self.s.close()
+            raise QueueRefused(err)
+        if err is None:
+            say(LOG_WARNING, "swg-sni: no answer to queue %s's bind in 2 s — carrying on", qnum)
         # copy the whole packet up to us
         params = struct.pack(">I", 0xFFFF) + struct.pack("=B", NFQNL_COPY_PACKET)
         # fail-open at the config layer too (belt-and-suspenders with the rule's bypass flag)
@@ -276,6 +292,36 @@ class NFQueue:
                          _nla(NFQA_CFG_PARAMS, params),
                          _nla(NFQA_CFG_MASK, struct.pack(">I", NFQA_CFG_F_FAIL_OPEN)),
                          _nla(NFQA_CFG_FLAGS, flags)))
+
+    def _answer(self, seq, wait=2.0):
+        """The kernel's answer to message `seq`: 0 done, an errno refused, None nothing within `wait` s (the kernel answers
+        while the send runs, so this guards a hang; it is not a path). A packet queued before the answer — the queue exists
+        from the moment the kernel made it, copying metadata until PARAMS — is ACCEPTed at once, unclassified: never held."""
+        end = time.monotonic() + wait
+        try:
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    return None
+                self.s.settimeout(left)
+                try:
+                    buf = self.s.recv(0x10000)
+                except socket.timeout:
+                    return None
+                off = 0
+                while off + 16 <= len(buf):
+                    mlen, mtype, _fl, mseq = struct.unpack("=IHHI", buf[off:off + 12])
+                    if mlen < 16 or off + mlen > len(buf):
+                        break
+                    if mtype == NLMSG_ERROR and mseq == seq and mlen >= 20:
+                        return -struct.unpack("=i", buf[off + 16:off + 20])[0]
+                    if mtype == NFQNL_MSG_PACKET:
+                        pid = self._parse_packet(buf[off + 16:off + mlen])[0]
+                        if pid is not None:
+                            self._accept(pid)
+                    off += (mlen + 3) & ~3
+        finally:
+            self.s.settimeout(None)
 
     def _accept(self, packet_id, mark=None):
         """ACCEPT the packet; if `mark` is truthy, also stamp the skb mark (NFQA_MARK) so a standing nft rule can
@@ -1235,7 +1281,12 @@ def main():
     ap.add_argument("--learn-ttl", type=int, default=int(os.environ.get("SWG_SNI_LEARN_TTL", "3600")))
     a = ap.parse_args()
     cls = Classifier(a.map, a.table, a.reset_mark, a.learn_ttl)
-    q = NFQueue(a.queue)
+    try:
+        q = NFQueue(a.queue)
+    except QueueRefused as e:
+        say(LOG_ERR, "swg-sni: queue %s refused (%s): another process holds it — not classifying", a.queue,
+            errno.errorcode.get(e.args[0], e.args[0]))
+        sys.exit(3)
     say(LOG_INFO, "swg-sni: bound queue %s, table %s, map %s, reset-mark %#x, learn-ttl %ss", a.queue, a.table, a.map,
         a.reset_mark, a.learn_ttl)
     q.loop(cls.on_packet)

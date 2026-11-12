@@ -561,6 +561,26 @@ def main():
         _qst = os.stat(QUEUE)
     except OSError:
         return
+    # ⚠️ ONE WRITE, ONE START. A `.json.tmp` the panel is writing (or abandoned, < 60 s old) is kept by the sweep, and it kept
+    # the .path unit's DirectoryNotEmpty true: the path started this drainer back to back until systemd's start limit failed
+    # the path unit for good — the 10 s timer drained from then on (1.8.9 CPU re-qualification, LC-F2). So the wait is HERE:
+    # while only such files are left, look again every 0.2 s — the write lands as its `.json` (handled in this run) or the
+    # tmp ages past a minute (swept). A running oneshot is not started again by its path or its timer. Anything else left
+    # (a request that could not be removed) returns as before, never spins; 65 s bounds a tmp whose mtime is in the future.
+    until = time.monotonic() + 65
+    while True:
+        _drain(_qst)
+        try:
+            left = os.listdir(QUEUE)
+        except OSError:
+            return
+        if not left or time.monotonic() > until or not all(n.endswith(".json.tmp") for n in left):
+            return
+        time.sleep(0.2)
+
+
+def _drain(_qst):
+    """One pass over the queue: the sweep, then every request in queued order."""
     _sweep_queue()
     for name in sorted(os.listdir(QUEUE)):
         if not name.endswith(".json"):

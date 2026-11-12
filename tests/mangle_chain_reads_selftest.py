@@ -20,6 +20,10 @@ chain it is asked for; measured on swgt). A node without Kernel SNI has no SWG_C
       sample_catk's reset makes that read a baseline; after a restart there is no N before the first read, which makes it
       one as well, so the first read alone cannot tell whether the reset is there.
   [4] Neither ever spawns `iptables-save`.
+  [5] K8 D3: a category's rate is keyed as catcount keys it (`mc:x-y` → `mc_x_y`), so the snapshot meets one key a
+      category; a pass 4.98 s after the last read reads (a strict `< 5` on a float clock skipped it: 14 reads in 120 s, not
+      24), one 3.5 s after does not; build_snapshot takes the LARGER of the two engines' rates for a category both report
+      (an address in both sets is counted by both — the operator's choice, 2026-11-12), and adds one only Kernel SNI has.
 
 Run: python3 tests/mangle_chain_reads_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -33,6 +37,9 @@ Run: python3 tests/mangle_chain_reads_selftest.py   (0 = pass)
      spike        no baseline after a node without the chain gets one: Kernel SNI back in the same run reports what the
                   chain holds as one rate (caught by [3]'s last check; after a restart the gate's first N makes a baseline
                   by itself)
+     rawkey       sample_catk keys by the raw id again (two rows a category)                                  [5]
+     strict5      the cadence gate is a strict `< 5` again                                                     [5]
+     sum          build_snapshot sums the two engines' rates again                                             [5]
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, threading
 
@@ -58,6 +65,10 @@ PLANTS = {
                    '    if False:                                     # no Kernel-SNI category here'),
     "nooff": ('    _CATK["on"] = bool(want)                               # sample_catk reads the chain only while there is one\n',
               '    _CATK["on"] = _CATK["on"] or bool(want)\n'),
+    "rawkey": ('cum.setdefault(_smart_setname(m.group(2))[len("cat_"):], {"up": 0, "dn": 0})', 'cum.setdefault(m.group(2), {"up": 0, "dn": 0})'),
+    "strict5": ('(now - _CATK["t"]) < CATK_SAMPLE_EVERY_S - 1:', '(now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:'),
+    "sum": ('_b["up"] = max(_b.get("up", 0.0), _v["up"]); _b["dn"] = max(_b.get("dn", 0.0), _v["dn"])',
+            '_b["up"] = _b.get("up", 0.0) + _v["up"]; _b["dn"] = _b.get("dn", 0.0) + _v["dn"]'),
     "spike": ('        _CATK["cum"] = None; _CATK["rate"] = {}             # None: the first read once there is one is a baseline — the',
               '        _CATK["cum"] = {}; _CATK["rate"] = {}             # None: the first read once there is one is a baseline — the'),
     "blipclears": ('        return dict(_CATK["rate"])                          # a timeout / no iptables → leave last known',
@@ -210,6 +221,37 @@ NOW[0] += 5
 back = N.sample_catk()
 check("[3] …and Kernel SNI back in the same run starts with a baseline: what the chain holds is no rate", back == {},
       (back, N._CATK))
+
+# ── [5] K8 D3: one key, every pass, the larger ──────────────────────────────────────────────────────────────────────────
+print("\n[5] the key form, the cadence, the merge")
+def catk_raw(up):
+    return ('-N SWG_CATK\n'
+            '-A SWG_CATK -m set --match-set swgk_mc_x_y dst -m comment --comment "swg-catk-up:mc:x-y" -c 1 %d\n'
+            '-A SWG_CATK -m set --match-set swgk_mc_x_y src -m comment --comment "swg-catk-dn:mc:x-y" -c 0 0\n') % up
+N.reconcile_catk_chain(["mc:x-y"])
+REPLY["catk"] = (0, catk_raw(0))
+NOW[0] += 6
+N.sample_catk()
+REPLY["catk"] = (0, catk_raw(5000))
+NOW[0] += 5
+r5 = N.sample_catk()
+check("[5] a raw provider id is keyed as catcount keys it (mc:x-y → mc_x_y)", list(r5) == ["mc_x_y"] and r5["mc_x_y"]["up"] == 1000.0, r5)
+CALLS.clear()
+NOW[0] += 4.98
+N.sample_catk()
+check("[5] a pass 4.98 s after the last read reads the chain", len(CALLS) == 1, CALLS)
+CALLS.clear()
+NOW[0] += 3.5
+N.sample_catk()
+check("[5] …one 3.5 s after it does not", CALLS == [], CALLS)
+_a = SRC.index("    for _c, _v in sample_catk().items():")
+_merge = "\n".join(ln[4:] for ln in SRC[_a:].split("\n")[:3])
+snap = {"cat_rate": {"mc_x_y": {"up": 300.0, "dn": 900.0}, "yandex": {"up": 5.0, "dn": 7.0}}}
+exec(_merge, {"sample_catk": lambda: {"mc_x_y": {"up": 400.0, "dn": 200.0}, "custom_c0": {"up": 1.0, "dn": 2.0}}, "snap": snap})
+check("[5] build_snapshot: a category both engines report takes the larger of each direction, not the sum",
+      snap["cat_rate"]["mc_x_y"] == {"up": 400.0, "dn": 900.0}, snap)
+check("[5] …one only Kernel SNI reports is added, one only catcount has is kept",
+      snap["cat_rate"]["custom_c0"] == {"up": 1.0, "dn": 2.0} and snap["cat_rate"]["yandex"] == {"up": 5.0, "dn": 7.0}, snap)
 
 # ── [4] never a dump ──────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] never a dump of mangle")
