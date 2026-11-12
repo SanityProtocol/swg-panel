@@ -530,60 +530,67 @@ export function AddTargetSheet({ peer, back, child }) {
   const netsAdded = nets.length > 0 && added.some(needsIp);
   const netsGone = nets.length ? removed.filter(t => !isSelfContainedKind(targetType(t))) : [];
 
+  // a refusal as the operator reads it: which deployment, which change, and why
+  const failText = f => Store.nodeName(f.node) + "/" + T(f.op === "remove" ? "{v1} (remove)" : f.op === "address" ? "{v1} (address)" : "{v1} (add)", { v1: f.iface })
+    + ((f.refusals || []).length ? " — " + f.refusals.map(x => netWhy(x, Store.nodeName(x.node))).join(" ") : srvText(f) ? " — " + srvText(f) : "");
+  // ⚠️ ONE CALL, APPLIED WHOLE OR NOT AT ALL (1.8.12 Scale F28). Deploy was every add, then every address edit, then every removal,
+  // each its own write, so a refused add (a full turn server) still ran the removals and a move left the peer on neither — and every
+  // partial state after that was one the sheet could not see. /api/peers/targets checks all of it against the stored peer and
+  // writes all or nothing; a Deploy whose answer was lost is answered as done when sent again, and a sheet whose picture of the
+  // peer is stale (another tab, a reopen before the poll) is told to reopen. Nothing here guesses what the panel holds.
   const doSave = async () => {
     setBusy(true); setMsg({ k: "work", t: T("applying…") });
-    const fails = [];
     // A peer with no key yet (every deployment csqtt / WDTT) gets one with its first WireGuard deployment, minted here as a new
     // peer's is; its csqtt / WDTT links stay as they are. The live peer decides: this sheet's copy may predate that first key.
-    const fresh = freshKey.current || (!(Store.peer(peer.id) || peer).pubkey && added.some(c => !isSelfContainedKind(kindFor(c)))
-      ? { keys: await genKeys(), psk: genPSK() } : null);
+    // Kept across a retry, so a Deploy sent again never mints a second.
+    const keyedAdd = added.some(c => !isSelfContainedKind(kindFor(c)));
+    const fresh = freshKey.current || (!(Store.peer(peer.id) || peer).pubkey && keyedAdd ? { keys: await genKeys(), psk: genPSK() } : null);
     freshKey.current = fresh;
     const pk = fresh ? fresh.keys.pub : peer.pubkey;   // srcConf's own key otherwise: never one config filed under another key
-    let freshKept = false;
-    for (const t of added) {
+    const confs = {};                                  // {pubkey: {target: config}} — filed only once the panel holds that key
+    const file = (key, t, conf) => { (confs[key] = confs[key] || {})[tkey(t.node, t.iface)] = conf; };
+    const add = added.map(t => {
       const kind = kindFor(t);
-      if (isSelfContainedKind(kind)) {
-        // A keyless deployment brings no address and no client config; if this is the peer's first of that
-        // kind, the panel mints its access password server-side (mint_keyless_secrets).
-        const r = await api.peerAddTarget({ peer_id: peer.id, target: { node: t.node, iface: t.iface, ip: "", type: kind } });
-        // why it was refused (a full server: turn_full names it and the count) — "(add)" alone said nothing
-        if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + T("{v1} (add)", { v1: t.iface }) + (srvText(r) ? " — " + srvText(r) : ""));
-        continue;
-      }
+      // A keyless deployment brings no address and no client config; if this is the peer's first of that kind, the panel
+      // mints its access password server-side (mint_keyless_secrets).
+      if (isSelfContainedKind(kind)) return { node: t.node, iface: t.iface, ip: "", type: kind };
       const info = Store.ifaceMeta(t.node, t.iface);
       const ipClean = String(t.ip || "").split("/")[0];
       const o = t.opts || null;                  // settings the operator set behind this row's gear
-      let conf = null;
-      if (srcConf) { const s = parseFullConf(srcConf);
-        conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: o ? String(o.dns).split(",").map(x => x.trim()).filter(Boolean) : s.dns, mtu: o ? (String(o.mtu).trim() || 1280) : s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: o ? (String(o.allowed).trim() || "0.0.0.0/0, ::/0") : s.allowed, keepalive: o ? String(o.keepalive).trim() : s.keepalive }); }
       const target = { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" };
       const ov = o ? configOverrides(o, info) : {};
       if (Object.keys(ov).length) target.overrides = ov;
-      if (fresh) conf = clientConf(peer, target, info, fresh.keys.priv, fresh.psk);   // the QR the kept key rebuilds later
-      // Same key as the existing deployments → the peer's blob already covers it; no plaintext to the server.
-      const r = await api.peerAddTarget({ peer_id: peer.id, target, ...(fresh ? { pubkey: fresh.keys.pub, psk: fresh.psk } : {}) });
-      if (r.ok) { if (conf) (Store.sessionConfigs[pk] = Store.sessionConfigs[pk] || {})[tkey(t.node, t.iface)] = conf; if (fresh) freshKept = true; }
-      // a refused deployment says WHY — "(add)" alone left the operator guessing which of this device's networks was in the way
-      else fails.push(Store.nodeName(t.node) + "/" + T("{v1} (add)", { v1: t.iface })
-        + ((r.refusals || []).length ? " — " + r.refusals.map(x => netWhy(x, Store.nodeName(x.node))).join(" ") : srvText(r) ? " — " + srvText(r) : ""));
-    }
-    // kept as a new peer's key is. A locked vault asks first, in a sheet over this one that closes before this one does.
-    if (freshKept) await subPublishOrPrompt(peer.user_id || null, peer.id, fresh.keys.priv, fresh.psk);
-    for (const t of ipChanged) {
+      if (fresh) file(pk, t, clientConf(peer, target, info, fresh.keys.priv, fresh.psk));   // the QR the kept key rebuilds later
+      else if (srcConf) { const s = parseFullConf(srcConf);
+        file(pk, t, buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: o ? String(o.dns).split(",").map(x => x.trim()).filter(Boolean) : s.dns, mtu: o ? (String(o.mtu).trim() || 1280) : s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: o ? (String(o.allowed).trim() || "0.0.0.0/0, ::/0") : s.allowed, keepalive: o ? String(o.keepalive).trim() : s.keepalive })); }
+      return target;
+    });
+    const address = ipChanged.map(t => {
       const info = Store.ifaceMeta(t.node, t.iface);
       const ipClean = String(t.ip || "").split("/")[0];
-      const body = { peer_id: peer.id, node: t.node, iface: t.iface, ip: ipClean };
       // address lives in the roster (rendered live); rebuild the session config for the QR, but send no plaintext.
-      if (srcConf) { const s = parseFullConf(srcConf); const conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
-      const r = await api.peerUpdateTarget(body);
-      if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + T("{v1} (address)", { v1: t.iface }));
-    }
-    for (const t of removed) {
-      const r = await api.peerRemoveTarget({ peer_id: peer.id, node: t.node, iface: t.iface });
-      if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + T("{v1} (remove)", { v1: t.iface }));
-    }
+      if (srcConf) { const s = parseFullConf(srcConf); file(peer.pubkey, t, buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive })); }
+      return { node: t.node, iface: t.iface, ip: ipClean };
+    });
+    let r;
+    try {
+      r = await api.peerTargets({ peer_id: peer.id, base: initial.map(t => ({ node: t.node, iface: t.iface })), add, address,
+        remove: removed.map(t => ({ node: t.node, iface: t.iface })), ...(fresh && keyedAdd ? { pubkey: fresh.keys.pub, psk: fresh.psk } : {}) });
+    } catch (e) { r = { ok: false, error: (e && e.message) || "" }; }
     setBusy(false);
-    if (fails.length) { setMsg({ k: "err", t: T("Some changes failed: {v1}", { v1: fails.join(", ") })}); return false; }
+    if (!r || !r.ok) {
+      // refused → nothing was written, every reason said; changed / key_changed → the panel's "reopen it"; a lost answer → the
+      // error, and Deploy again is safe (the panel answers a change already made as done).
+      setMsg({ k: "err", t: r && r.code === "refused" ? T("Nothing was changed: {v1}", { v1: (r.fails || []).map(failText).join(", ") })
+        : T("Error: {v1}", { v1: srvText(r) || (r && r.code) || T("Failed") }) });
+      return false;
+    }
+    // The key is decided by the answer, the QR by the address: a config is filed, and a minted key kept, exactly when the peer the
+    // panel answered with holds that key (k6c F18 — a lost answer's retry is answered with the peer as it stands).
+    const held = (r.data && r.data.pubkey) || "";
+    for (const [key, byT] of Object.entries(confs)) if (key && key === held) Object.assign(Store.sessionConfigs[key] = Store.sessionConfigs[key] || {}, byT);
+    // kept as a new peer's key is. A locked vault asks first, in a sheet over this one that closes before this one does.
+    if (fresh && held === fresh.keys.pub) await subPublishOrPrompt(peer.user_id || null, peer.id, fresh.keys.priv, fresh.psk);
     toast(T("Peer targets updated."), "ok"); await Store.poll(); return true;
   };
   const save = () => {

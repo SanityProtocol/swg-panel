@@ -6100,7 +6100,7 @@ export const STR = {
   "{v1} (add)": "{v1} (доб.)",
   "{v1} (address)": "{v1} (адрес)",
   "{v1} (remove)": "{v1} (удаление)",
-  "Some changes failed: {v1}": "Часть изменений не прошла: {v1}",
+  "Nothing was changed: {v1}": "Ничего не изменено: {v1}",
   "Delete failed: {v1}": "Удалить не удалось: {v1}",
   "Remove the peer from {v1} — those tunnels drop immediately and the client can no longer connect through them.":
     "Убрать пира с {v1} — эти туннели сразу разорвутся, и клиент больше через них не подключится.",
@@ -6711,6 +6711,8 @@ export const STR = {
     "{v1} — самодостаточный turn-сервер: его пользователей добавляют из карточки пира, а не принятием ключа WireGuard",
   "this peer has another key now — reopen it":
     "у этого пира теперь другой ключ — откройте его заново",
+  "this peer changed since you opened it — reopen it":
+    "пир изменился, пока окно было открыто, — откройте его заново",
   "{v1} needs a client key — this peer has none":
     "{v1} нужен клиентский ключ, а у этого пира его нет",
   "{v1} assigns the client address on connect — it can't be set here":

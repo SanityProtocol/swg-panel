@@ -22,9 +22,9 @@ PERTURB = "--perturb" in sys.argv
 
 src = open(PANEL, encoding="utf-8").read()
 if PERTURB:
-    cut = "            if _took:\n                return 409,"
+    cut = '    return [{"prefix": x, "node": nid, "why": "takes", "by": opid}'   # network_takeover: every door's one check
     assert src.count(cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"
-    src = src.replace(cut, "            if False:\n                return 409,", 1)
+    src = src.replace(cut, '    return [] and [{"prefix": x, "node": nid, "why": "takes", "by": opid}', 1)
 path = os.path.join(tempfile.mkdtemp(), "swg-panel-server")
 open(path, "w", encoding="utf-8").write(src)
 loader = importlib.machinery.SourceFileLoader("swgpanel", path)

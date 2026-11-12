@@ -29,9 +29,12 @@ address is the read-back keyed by its password, which a Rotate blanks.
        the same key, the QR card says locked, and the unlock gives the new target its config
   [11] a peer with no key (csqtt only) adds WireGuard: no warning, and on Save it gets a key and a PSK, its csqtt password as it
        was; the key is kept encrypted, the QR is there at once and after a reload with the same key; a second key is refused.
-       A refused deployment says why, a retry after one sends the key it minted again, and a key another tab gave first is refused
-       with "reopen it"
+       A refused Deploy applies nothing and says why, a retry sends the key it minted again, and a sheet another tab overtook
+       (a key given first) is told to reopen
   [12] the unlock follows the vault, not the setting: no vault, none; store_configs off, a config kept from before still opens
+  [13] (run before [12], which turns store_configs off) Peer targets' Deploy is one call, whole or nothing (SCALE-PLAN "F28 —
+       design"): a move from awg1 onto a full turn server (qWDTT /30, pool 1) keeps awg1 and says why; a Deploy whose answer is
+       lost, sent again, is answered as done — one key, kept, its QR there
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
@@ -101,12 +104,12 @@ PERTURBS = {
     "gonecard": [("js/peer-ui.js", ': !Store.ifaceMeta(t.node, t.iface) ? T("The node no longer reports interface', ': false ? T("The node no longer reports interface')],
     "gonemiss": [("js/crypto.js", "  if (!Store.ifaceMeta(node, iface)) return Promise.resolve(null);\n  if (_configMissFresh(mk))", "  if (_configMissFresh(mk))")],
     "gonedeps": [("js/peer-ui.js", ", Store.configEpoch, !!Store.ifaceMeta(t.node, t.iface)]);", ", Store.configEpoch]);")],
-    "addwhy": [("js/sheets-crud.js", ': srvText(r) ? " — " + srvText(r) : ""));', ': ""));')],
+    "addwhy": [("js/sheets-crud.js", ': srvText(f) ? " — " + srvText(f) : "");', ': "");')],
     "freshref": [("js/sheets-crud.js", "    const fresh = freshKey.current || (", "    const fresh = (")],
     "firstkey": [("swg-panel-server", '            _key = {"pubkey": nk, "psk": body.get("psk") or gen_psk()}', '            return 400, {"ok": False, "error": "planted", "code": "bad_request"}')],
     "keyguard": [("swg-panel-server", 'if nk and p.get("pubkey") and nk != p["pubkey"]:', "if False:")],
     "freshwarn": [("js/sheets-crud.js", "&& !srcConf && (Store.peer(peer.id) || peer).pubkey ? html`", "&& !srcConf ? html`")],
-    "freshkeep": [("js/sheets-crud.js", "    if (freshKept) await subPublishOrPrompt(", "    if (false) await subPublishOrPrompt(")],
+    "freshkeep": [("js/sheets-crud.js", "    if (fresh && held === fresh.keys.pub) await subPublishOrPrompt(", "    if (false) await subPublishOrPrompt(")],
     "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
     "keyless": [("js/sheets-crud.js", "${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf ?", "${added.length && !srcConf ?")],
     "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
@@ -630,20 +633,23 @@ try:
         until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
         tick("awg1"); tick("awg2")
         addresses_in()
-        # the panel refuses awg2 once, after awg1 gave the peer its key
+        # the panel refuses awg2 once: the whole Deploy, as /api/peers/targets answers a refusal
         tab.ev("""(() => { const f = window.fetch; window.__fetch = f; let once = true;
-          window.fetch = (u, o, ...a) => { if (once && String(u.url || u).includes('/api/peers/add-target') && o && String(o.body).includes('"awg2"')) { once = false;
-            return Promise.resolve(new Response(JSON.stringify({ok: false, error: "planted refusal", code: "bad_request"}), {status: 400, headers: {"Content-Type": "application/json"}})); }
-            return f(u, o, ...a); }; })()""")
+          window.fetch = (u, o, ...a) => { if (once && String(u.url || u).includes('/api/peers/targets')) { once = false; window.__sent = JSON.parse(o.body);
+            return Promise.resolve(new Response(JSON.stringify({ok: false, error: "nothing was changed", code: "refused",
+              fails: [{node: %s, iface: "awg2", op: "add", code: "bad_request", error: "planted refusal"}]}), {status: 409, headers: {"Content-Type": "application/json"}})); }
+            return f(u, o, ...a); }; })()""" % json.dumps(NID))
         tab.ev(ACT + ".click()")
         m = formmsg_done()
         tab.ev("window.fetch = window.__fetch; 1")
-        k1 = roster()[pid].get("pubkey")
-        check("[11] a refused deployment says why", "planted refusal" in m, m)
+        k1 = (tab.ev("window.__sent") or {}).get("pubkey")
+        check("[11] a refused Deploy says nothing was changed, and why", "Nothing was changed" in m and "awg2 (add) — planted refusal" in m, m)
+        check("[11] …and the panel was never written", not roster()[pid].get("pubkey") and {t["iface"] for t in roster()[pid]["targets"]} == {"csqtt25"}, roster()[pid])
+        watch_toasts()
         tab.ev(ACT + ".click()")
-        formmsg_done()
+        until("window.__toasts.some(t => t.startsWith('Peer targets updated'))", 10, "the retry")
         p = roster()[pid]
-        check("[11] the retry sends the key it minted again: both deployments, one key", bool(k1) and p.get("pubkey") == k1 and {t["iface"] for t in p["targets"]} == {"csqtt25", "awg1", "awg2"}, p.get("targets"))
+        check("[11] the retry sends the key it minted again: both deployments, that key", bool(k1) and p.get("pubkey") == k1 and {t["iface"] for t in p["targets"]} == {"csqtt25", "awg1", "awg2"}, p.get("targets"))
         close_all()
         uid, pid = new_peer("keyless3", ["csqtt25"], kept=False)
         reload()
@@ -655,8 +661,53 @@ try:
                                                     "pubkey": base64.b64encode(os.urandom(32)).decode()}), "the other tab's add")
         tab.ev(ACT + ".click()")
         m = formmsg_done()
-        check("[11] a key another tab gave it first: refused, and the sheet says to reopen", "another key now" in m, m)
+        check("[11] another tab deployed it first (with a key): refused, and the sheet says to reopen", "changed since you opened it" in m and "reopen" in m, m)
+        check("[11] …nothing of this sheet's applied", {t["iface"] for t in roster()[pid]["targets"]} == {"csqtt25", "awg1"}, roster()[pid]["targets"])
         close_all()
+
+    print("\n[13] Peer targets' Deploy is one call, whole or nothing")
+    with guard("[13]"):
+        must(call("POST", "/api/wdtt/set", {"node": NID, "iface": "wdtt1", "listen": "0.0.0.0:53479", "wg_addr": "10.10.0.1/30", "fork": "qwdtt"}),
+             "wdtt1 down to a pool of 1 (held by [2]'s peer)")
+        uid, pid = new_peer("mover", ["awg1"])
+        reload()
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg1"); tick("wdtt1")
+        addresses_in(False)
+        tab.ev(ACT + ".click()")                 # a removal: the confirm first
+        until("[...%s.querySelectorAll('button')].some(b => b.textContent.trim() === 'Save changes')" % SHEET, 10, "the confirm")
+        tab.ev("[...%s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Save changes').click()" % SHEET)
+        m = formmsg_done()
+        check("[13] the move onto a full server: nothing was changed, and it says the server is full",
+              "Nothing was changed" in m and "wdtt1 (add)" in m and "is full" in m, m)
+        check("[13] …the peer is still on awg1 (before F28 it was left on neither)", [t["iface"] for t in roster()[pid]["targets"]] == ["awg1"], roster()[pid]["targets"])
+        close_all()
+        uid, pid = new_peer("lost", ["csqtt25"], kept=False)
+        reload()
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg2")
+        addresses_in()
+        # the panel applies the Deploy, and its answer never reaches the page
+        tab.ev("""(() => { const f = window.fetch; window.__fetch = f; let once = true;
+          window.fetch = (u, o, ...a) => { if (once && String(u.url || u).includes('/api/peers/targets')) { once = false;
+            return f(u, o, ...a).then(() => { throw new TypeError("Failed to fetch"); }); }
+            return f(u, o, ...a); }; })()""")
+        tab.ev(ACT + ".click()")
+        m = formmsg_done()
+        tab.ev("window.fetch = window.__fetch; 1")
+        k1 = roster()[pid].get("pubkey")
+        check("[13] the answer lost: an error shown, while the panel took it", bool(k1) and "Failed to fetch" in m, [m, roster()[pid]])
+        watch_toasts()
+        tab.ev(ACT + ".click()")
+        until("window.__toasts.some(t => t.startsWith('Peer targets updated'))", 10, "the second Deploy")
+        until("!document.querySelector('.overlay.show')", 15, "the Targets sheet closing itself")
+        p = roster()[pid]
+        check("[13] Deploy again: answered as done — one key, both deployments", p.get("pubkey") == k1 and {t["iface"] for t in p["targets"]} == {"csqtt25", "awg2"}, p)
+        check("[13] …the key kept, encrypted", stored(pid))
+        c = qr_cards(pid)
+        check("[13] …and its QR there", c.get("awg2") == "QR", c)
 
     print("\n[12] the unlock follows the vault, not the setting")
     with guard("[12]"):

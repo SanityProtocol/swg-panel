@@ -92,6 +92,12 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **Moving a device to a full turn server no longer leaves it on neither.** Peer targets applied a Deploy as separate
+  steps: the new deployments, then the address changes, then the removals. When the new server refused the device (its
+  address pool was full), the old deployment was still removed. A Deploy is now applied as a whole or not at all: if any
+  part is refused, nothing changes and the sheet lists every reason. A Deploy whose answer was lost can be sent again
+  safely, and a sheet that is out of date (the device was changed in another tab) asks you to reopen it.
+
 - **SNI mode says so when another program holds its packet queue.** The SNI classifier never checked that the kernel gave
   it the queue: with another program on queue 0 (an intrusion-prevention tool, a leftover reader) it saw no traffic,
   routed and blocked nothing by name, and the node still reported it running. It now exits with a log line naming the

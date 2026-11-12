@@ -200,10 +200,9 @@ export const api = {
   routingWho(b) { return this.post("/api/routing/who", b); },   // {node, iface, rows:[who]} — what each per-person selection covers there
   userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
   peerNetworkProbe(b) { return this.post("/api/peers/networks/probe", b); },   // {peer_id, node, addr, port?} arms one reachability test from that node · {peer_id, id} reads it · {peer_id} lists this peer's
-  peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   exitTest(b) { return this.post("/api/exit/test", b); },   // {node, exit_id?, socks_text, socks_pass} tests a SOCKS5 proxy from that node · {node, id} reads it
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
-  peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
+  peerTargets(b) { return this.post("/api/peers/targets", b); },   // Peer targets' Deploy: adds, address edits and removals, all or none
   peerSetRole(b) { return this.post("/api/peers/set-role", b); },   // role: "primary" | "backup" | "" (clear)
   peerDelete(b) { return this.post("/api/peers/delete", b); },
   peerUnassign(b) { return this.post("/api/peers/unassign", b); },

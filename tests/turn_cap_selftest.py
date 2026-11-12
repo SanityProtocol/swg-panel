@@ -43,7 +43,7 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "gt":         ("    if used < cap:\n        return None\n", "    if used <= cap:\n        return None\n"),
     "blocked":    ("    return sum(1 for _pid, p in _peers_on(roster, nid)\n               if any(",
                    "    return sum(1 for _pid, p in _peers_on(roster, nid)\n               if not p.get(\"disabled\") and any("),
-    "addtarget":  ("        full = turn_full(nodes, snaps, roster, target)\n        if full:\n", "        full = None\n        if full:\n"),
+    "addtarget":  ("    full = turn_full(nodes, snaps, roster, target)\n    if full:\n", "    full = None\n    if full:\n"),   # target_add_refusal
     "issuebelow": ("            if _wait and _use >= _cap:\n", "            if _wait:\n"),
     "storedline": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\")"),
     "recordfork": ("**{k: e[k] for k in (\"fork\", \"wg_addr\", \"raw_port\", \"line\")", "**{k: e[k] for k in (\"line\",)"),

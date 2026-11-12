@@ -25970,6 +25970,74 @@ _LEDGER_GZ = ("/api/traffic-totals", "/api/traffic-series", "/api/traffic-ledger
 _SYNC_SEQ = itertools.count(1)   # every node sync's arrival number — TrafficLedger.ingest drops a snapshot older than a node's newest
 
 
+def target_add_refusal(deps, nodes, snaps, roster, pid, p, target, nk):
+    """Why one new target cannot go on peer `p`, as (status, body), else None — /api/peers/add-target's checks, shared with
+    /api/peers/targets so one door's rule is the other's. Normalises `target` in place (its kind; no address on a keyless
+    one). `nk` is the client key the request carries for a peer that has none yet. Not here: key_changed (a request's, not
+    a target's) and the network takeover (it needs the whole draft — network_takeover)."""
+    for f in ("node", "iface"):
+        if not target.get(f):
+            return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
+    if target["node"] not in nodes:
+        return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(target["node"])), "code": "bad_request"}
+    if is_system_iface(deps, nodes, target["node"], target["iface"]):
+        return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=target["iface"]), "code": "system_iface"}
+    target["type"] = iface_kind(deps, nodes, snaps, target["node"], target["iface"], target.get("type") or "")
+    if is_keyless_kind(target["type"]):
+        target["ip"] = ""
+    else:
+        if not target.get("ip"):
+            return 400, {"ok": False, **perr("target.{v1} is required", v1="ip"), "code": "bad_request"}
+        if not valid_addr(target["ip"]):
+            return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
+    if any(t["node"] == target["node"] and t["iface"] == target["iface"] for t in p["targets"]):
+        return 409, {"ok": False, "error": "peer already has a target on that node/interface", "code": "exists"}
+    full = turn_full(nodes, snaps, roster, target)
+    if full:
+        return 409, {"ok": False, **full, "code": "turn_full"}
+    # ⚠️ A PEER WITH NO KEY YET (every deployment csqtt / WDTT) GETS ONE WITH ITS FIRST WIREGUARD DEPLOYMENT, minted in the browser
+    # as a new peer's is, so the private half never reaches the panel; its csqtt / WDTT passwords are untouched. Refused, it had no
+    # way to get one: its Rotate is "Rotate link", passwords only.
+    if not is_keyless_kind(target["type"]) and not p.get("pubkey"):
+        if not nk:
+            return 400, {"ok": False, **perr("{v1} needs a client key — this peer has none", v1=target["iface"]), "code": "bad_request"}
+        clash = find_peer_by_pubkey(roster, nk)
+        if clash and clash["id"] != pid:
+            return 409, {"ok": False, "error": "another peer already uses this key", "code": "exists"}
+    return None
+
+
+def network_takeover(roster, pid, p, targets, nid, snaps):
+    """The networks other devices carry on node `nid` that peer `p` would take over with `targets` as its deployments.
+
+    ⚠️ A DEPLOYMENT NEVER TAKES A NETWORK AWAY FROM THE DEVICE CARRYING IT. The networks door refuses a new prefix that
+    overlaps one a node carries, but a device whose networks were saved while it lived elsewhere brings them along, and
+    node_networks resolves an overlap by age (then id) — so an older or same-second device took the live network over, and
+    with it its audience: measured on swgt (qualification 1.8.7 §N12), an owner-only network became another user's open one
+    at the same address. Refused exactly when that would happen, judged by the plan itself before and after; a device that
+    would lose the overlap just stays inert there with "taken", which the sheet already shows."""
+    if not p.get("routes"):
+        return []
+    _nsnap = (snaps or {}).get(nid) or {}
+    _before = node_networks(roster, nid, _nsnap)["carry"]
+    _draft = dict(roster, peers=dict(roster["peers"]))
+    _draft["peers"][pid] = dict(p, targets=targets)
+    _after = node_networks(_draft, nid, _nsnap)["carry"]
+    return [{"prefix": x, "node": nid, "why": "takes", "by": opid}
+            for opid, ent in sorted(_before.items()) if opid != pid
+            for x in ent["nets"] if x not in ((_after.get(opid) or {}).get("nets") or [])]
+
+
+def addr_taken(roster, pid, node, iface, ip):
+    """Another peer already holds `ip` on (node, iface) — an address is unique within its interface's subnet."""
+    for op in roster["peers"].values():
+        if op.get("id") == pid:
+            continue
+        for t in op.get("targets", []):
+            if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
+                return True
+    return False
+
 
 # ───────────────────────── API ─────────────────────────
 
@@ -29717,67 +29785,30 @@ def api(method, path, qs, body, deps):
         # "Copy peer interface→interface" — SAME key + SAME PSK on a new (node, iface, ip). Since a peer may
         # hold a mix of kinds, the new target can be a KEYLESS one (WDTT / csqtt): it brings no address, and
         # if this is the peer's first deployment of that kind it also mints that kind's access password.
+        # Its checks are target_add_refusal's and network_takeover's, which /api/peers/targets runs too.
         pid = body.get("peer_id") or ""
         target = body.get("target") or {}
         for f in ("node", "iface"):
             if not target.get(f):
                 return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
-        if not known(target["node"]):
-            return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(target["node"])), "code": "bad_request"}
-        if is_system_iface(deps, nodes, target["node"], target["iface"]):
-            return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=target["iface"]), "code": "system_iface"}
-        target["type"] = iface_kind(deps, nodes, snaps, target["node"], target["iface"], target.get("type") or "")
-        if is_keyless_kind(target["type"]):
-            target["ip"] = ""
-        else:
-            if not target.get("ip"):
-                return 400, {"ok": False, **perr("target.{v1} is required", v1="ip"), "code": "bad_request"}
-            if not valid_addr(target["ip"]):
-                return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
-        if any(t["node"] == target["node"] and t["iface"] == target["iface"] for t in p["targets"]):
-            return 409, {"ok": False, "error": "peer already has a target on that node/interface",
-                         "code": "exists"}
-        full = turn_full(nodes, snaps, roster, target)
-        if full:
-            return 409, {"ok": False, **full, "code": "turn_full"}
-        # ⚠️ A PEER WITH NO KEY YET (every deployment csqtt / WDTT) GETS ONE WITH ITS FIRST WIREGUARD DEPLOYMENT, minted in the browser
-        # as a new peer's is, so the private half never reaches the panel; its csqtt / WDTT passwords are untouched. Refused, it had no
-        # way to get one: its Rotate is "Rotate link", passwords only. A key other than the one the peer has is refused, not dropped:
-        # a sheet opened before the first key would mint a second, and hand out a QR with a key no node has.
-        _key = {}
         nk = (body.get("pubkey") or "").strip()
+        why = target_add_refusal(deps, nodes, snaps, roster, pid, p, target, nk)
+        if why:
+            return why
+        # A key other than the one the peer has is refused, not dropped: a sheet opened before the first key would mint a
+        # second, and hand out a QR with a key no node has.
         if nk and p.get("pubkey") and nk != p["pubkey"]:
             return 409, {"ok": False, **perr("this peer has another key now — reopen it"), "code": "key_changed"}
-        if not is_keyless_kind(target["type"]) and not p.get("pubkey"):
-            if not nk:
-                return 400, {"ok": False, **perr("{v1} needs a client key — this peer has none", v1=target["iface"]), "code": "bad_request"}
-            clash = find_peer_by_pubkey(roster, nk)
-            if clash and clash["id"] != pid:
-                return 409, {"ok": False, "error": "another peer already uses this key", "code": "exists"}
-            _key = {"pubkey": nk, "psk": body.get("psk") or gen_psk()}
-        # ⚠️ A DEPLOYMENT NEVER TAKES A NETWORK AWAY FROM THE DEVICE CARRYING IT. The networks door refuses a new prefix that
-        # overlaps one a node carries, but a device whose networks were saved while it lived elsewhere brings them along here,
-        # and node_networks resolves an overlap by age (then id) — so an older or same-second device took the live network
-        # over, and with it its audience: measured on swgt (qualification 1.8.7 §N12), an owner-only network became another
-        # user's open one at the same address. Refused exactly when that would happen, judged by the plan itself before and
-        # after; a device that would lose the overlap just stays inert there with "taken", which the sheet already shows.
-        if p.get("routes") and not is_keyless_kind(target["type"]):
-            _nsnap = (snaps or {}).get(target["node"]) or {}
-            _before = node_networks(roster, target["node"], _nsnap)["carry"]
-            _draft = dict(roster, peers=dict(roster["peers"]))
-            _draft["peers"][pid] = dict(p, targets=p["targets"] + [target])
-            _after = node_networks(_draft, target["node"], _nsnap)["carry"]
-            _took = [{"prefix": x, "node": target["node"], "why": "takes", "by": opid}
-                     for opid, ent in sorted(_before.items()) if opid != pid
-                     for x in ent["nets"] if x not in ((_after.get(opid) or {}).get("nets") or [])]
-            if _took:
-                return 409, {"ok": False, **perr("{v1} is already carried on this node by another device — deploying this one there would take it over",
-                                                 v1=", ".join(r["prefix"] for r in _took)),
-                             "code": "network_refused", "refusals": _took}
+        _key = {"pubkey": nk, "psk": body.get("psk") or gen_psk()} if not is_keyless_kind(target["type"]) and not p.get("pubkey") else {}
+        _took = [] if is_keyless_kind(target["type"]) else network_takeover(roster, pid, p, p["targets"] + [target], target["node"], snaps)
+        if _took:
+            return 409, {"ok": False, **perr("{v1} is already carried on this node by another device — deploying this one there would take it over",
+                                             v1=", ".join(r["prefix"] for r in _took)),
+                         "code": "network_refused", "refusals": _took}
         _add = {"targets": p["targets"] + [target], **_key}
         _add.update(mint_keyless_secrets([target], p))   # first wdtt/csqtt deployment on this peer → its password
         p2 = peer_set(roster, pid, _add, now())
@@ -29806,6 +29837,102 @@ def api(method, path, qs, body, deps):
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Removed deployment", peer_label(roster, p2),
                   f"{node}/{iface}")
+        return 200, {"ok": True, "data": p2}
+
+    if method == "POST" and path == "/api/peers/targets":
+        # ⚠️ PEER TARGETS' DEPLOY IS ONE CALL, APPLIED WHOLE OR NOT AT ALL (1.8.12 Scale F28, docs/SCALE-PLAN.md "F28 — design").
+        # The sheet sent its adds, address edits and removals as separate writes, so a refused add — routine once a turn server
+        # is full — still ran the removals: a move to a full server left the peer on neither. Two attempts patched the partial
+        # states of that sequence (a lost answer, a reopen before the poll, another tab, a first key retried) and each found
+        # more. Under _api_lock this handler is one read-check-write: every change is checked against the stored peer first,
+        # any refusal answers 409 `refused` with every reason and writes nothing, else one save applies them all.
+        pid = body.get("peer_id") or ""
+        lists = {k: body.get(k) or [] for k in ("base", "add", "address", "remove")}
+        if not all(isinstance(v, list) and all(isinstance(x, dict) and x.get("node") and x.get("iface") for x in v) for v in lists.values()):
+            return 400, {"ok": False, "error": "base, add, address and remove are lists of {node, iface}", "code": "bad_request"}
+        key = lambda x: (x["node"], x["iface"])
+        touched = [key(x) for k in ("add", "address", "remove") for x in lists[k]]
+        if len(set(touched)) != len(touched):            # peer_set does not dedupe: a doubled add would store two targets on one iface
+            return 400, {"ok": False, "error": "an interface is named twice", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        p = roster["peers"].get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        nk = (body.get("pubkey") or "").strip()
+        have = {key(t): t for t in p["targets"]}
+        ipof = lambda x: (x.get("ip") or "").split("/")[0].strip()
+        # Already done — the retry of a Deploy whose answer never came back: every add there at the address it was sent with
+        # (another tab's add at another address is not this one: the sheet would file a QR for an address the peer does not
+        # hold), no removal, each address edit as sent, the key it minted the peer's. Answered with the peer, nothing written;
+        # before the base check, so a lost answer is never "changed".
+        if (all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["add"]) and not any(key(x) in have for x in lists["remove"])
+                and all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["address"])
+                and (not nk or p.get("pubkey") == nk)):
+            return 200, {"ok": True, "data": p}
+        # Base: the interfaces the sheet opened with. Another tab added or removed one, or a reopen read the store from before
+        # this sheet's own last Deploy — its picture is not the peer, so nothing it asks is guessed at.
+        if {key(x) for x in lists["base"]} != set(have):
+            return 409, {"ok": False, **perr("this peer changed since you opened it — reopen it"), "code": "changed"}
+        if nk and p.get("pubkey") and nk != p["pubkey"]:
+            return 409, {"ok": False, **perr("this peer has another key now — reopen it"), "code": "key_changed"}
+        fails = []
+        def fail(x, op, st_body):
+            fails.append({"node": x["node"], "iface": x["iface"], "op": op,
+                          **{k: v for k, v in st_body[1].items() if k in ("code", "error", "error_key", "error_vars", "refusals")}})
+        adds = []
+        for x in lists["add"]:
+            t = {k: x[k] for k in ("node", "iface", "ip", "type", "overrides") if k in x}
+            why = target_add_refusal(deps, nodes, snaps, roster, pid, p, t, nk)
+            if why:
+                fail(x, "add", why)
+            else:
+                adds.append(t)
+        edits = {}
+        for x in lists["address"]:
+            ip, cur = ipof(x), have.get(key(x))
+            if cur is None:
+                fail(x, "address", (404, {"error": "peer has no target on that node/interface", "code": "not_found"}))
+            elif is_keyless_kind(iface_kind(deps, nodes, snaps, x["node"], x["iface"], cur.get("type") or "")):
+                fail(x, "address", (400, {**perr("{v1} assigns the client address on connect — it can't be set here", v1=x["iface"]), "code": "bad_request"}))
+            elif not valid_addr(ip):
+                fail(x, "address", (400, {**perr("invalid address {v1}", v1=repr(x.get("ip"))), "code": "bad_request"}))
+            elif addr_taken(roster, pid, x["node"], x["iface"], ip):
+                fail(x, "address", (409, {**perr("{v1} is already used on {v2}", v1=ip, v2=f"{x['node']}/{x['iface']}"), "code": "exists"}))
+            else:
+                edits[key(x)] = ip
+        gone = {key(x) for x in lists["remove"]}
+        for x in lists["remove"]:
+            if key(x) not in have:
+                fail(x, "remove", (404, {"error": "peer has no target on that node/interface", "code": "not_found"}))
+        final = [dict(t, ip=edits[key(t)]) if key(t) in edits else t for t in p["targets"] if key(t) not in gone] + adds
+        if not final and not fails:                      # a refused add is not in `final`: its refusal is the answer, not this
+            return 409, {"ok": False, "error": "this is the peer's only deployment — delete the peer instead (unassign it first)",
+                         "code": "last_target"}
+        for nid in sorted({t["node"] for t in adds if not is_keyless_kind(t["type"])}):
+            took = network_takeover(roster, pid, p, final, nid, snaps)
+            if took:
+                fails.append({"node": nid, "iface": next(t["iface"] for t in adds if t["node"] == nid), "op": "add", "code": "network_refused",
+                              **perr("{v1} is already carried on this node by another device — deploying this one there would take it over",
+                                     v1=", ".join(r["prefix"] for r in took)), "refusals": took})
+        if fails:
+            return 409, {"ok": False, "error": "nothing was changed", "code": "refused", "fails": fails}
+        fields = {"targets": final}
+        if not p.get("pubkey") and any(not is_keyless_kind(t["type"]) for t in adds):
+            fields.update(pubkey=nk, psk=body.get("psk") or gen_psk())
+        fields.update(mint_keyless_secrets(adds, p))     # a first wdtt / csqtt deployment → that kind's password
+        old_key = p.get("pubkey") or ""
+        p2 = peer_set(roster, pid, fields, now())
+        roster_save(roster_path, roster)
+        for x in lists["remove"]:                        # after the save: a failed save retires nothing
+            del_config(store_configs, config_dir, old_key, x["node"], x["iface"])
+            retire_pubkey(nodes, deps["nodes_path"], [{"node": x["node"], "iface": x["iface"]}], old_key)
+        label = peer_label(roster, p2)
+        for t in adds:
+            ev_append(roster_path, "peer", pid, "Added deployment", label, f"{t['node']}/{t['iface']}")
+        for (n, i), ip in edits.items():
+            ev_append(roster_path, "peer", pid, "Changed address", label, f"{n}/{i} → {ip}")
+        for x in lists["remove"]:
+            ev_append(roster_path, "peer", pid, "Removed deployment", label, f"{x['node']}/{x['iface']}")
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/set-role":
@@ -30075,13 +30202,8 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "peer has no target on that node/interface", "code": "not_found"}
         if has_ip and is_keyless_kind(iface_kind(deps, nodes, snaps, node, iface, cur.get("type") or "")):
             return 400, {"ok": False, **perr("{v1} assigns the client address on connect — it can't be set here", v1=iface), "code": "bad_request"}
-        if has_ip:
-            for op in roster["peers"].values():     # uniqueness within the (node, iface) subnet
-                if op.get("id") == pid:
-                    continue
-                for t in op.get("targets", []):
-                    if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
-                        return 409, {"ok": False, **perr("{v1} is already used on {v2}", v1=ip, v2=f"{node}/{iface}"), "code": "exists"}
+        if has_ip and addr_taken(roster, pid, node, iface, ip):   # uniqueness within the (node, iface) subnet
+            return 409, {"ok": False, **perr("{v1} is already used on {v2}", v1=ip, v2=f"{node}/{iface}"), "code": "exists"}
         def _upd(t):
             if t["node"] != node or t["iface"] != iface:
                 return t
