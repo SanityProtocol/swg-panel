@@ -6974,7 +6974,8 @@ def _zone_label_ok(d):
     return bool(_ZLABEL_RE.match(d)) and d not in _RESERVED_ZONE
 
 
-_DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list, zones) — or, for a list read by file (K9), (sig, None, zones, has names)
+_DOM_CACHE = {}   # cat -> ((inode, mtime_ns, size[, "file"]), names, zones, stamp) — names None for a list read by file (K9),
+#                   stamp then the checked file's (None when it holds no names); a list's stamp is None
 _DOMTIER_CACHE = {}   # {"v": (input-signature, fully-enriched {cat:[domain]})}: skip the union+sort when inputs are unchanged
 _DNSMASQ_BUILD = {"n": 0}   # cycles since the domain tier went active — drives the periodic self-heal rebuild
 
@@ -7056,31 +7057,84 @@ def _forcedns_admit(cats, res):
 class _Pulled:
     """A big pulled list under Hybrid SNI, held as its FILE rather than its names (docs/SCALE-PLAN.md K9). A 1.2 M-name
     block list cost this process ~260 MB held as a list (peak ~600 with its rebuild) and swg-sni ~330 MB more as a dict;
-    swg-sni now answers from the file itself (FILES_KEY), so nothing here keeps the names. Made only for a file with names
-    whose order and lines _doms_file_ok checked, and FRESH on every enrichment, never cached: _never_block_adjust writes
-    `inline` and `cut` on it. Iterating it yields what the list would have held — the panel's own names for the category,
-    then the file's `_DOM_RE` names not under `cut` — streamed, so a reader that walks names (the shadows, Never-block)
-    gets every one and holds none."""
-    __slots__ = ("path", "inline", "cut")
+    swg-sni now answers from the file itself (SNI_FILES_KEY), so the list itself is never held here. Made only for a file
+    with names whose order and lines _doms_file_ok checked; `stamp` is that file's (inode, mtime_ns, size), which the map
+    carries — swg-sni maps a file only at that stamp, so a pull that renames a new file in is answered from only once the
+    next pass has checked it. Made afresh on every enrichment (the domain tier's cache then keeps it with the map it was
+    enriched into): _never_block_adjust writes `inline` and `cut` on it. Iterating it yields what the list would have held
+    — the panel's own names for the category, then the file's names not under `cut` — streamed; `holds` asks the sorted
+    file by binary search. A reader that keeps what it walks (_smart_shadows' index, a shadow category) holds those
+    names again: that is the rest of the list's cost, transient and well under what the list itself was."""
+    __slots__ = ("path", "stamp", "inline", "cut")
 
-    def __init__(self, path, inline=(), cut=()):
-        self.path, self.inline, self.cut = path, list(inline), set(cut)
+    def __init__(self, path, stamp):
+        self.path, self.stamp, self.inline, self.cut = path, stamp, [], set()
+
+    def _open(self):
+        """(file, True when it is still the checked one)."""
+        f = open(self.path, "rb")
+        st = os.fstat(f.fileno())
+        return f, (st.st_ino, st.st_mtime_ns, st.st_size) == self.stamp
 
     def __iter__(self):
         yield from self.inline
-        with open(self.path, "rb") as f:
+        f, checked = self._open()
+        with f:
             for raw in f:
-                d = raw.strip().decode("ascii", "replace")
-                if _DOM_RE.match(d) and not (self.cut and _nb_under(d, self.cut)):
+                if checked:                                    # every dotted line is a name (_doms_file_ok); a dotless one a zone
+                    if b"." not in raw:
+                        continue
+                    d = raw.rstrip(b"\n").decode()
+                else:                                          # a file renamed in after the check: as the parse reads it
+                    d = raw.strip().decode("ascii", "replace")
+                    if not _DOM_RE.match(d):
+                        continue
+                if not (self.cut and _nb_under(d, self.cut)):
                     yield d
+
+    def holds(self, names):
+        """The names of `names` this list holds, `cut` applied — a binary search a name over the checked file (one walk of it
+        when the file was renamed since)."""
+        names = set(names)
+        got = {d for d in self.inline if d in names}
+        f, checked = self._open()
+        with f:
+            if not checked:
+                return got | {d for d in self if d in names}
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                for d in names - got:
+                    if "." in d and _DOM_RE.match(d) and not (self.cut and _nb_under(d, self.cut)) and _in_sorted(mm, d.encode()):
+                        got.add(d)
+        return got
+
+
+def _in_sorted(mm, key):
+    """True when the byte-sorted, newline-separated `mm` holds the line `key` exactly — swg-sni's _in_sorted."""
+    lo, hi = 0, len(mm)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        ls = mm.rfind(b"\n", lo, mid) + 1 or lo
+        le = mm.find(b"\n", ls)
+        if le < 0:
+            le = len(mm)
+        line = mm[ls:le]
+        if line == key:
+            return True
+        if line < key:
+            lo = le + 1
+        else:
+            hi = ls
+    return False
 
 
 def _doms_file_ok(path):
-    """(has names, zones) when the file can be read by swg-sni's binary search — every line in byte order, ASCII, no
+    """(has names, zones, stamp) when the file can be read by swg-sni's binary search — every line in byte order, ASCII, no
     surrounding whitespace or `\r`, each dotted line a `_DOM_RE` name and each dotless one a zone-shaped label — else None
-    (then the list is parsed and goes inline, as before). One streaming pass that keeps only the zones, as the parse does."""
+    (then the list is parsed and goes inline, as before). One streaming pass that keeps only the zones, as the parse does;
+    `stamp` is the (inode, mtime_ns, size) of the file it read."""
     zones, has, prev = [], False, b""
     with open(path, "rb") as f:
+        st = os.fstat(f.fileno())
         for raw in f:
             ln = raw[:-1] if raw.endswith(b"\n") else raw
             if ln < prev or not ln.isascii() or ln != ln.strip():
@@ -7096,7 +7150,7 @@ def _doms_file_ok(path):
                     zones.append(d)
             else:
                 return None
-    return has, zones
+    return has, zones, (st.st_ino, st.st_mtime_ns, st.st_size)
 
 
 def _smart_domain_refresh(cats, res, files=False):
@@ -7127,18 +7181,18 @@ def _smart_domain_refresh(cats, res, files=False):
                 st = os.stat(path)
             except OSError:
                 continue                                       # no cache yet → nothing to return for this cat
-            sig = (int(st.st_mtime), st.st_size)
+            sig = (st.st_ino, st.st_mtime_ns, st.st_size)     # the pull renames a new file in: a new inode, whatever the clock
             byfile = files and st.st_size >= SNI_FILE_MIN
             if byfile:
                 sig += ("file",)
             cached = _DOM_CACHE.get(cat)
-            if cached and cached[0] == sig:                    # file unchanged → reuse the parsed split (skip the big read+regex)
-                doms, zones = cached[1], cached[2]
-                if doms is None:                               # read by file: a fresh _Pulled each time (see the class)
-                    doms = [_Pulled(path)] if cached[3] else []
-            elif byfile and (chk := _doms_file_ok(path)) is not None:
-                _DOM_CACHE[cat] = (sig, None, chk[1], chk[0])
-                doms, zones = ([_Pulled(path)] if chk[0] else []), chk[1]
+            hit = bool(cached and cached[0] == sig)
+            chk = _doms_file_ok(path) if byfile and not hit else None
+            if hit:                                            # file unchanged → reuse the parsed split (skip the big read+regex)
+                doms, zones, stamp = cached[1:]
+            elif chk is not None:
+                doms, zones, stamp = None, chk[1], (chk[2] if chk[0] else None)
+                _DOM_CACHE[cat] = (sig, doms, zones, stamp)
             else:
                 if byfile:
                     log(LOG_WARNING, "sni: %s.doms is not in byte order or not clean — its names are held in memory", cat)
@@ -7149,9 +7203,12 @@ def _smart_domain_refresh(cats, res, files=False):
                         doms.append(_d)
                     elif _zone_label_ok(_d):                   # `+.ru` → `ru`: a declared zone, not a malformed domain
                         zones.append(_d)
-                _DOM_CACHE[cat] = (sig, doms, zones)
-            if doms:
-                out[cat] = doms[0] if isinstance(doms[0], _Pulled) else doms
+                _DOM_CACHE[cat] = (sig, doms, zones, None)
+            if doms is None:
+                if stamp:                                      # read by file: a fresh _Pulled each time (see the class)
+                    out[cat] = _Pulled(path, stamp)
+            elif doms:
+                out[cat] = doms
             if zones:
                 zout[cat] = zones
         except Exception as e:
@@ -7690,12 +7747,12 @@ def _never_block_adjust(domains, pats, allow, engine):
     hit = {}                                                   # candidate → {category listing it}, after the cut
     for c in list(domains):
         lst = domains[c] or []
-        if str(c).startswith(_NB_UNION) and isinstance(lst, _Pulled):   # read by file (K9): its inline part is cut here, the
-            lst.inline = [d for d in lst.inline if not _nb_under(d, allow)]   # file's by swg-sni through `cut`
-            lst.cut = set(allow)
-            for d in lst:                                      # streamed, the cut applied — what the list's `keep` holds
-                if d in cand:
-                    hit.setdefault(d, set()).add(c)
+        if isinstance(lst, _Pulled):                           # read by file (K9): asked for the candidates, never walked
+            if str(c).startswith(_NB_UNION):                   # its inline part is cut here, the file's by swg-sni through `cut`
+                lst.inline = [d for d in lst.inline if not _nb_under(d, allow)]
+                lst.cut = set(allow)
+            for d in lst.holds(cand):                          # the cut applied — what the list's `keep` holds
+                hit.setdefault(d, set()).add(c)
             continue
         if str(c).startswith(_NB_UNION):
             keep = []
@@ -7765,7 +7822,7 @@ def _never_block_adjust(domains, pats, allow, engine):
             add.setdefault(c, []).append(a)
     for c, names in add.items():
         if isinstance(domains.get(c), _Pulled):
-            domains[c].inline = domains[c].inline + names      # a _Pulled is this pass's own (fresh, never cached)
+            domains[c].inline = domains[c].inline + names      # a _Pulled is this pass's own (made afresh by the refresh)
             continue
         domains[c] = list(domains.get(c) or []) + names        # a copy: never append to a list some cache holds
 
@@ -14160,7 +14217,7 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
             _inl, _fls = {}, {}
             for c, d in (domains or {}).items():
                 if isinstance(d, _Pulled):                     # swg-sni reads it from its file (K9): the path, never the names
-                    _fls[c] = dict({"path": d.path}, **({"cut": sorted(d.cut)} if d.cut else {}))
+                    _fls[c] = dict({"path": d.path, "stamp": list(d.stamp)}, **({"cut": sorted(d.cut)} if d.cut else {}))
                     if d.inline:
                         _inl[c] = sorted(d.inline)
                 elif d:

@@ -19,7 +19,9 @@ Python: pure stdlib, single file, like the rest of the fleet. Fails OPEN: swg-no
 `bypass` flag, so if this process dies, new connections simply stop being learned — traffic keeps flowing.
 
 TWO INPUT FILES, both written by swg-noded and both pre-bucketed by the PANEL — this process classifies
-nothing, it only looks strings up. `sni-map.json` is {category: [domain]}, matched by longest suffix.
+nothing, it only looks strings up. `sni-map.json` is {category: [domain]}, matched by longest suffix; under its
+FILES_KEY it may instead name a big list by its file — {category: {path, stamp, cut}} — which is mapped and asked by
+binary search on the same rung (see FILES_KEY).
 `sni-patterns.json` beside it is {kind: {category: [operand]}} — the panel's pattern buckets — of which this
 build lowers all six, in two tiers: label-anchored ones by dict lookup (`any` / `first` / `zone`) and
 character-level ones by a linear scan (`starts` / `ends` / `contains`). This is the only engine holding the
@@ -459,9 +461,10 @@ if set(SNI_TIER1) & set(SNI_TIER2):
 
 
 # A BIG PULLED LIST IS READ FROM ITS FILE, NOT HELD (docs/SCALE-PLAN.md K9). swg-noded names it in the map under this key
-# — {category: {"path": …, "cut": [name, …]}} — instead of writing its names: a 1.2 M-name block list cost this process
-# ~330 MB as a dict (peak ~940 at the daily refresh) and costs nothing as a mapped file, clean page cache. The file is the
-# panel's own sorted output (swg-noded checks the order before naming it), so rung 1 asks it by binary search. `~` cannot
+# — {category: {"path": …, "stamp": [inode, mtime_ns, size], "cut": [name, …]}} — instead of writing its names: a 1.2 M-name
+# block list cost this process ~330 MB as a dict (peak ~940 at the daily refresh) and costs nothing as a mapped file, clean
+# page cache. The file is the panel's own sorted output, and swg-noded checks the order of the very file it names — `stamp`
+# is that file's, and only a file at that stamp is mapped (_remap) — so rung 1 asks it by binary search. `~` cannot
 # begin a category (swg-noded NEVER_BLOCK_CAT); an older build skips the key's dict value in _index and refuses fewer names.
 FILES_KEY = "~files"                                   # MUST match swg-noded's SNI_FILES_KEY
 # The expression swg-noded keeps a pulled name by (_DOM_RE). A file line answers only a suffix that passes it, so whatever
@@ -637,7 +640,7 @@ class Classifier:
     bsrc, barr, bsel, nolearn, bmark, blocks_path, blocks_mtime = (), (), {}, frozenset(), 0, None, None
     quiet = frozenset()                                # categories learned WITHOUT the first-hit reset (see _reload)
     sets_path, sets_mtime, set_gen = None, None, {}
-    file_want, files = (), ()                          # no list read by file (K9) — the same reason as above
+    file_want, files, map_failed = (), (), frozenset()   # no list read by file (K9) — the same reason as above
 
     def __init__(self, map_path, table, reset_mark=0, learn_ttl=3600):
         self.map_path = map_path
@@ -648,8 +651,8 @@ class Classifier:
         self.map_mtime = None                          # each file is stat-gated and PARSED on its own — see _reload
         self.pat_mtime = None
         self.dom2cat = {}                              # exact domain → [category, ...] — see _reload
-        self.file_want = []                            # [(category, path, cut)] named by the map's FILES_KEY
-        self.files = []                                # [(category, path, cut, mmap or None, stamp)] — see _remap
+        self.file_want = []                            # [(category, path, cut, stamp)] named by the map's FILES_KEY
+        self.files = []                                # [(category, path, cut, mmap, stamp mapped)] — see _remap
         self.pats = _empty_pats()                      # kind → Tier-1 {operand: [cat]} / Tier-2 [(operand, [cat])]
         # Derived from --map, like blk_path below: swg-noded writes both into the same directory, so a node
         # whose swg-noded and swg-sni are updated a moment apart never has to agree about a new flag.
@@ -699,7 +702,8 @@ class Classifier:
                 want = []
                 for c, e in sorted((fl if isinstance(fl, dict) else {}).items()):
                     try:
-                        want.append((str(c), str(e["path"]), frozenset(str(x) for x in e.get("cut") or ())))
+                        want.append((str(c), str(e["path"]), frozenset(str(x) for x in e.get("cut") or ()),
+                                     tuple(int(x) for x in e["stamp"])))
                     except Exception:
                         continue                       # a malformed entry: that list refuses nothing (fewer, never more)
                 self.file_want = want
@@ -762,37 +766,36 @@ class Classifier:
             self.set_gen = gen
 
     def _remap(self):
-        """Map each list the map names by file, re-mapping one whose (inode, mtime, size) moved. swg-noded's pull writes a
-        temp file and renames it, so a mapping stays valid until it is dropped here. Missing, empty or unreadable → no names
-        for it (fewer refused, never more); its stamp is kept so it is not retried every tick. Runs on the packet thread,
-        as _match does, so a re-map never races a lookup. ⚠️ A file truncated IN PLACE under the mapping raises SIGBUS:
-        nothing of swg's writes one so (docs/SCALE-PLAN.md K9 Round 3); a hand edit that does kills this process, the
-        queue's bypass fails open and swg-noded relaunches it."""
+        """Map each list the map names by file, AT THE STAMP the map gives — the (inode, mtime_ns, size) of the file
+        swg-noded checked. Any other file at the path (a pull renamed a new one in, or a stat or a map failed) keeps the
+        mapping already held, which stays valid while mapped, and is tried again next tick; with none held, the list answers
+        nothing until swg-noded names the file there now (fewer refused, never more, and never a file it has not checked).
+        Runs on the packet thread, as _match does, so a re-map never races a lookup. ⚠️ A file truncated IN PLACE under the
+        mapping raises SIGBUS: nothing of swg's writes one so (docs/SCALE-PLAN.md K9 Round 3); a hand edit that does kills
+        this process, the queue's bypass fails open and swg-noded relaunches it."""
         old = {e[1]: e for e in self.files}
         out = []
-        for cat, path, cut in self.file_want:
-            try:
-                st = os.stat(path); stamp = (st.st_ino, st.st_mtime_ns, st.st_size)
-            except OSError:
-                stamp = None
+        for cat, path, cut, want in self.file_want:
             e = old.get(path)
-            if e and e[4] == stamp:
-                out.append((cat, path, cut, e[3], stamp))
-                continue
             mm = None
-            if stamp and stamp[2]:
+            if not (e and e[4] == want):
                 try:
                     with open(path, "rb") as f:
-                        st = os.fstat(f.fileno()); stamp = (st.st_ino, st.st_mtime_ns, st.st_size)
-                        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) if st.st_size else None
+                        st = os.fstat(f.fileno())
+                        if (st.st_ino, st.st_mtime_ns, st.st_size) == want:
+                            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
                 except (OSError, ValueError) as ex:
-                    say(LOG_ERR, "swg-sni: %s: cannot map %s: %s", cat, path, ex)
+                    if (path, want) not in self.map_failed:
+                        self.map_failed = self.map_failed | {(path, want)}
+                        say(LOG_ERR, "swg-sni: %s: cannot map %s: %s", cat, path, ex)
             if mm is not None:
-                say(LOG_INFO, "swg-sni: %s read from %s (%d bytes)", cat, path, stamp[2])
-            out.append((cat, path, cut, mm, stamp))
+                say(LOG_INFO, "swg-sni: %s read from %s (%d bytes)", cat, path, want[2])
+                out.append((cat, path, cut, mm, want))
+            elif e:
+                out.append((cat, path, cut, e[3], e[4]))
         keep = {id(e[3]) for e in out}
         for e in self.files:
-            if e[3] is not None and id(e[3]) not in keep:
+            if id(e[3]) not in keep:
                 with contextlib.suppress(Exception):
                     e[3].close()
         self.files = out
@@ -804,7 +807,7 @@ class Classifier:
             return got
         b = s.encode("ascii")
         for cat, _p, cut, mm, _st in self.files:
-            if mm is not None and cat not in got and not (cut and _nb_under(s, cut)) and _in_sorted(mm, b):
+            if not (cut and _nb_under(s, cut)) and _in_sorted(mm, b):
                 got.add(cat)
         return got
 
