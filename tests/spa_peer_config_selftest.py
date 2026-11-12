@@ -63,6 +63,9 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-freshkeep the new key is never kept                                                  → RED [11]
        --perturb-addwhy   a refused deployment is a bare "(add)"                                      → RED [11]
        --perturb-freshref a retry mints a second key                                                  → RED [11]
+       --perturb-nofile   the Deploy's QR configs are never filed in the session                      → RED [13]
+       --perturb-stalepeer Targets opens on the caller's copy of the peer, not the live one            → RED [13]
+       --perturb-lostkeep a key a lost Deploy took is dropped when the next one is refused "changed"   → RED [13]
        --perturb-novault  the unlock is offered with no vault                                         → RED [12]
        --perturb-need     the unlock is hidden with store_configs off                                 → RED [12]
 """
@@ -106,8 +109,11 @@ PERTURBS = {
     "gonedeps": [("js/peer-ui.js", ", Store.configEpoch, !!Store.ifaceMeta(t.node, t.iface)]);", ", Store.configEpoch]);")],
     "addwhy": [("js/sheets-crud.js", ': srvText(f) ? " — " + srvText(f) : "");', ': "");')],
     "freshref": [("js/sheets-crud.js", "    const fresh = freshKey.current || (", "    const fresh = (")],
-    "firstkey": [("swg-panel-server", '            _key = {"pubkey": nk, "psk": body.get("psk") or gen_psk()}', '            return 400, {"ok": False, "error": "planted", "code": "bad_request"}')],
-    "keyguard": [("swg-panel-server", 'if nk and p.get("pubkey") and nk != p["pubkey"]:', "if False:")],
+    "firstkey": [("swg-panel-server", '            fields.update(pubkey=nk, psk=psk or gen_psk())', '            return 400, {"ok": False, "error": "planted", "code": "bad_request"}')],
+    "keyguard": [("swg-panel-server", '    if nk and p.get("pubkey") and nk != p["pubkey"]:', "    if False:")],
+    "nofile": [("js/sheets-crud.js", "    if (held && confs[held]) Object.assign(", "    if (false) Object.assign(")],
+    "stalepeer": [("js/sheets-crud.js", "  peer = Store.peer(peer.id) || peer;\n  const child", "  const child")],
+    "lostkeep": [("js/sheets-crud.js", '    const held = (r.data && r.data.pubkey) || "";', '    const held = (r.ok && r.data && r.data.pubkey) || "";')],
     "freshwarn": [("js/sheets-crud.js", "&& !srcConf && (Store.peer(peer.id) || peer).pubkey ? html`", "&& !srcConf ? html`")],
     "freshkeep": [("js/sheets-crud.js", "    if (fresh && held === fresh.keys.pub) await subPublishOrPrompt(", "    if (false) await subPublishOrPrompt(")],
     "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
@@ -160,8 +166,9 @@ if PERTURB:
         SERVER = os.path.join(WEB, "swg-panel-server")
     for f, old, new in PERTURBS[PERTURB]:
         src = open(os.path.join(WEB, f), encoding="utf-8").read()
-        if src.count(old) != 1:
-            bail("PERTURB %s: the anchor is not in %s exactly once (%d), so it cannot be undone" % (PERTURB, f, src.count(old)))
+        if src.count(old) != 1:                          # not "FAIL": a plant that never planted must not read as caught
+            print("PERTURB FAILED — %s: the anchor is not in %s exactly once (%d)" % (PERTURB, f, src.count(old)))
+            sys.exit(1)
         open(os.path.join(WEB, f), "w", encoding="utf-8").write(src.replace(old, new))
 
 # ── the panel and its fixture ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -689,6 +696,8 @@ try:
         until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
         tick("awg2")
         addresses_in()
+        tab.ev("window.__old = null; 1")
+        ev("store", "window.__old = JSON.parse(JSON.stringify(S.Store.peer(%s))); return 1;" % json.dumps(pid))   # the caller's copy
         # the panel applies the Deploy, and its answer never reaches the page
         tab.ev("""(() => { const f = window.fetch; window.__fetch = f; let once = true;
           window.fetch = (u, o, ...a) => { if (once && String(u.url || u).includes('/api/peers/targets')) { once = false;
@@ -705,9 +714,38 @@ try:
         until("!document.querySelector('.overlay.show')", 15, "the Targets sheet closing itself")
         p = roster()[pid]
         check("[13] Deploy again: answered as done — one key, both deployments", p.get("pubkey") == k1 and {t["iface"] for t in p["targets"]} == {"csqtt25", "awg2"}, p)
+        ip2 = next((t["ip"] for t in p["targets"] if t["iface"] == "awg2"), "?")
+        sc = ev("store", "return (S.Store.sessionConfigs[%s] || {})[%s] || '';" % (json.dumps(k1 or ""), json.dumps(NID + "|awg2")))
+        check("[13] …its QR config filed in the session, at the stored address", ("Address = %s/32" % ip2) in (sc or ""), sc)
+        ev("sheets-crud", "M.openAddTarget(window.__old); return 1;")   # Edit peer's Targets button hands over the copy it opened with
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the Targets sheet again")
+        sel = tab.ev("[...document.querySelectorAll('.overlay.show .targetopt.sel .tp')].map(e => e.textContent.trim())")
+        check("[13] Targets opened from an old copy of the peer shows the live one (awg2 ticked)", "awg2" in (sel or []), sel)
+        close_all()
         check("[13] …the key kept, encrypted", stored(pid))
         c = qr_cards(pid)
         check("[13] …and its QR there", c.get("awg2") == "QR", c)
+        uid, pid = new_peer("lost2", ["csqtt25"], kept=False)
+        reload()
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg2")
+        addresses_in()
+        tab.ev("""(() => { const f = window.fetch; window.__fetch = f; let once = true;
+          window.fetch = (u, o, ...a) => { if (once && String(u.url || u).includes('/api/peers/targets')) { once = false;
+            return f(u, o, ...a).then(() => { throw new TypeError("Failed to fetch"); }); }
+            return f(u, o, ...a); }; })()""")
+        tab.ev(ACT + ".click()")
+        formmsg_done()
+        tab.ev("window.fetch = window.__fetch; 1")
+        k1 = roster()[pid].get("pubkey")
+        tick("awg1")                             # the draft changes before the second Deploy
+        addresses_in()
+        tab.ev(ACT + ".click()")
+        until("(() => { const m = document.querySelector('.overlay.show .formmsg'); return !!m && m.textContent.includes('reopen'); })()", 20, "the changed answer")
+        check("[13] a lost Deploy took the key, the next (changed draft) is refused \"changed\": the key it took is still kept",
+              bool(k1) and roster()[pid].get("pubkey") == k1 and stored(pid), [k1, roster()[pid].get("pubkey")])
+        close_all()
 
     print("\n[12] the unlock follows the vault, not the setting")
     with guard("[12]"):

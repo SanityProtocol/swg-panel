@@ -6713,6 +6713,10 @@ export const STR = {
     "у этого пира теперь другой ключ — откройте его заново",
   "this peer changed since you opened it — reopen it":
     "пир изменился, пока окно было открыто, — откройте его заново",
+  "base, add, address and remove are lists of node / interface pairs":
+    "base, add, address и remove — списки пар «узел / интерфейс»",
+  "pubkey and psk are WireGuard keys":
+    "pubkey и psk должны быть ключами WireGuard",
   "{v1} needs a client key — this peer has none":
     "{v1} нужен клиентский ключ, а у этого пира его нет",
   "{v1} assigns the client address on connect — it can't be set here":

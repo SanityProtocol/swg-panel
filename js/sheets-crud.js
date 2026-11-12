@@ -488,6 +488,9 @@ export function CreatePeerSheet({ prefill }) {
 // private key (session config, or stored) to build the new client config / QR.
 // `back` = where Cancel / Deploy / Esc returns to (e.g. reopen the peer view); default just closes.
 export function openAddTarget(peer, back) {
+  // The live peer, not the caller's copy: Edit peer's Targets button holds the peer as the Edit sheet opened, so after a Deploy from
+  // it a second Targets would open on the old interfaces — and every Deploy from it is "changed — reopen it" (F28 review F1).
+  peer = Store.peer(peer.id) || peer;
   const child = modalDepth() > 0;   // opened from another modal (peer view / edit) → child; Cancel pops back to it
   (child ? pushModal : openModal)(html`<${AddTargetSheet} peer=${peer} back=${back || closeModal} child=${child}/>`);
 }
@@ -543,10 +546,9 @@ export function AddTargetSheet({ peer, back, child }) {
     // A peer with no key yet (every deployment csqtt / WDTT) gets one with its first WireGuard deployment, minted here as a new
     // peer's is; its csqtt / WDTT links stay as they are. The live peer decides: this sheet's copy may predate that first key.
     // Kept across a retry, so a Deploy sent again never mints a second.
-    const keyedAdd = added.some(c => !isSelfContainedKind(kindFor(c)));
+    const keyedAdd = added.some(needsIp);
     const fresh = freshKey.current || (!(Store.peer(peer.id) || peer).pubkey && keyedAdd ? { keys: await genKeys(), psk: genPSK() } : null);
     freshKey.current = fresh;
-    const pk = fresh ? fresh.keys.pub : peer.pubkey;   // srcConf's own key otherwise: never one config filed under another key
     const confs = {};                                  // {pubkey: {target: config}} — filed only once the panel holds that key
     const file = (key, t, conf) => { (confs[key] = confs[key] || {})[tkey(t.node, t.iface)] = conf; };
     const add = added.map(t => {
@@ -560,9 +562,9 @@ export function AddTargetSheet({ peer, back, child }) {
       const target = { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" };
       const ov = o ? configOverrides(o, info) : {};
       if (Object.keys(ov).length) target.overrides = ov;
-      if (fresh) file(pk, t, clientConf(peer, target, info, fresh.keys.priv, fresh.psk));   // the QR the kept key rebuilds later
+      if (fresh) file(fresh.keys.pub, t, clientConf(peer, target, info, fresh.keys.priv, fresh.psk));   // the QR the kept key rebuilds later
       else if (srcConf) { const s = parseFullConf(srcConf);
-        file(pk, t, buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: o ? String(o.dns).split(",").map(x => x.trim()).filter(Boolean) : s.dns, mtu: o ? (String(o.mtu).trim() || 1280) : s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: o ? (String(o.allowed).trim() || "0.0.0.0/0, ::/0") : s.allowed, keepalive: o ? String(o.keepalive).trim() : s.keepalive })); }
+        file(peer.pubkey, t, buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: o ? String(o.dns).split(",").map(x => x.trim()).filter(Boolean) : s.dns, mtu: o ? (String(o.mtu).trim() || 1280) : s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: o ? (String(o.allowed).trim() || "0.0.0.0/0, ::/0") : s.allowed, keepalive: o ? String(o.keepalive).trim() : s.keepalive })); }
       return target;
     });
     const address = ipChanged.map(t => {
@@ -578,19 +580,21 @@ export function AddTargetSheet({ peer, back, child }) {
         remove: removed.map(t => ({ node: t.node, iface: t.iface })), ...(fresh && keyedAdd ? { pubkey: fresh.keys.pub, psk: fresh.psk } : {}) });
     } catch (e) { r = { ok: false, error: (e && e.message) || "" }; }
     setBusy(false);
-    if (!r || !r.ok) {
-      // refused → nothing was written, every reason said; changed / key_changed → the panel's "reopen it"; a lost answer → the
-      // error, and Deploy again is safe (the panel answers a change already made as done).
-      setMsg({ k: "err", t: r && r.code === "refused" ? T("Nothing was changed: {v1}", { v1: (r.fails || []).map(failText).join(", ") })
-        : T("Error: {v1}", { v1: srvText(r) || (r && r.code) || T("Failed") }) });
-      return false;
-    }
     // The key is decided by the answer, the QR by the address: a config is filed, and a minted key kept, exactly when the peer the
-    // panel answered with holds that key (k6c F18 — a lost answer's retry is answered with the peer as it stands).
+    // panel answered with holds that key (k6c F18 — a lost answer's retry is answered with the peer as it stands). "changed" carries
+    // the peer too: an earlier Deploy whose answer was lost may have taken this sheet's key before the draft changed, and that key is
+    // kept even though this Deploy is refused — the sheet that reopens has no other copy of it.
     const held = (r.data && r.data.pubkey) || "";
-    for (const [key, byT] of Object.entries(confs)) if (key && key === held) Object.assign(Store.sessionConfigs[key] = Store.sessionConfigs[key] || {}, byT);
     // kept as a new peer's key is. A locked vault asks first, in a sheet over this one that closes before this one does.
     if (fresh && held === fresh.keys.pub) await subPublishOrPrompt(peer.user_id || null, peer.id, fresh.keys.priv, fresh.psk);
+    if (!r.ok) {
+      // refused → nothing was written, every reason said; changed / key_changed → the panel's "reopen it"; a lost answer → the
+      // error, and Deploy again is safe (the panel answers a change already made as done).
+      setMsg({ k: "err", t: r.code === "refused" ? T("Nothing was changed: {v1}", { v1: (r.fails || []).map(failText).join(", ") })
+        : T("Error: {v1}", { v1: srvText(r) || r.code || T("Failed") }) });
+      return false;
+    }
+    if (held && confs[held]) Object.assign(Store.sessionConfigs[held] = Store.sessionConfigs[held] || {}, confs[held]);
     toast(T("Peer targets updated."), "ok"); await Store.poll(); return true;
   };
   const save = () => {

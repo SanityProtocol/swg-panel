@@ -14,15 +14,27 @@ stored peer and writes all of it or nothing. The panel's own api(), in process, 
   [6] a keyless peer's first key: applied once; the retry 200 and nothing written; another key → 409 key_changed
   [7] every target removed → 409 last_target; an interface named twice → 400
   [8] a deployment that would take another device's network over → refused (network_refused), nothing written
+  [9] "already done" is exact (review F2/F3/F11): a retry of a Deploy whose draft lost an add since → changed, not done; an
+      add stored with other settings → changed; a keyless add sent with an address, sent again → done
+  [10] what a body may carry (F4/F7/F45): an add onto another peer's address → refused (exists); a non-string node / iface / ip,
+      a psk or pubkey that is not a key → 400, never stored, never a crash; a key another door gave the peer → key_changed
+  [11] a network refusal names the keyed add that takes it, not a keyless one beside it (F10)
+  [12] removals retire every key in one nodes.json write (F12)
 
 Run: python3 tests/peer_targets_move_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
      nobase      the base check off                                   [4]
      nodone      a change already made is not answered as done        [3]
      doneip      an add at another address counts as done              [4]
+     doneset     "done" asks only for this Deploy's own rows           [9]
+     doneov      "done" ignores an add's settings                     [9]
      nofails     the collected refusals are not acted on              [1]
      noretire    a removal leaves the key on the node                 [2]
      notakeover  the takeover check skipped in this door              [8]
+     addrtaken   an add may take another peer's address               [10]
+     keytype     pubkey / psk taken as sent                           [10]
+     keyguard    a key other than the peer's is taken                 [10]
+     netkeyless  a network refusal names a keyless add                 [11]
 """
 import importlib.machinery, importlib.util, hashlib, json, os, shutil, sys, tempfile
 
@@ -32,9 +44,16 @@ PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {
     "nobase": ('        if {key(x) for x in lists["base"]} != set(have):\n', '        if False:\n'),
     "nodone": ('                and (not nk or p.get("pubkey") == nk)):\n', '                and (not nk or p.get("pubkey") == nk)) and False:\n'),
-    "doneip": ('all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["add"])', 'all(key(x) in have for x in lists["add"])'),
+    "doneip": ('        same = lambda t, x: is_keyless_kind(t.get("type") or "") or ipof(t) == ipof(x)', '        same = lambda t, x: True'),
+    "doneset": ('        if (set(have) == ({key(x) for x in lists["base"]} - gone) | {key(x) for x in lists["add"]}\n',
+                '        if (all(key(x) in have for x in lists["add"]) and not any(key(x) in have for x in lists["remove"])\n'),
+    "doneov": (' and clean_overrides(have[key(x)].get("overrides")) == clean_overrides(x.get("overrides"))\n', '\n'),
+    "addrtaken": ('        if addr_taken(roster, pid, target["node"], target["iface"], _ip):\n', '        if False:\n'),
+    "keytype": ('        if not (_str(nk, True) and _str(psk, True)) or any(k and not _WG_KEY_RE.match(k) for k in (nk, psk)):\n', '        if False:\n'),
+    "keyguard": ('    if nk and p.get("pubkey") and nk != p["pubkey"]:\n', '    if False:\n'),
+    "netkeyless": ('next(t["iface"] for t in adds if t["node"] == nid and not is_keyless_kind(t["type"]))', 'next(t["iface"] for t in adds if t["node"] == nid)'),
     "nofails": ('        if fails:\n            return 409, {"ok": False, "error": "nothing was changed"', '        if False:\n            return 409, {"ok": False, "error": "nothing was changed"'),
-    "noretire": ('            retire_pubkey(nodes, deps["nodes_path"], [{"node": x["node"], "iface": x["iface"]}], old_key)\n', '            pass\n'),
+    "noretire": ('            retire_pubkey(nodes, deps["nodes_path"], [{"node": x["node"], "iface": x["iface"]} for x in lists["remove"]], old_key)\n', '            pass\n'),
     "notakeover": ('            took = network_takeover(roster, pid, p, final, nid, snaps)\n', '            took = []\n'),
 }
 if PLANT and PLANT not in PLANTS:
@@ -68,7 +87,8 @@ SNAP = {"node_ips": ["203.0.113.5"], "ether_gws": {"eth0": "203.0.113.1"},
         "net_deps": {"panel": "198.51.100.10", "resolvers": ["198.51.100.53"], "resolvers_known": True, "share": 1, "carried": 1}}
 SNAP2 = dict(SNAP, interfaces={"wgs1": {"meta": {"subnet": "10.145.0.0/24", "type": "wg"}}})
 NODES = {"n1": {"id": "n1", "name": "msk", "ifaces": {},
-                "wdtt": {"wdtt7": {"fork": "qwdtt", "wg_addr": "10.66.70.1/30", "listen": "0.0.0.0:56000"}}},   # a pool of 1
+                "wdtt": {"wdtt7": {"fork": "qwdtt", "wg_addr": "10.66.70.1/30", "listen": "0.0.0.0:56000"},     # a pool of 1
+                         "wdtt8": {"fork": "qwdtt", "wg_addr": "10.66.80.1/24", "listen": "0.0.0.0:56001"}}},
          "n2": {"id": "n2", "name": "svo", "ifaces": {}}}
 
 
@@ -128,9 +148,9 @@ def tg(pid):
 
 
 def events():
-    """The event log's lines, read through the panel (wherever it keeps them)."""
+    """The event log's lines, newest first, read through the panel."""
     c, b = P.api("GET", "/api/events", {"limit": ["200"]}, {}, deps)
-    return [(e.get("verb"), e.get("detail")) for e in ((b.get("data") or {}).get("events") if isinstance(b.get("data"), dict) else b.get("data") or [])]
+    return [(e.get("verb"), e.get("detail")) for e in b.get("data") or []]
 
 
 N = lambda i, ip="": {"node": "n1", "iface": i, **({"ip": ip} if ip else {})}
@@ -155,7 +175,7 @@ try:
     check("[2] 200, the peer on awg2 alone", c == 200 and tg("a") == [("awg2", "10.71.0.5")] and [t["iface"] for t in b["data"]["targets"]] == ["awg2"], (c, b, tg("a")))
     retire = (json.load(open(nodes_path))["n1"].get("retire") or {}).get("awg1") or []
     check("[2] awg1 retired on the node, its stored config gone", K("A") in retire and not os.path.exists(cfg), (retire, os.path.exists(cfg)))
-    new = events()[len(ev0):] if events()[:len(ev0)] == ev0 else events()
+    new = events()[:len(events()) - len(ev0)]          # newest first: the lines this Deploy wrote
     verbs = sorted(v for v, _d in new)
     check("[2] one Added and one Removed line", verbs == ["Added deployment", "Removed deployment"], new)
 
@@ -169,6 +189,7 @@ try:
     c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.9", "type": "awg"}]})
     check("[4] 409 changed, nothing written", c == 409 and b.get("code") == "changed" and "reopen" in (b.get("error") or "")
           and files() == before and tg("a") == [("awg2", "10.71.0.5")], (c, b, tg("a")))
+    check("[4] …with the peer as it stands (a sheet whose lost Deploy took its key keeps it)", (b.get("data") or {}).get("pubkey") == K("A"), b)
     c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.77", "type": "awg"}], "remove": [N("awg1")]})
     check("[4] an add another tab made first at another address is not this one: 409 changed", c == 409 and b.get("code") == "changed"
           and files() == before, (c, b))
@@ -182,7 +203,7 @@ try:
     c, b = door({"peer_id": "a", "base": [N("awg2")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.9", "type": "awg"}],
                  "address": [N("awg2", "10.71.0.9")]})
     check("[5] a free one: both applied", c == 200 and tg("a") == [("awg1", "10.8.0.9"), ("awg2", "10.71.0.9")], (c, b, tg("a")))
-    check("[5] …with a Changed address line", any(v == "Changed address" and "10.71.0.9" in (d or "") for v, d in events()), events()[-4:])
+    check("[5] …with a Changed address line", any(v == "Changed address" and "10.71.0.9" in (d or "") for v, d in events()), events()[:4])
 
     print("\n[6] a keyless peer's first key")
     body = {"peer_id": "q", "base": [N("wdtt7")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.8", "type": "awg"}],
@@ -212,6 +233,67 @@ try:
     check("[8] refused as network_refused, naming the prefix; nothing written", c == 409 and b.get("code") == "refused"
           and f[0].get("code") == "network_refused" and (f[0].get("refusals") or [{}])[0].get("prefix") == "192.168.141.0/24"
           and files() == before, (c, b))
+
+    print("\n[9] \"already done\" is exact")
+    reset()
+    c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.5", "type": "awg"},
+                                                              {"node": "n2", "iface": "wgs1", "ip": "10.145.0.9", "type": "wg"}]})
+    check("[9] two adds applied (their answer lost)", c == 200 and len(peer("a")["targets"]) == 3, (c, b))
+    before = files()
+    c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.5", "type": "awg"}]})
+    check("[9] the draft unticked one since: not done — 409 changed, nothing written", c == 409 and b.get("code") == "changed" and files() == before, (c, b))
+    c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.5", "type": "awg", "overrides": {"mtu": 1300}},
+                                                              {"node": "n2", "iface": "wgs1", "ip": "10.145.0.9", "type": "wg"}]})
+    check("[9] the same adds with other settings: not done — 409 changed, nothing written", c == 409 and b.get("code") == "changed" and files() == before, (c, b))
+    body = {"peer_id": "a", "base": [N("awg1"), N("awg2"), {"node": "n2", "iface": "wgs1"}], "add": [{"node": "n1", "iface": "wdtt8", "ip": "10.66.80.2", "type": "wdtt"}]}
+    c, b = door(body)
+    check("[9] a keyless add sent with an address: stored with none", c == 200 and ("wdtt8", "") in tg("a"), (c, b, tg("a")))
+    before = files()
+    c, b = door(body)
+    check("[9] …sent again: done, nothing written", c == 200 and files() == before, (c, b))
+
+    print("\n[10] what a body may carry")
+    reset()
+    before = files()
+    c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.6", "type": "awg"}], "remove": [N("awg1")]})
+    f = b.get("fails") or [{}]
+    check("[10] a move onto another peer's address (b holds .6): refused, exists, nothing written", c == 409 and b.get("code") == "refused"
+          and [(x.get("iface"), x.get("code")) for x in f] == [("awg2", "exists")] and files() == before and tg("a") == [("awg1", "10.8.0.5")], (c, b))
+    bad = [("an int iface", {"add": [{"node": "n1", "iface": 7, "ip": "10.9.0.2"}]}),
+           ("a list node", {"add": [{"node": ["n1"], "iface": "awg2", "ip": "10.71.0.9"}]}),
+           ("an int ip", {"add": [{"node": "n1", "iface": "awg2", "ip": 5}]}),
+           ("a NaN psk", {"peer_id": "q", "base": [N("wdtt7")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.8"}], "pubkey": K("Q"), "psk": float("nan")}),
+           ("a pubkey that is not a key", {"peer_id": "q", "base": [N("wdtt7")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.8"}], "pubkey": "x"})]
+    for what, extra in bad:
+        c, b = door(dict({"peer_id": "a", "base": [N("awg1")]}, **extra))
+        check("[10] %s → 400, nothing written" % what, c == 400 and b.get("code") == "bad_request" and files() == before, (c, b))
+    r = json.load(open(roster_path)); r["peers"]["q"]["pubkey"] = K("Z"); json.dump(r, open(roster_path, "w"))   # another door keyed it
+    before = files()
+    c, b = door({"peer_id": "q", "base": [N("wdtt7")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.8", "type": "awg"}], "pubkey": K("Q")})
+    check("[10] a key another door gave the peer, same interfaces: 409 key_changed, nothing written", c == 409 and b.get("code") == "key_changed"
+          and files() == before, (c, b))
+
+    print("\n[11] a network refusal names the keyed add")
+    reset()
+    c, b = door({"peer_id": "g2", "base": [{"node": "n2", "iface": "wgs1"}], "add": [{"node": "n1", "iface": "wdtt8", "ip": "", "type": "wdtt"},
+                                                                                   {"node": "n1", "iface": "awg2", "ip": "10.71.0.40", "type": "awg"}]})
+    f = b.get("fails") or [{}]
+    check("[11] refused, naming awg2 (not wdtt8, which carries no networks)", c == 409 and [(x.get("iface"), x.get("code")) for x in f] == [("awg2", "network_refused")], (c, b))
+
+    print("\n[12] removals retire in one write")
+    reset()
+    first = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.5", "type": "awg"},
+                                                              {"node": "n2", "iface": "wgs1", "ip": "10.145.0.9", "type": "wg"}]})
+    saves, _save = [], P.nodes_save
+    P.nodes_save = lambda *a, **k: (saves.append(1), _save(*a, **k))[1]
+    try:
+        c, b = door({"peer_id": "a", "base": [N("awg1"), N("awg2"), {"node": "n2", "iface": "wgs1"}], "remove": [N("awg1"), {"node": "n2", "iface": "wgs1"}]})
+    finally:
+        P.nodes_save = _save
+    ns = json.load(open(nodes_path))
+    ret = lambda n, i: (ns[n].get("retire") or {}).get(i) or []
+    check("[12] both keys retired, one nodes.json write", first[0] == 200 and c == 200 and K("A") in ret("n1", "awg1")
+          and K("A") in ret("n2", "wgs1") and len(saves) == 1, (first[0], c, b, len(saves)))
 finally:
     shutil.rmtree(D, ignore_errors=True)
     shutil.rmtree(TMPM, ignore_errors=True)
