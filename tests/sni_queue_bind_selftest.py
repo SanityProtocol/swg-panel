@@ -13,9 +13,10 @@ and a queue exists from the BIND on, so a packet can arrive before the answer. T
   [2] the kernel refuses (EPERM): QueueRefused, no PARAMS, the socket closed; main() logs the refusal at err and exits non-zero.
   [3] a packet queued before the answer is ACCEPTed (its verdict sent) and the bind is still confirmed.
   [4] no answer at all: a warning, and on as before (fail-open).
-  [5] swg-noded: a swg-sni that died within 60 s of its launch is not relaunched until that minute is over — `sni_alive`
-      reads false meanwhile; one that ran longer is relaunched in the same pass; a stop noded made itself is not delayed.
-  [6] swg-noded: the TTL relaunch waits for the old process before it starts the new one.
+  [5] swg-noded: a swg-sni the kernel refused (exit 3) within 60 s of its launch is not relaunched until that minute is
+      over — `sni_alive` reads false meanwhile; a crash (any other exit) is relaunched next pass, as always; one that ran
+      longer is relaunched in the same pass; a stop noded made itself is not delayed.
+  [6] swg-noded: the TTL relaunch waits for the old process before it starts the new one, and kills one that will not go.
 
 Run: python3 tests/sni_queue_bind_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -23,8 +24,10 @@ Run: python3 tests/sni_queue_bind_selftest.py   (0 = pass)
      noackflag   the BIND does not ask for an ack (a success is never confirmed)     [1]
      ignoreerr   a refusal is read and ignored                                       [2]
      droppkt     a packet that arrives before the answer is dropped, not accepted    [3]
-     everypass   swg-noded relaunches a dead swg-sni every pass                      [5]
+     everypass   swg-noded relaunches a refused swg-sni every pass                   [5]
+     anydeath    swg-noded holds back the relaunch of any early death, not only exit 3 [5]
      nowait      the TTL relaunch does not wait for the old process                  [6]
+     nokill      the TTL relaunch leaves an old process that will not go             [6]
 """
 import importlib.machinery, importlib.util, os, socket, struct, sys, tempfile, time
 
@@ -48,8 +51,11 @@ PLANTS = {
     "ignoreerr": (SNI, "        if err:\n            self.s.close()\n            raise QueueRefused(err)\n", "        if False:\n            pass\n"),
     "droppkt": (SNI, "                        if pid is not None:\n                            self._accept(pid)\n",
                 "                        if pid is not None:\n                            pass\n"),
-    "everypass": (NODED, '        if p and time.monotonic() - _SNI_PROC.get("at", 0.0) < 60:\n            return\n', ""),
-    "nowait": (NODED, "            p.terminate(); p.wait(2)", "            p.terminate()"),
+    "everypass": (NODED, '        if p and p.returncode == 3 and time.monotonic() - _SNI_PROC.get("at", 0.0) < 60:\n            return\n', ""),
+    "anydeath": (NODED, "        if p and p.returncode == 3 and time.monotonic()", "        if p and time.monotonic()"),
+    "nowait": (NODED, "            try:\n                p.wait(2)\n            except subprocess.TimeoutExpired:",
+               "            try:\n                pass\n            except subprocess.TimeoutExpired:"),
+    "nokill": (NODED, "                p.kill(); p.wait(2)", "                pass"),
 }
 TMP = tempfile.mkdtemp(prefix="sni-bind-")
 paths = {SNI: SNI, NODED: NODED}
@@ -197,7 +203,7 @@ except Exception as x:                                          # it went on int
 finally:
     S.socket.socket = REAL_SOCKET
     sys.argv = argv
-check("[2] main() exits non-zero", code not in (None, 0), code)
+check("[2] main() exits 3 — what swg-noded reads as \"refused\"", code == 3, code)
 check("[2] …with one err line naming the refusal, and never 'bound'",
       [l for l in LOG if l[0] == S.LOG_ERR and "refused (EPERM)" in l[1]] and not [l for l in LOG if "bound queue" in l[1]], LOG)
 
@@ -224,18 +230,29 @@ EV = []
 
 
 class Proc:
-    def __init__(self, rc):
-        self.rc = rc
+    def __init__(self, rc, stuck=False):
+        self.rc, self.stuck = rc, stuck
+
+    @property
+    def returncode(self):
+        return self.rc
 
     def poll(self):
         return self.rc
 
     def terminate(self):
         EV.append("terminate")
-        self.rc = -15
+        if not self.stuck:
+            self.rc = -15
+
+    def kill(self):
+        EV.append("kill")
+        self.rc = -9
 
     def wait(self, t=None):
         EV.append("wait")
+        if self.rc is None:
+            raise N.subprocess.TimeoutExpired("swg-sni", t)
         return self.rc
 
 
@@ -259,12 +276,15 @@ alive = lambda: bool(N._SNI_PROC.get("p") and N._SNI_PROC["p"].poll() is None)  
 dead = Proc(3)
 N._SNI_PROC.update(p=dead, ttl=3600, at=time.monotonic() - 10)
 r = router()
-check("[5] died 10 s after its launch: not relaunched this pass", "launch" not in EV and N._SNI_PROC["p"] is dead, (EV, r))
+check("[5] refused (exit 3) 10 s after its launch: not relaunched this pass", "launch" not in EV and N._SNI_PROC["p"] is dead, (EV, r))
 check("[5] …and sni_alive reads false meanwhile", alive() is False)
 N._SNI_PROC["at"] = time.monotonic() - 61
 r = router()
 check("[5] once the minute is over: relaunched, its launch time taken",
       EV == ["launch"] and alive() and time.monotonic() - N._SNI_PROC["at"] < 5, (EV, r))
+N._SNI_PROC.update(p=Proc(1), at=time.monotonic() - 10)
+router()
+check("[5] a crash 10 s after its launch (any other exit) is relaunched next pass, as always", EV == ["launch"], EV)
 N._SNI_PROC.update(p=Proc(1), at=time.monotonic() - 3600)
 router()
 check("[5] one that ran an hour and died is relaunched in the same pass, as before", EV == ["launch"], EV)
@@ -276,6 +296,10 @@ print("\n[6] the TTL relaunch")
 N._SNI_PROC.update(p=Proc(None), ttl=3600, at=time.monotonic() - 5)
 router(ttl=120)
 check("[6] the old process is stopped AND waited for before the new one starts", EV == ["terminate", "wait", "launch"], EV)
+N._SNI_PROC.update(p=Proc(None, stuck=True), ttl=3600, at=time.monotonic() - 5)
+router(ttl=120)
+check("[6] one still there after 2 s is killed and reaped before the new one starts",
+      EV == ["terminate", "wait", "kill", "wait", "launch"], EV)
 
 import shutil
 shutil.rmtree(TMP, ignore_errors=True)

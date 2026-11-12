@@ -1286,7 +1286,7 @@ def main():
     except QueueRefused as e:
         say(LOG_ERR, "swg-sni: queue %s refused (%s): another process holds it — not classifying", a.queue,
             errno.errorcode.get(e.args[0], e.args[0]))
-        sys.exit(3)
+        sys.exit(3)                                    # swg-noded reads 3 as "refused": it retries in a minute, not every pass
     say(LOG_INFO, "swg-sni: bound queue %s, table %s, map %s, reset-mark %#x, learn-ttl %ss", a.queue, a.table, a.map,
         a.reset_mark, a.learn_ttl)
     q.loop(cls.on_packet)

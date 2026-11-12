@@ -14169,7 +14169,11 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
         return
     if p and p.poll() is None and _SNI_PROC.get("ttl") != learn_ttl:   # ip_learning TTL flipped → relaunch so swg-sni's seen-cache
         with contextlib.suppress(Exception):                          # TTL matches the new learned-set timeout (else a 3600→120 flip leaks)
-            p.terminate(); p.wait(2)                                  # gone before the new one binds: the queue is one owner's (K8 D1)
+            p.terminate()                                             # gone before the new one binds: the queue is one owner's (K8 D1)
+            try:
+                p.wait(2)
+            except subprocess.TimeoutExpired:                         # still there after 2 s: it goes now, and is reaped
+                p.kill(); p.wait(2)
         _SNI_PROC["p"] = None; p = None
     def _put_blocks():
         # The per-source verdicts (D1), same rule, own file: absent when no Block exists, which is also what an older
@@ -14274,10 +14278,10 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
     except Exception as e:
         res["errors"].append("sni map: " + str(e)[:120]); return
     if not p or p.poll() is not None:                          # (re)launch the classifier if it isn't running
-        # …but one that died on its own within a minute of its launch waits out that minute (K8 D1): swg-sni exits when the
-        # kernel refuses its queue (another process holds it), and a relaunch every pass would be a Python start and a map
-        # load every 5 s for nothing. The dead process stays in _SNI_PROC meanwhile, so `sni_alive` reads false.
-        if p and time.monotonic() - _SNI_PROC.get("at", 0.0) < 60:
+        # …but one the kernel refused its queue (exit 3: another process holds it) waits out a minute from its launch (K8 D1):
+        # a relaunch every pass would be a Python start and a map load every 5 s for nothing. Only that exit — a crash or an
+        # OOM kill is relaunched next pass, as always. The dead process stays in _SNI_PROC meanwhile: `sni_alive` reads false.
+        if p and p.returncode == 3 and time.monotonic() - _SNI_PROC.get("at", 0.0) < 60:
             return
         exe = next((c for c in (os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "swg-sni"),
                                 "/opt/swg-noded/swg-sni", "/usr/local/bin/swg-sni") if os.path.exists(c)), None)
@@ -16193,7 +16197,7 @@ def sample_catk():
     for m in re.finditer(r'--comment "?swg-catk-(up|dn):([^"\s]+)"?.* -c \d+ (\d+)', r.stdout or ""):
         if not m.group(2).startswith("__"):                 # the sampling gate (D1) is no category
             # keyed as catcount keys it (`mc:cloudflare` → `mc_cloudflare`), so build_snapshot meets ONE key a category (K8 D3)
-            cum.setdefault(_smart_setname(m.group(2))[len("cat_"):], {"up": 0, "dn": 0})[m.group(1)] += int(m.group(3))
+            cum.setdefault(_smart_countername(m.group(2))[len("c_"):], {"up": 0, "dn": 0})[m.group(1)] += int(m.group(3))
     g0 = _ipt_gate_n(r.stdout or "")
     if g0:
         _GATE_SEEN[SWG_CATK_CHAIN] = g0                     # for _stats_steer

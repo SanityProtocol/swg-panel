@@ -65,7 +65,7 @@ PLANTS = {
                    '    if False:                                     # no Kernel-SNI category here'),
     "nooff": ('    _CATK["on"] = bool(want)                               # sample_catk reads the chain only while there is one\n',
               '    _CATK["on"] = _CATK["on"] or bool(want)\n'),
-    "rawkey": ('cum.setdefault(_smart_setname(m.group(2))[len("cat_"):], {"up": 0, "dn": 0})', 'cum.setdefault(m.group(2), {"up": 0, "dn": 0})'),
+    "rawkey": ('cum.setdefault(_smart_countername(m.group(2))[len("c_"):], {"up": 0, "dn": 0})', 'cum.setdefault(m.group(2), {"up": 0, "dn": 0})'),
     "strict5": ('(now - _CATK["t"]) < CATK_SAMPLE_EVERY_S - 1:', '(now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:'),
     "sum": ('_b["up"] = max(_b.get("up", 0.0), _v["up"]); _b["dn"] = max(_b.get("dn", 0.0), _v["dn"])',
             '_b["up"] = _b.get("up", 0.0) + _v["up"]; _b["dn"] = _b.get("dn", 0.0) + _v["dn"]'),
