@@ -493,11 +493,11 @@ def _in_sorted(mm, key):
     return False
 
 
-def _nb_under(d, names):
-    """True when `d` or one of its parents is in `names` — swg-noded's _nb_under: a file's `cut` drops exactly the lines the
+def _nb_under(d, allow):
+    """True when `d` or one of its parents is in `allow` — swg-noded's _nb_under: a file's `cut` drops exactly the lines the
     Never-block list cut out of an inline union."""
     while True:
-        if d in names:
+        if d in allow:
             return True
         i = d.find(".")
         if i < 0:
@@ -775,6 +775,8 @@ class Classifier:
         this process, the queue's bypass fails open and swg-noded relaunches it."""
         old = {e[1]: e for e in self.files}
         out = []
+        if self.map_failed:                            # only the files the map still names (a failure is logged once a file)
+            self.map_failed = self.map_failed & {(w[1], w[3]) for w in self.file_want}
         for cat, path, cut, want in self.file_want:
             e = old.get(path)
             mm = None

@@ -7058,53 +7058,38 @@ class _Pulled:
     """A big pulled list under Hybrid SNI, held as its FILE rather than its names (docs/SCALE-PLAN.md K9). A 1.2 M-name
     block list cost this process ~260 MB held as a list (peak ~600 with its rebuild) and swg-sni ~330 MB more as a dict;
     swg-sni now answers from the file itself (SNI_FILES_KEY), so the list itself is never held here. Made only for a file
-    with names whose order and lines _doms_file_ok checked; `stamp` is that file's (inode, mtime_ns, size), which the map
-    carries — swg-sni maps a file only at that stamp, so a pull that renames a new file in is answered from only once the
-    next pass has checked it. Made afresh on every enrichment (the domain tier's cache then keeps it with the map it was
-    enriched into): _never_block_adjust writes `inline` and `cut` on it. Iterating it yields what the list would have held
-    — the panel's own names for the category, then the file's names not under `cut` — streamed; `holds` asks the sorted
-    file by binary search. A reader that keeps what it walks (_smart_shadows' index, a shadow category) holds those
-    names again: that is the rest of the list's cost, transient and well under what the list itself was."""
-    __slots__ = ("path", "stamp", "inline", "cut")
+    with names whose order and lines _doms_file_ok checked, and it HOLDS THAT FILE OPEN (`fh`): every read here is of the
+    checked inode, whatever the pull renames in at the path meanwhile — and `stamp`, its (inode, mtime_ns, size), goes
+    into the map, where swg-sni maps a file only at that stamp. So both processes read the one file that was checked.
+    Made afresh on every refresh (the domain tier's cache then keeps it with the map it was enriched into):
+    _never_block_adjust writes `inline` and `cut` on it. Iterating it yields what the list would have held — the panel's
+    own names for the category, then the file's names not under `cut` — streamed; `holds` asks the sorted file by binary
+    search. A reader that keeps what it walks (_smart_shadows' index, a shadow category) holds those names again: that is
+    the rest of the list's cost, transient and well under what the list itself was."""
+    __slots__ = ("path", "stamp", "fh", "inline", "cut")
 
-    def __init__(self, path, stamp):
-        self.path, self.stamp, self.inline, self.cut = path, stamp, [], set()
+    def __init__(self, path, stamp, fh):
+        self.path, self.stamp, self.fh, self.inline, self.cut = path, stamp, fh, [], set()
 
-    def _open(self):
-        """(file, True when it is still the checked one)."""
-        f = open(self.path, "rb")
-        st = os.fstat(f.fileno())
-        return f, (st.st_ino, st.st_mtime_ns, st.st_size) == self.stamp
+    def _map(self):
+        return mmap.mmap(self.fh.fileno(), 0, access=mmap.ACCESS_READ)   # its own position: walks never share an offset
 
     def __iter__(self):
         yield from self.inline
-        f, checked = self._open()
-        with f:
-            for raw in f:
-                if checked:                                    # every dotted line is a name (_doms_file_ok); a dotless one a zone
-                    if b"." not in raw:
-                        continue
+        with self._map() as mm:
+            for raw in iter(mm.readline, b""):
+                if b"." in raw:                                # every dotted line is a name (_doms_file_ok); a dotless one a zone
                     d = raw.rstrip(b"\n").decode()
-                else:                                          # a file renamed in after the check: as the parse reads it
-                    d = raw.strip().decode("ascii", "replace")
-                    if not _DOM_RE.match(d):
-                        continue
-                if not (self.cut and _nb_under(d, self.cut)):
-                    yield d
+                    if not (self.cut and _nb_under(d, self.cut)):
+                        yield d
 
     def holds(self, names):
-        """The names of `names` this list holds, `cut` applied — a binary search a name over the checked file (one walk of it
-        when the file was renamed since)."""
-        names = set(names)
+        """The names of `names` this list holds, `cut` applied — a binary search a name."""
         got = {d for d in self.inline if d in names}
-        f, checked = self._open()
-        with f:
-            if not checked:
-                return got | {d for d in self if d in names}
-            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                for d in names - got:
-                    if "." in d and _DOM_RE.match(d) and not (self.cut and _nb_under(d, self.cut)) and _in_sorted(mm, d.encode()):
-                        got.add(d)
+        with self._map() as mm:
+            for d in set(names) - got:
+                if "." in d and _DOM_RE.match(d) and not (self.cut and _nb_under(d, self.cut)) and _in_sorted(mm, d.encode()):
+                    got.add(d)
         return got
 
 
@@ -7127,30 +7112,28 @@ def _in_sorted(mm, key):
     return False
 
 
-def _doms_file_ok(path):
-    """(has names, zones, stamp) when the file can be read by swg-sni's binary search — every line in byte order, ASCII, no
+def _doms_file_ok(f):
+    """(has names, zones) when the open file `f` can be read by swg-sni's binary search — every line in byte order, ASCII, no
     surrounding whitespace or `\r`, each dotted line a `_DOM_RE` name and each dotless one a zone-shaped label — else None
-    (then the list is parsed and goes inline, as before). One streaming pass that keeps only the zones, as the parse does;
-    `stamp` is the (inode, mtime_ns, size) of the file it read."""
+    (then the list is parsed and goes inline, as before). One streaming pass that keeps only the zones, as the parse does."""
     zones, has, prev = [], False, b""
-    with open(path, "rb") as f:
-        st = os.fstat(f.fileno())
-        for raw in f:
-            ln = raw[:-1] if raw.endswith(b"\n") else raw
-            if ln < prev or not ln.isascii() or ln != ln.strip():
+    f.seek(0)
+    for raw in f:
+        ln = raw[:-1] if raw.endswith(b"\n") else raw
+        if ln < prev or not ln.isascii() or ln != ln.strip():
+            return None
+        prev = ln
+        d = ln.decode()
+        if "." in d:
+            if not _DOM_RE.match(d):
                 return None
-            prev = ln
-            d = ln.decode()
-            if "." in d:
-                if not _DOM_RE.match(d):
-                    return None
-                has = True
-            elif _ZLABEL_RE.match(d):
-                if _zone_label_ok(d):
-                    zones.append(d)
-            else:
-                return None
-    return has, zones, (st.st_ino, st.st_mtime_ns, st.st_size)
+            has = True
+        elif _ZLABEL_RE.match(d):
+            if _zone_label_ok(d):
+                zones.append(d)
+        else:
+            return None
+    return has, zones
 
 
 def _smart_domain_refresh(cats, res, files=False):
@@ -7176,22 +7159,25 @@ def _smart_domain_refresh(cats, res, files=False):
         # custom_<hash> (its domains come inline from the panel) → skip.
         if not (_is_provider_cat(cat) or os.path.exists(path)):
             continue
+        fh = None
         try:
             try:
                 st = os.stat(path)
             except OSError:
                 continue                                       # no cache yet → nothing to return for this cat
-            sig = (st.st_ino, st.st_mtime_ns, st.st_size)     # the pull renames a new file in: a new inode, whatever the clock
             byfile = files and st.st_size >= SNI_FILE_MIN
+            if byfile:                                         # the file this list is read by, checked and pinned (_Pulled)
+                fh = open(path, "rb"); st = os.fstat(fh.fileno())
+            sig = (st.st_ino, st.st_mtime_ns, st.st_size)     # the pull renames a new file in: a new inode, whatever the clock
             if byfile:
                 sig += ("file",)
             cached = _DOM_CACHE.get(cat)
             hit = bool(cached and cached[0] == sig)
-            chk = _doms_file_ok(path) if byfile and not hit else None
+            chk = _doms_file_ok(fh) if byfile and not hit else None
             if hit:                                            # file unchanged → reuse the parsed split (skip the big read+regex)
                 doms, zones, stamp = cached[1:]
             elif chk is not None:
-                doms, zones, stamp = None, chk[1], (chk[2] if chk[0] else None)
+                doms, zones, stamp = None, chk[1], (sig[:3] if chk[0] else None)
                 _DOM_CACHE[cat] = (sig, doms, zones, stamp)
             else:
                 if byfile:
@@ -7206,13 +7192,16 @@ def _smart_domain_refresh(cats, res, files=False):
                 _DOM_CACHE[cat] = (sig, doms, zones, None)
             if doms is None:
                 if stamp:                                      # read by file: a fresh _Pulled each time (see the class)
-                    out[cat] = _Pulled(path, stamp)
+                    out[cat], fh = _Pulled(path, stamp, fh), None
             elif doms:
                 out[cat] = doms
             if zones:
                 zout[cat] = zones
         except Exception as e:
             res["errors"].append("smart domain " + cat + ": " + str(e)[:120])
+        finally:
+            if fh is not None:                                 # not handed to a _Pulled
+                fh.close()
     return out, zout
 
 

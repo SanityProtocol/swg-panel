@@ -24,7 +24,7 @@ binary search over the mapped file. Nothing a connection meets may change: every
 Run: python3 tests/sni_pulled_file_selftest.py      (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
 """
-import importlib.machinery, importlib.util, json, os, random, shutil, subprocess, sys, tempfile
+import ast, importlib.machinery, importlib.util, json, os, random, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -46,15 +46,19 @@ PLANTS = {   # name: (file, old text, planted text)
     "s-dropold":  ("sni", "            elif e:\n                out.append((cat, path, cut, e[3], e[4]))", "            elif False:\n                pass"),
     "s-noregex":  ("sni", "        if not _DOM_RE.match(s):\n            return got\n", ""),
     "s-nocut":    ("sni", "            if not (cut and _nb_under(s, cut)) and _in_sorted", "            if _in_sorted"),
-    "n-noorder":  ("noded", "            if ln < prev or not ln.isascii()", "            if not ln.isascii()"),
+    "n-noorder":  ("noded", "        if ln < prev or not ln.isascii()", "        if not ln.isascii()"),
     "n-nomode":   ("noded", "            if byfile:\n                sig += (\"file\",)\n", ""),
-    "n-cached":   ("noded", "                    out[cat] = _Pulled(path, stamp)",
-                   "                    out[cat] = globals().setdefault(\"_PC\", {}).setdefault(path, _Pulled(path, stamp))"),
+    "n-cached":   ("noded", "                    out[cat], fh = _Pulled(path, stamp, fh), None",
+                   "                    out[cat], fh = globals().setdefault(\"_PC\", {}).setdefault(path, _Pulled(path, stamp, fh)), None"),
     "n-names":    ("noded", "                if isinstance(d, _Pulled):                     # swg-sni reads it", "                if False:   # swg-sni reads it"),
     "n-nostamp":  ("noded", "{\"path\": d.path, \"stamp\": list(d.stamp)}", "{\"path\": d.path}"),
     "n-noinline": ("noded", "                fl.inline = sorted(set(domains.get(cat) or []))", "                fl.inline = []"),
-    "n-itercut":  ("noded", "                if not (self.cut and _nb_under(d, self.cut)):\n                    yield d",
-                   "                if True:\n                    yield d"),
+    "n-itercut":  ("noded", "                    if not (self.cut and _nb_under(d, self.cut)):\n                        yield d",
+                   "                    if True:\n                        yield d"),
+    "n-unpinned": ("noded", "        return mmap.mmap(self.fh.fileno(), 0, access=mmap.ACCESS_READ)",
+                   "        with open(self.path, \"rb\") as f:\n            return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)"),
+    "n-searchdrift": ("noded", "            hi = ls\n    return False\n\n\ndef _doms_file_ok",
+                      "            hi = ls\n    return key == b\"\"\n\n\ndef _doms_file_ok"),
     "n-inlcut":   ("noded", "                lst.inline = [d for d in lst.inline if not _nb_under(d, allow)]", "                pass"),
     "n-holdscut": ("noded", "_DOM_RE.match(d) and not (self.cut and _nb_under(d, self.cut)) and _in_sorted(mm, d.encode())",
                    "_DOM_RE.match(d) and _in_sorted(mm, d.encode())"),
@@ -229,15 +233,20 @@ def run_checks(nsrc, ssrc, which=""):
         d3, _z = N._smart_domain_refresh([UNION], r, files=True)
         ok(isinstance(d3.get(UNION), N._Pulled) and list(d3[UNION]) == unames,
            "[1] back to Hybrid: by file again, iterating it gives the list's names", type(d3.get(UNION)).__name__)
-        ok(S._DOM_RE.pattern == N._DOM_RE.pattern and S.FILES_KEY == N.SNI_FILES_KEY,
-           "[4] swg-sni's name expression and map key are swg-noded's", (S._DOM_RE.pattern, N._DOM_RE.pattern))
-        # a file renamed in after the check: the object still reads it right (walked, not searched), and the next pass re-checks
+        def body(src, fn):                                         # a function's code without its docstring
+            f = next(x for x in ast.parse(src).body if isinstance(x, ast.FunctionDef) and x.name == fn)
+            b = f.body[1:] if f.body and isinstance(f.body[0], ast.Expr) and isinstance(getattr(f.body[0], "value", None), ast.Constant) else f.body
+            return [ast.dump(x) for x in b]
+        ok(S._DOM_RE.pattern == N._DOM_RE.pattern and S.FILES_KEY == N.SNI_FILES_KEY
+           and all(body(nsrc, fn) == body(ssrc, fn) for fn in ("_in_sorted", "_nb_under")),
+           "[4] swg-sni's name expression, map key, search and cut are swg-noded's", (S._DOM_RE.pattern, N._DOM_RE.pattern))
+        # a file renamed in after the check: the object still reads the CHECKED file (the one swg-sni maps), the next pass the new
         up = os.path.join(N.GEO_DIR, UNION + ".doms")
         open(up + ".tmp", "w").write("".join(x + "\n" for x in sorted(set(ul) | {"late.example"})))
         os.replace(up + ".tmp", up)
         pl = d3[UNION]
-        ok(pl.holds(["late.example", "tracker.com", "nope.example"]) == {"late.example", "tracker.com"},
-           "[4] a file replaced after the check: holds() reads it right", sorted(pl.holds(["late.example", "tracker.com"])))
+        ok(pl.holds(["late.example", "tracker.com", "nope.example"]) == {"tracker.com"} and list(pl) == unames,
+           "[4] a file replaced after the check: the list still reads the file it checked", sorted(pl.holds(["late.example", "tracker.com"])))
         d4, _z = N._smart_domain_refresh([UNION], r, files=True)
         ok(isinstance(d4.get(UNION), N._Pulled) and d4[UNION].stamp != pl.stamp
            and d4[UNION].holds(["late.example"]) == {"late.example"}, "[4] …and the next refresh checks it and takes its stamp",
