@@ -544,11 +544,15 @@ export function AddTargetSheet({ peer, back, child }) {
   const doSave = async () => {
     setBusy(true); setMsg({ k: "work", t: T("applying…") });
     // A peer with no key yet (every deployment csqtt / WDTT) gets one with its first WireGuard deployment, minted here as a new
-    // peer's is; its csqtt / WDTT links stay as they are. The live peer decides: this sheet's copy may predate that first key.
-    // Kept across a retry, so a Deploy sent again never mints a second.
+    // peer's is; its csqtt / WDTT links stay as they are. Kept across a retry, so a Deploy sent again never mints a second.
+    // ⚠️ THE SHEET SENDS THE KEY IT BUILDS WITH, ALWAYS (F28 review F42, the operator 2026-11-12): the minted one, else the key the
+    // peer had when the sheet opened — the one srcConf holds. A key rotated (or a first key given) in another tab since is then
+    // the panel's key_changed, "reopen it", not adds applied with no QR and no reason. So this sheet's own copy decides whether
+    // to mint, not the live store: minting against a key that appeared since is refused the same way.
     const keyedAdd = added.some(needsIp);
-    const fresh = freshKey.current || (!(Store.peer(peer.id) || peer).pubkey && keyedAdd ? { keys: await genKeys(), psk: genPSK() } : null);
+    const fresh = freshKey.current || (!peer.pubkey && keyedAdd ? { keys: await genKeys(), psk: genPSK() } : null);
     freshKey.current = fresh;
+    const sheetKey = fresh && keyedAdd ? fresh.keys.pub : peer.pubkey;
     const confs = {};                                  // {pubkey: {target: config}} — filed only once the panel holds that key
     const file = (key, t, conf) => { (confs[key] = confs[key] || {})[tkey(t.node, t.iface)] = conf; };
     const add = added.map(t => {
@@ -577,16 +581,24 @@ export function AddTargetSheet({ peer, back, child }) {
     let r;
     try {
       r = await api.peerTargets({ peer_id: peer.id, base: initial.map(t => ({ node: t.node, iface: t.iface })), add, address,
-        remove: removed.map(t => ({ node: t.node, iface: t.iface })), ...(fresh && keyedAdd ? { pubkey: fresh.keys.pub, psk: fresh.psk } : {}) });
+        remove: removed.map(t => ({ node: t.node, iface: t.iface })), ...(sheetKey ? { pubkey: sheetKey } : {}), ...(fresh && keyedAdd ? { psk: fresh.psk } : {}) });
     } catch (e) { r = { ok: false, error: (e && e.message) || "" }; }
     setBusy(false);
     // The key is decided by the answer, the QR by the address: a config is filed, and a minted key kept, exactly when the peer the
     // panel answered with holds that key (k6c F18 — a lost answer's retry is answered with the peer as it stands). "changed" carries
     // the peer too: an earlier Deploy whose answer was lost may have taken this sheet's key before the draft changed, and that key is
-    // kept even though this Deploy is refused — the sheet that reopens has no other copy of it.
+    // kept even though this Deploy is refused — the sheet that reopens has no other copy of it: its QR configs for what the peer holds
+    // go into the session (whatever store_configs is, F49), and the key is published once, to the user the answer names (F50).
     const held = (r.data && r.data.pubkey) || "";
+    const keep = fresh && held === fresh.keys.pub;
+    if (r.ok || keep) {
+      const holds = new Set(((r.data && r.data.targets) || []).map(t => tkey(t.node, t.iface) + " " + String(t.ip || "").split("/")[0]));
+      const sent = {}; add.concat(address).forEach(t => { sent[tkey(t.node, t.iface)] = t.ip; });
+      for (const [k, conf] of Object.entries(confs[held] || {}))
+        if (holds.has(k + " " + sent[k])) (Store.sessionConfigs[held] = Store.sessionConfigs[held] || {})[k] = conf;
+    }
     // kept as a new peer's key is. A locked vault asks first, in a sheet over this one that closes before this one does.
-    if (fresh && held === fresh.keys.pub) await subPublishOrPrompt(peer.user_id || null, peer.id, fresh.keys.priv, fresh.psk);
+    if (keep && !fresh.kept) { fresh.kept = true; await subPublishOrPrompt(r.data.user_id || null, peer.id, fresh.keys.priv, fresh.psk); }
     if (!r.ok) {
       // refused → nothing was written, every reason said; changed / key_changed → the panel's "reopen it"; a lost answer → the
       // error, and Deploy again is safe (the panel answers a change already made as done).
@@ -594,7 +606,6 @@ export function AddTargetSheet({ peer, back, child }) {
         : T("Error: {v1}", { v1: srvText(r) || r.code || T("Failed") }) });
       return false;
     }
-    if (held && confs[held]) Object.assign(Store.sessionConfigs[held] = Store.sessionConfigs[held] || {}, confs[held]);
     toast(T("Peer targets updated."), "ok"); await Store.poll(); return true;
   };
   const save = () => {

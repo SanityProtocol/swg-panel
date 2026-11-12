@@ -26059,13 +26059,24 @@ def address_refusal(deps, nodes, snaps, roster, pid, cur, node, iface, ip):
 
 
 def addr_taken(roster, pid, node, iface, ip):
-    """Another peer already holds `ip` on (node, iface) — an address is unique within its interface's subnet."""
+    """Another peer already holds `ip` on (node, iface) — an address is unique within its interface's subnet. Compared as
+    addresses: 'FD00:0::5' is 'fd00::5' (F28 verify F53). Text first — an IPv4 address has one valid spelling, so only IPv6 text
+    is parsed (this walks every peer under _api_lock)."""
+    def norm(a):
+        try:
+            return ipaddress.ip_address(a)
+        except ValueError:
+            return a
+    ip = (ip or "").split("/")[0].strip()
+    want = norm(ip) if ":" in ip else ip
     for op in roster["peers"].values():
         if op.get("id") == pid:
             continue
         for t in op.get("targets", []):
-            if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
-                return True
+            if t.get("node") == node and t.get("iface") == iface:
+                a = (t.get("ip") or "").split("/")[0].strip()
+                if a == ip or (":" in a and norm(a) == want):
+                    return True
     return False
 
 
@@ -29876,16 +29887,20 @@ def api(method, path, qs, body, deps):
         pid = body.get("peer_id") or ""
         lists = {k: body.get(k) or [] for k in ("base", "add", "address", "remove")}
         _str = lambda v, empty=False: isinstance(v, str) and (empty or bool(v))
-        if not all(isinstance(v, list) and all(isinstance(x, dict) and _str(x.get("node")) and _str(x.get("iface"))
+        if not _str(pid, True) or not all(isinstance(v, list) and all(isinstance(x, dict) and _str(x.get("node")) and _str(x.get("iface"))
                                                and _str(x.get("ip") or "", True) and _str(x.get("type") or "", True) for x in v)
                    for v in lists.values()):
             return 400, {"ok": False, **perr("base, add, address and remove are lists of node / interface pairs"), "code": "bad_request"}
         nk, psk = body.get("pubkey") or "", body.get("psk") or ""
-        if not (_str(nk, True) and _str(psk, True)) or any(k and not _WG_KEY_RE.match(k) for k in (nk, psk)):
+        if not (_str(nk, True) and _str(psk, True)) or any(k and not _WG_KEY_RE.fullmatch(k) for k in (nk, psk)):
             return 400, {"ok": False, **perr("pubkey and psk are WireGuard keys"), "code": "bad_request"}
         key = lambda x: (x["node"], x["iface"])
-        touched = [key(x) for k in ("add", "address", "remove") for x in lists[k]]
-        twice = next((k for k in touched if touched.count(k) > 1), None)
+        seen, twice = set(), None
+        for x in (x for k in ("add", "address", "remove") for x in lists[k]):
+            if key(x) in seen:
+                twice = key(x)
+                break
+            seen.add(key(x))
         if twice:                                        # peer_set does not dedupe: a doubled add would store two targets on one iface
             return 400, {"ok": False, **perr("duplicate target {v1}", v1="/".join(twice)), "code": "bad_request"}
         roster = roster_load(roster_path)
@@ -29898,13 +29913,13 @@ def api(method, path, qs, body, deps):
         gone = {key(x) for x in lists["remove"]}
         # Already done — the retry of a Deploy whose answer never came back: the peer is exactly what this Deploy makes of the
         # interfaces it opened with (base − removals + adds), each add at its address with its settings, each address edit as
-        # sent, the key it minted the peer's. Answered with the peer, nothing written; before the base check, so a lost answer is
+        # sent, the key it sent the peer's (the sheet sends the key it builds with, always — F42). Answered with the peer, nothing written; before the base check, so a lost answer is
         # never "changed". Anything less exact is not this Deploy: another tab's add at another address or with other settings,
         # or a draft changed since (the sheet would file a QR for what the peer does not hold).
         if (set(have) == ({key(x) for x in lists["base"]} - gone) | {key(x) for x in lists["add"]}
                 and all(same(have[key(x)], x) and clean_overrides(have[key(x)].get("overrides")) == clean_overrides(x.get("overrides"))
                         for x in lists["add"])
-                and all(key(x) in have and same(have[key(x)], x) for x in lists["address"])
+                and all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["address"])   # never a keyless one
                 and (not nk or p.get("pubkey") == nk)):
             return 200, {"ok": True, "data": p}
         # Base: the interfaces the sheet opened with. Another tab added or removed one, or a reopen read the store from before

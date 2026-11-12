@@ -20,6 +20,9 @@ stored peer and writes all of it or nothing. The panel's own api(), in process, 
       a psk or pubkey that is not a key → 400, never stored, never a crash; a key another door gave the peer → key_changed
   [11] a network refusal names the keyed add that takes it, not a keyless one beside it (F10)
   [12] removals retire every key in one nodes.json write (F12)
+  [13] the verify round and F42: the sheet's key after another tab rotated it → key_changed; an address edit on a keyless
+      deployment is never "done" (F51); a key with a newline, a non-string peer_id → 400 (F52, F54); an add at another
+      peer's IPv6 address written differently → exists (F53)
 
 Run: python3 tests/peer_targets_move_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -35,6 +38,9 @@ Run: python3 tests/peer_targets_move_selftest.py   (0 = pass)
      keytype     pubkey / psk taken as sent                           [10]
      keyguard    a key other than the peer's is taken                 [10]
      netkeyless  a network refusal names a keyless add                 [11]
+     donekeyless an address edit on a keyless deployment counts as done [13]
+     keynl       a key with a trailing newline passes                 [13]
+     addrtext    addresses compared as text                           [13]
 """
 import importlib.machinery, importlib.util, hashlib, json, os, shutil, sys, tempfile
 
@@ -49,8 +55,12 @@ PLANTS = {
                 '        if (all(key(x) in have for x in lists["add"]) and not any(key(x) in have for x in lists["remove"])\n'),
     "doneov": (' and clean_overrides(have[key(x)].get("overrides")) == clean_overrides(x.get("overrides"))\n', '\n'),
     "addrtaken": ('        if addr_taken(roster, pid, target["node"], target["iface"], _ip):\n', '        if False:\n'),
-    "keytype": ('        if not (_str(nk, True) and _str(psk, True)) or any(k and not _WG_KEY_RE.match(k) for k in (nk, psk)):\n', '        if False:\n'),
+    "keytype": ('        if not (_str(nk, True) and _str(psk, True)) or any(k and not _WG_KEY_RE.fullmatch(k) for k in (nk, psk)):\n', '        if False:\n'),
     "keyguard": ('    if nk and p.get("pubkey") and nk != p["pubkey"]:\n', '    if False:\n'),
+    "donekeyless": ('                and all(key(x) in have and ipof(have[key(x)]) == ipof(x) for x in lists["address"])',
+                    '                and all(key(x) in have and same(have[key(x)], x) for x in lists["address"])'),
+    "keynl": ("any(k and not _WG_KEY_RE.fullmatch(k) for k in (nk, psk))", "any(k and not _WG_KEY_RE.match(k) for k in (nk, psk))"),
+    "addrtext": ('                if a == ip or (":" in a and norm(a) == want):', '                if a == ip:'),
     "netkeyless": ('next(t["iface"] for t in adds if t["node"] == nid and not is_keyless_kind(t["type"]))', 'next(t["iface"] for t in adds if t["node"] == nid)'),
     "nofails": ('        if fails:\n            return 409, {"ok": False, "error": "nothing was changed"', '        if False:\n            return 409, {"ok": False, "error": "nothing was changed"'),
     "noretire": ('            retire_pubkey(nodes, deps["nodes_path"], [{"node": x["node"], "iface": x["iface"]} for x in lists["remove"]], old_key)\n', '            pass\n'),
@@ -294,6 +304,29 @@ try:
     ret = lambda n, i: (ns[n].get("retire") or {}).get(i) or []
     check("[12] both keys retired, one nodes.json write", first[0] == 200 and c == 200 and K("A") in ret("n1", "awg1")
           and K("A") in ret("n2", "wgs1") and len(saves) == 1, (first[0], c, b, len(saves)))
+
+    print("\n[13] the verify round and F42")
+    reset()
+    r = json.load(open(roster_path)); r["peers"]["a"]["pubkey"] = K("Y"); json.dump(r, open(roster_path, "w"))   # another tab rotated it
+    before = files()
+    c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "10.71.0.5", "type": "awg"}], "pubkey": K("A")})
+    check("[13] the sheet's key after another tab rotated it: 409 key_changed, nothing written", c == 409 and b.get("code") == "key_changed"
+          and files() == before, (c, b))
+    c, b = door({"peer_id": "w", "base": [N("wdtt7")], "address": [N("wdtt7", "10.66.70.2")]})
+    f = b.get("fails") or [{}]
+    check("[13] an address edit on a keyless deployment: refused, not \"done\"", c == 409 and b.get("code") == "refused"
+          and f[0].get("op") == "address" and files() == before, (c, b))
+    for what, extra in (("a pubkey with a trailing newline", {"peer_id": "q", "base": [N("wdtt7")], "add": [{"node": "n1", "iface": "awg1", "ip": "10.8.0.8"}],
+                                                              "pubkey": K("Q") + "\n"}),
+                        ("a list peer_id", {"peer_id": ["a"], "base": [N("awg1")]})):
+        c, b = door(extra)
+        check("[13] %s → 400, nothing written" % what, c == 400 and b.get("code") == "bad_request" and files() == before, (c, b))
+    r = json.load(open(roster_path)); r["peers"]["b"]["targets"][0]["ip"] = "fd00::5"; json.dump(r, open(roster_path, "w"))
+    before = files()
+    c, b = door({"peer_id": "a", "base": [N("awg1")], "add": [{"node": "n1", "iface": "awg2", "ip": "FD00:0::5", "type": "awg"}], "pubkey": K("Y")})
+    f = b.get("fails") or [{}]
+    check("[13] an add at b's IPv6 address written another way: refused, exists", c == 409 and [(x.get("iface"), x.get("code")) for x in f] == [("awg2", "exists")]
+          and files() == before, (c, b))
 finally:
     shutil.rmtree(D, ignore_errors=True)
     shutil.rmtree(TMPM, ignore_errors=True)

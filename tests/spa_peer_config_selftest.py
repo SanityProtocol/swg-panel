@@ -38,7 +38,7 @@ address is the read-back keyed by its password, which a Rotate blanks.
 
 Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome / chromium, or $CHROME)
      --perturb-<name>   serves a copy of the SPA with one change undone and expects RED; a plant stops at its first FAIL
-       --perturb-orig     the reported bug back: a lookup reads the mark, and a miss writes it        → RED [1]
+       --perturb-orig     the reported bug back: a lookup reads the mark, and a miss writes it        → RED [5]
        --perturb-write    a miss writes the mark                                                      → RED [1]
        --perturb-read     a lookup reads the mark before it asks                                      → RED [7]
        --perturb-ver      the old marks are kept                                                      → RED [6]
@@ -66,6 +66,8 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-nofile   the Deploy's QR configs are never filed in the session                      → RED [13]
        --perturb-stalepeer Targets opens on the caller's copy of the peer, not the live one            → RED [13]
        --perturb-lostkeep a key a lost Deploy took is dropped when the next one is refused "changed"   → RED [13]
+       --perturb-changedfile …and its QR config is not kept in the session (store_configs off loses it) → RED [13]
+       --perturb-sendkey  the sheet sends no key unless it minted one (another tab's rotation unseen)  → RED [13]
        --perturb-novault  the unlock is offered with no vault                                         → RED [12]
        --perturb-need     the unlock is hidden with store_configs off                                 → RED [12]
 """
@@ -81,7 +83,7 @@ SERVER = os.path.join(ROOT, "swg-panel-server")
 PERTURB = next((a[len("--perturb-"):] for a in sys.argv if a.startswith("--perturb-")), None)
 _MISS = 'const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); };'
 _MISSW = 'const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); if (peer) subNoConfSet(peer.id, pubkey); };'
-_MK = '  const mk = pubkey + "|" + node + "|" + iface;\n  if (_configMissFresh(mk))'
+_MK = '  if (_configMissFresh(mk)) return Promise.resolve(null);'
 _READ = '  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);\n' + _MK
 _ADDR = 'const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v'
 _DOOR = '${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn">'
@@ -111,13 +113,15 @@ PERTURBS = {
     "freshref": [("js/sheets-crud.js", "    const fresh = freshKey.current || (", "    const fresh = (")],
     "firstkey": [("swg-panel-server", '            fields.update(pubkey=nk, psk=psk or gen_psk())', '            return 400, {"ok": False, "error": "planted", "code": "bad_request"}')],
     "keyguard": [("swg-panel-server", '    if nk and p.get("pubkey") and nk != p["pubkey"]:', "    if False:")],
-    "nofile": [("js/sheets-crud.js", "    if (held && confs[held]) Object.assign(", "    if (false) Object.assign(")],
+    "nofile": [("js/sheets-crud.js", '        if (holds.has(k + " " + sent[k])) (Store.sessionConfigs', "        if (false) (Store.sessionConfigs")],
     "stalepeer": [("js/sheets-crud.js", "  peer = Store.peer(peer.id) || peer;\n  const child", "  const child")],
     "lostkeep": [("js/sheets-crud.js", '    const held = (r.data && r.data.pubkey) || "";', '    const held = (r.ok && r.data && r.data.pubkey) || "";')],
-    "freshwarn": [("js/sheets-crud.js", "&& !srcConf && (Store.peer(peer.id) || peer).pubkey ? html`", "&& !srcConf ? html`")],
-    "freshkeep": [("js/sheets-crud.js", "    if (fresh && held === fresh.keys.pub) await subPublishOrPrompt(", "    if (false) await subPublishOrPrompt(")],
+    "freshwarn": [("js/sheets-crud.js", "&& !srcConf && !freshKey.current && (Store.peer(peer.id) || peer).pubkey ? html`", "&& !srcConf && !freshKey.current ? html`")],
+    "freshkeep": [("js/sheets-crud.js", "    if (keep && !fresh.kept) {", "    if (false) {")],
+    "sendkey": [("js/sheets-crud.js", "...(sheetKey ? { pubkey: sheetKey } : {})", "...(fresh && keyedAdd ? { pubkey: sheetKey } : {})")],
+    "changedfile": [("js/sheets-crud.js", "    if (r.ok || keep) {", "    if (r.ok) {")],
     "advice": [("js/sheets-crud.js", "but a fresh QR / config can't be generated.\")", "but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.\")")],
-    "keyless": [("js/sheets-crud.js", "${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf ?", "${added.length && !srcConf ?")],
+    "keyless": [("js/sheets-crud.js", "${added.some(c => !isSelfContainedKind(kindFor(c))) && !srcConf && !freshKey.current &&", "${added.length && !srcConf && !freshKey.current &&")],
     "need": [("js/sheets-crud.js", _DOOR, _DOOR.replace("<${VaultUnlockPanel}/>", "<${VaultUnlockPanel} need=${Store.storeConfigs}/>"))],
 }
 assert PERTURB in (None,) + tuple(PERTURBS), "unknown perturbation %r" % PERTURB
@@ -745,6 +749,21 @@ try:
         until("(() => { const m = document.querySelector('.overlay.show .formmsg'); return !!m && m.textContent.includes('reopen'); })()", 20, "the changed answer")
         check("[13] a lost Deploy took the key, the next (changed draft) is refused \"changed\": the key it took is still kept",
               bool(k1) and roster()[pid].get("pubkey") == k1 and stored(pid), [k1, roster()[pid].get("pubkey")])
+        sc = ev("store", "return (S.Store.sessionConfigs[%s] || {})[%s] || '';" % (json.dumps(k1 or ""), json.dumps(NID + "|awg2")))
+        check("[13] …and its QR config for what the panel holds, in the session (any store_configs)", "PrivateKey" in (sc or ""), sc)
+        close_all()
+        uid, pid = new_peer("rotated", ["awg1"])
+        reload()
+        ev("sheets-crud", "M.openAddTarget(S.Store.peer(%s)); return 1;" % json.dumps(pid))
+        until("!!document.querySelector('.overlay.show .targetopt.sel')", 15, "the deployed target seeded")
+        tick("awg2")
+        addresses_in()
+        must(call("POST", "/api/peers/rekey", {"peer_id": pid, "user_id": uid, "pubkey": base64.b64encode(os.urandom(32)).decode()}),
+             "another tab rotated the key")
+        tab.ev(ACT + ".click()")
+        m = formmsg_done()
+        check("[13] a key rotated in another tab since the sheet opened: refused, \"reopen it\" (F42)", "another key now" in m and "reopen" in m, m)
+        check("[13] …the add not applied", [t["iface"] for t in roster()[pid]["targets"]] == ["awg1"], roster()[pid]["targets"])
         close_all()
 
     print("\n[12] the unlock follows the vault, not the setting")
