@@ -37,10 +37,10 @@
   [15] Review round 3 (F71, F72, F75): a sweep and a device batch that hang for their timeout wait a minute from its end;
        inside a failed cap change's minute, another pool's move keeps its cap as recorded; a device the marker cannot
        name is not loaded, and is reported.
-  [16] limits-l1 F65: a WDTT / RAW / csqtt device whose SNAT write failed stays a client tunnel (the limits, the LAN block,
-       the tunnel ACL, the MSS clamp all name it), and an instance's failed write still reconciles its RAW tunnel.
   [13] The main loop's wiring (the critical invariant): the wire is None each pass, set only from a valid 200 carrying
        `desired`, the call sits outside the sync's try, and the snapshot carries limit_err.
+  [16] limits-l1 F65: a WDTT / RAW / csqtt device whose SNAT write failed stays a client tunnel (the limits, the LAN block,
+       the tunnel ACL, the MSS clamp all name it), and an instance's failed write still reconciles its RAW tunnel.
 
 Run: python3 tests/limits_node_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -546,7 +546,8 @@ check("…not again within a minute (a hung tc must not block every pass, F61)",
 NOW[0] += N.LIMITS_RETRY_S
 ens(W)
 check("…and then tried again", len(CALLS) == 3 and "-force" in CALLS[0][0], [c[0] for c in CALLS])
-# a WDTT device left out of the client list for one pass (its SNAT write failed)
+# a WDTT device left out of the client list for one pass (its instance record briefly unreadable — F9; a failed SNAT
+# write no longer does it, [16])
 reset()
 WD = [["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""]]
 ens(WD)
@@ -580,7 +581,7 @@ ens([["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""], ["awg2", ["10.9.0.2/32"], 10, 0,
 names = open(N.LIMITS_MARK).read().split()
 check("the marker names every device loaded", names == ["awg2", "wdtt1"], names)
 N._LIMITS.update(started=False, mark=None, markdevs=set(), dev={}, wire=None, cdevs=None, plan=None)   # a new process
-N._CLIENT_DEVS["list"] = [d for d in CLIENT if d != "wdtt1"]           # wdtt1's SNAT write failed on its first pass
+N._CLIENT_DEVS["list"] = [d for d in CLIENT if d != "wdtt1"]           # wdtt1's record unreadable on its first pass
 CALLS.clear()
 ens([])
 swept = sorted({ln.split()[3] for ln in tc_lines()})

@@ -102,8 +102,8 @@ earlier releases predate the changelog — see the git history. · Русски�
 ### Fixed
 
 - **A WDTT or csqtt server keeps its protections when its outbound NAT fails to write.** For that pass the node also
-  dropped the server from its tunnel firewall, its MSS clamp, the LAN block and its speed limits, and a WDTT server's RAW
-  tunnel was skipped altogether. Only the NAT is retried now; everything else stays in place.
+  dropped the server from its tunnel firewall, its MSS clamp and the LAN block, and a WDTT server's RAW tunnel was
+  skipped altogether. Only the NAT is retried now; everything else stays in place.
 - **A node waiting for a reboot is told to reboot, not to update.** When the running kernel had no AmneziaWG module but
   a newer installed kernel had one built, the panel said "running Update rebuilds it", and every update spent minutes on
   a build that could not succeed (the running kernel's headers were no longer available). The panel now names the kernel

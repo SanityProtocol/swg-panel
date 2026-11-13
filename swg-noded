@@ -5135,8 +5135,9 @@ def _ensure_limits(node_cfg, wire, snap, res):
             res["errors"].append("the panel's limits are not a list: ignored, what is loaded stays")
         st["err"] = dict(st["err"], limits="not a list: ignored, what is loaded stays")
         return
-    # A device loaded here stays a candidate while it exists: reconcile_egress leaves a WDTT / csqtt device out of its list
-    # for a pass whose SNAT write failed, and that must not lift the device's limits (review F9).
+    # A device loaded here stays a candidate while it exists (review F9): reconcile_egress lists a WDTT / csqtt device only
+    # while its instance record reads (_wdtt_load / _csqtt_load), and a record briefly unreadable or half-written must not
+    # lift the device's limits for that pass. (A failed SNAT write no longer drops one: limits-l1 F65.)
     cdevs = sorted(set(str(d) for d in (_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))
     if wire != st.get("wire") or cdevs != st.get("cdevs"):   # R4: an unchanged wire over the same tunnels is a compare
         plan, pools, why = _limits_plan(wire, set(cdevs))
