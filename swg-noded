@@ -2453,18 +2453,21 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
     # WDTT instances own their (built-in userspace-WG) interface and run with -no-nat → the node owns their
     # egress MASQUERADE + FORWARD/MSS, exactly like a client interface. Their subnet comes from the WDTT record
     # (wg_addr), not a wg-quick .conf, so they're reconciled here separately (never mesh; heal only genuine gaps).
+    # ⚠️ Each one is LISTED before its SNAT write, as a kernel client interface is above: a failed write is an egress
+    # problem, and must not also drop the device from the tunnel ACL, the MSS clamp, the LAN block and the speed limits
+    # for that pass (limits-l1 review F65, the cause behind F9).
     for _wif, _winst in _wdtt_load().items():
         _wsub = _wdtt_subnet(_winst.get("wg_addr") or "")
         if not _wsub:
             continue
+        client_devs.append(_wif)
         _wdes = _egress_des((_winst.get("egress_ip") or "").strip(), _safe_wan(_winst.get("wan_iface"), ""),
                             default_egress_ip, default_wan, _wsub, rules)
         changed, err = _snat_reconcile_rule("swg-egress:" + _wif, _wsub, _wdes, rules)
-        if err:
-            res["errors"].append("egress " + _wif + ": " + err); continue
-        if changed:
+        if err:                                       # …and its RAW tunnel is still reconciled: its own rule, its own
+            res["errors"].append("egress " + _wif + ": " + err)   # subnet
+        elif changed:
             res["changed"] += 1
-        client_devs.append(_wif)
         # A qWDTT instance with RAW enabled owns a SECOND tunnel (its own TUN + subnet, no WireGuard). It runs
         # -no-nat like the wg one, so its egress is ours too — including the MSS clamp client_devs brings, which
         # upstream adds itself and our -no-nat gate skips.
@@ -2472,21 +2475,21 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         if _wraw:
             _rsub = _wdtt_subnet(_wraw[2])
             if _rsub:
+                client_devs.append(_wraw[1])
                 _rdes = _egress_des((_winst.get("egress_ip") or "").strip(), _safe_wan(_winst.get("wan_iface"), ""),
                                     default_egress_ip, default_wan, _rsub, rules)
                 changed, err = _snat_reconcile_rule("swg-egress:" + _wraw[1], _rsub, _rdes, rules)
                 if err:
                     res["errors"].append("egress " + _wraw[1] + ": " + err)
-                else:
-                    if changed:
-                        res["changed"] += 1
-                    client_devs.append(_wraw[1])
+                elif changed:
+                    res["changed"] += 1
     # csqtt instances (raw-IP TUN, run with --no-nat) → the node owns their egress MASQUERADE + FORWARD/MSS too.
     # Their subnet comes from the csqtt record (tun_addr), same treatment as a WDTT instance / client interface.
     for _cif, _cinst in _csqtt_load().items():
         _csub = _csqtt_subnet(_cinst.get("tun_addr") or "")
         if not _csub:
             continue
+        client_devs.append(_cif)
         _cdes = _egress_des((_cinst.get("egress_ip") or "").strip(), _safe_wan(_cinst.get("wan_iface"), ""),
                             default_egress_ip, default_wan, _csub, rules)
         changed, err = _snat_reconcile_rule("swg-egress:" + _cif, _csub, _cdes, rules)
@@ -2494,7 +2497,6 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
             res["errors"].append("egress " + _cif + ": " + err); continue
         if changed:
             res["changed"] += 1
-        client_devs.append(_cif)
     # FORWARD-accept (belt-and-suspenders — harmless under the usual ACCEPT policy, load-bearing under DROP) and — the
     # real value — a TCP-MSS clamp TOWARD each client tunnel, so a website's return packets can't exceed the 1280 tunnel
     # MTU and silently blackhole ("connects but pages time out"). Applied to ALL client tunnels (PostUp never wrote an

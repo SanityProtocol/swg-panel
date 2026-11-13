@@ -37,6 +37,8 @@
   [15] Review round 3 (F71, F72, F75): a sweep and a device batch that hang for their timeout wait a minute from its end;
        inside a failed cap change's minute, another pool's move keeps its cap as recorded; a device the marker cannot
        name is not loaded, and is reported.
+  [16] limits-l1 F65: a WDTT / RAW / csqtt device whose SNAT write failed stays a client tunnel (the limits, the LAN block,
+       the tunnel ACL, the MSS clamp all name it), and an instance's failed write still reconciles its RAW tunnel.
   [13] The main loop's wiring (the critical invariant): the wire is None each pass, set only from a valid 200 carrying
        `desired`, the call sits outside the sync's try, and the snapshot carries limit_err.
 
@@ -58,6 +60,9 @@ Run: python3 tests/limits_node_selftest.py   (0 = pass)
      mixkind      a pool with a combined and a per-direction member keeps both
      strict       host bits are masked into the subnet
      notlist      a `limits` that is not a list reads as none
+     snatlate     a csqtt device is listed only after its SNAT write succeeds (F65)
+     snatlatew    a WDTT device is listed only after its SNAT write succeeds (F65)
+     rawskip      an instance's failed SNAT write skips its RAW tunnel (F65)
      rawtwice     a WDTT password's speed counts on both its paths
      nohold       a member counts only on the pass it moved
      mincap       no floor under a cap
@@ -136,6 +141,9 @@ PLANTS = {
     "unwide": ('''done < /var/lib/swg-noded/limits; true''', '''done < /dev/null; for d in $(ls /sys/class/net); do for h in egress ingress; do tc filter del dev "$d" $h pref 4097 >/dev/null 2>&1; done; done; true'''),
     "errcause": ('''    cause = [x for x in ls if not x.startswith("Command failed")]''', '''    cause = []'''),
     "sweepfail": ('''        if r.returncode in (124, 127):                # not run at all''', '''        if False:                # not run at all'''),
+    "snatlatew": ("        client_devs.append(_wif)\n        _wdes", "        _wdes"),
+    "snatlate": ("        client_devs.append(_cif)\n        _cdes", "        _cdes"),
+    "rawskip": ('''            res["errors"].append("egress " + _wif + ": " + err)   # subnet''', '''            res["errors"].append("egress " + _wif + ": " + err); continue   # subnet'''),
     "snatdrop": ('''(_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))''', '''(_CLIENT_DEVS.get("list") or ())))'''),
     "clientsweep": ('''        devs = [d for d in sorted(set(cdevs) | st["markdevs"]) if''',
                     '''        devs = [d for d in sorted(set(_own_tunnel_devs(node_cfg)) | st["markdevs"]) if'''),
@@ -695,6 +703,34 @@ _call = _pass.find("\n        if _lim_wire is not None:")
 check("the call sits outside the sync's try, at the loop's level", _call > _i_set
       and "_ensure_limits(node_cfg, _lim_wire, snap, _lres)" in _pass[_call:_call + 800], _call)
 check("the snapshot carries limit_err", 'snap["limit_err"] = dict(_LIMITS["err"])' in src)
+
+
+print("[16] a failed SNAT write keeps the device a client tunnel (limits-l1 F65, the cause behind F9)")
+_saved = {k: getattr(N, k) for k in ("run", "_detect_wan", "_wdtt_load", "_csqtt_load", "_snat_reconcile_rule",
+                                    "_ensure_tunnel_acl", "_ensure_dev_rules")}
+_acl, _mss, _tried = [], [], []
+try:
+    N.run = lambda args, **kw: subprocess.CompletedProcess(args, 0, "", "")          # an empty nat table
+    N._detect_wan = lambda: "eth0"
+    N._wdtt_load = lambda: {"wdtt1": {"wg_addr": "10.66.0.1/24", "raw_port": "9443", "raw_iface": "wdttraw1", "raw_addr": "10.67.0.1/24"}}
+    N._csqtt_load = lambda: {"csqtt0": {"tun_addr": "10.68.0.1/24"}}
+    N._snat_reconcile_rule = lambda tag, sub, des, rules: (_tried.append(tag), (False, "iptables: Resource temporarily unavailable"))[1]
+    N._ensure_tunnel_acl = lambda tag, devs, res: _acl.extend(devs)
+    N._ensure_dev_rules = lambda tbl, chain, tag, devs, res, mk: _mss.extend(devs)
+    _raw = N._wdtt_raw(N._wdtt_load()["wdtt1"])
+    _r = N.reconcile_egress({"interfaces": {}}, {}, "")
+    _want = sorted(["wdtt1", "csqtt0"] + ([_raw[1]] if _raw else []))
+    check("every SNAT write failed and each is reported", len(_r["errors"]) == len(_want), _r["errors"])
+    check("…a RAW tunnel is still reconciled when its instance's write failed", not _raw or ("swg-egress:" + _raw[1]) in _tried,
+          (_raw, _tried))
+    check("…yet each stays a client tunnel: the limits, the LAN block, the tunnel ACL and the MSS clamp all name it",
+          sorted(N._CLIENT_DEVS["list"]) == _want and sorted(_acl) == _want and sorted(_mss) == _want,
+          (N._CLIENT_DEVS["list"], _acl, _mss, _want))
+    check("…(the fixture has a RAW tunnel)", bool(_raw), _raw)
+finally:
+    for _k, _v in _saved.items():
+        setattr(N, _k, _v)
+    N._CLIENT_DEVS["list"] = list(CLIENT)
 
 
 print("[11] a real kernel")
