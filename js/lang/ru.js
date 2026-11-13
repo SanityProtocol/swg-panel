@@ -6722,6 +6722,9 @@ export const STR = {
   "{v1} assigns the client address on connect — it can't be set here":
     "{v1} выдаёт адрес клиенту при подключении — здесь его не задать",
   "nothing to change (send ip and/or overrides)": "нечего менять (передайте ip и/или overrides)",
+  "nothing to change (send ip, overrides and/or limits)": "нечего менять (передайте ip, overrides и/или limits)",
+  "A speed limit is download and/or upload, or one combined figure": "Ограничение скорости — это загрузка и/или отдача либо одно общее значение",
+  "A speed limit must be between 1 and {v1} Mbit/s": "Ограничение скорости должно быть от 1 до {v1} Мбит/с",
   "{v1} is already used on {v2}": "{v1} уже занят на {v2}",
   "kind|bare-metal": "Железо",
   "kind|docker": "Докер",
@@ -7122,6 +7125,8 @@ export const STR = {
   "Added a pool VK link": "Добавлена ссылка VK в пул",
   "Captured node fingerprint": "Снят отпечаток ноды",
   "Changed deployment settings": "Изменены настройки развёртывания",
+  "Changed deployment speed limit": "Изменено ограничение скорости развёртывания",
+  "Changed group speed limit": "Изменено ограничение скорости группы",
   "Cloudflare Origin (cf15) TLS needs a Cloudflare Origin CA token (Zone:SSL + Certificates:Edit) — add it before switching.": "Для TLS Cloudflare Origin (cf15) нужен токен Origin CA (Zone:SSL + Certificates:Edit) — добавьте его до переключения.",
   "Cloudflare TLS needs a Cloudflare DNS API token (Zone:DNS:Edit + Zone:Read) — add it before switching, otherwise it issues a self-signed certificate Cloudflare rejects (526).": "Для TLS Cloudflare нужен токен DNS API (Zone:DNS:Edit + Zone:Read) — добавьте его до переключения, иначе будет выпущен самоподписанный сертификат, который Cloudflare отклонит (526).",
   "Debug": "Отладка",

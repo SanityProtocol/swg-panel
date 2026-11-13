@@ -3028,12 +3028,13 @@ class _RosterView(dict):
     """users.json as parsed for READERS (roster_view, 1.8.12 Scale P2): one copy shared by every sync and /api/state build
     until the next save. ⚠️ NEVER WRITTEN — a write would reach every node's next sync until the next save, and a peer dropped
     from a desired set is REMOVED by its node. peer_set and roster_save refuse one; a request that writes takes roster_own().
-    `idx` is its per-node index (P3, _peers_on); `digest` its hash under SWG_ROSTER_GUARD."""
-    __slots__ = ("idx", "digest")
+    `idx` is its per-node index (P3, _peers_on); `digest` its hash under SWG_ROSTER_GUARD; `lim` its speed-limit precedence
+    (_lim_index, docs/LIMITS-PLAN.md R6)."""
+    __slots__ = ("idx", "digest", "lim")
 
     def __init__(self, r):
         super().__init__(r)
-        self.idx = self.digest = None
+        self.idx = self.digest = self.lim = None
 
 
 _ROSTER_VIEW = [None]               # (path, roster_mark, _RosterView), swapped whole: a reader never sees half of one
@@ -3496,7 +3497,32 @@ def clean_target(t):
     ov = clean_overrides(t.get("overrides"))
     if ov:
         out["overrides"] = ov
+    # This ONE deployment's speed limit (docs/LIMITS-PLAN.md §3.4, R7) — ⚠️ CARRIED HERE OR LOST: this rebuild is a whitelist,
+    # and a limit a save drops is lifted without a word. Set by /api/peers/update-target only; a Deploy never carries one.
+    lim = limits_clean(t.get("limits"))[0]
+    if lim:
+        out["limits"] = lim
     return out
+
+
+LIMITS_MAX_MBIT = 100000
+
+
+def limits_clean(raw):
+    """(limit, refusal) for a stored or requested speed limit (docs/LIMITS-PLAN.md §3.4): `{"d": x, "u": y}` (either or
+    both) or `{"c": z}` — one budget for both directions — in Mbit/s, each 1..LIMITS_MAX_MBIT. `{}` / None / absent = no
+    limit. A rate under 1 is refused: a limit may slow a device, never silence it (only a volume cut or an expiry does).
+    The refusal is a perr() dict; a stored value that fails (a hand edit) reads as no limit."""
+    if raw is None or raw == {}:
+        return {}, None
+    if not isinstance(raw, dict) or not raw or set(raw) - {"d", "u", "c"} or ("c" in raw and len(raw) > 1):
+        return {}, perr("A speed limit is download and/or upload, or one combined figure")
+    out = {}
+    for k, v in raw.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or not 1 <= v <= LIMITS_MAX_MBIT:
+            return {}, perr("A speed limit must be between 1 and {v1} Mbit/s", v1=LIMITS_MAX_MBIT)
+        out[k] = int(v) if float(v).is_integer() else round(float(v), 3)
+    return out, None
 
 
 def clean_overrides(raw):
@@ -4593,6 +4619,11 @@ def user_set(roster, uid, fields, now):
     for k in ("disabled", "disabled_at", "unblock_at"):
         if u.get(k):
             roster["users"][uid][k] = u[k]
+    # Speed and volume limits (docs/LIMITS-PLAN.md §3.4): carried, or a rename would lift them. `{}` clears one.
+    for k in ("limits", "volume"):
+        v = fields.get(k, u.get(k))
+        if v:
+            roster["users"][uid][k] = v
     return roster["users"][uid]
 
 
@@ -4632,6 +4663,10 @@ def group_set(roster, gid, fields):
     g = roster["groups"].get(gid) if isinstance(roster["groups"].get(gid), dict) else {}
     rec = {"name": fields.get("name", g.get("name") or ""),
            "users": sorted({u for u in fields.get("users", g.get("users") or []) if isinstance(u, str)})}
+    for k in ("limits", "volume"):                    # docs/LIMITS-PLAN.md §3.4: carried, as user_set carries them
+        v = fields.get(k, g.get(k))
+        if v:
+            rec[k] = v
     roster["groups"][gid] = rec
     return rec
 
@@ -4674,7 +4709,7 @@ def peer_set(roster, pid, fields, now, book=None):
     # unrelated save — an update-target or a rekey would silently un-private a device, which is the direction that opens
     # something. `if v` also means an explicit False clears the key, which is how it is unset.
     for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
-              "routes", "share", "private", "router", "p2p_port"):
+              "routes", "share", "private", "router", "p2p_port", "limits", "volume"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -9644,6 +9679,83 @@ def desired_for_node(roster, node_id, snap=None):
                 "name": name,
             })
     return out
+
+
+def _lim_key(lim):
+    """Lower is tighter: download (combined or d) first, then upload; a direction with no figure counts as unlimited."""
+    inf = float("inf")
+    return (lim.get("c") or lim.get("d") or inf, lim.get("c") or lim.get("u") or inf)
+
+
+def _lim_index(roster):
+    """{"any": bool, "user": {uid: (limit, pool)}} — the speed-limit precedence of one roster (docs/LIMITS-PLAN.md §3.4, R6),
+    built once per revision on the shared view (its `lim` slot), per call on a writer's own copy. A user's own limit is the
+    pool `u:<uid>`; else the LOWEST of their groups' (one packet cannot be in two pools), pool `g:<gid>`. `any` is whether
+    any record carries a limit at all — a fleet with none builds no wire."""
+    if isinstance(roster, _RosterView) and roster.lim is not None:
+        return roster.lim
+    users = roster.get("users") or {}
+    eff, anyl = {}, False
+    for gid, g in sorted(roster_groups(roster).items()):
+        lim = limits_clean(g.get("limits"))[0] if isinstance(g, dict) else {}
+        if not lim:
+            continue
+        anyl = True
+        for uid in (g.get("users") or ()):
+            if isinstance(uid, str) and uid in users and (uid not in eff or _lim_key(lim) < _lim_key(eff[uid][0])):
+                eff[uid] = (lim, "g:" + gid)
+    for uid, u in users.items():
+        lim = limits_clean(u.get("limits"))[0] if isinstance(u, dict) else {}
+        if lim:
+            anyl = True
+            eff[uid] = (lim, "u:" + uid)
+    if not anyl:
+        anyl = any(isinstance(p, dict) and (p.get("limits") or any(isinstance(t, dict) and t.get("limits")
+                                                                   for t in (p.get("targets") or ())))
+                   for p in (roster.get("peers") or {}).values())
+    out = {"any": anyl, "user": eff}
+    if isinstance(roster, _RosterView):
+        roster.lim = out
+    return out
+
+
+def limits_for_node(roster, node_id, desired, snap=None):
+    """The sync's `limits` wire key for one node (docs/LIMITS-PLAN.md §3.4): [[dev, [ipv4 prefix…], d, u, c, pool]] —
+    [] at once when no record carries a limit. Per deployment the most specific limit wins: the target's own, else the
+    device's (each its own policer, pool ""), else its user's or group's pool. The prefixes are the ones the node was just
+    given: a wg/awg deployment's allowed_ips from `desired` (this sync's desired_for_node), so a cut or expired device —
+    absent from it — gets no entry; a keyless one's from keyless_sources (none until it is vouched). IPv4 only: the node
+    refuses an entry with a prefix it cannot load. Sorted, so the reply's bytes are stable."""
+    li = _lim_index(roster)
+    if not li["any"]:
+        return []
+    given = {(ifn, e.get("public_key")): e.get("allowed_ips") or ""
+             for ifn, lst in (desired or {}).items() for e in (lst or ()) if isinstance(e, dict)}
+    out, kidx = [], None
+    for pid, p in _peers_on(roster, node_id):
+        own = limits_clean(p.get("limits"))[0]
+        user = li["user"].get(p.get("user_id")) if p.get("user_id") else None
+        for t in (p.get("targets") or ()):
+            if not isinstance(t, dict) or t.get("node") != node_id:
+                continue
+            tl = limits_clean(t.get("limits"))[0]
+            lim, pool = (tl, "") if tl else (own, "") if own else user if user else (None, "")
+            if not lim:
+                continue
+            if _is_self_contained_target(t):
+                kidx = _keyless_index(snap) if kidx is None else kidx
+                pairs = {}
+                for dev, pre in keyless_sources(p, t, kidx)[0]:
+                    pairs.setdefault(dev, []).append(pre)
+            else:
+                pairs = {t.get("iface") or "": [x.strip() for x in given.get((t.get("iface"), p.get("pubkey")), "").split(",")]}
+            if not pool and len(pairs) > 1:           # one device on two paths (a RAW-capable WDTT): ONE budget, not one a
+                pool = "t:" + hashlib.sha256(("%s|%s" % (pid, t.get("iface"))).encode()).hexdigest()[:16]   # path
+            for dev, nets in pairs.items():
+                nets = [n for n in nets if n and ":" not in n]
+                if dev and nets:
+                    out.append([dev, nets, lim.get("d", 0), lim.get("u", 0), lim.get("c", 0), pool])
+    return sorted(out, key=lambda e: (e[0], e[1]))
 
 
 def p2p_routers_for_node(roster, node_id, arrivals=()):
@@ -29624,6 +29736,11 @@ def api(method, path, qs, body, deps):
                 if maxpeer and exp < maxpeer:
                     return 400, {"ok": False, **perr("Subscription expiry can't be earlier than a peer's expiry ({v1})", v1=fmt_day(maxpeer)), "code": "bad_request"}
             fields["expiry"] = exp
+        if "limits" in body:                                 # a speed limit (docs/LIMITS-PLAN.md §3.4); {} / null clears it
+            _lim, _why = limits_clean(body.get("limits"))
+            if _why:
+                return 400, {"ok": False, **_why, "code": "bad_request"}
+            fields["limits"] = _lim
         renamed = "name" in fields
         u = user_set(roster, uid, fields, now())
         roster_save(roster_path, roster)
@@ -29721,6 +29838,12 @@ def api(method, path, qs, body, deps):
         added, removed = now_set - was, was - now_set
         if added or removed:
             fields["users"] = sorted(now_set)
+        if "limits" in body:                                 # a speed limit (docs/LIMITS-PLAN.md §3.4); {} / null clears it
+            _lim, _why = limits_clean(body.get("limits"))
+            if _why:
+                return 400, {"ok": False, **_why, "code": "bad_request"}
+            if _lim != (cur.get("limits") or {}):
+                fields["limits"] = _lim
         if not fields:
             return 200, {"ok": True, "data": dict(cur, id=gid)}
         old_name = cur.get("name") or ""
@@ -29730,6 +29853,8 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "group", gid, "Renamed group", g["name"], old_name)
         if "users" in fields:
             ev_append(roster_path, "group", gid, "Changed group members", g["name"], f"+{len(added)} −{len(removed)}")
+        if "limits" in fields:
+            ev_append(roster_path, "group", gid, "Changed group speed limit", g["name"])
         return 200, {"ok": True, "data": dict(g, id=gid)}
 
     if method == "POST" and path == "/api/groups/delete":
@@ -30057,6 +30182,11 @@ def api(method, path, qs, body, deps):
                 if uexp and exp > uexp:
                     return 400, {"ok": False, **perr("Peer expiry can't be later than the subscription's expiry ({v1})", v1=fmt_day(uexp)), "code": "bad_request"}
             changed["expiry"] = exp
+        if "limits" in body:                                 # a speed limit (docs/LIMITS-PLAN.md §3.4); {} / null clears it
+            _lim, _why = limits_clean(body.get("limits"))
+            if _why:
+                return 400, {"ok": False, **_why, "code": "bad_request"}
+            changed["limits"] = _lim
         if "routes" in body:                    # the networks behind this device — refused at the door, tolerated once stored
             _rt = body.get("routes")
             if not isinstance(_rt, list) or any(not isinstance(x, str) for x in _rt):
@@ -30236,8 +30366,12 @@ def api(method, path, qs, body, deps):
         node = body.get("node") or ""; iface = body.get("iface") or ""
         has_ip = bool((body.get("ip") or "").strip())
         has_ov = "overrides" in body
-        if not has_ip and not has_ov:
-            return 400, {"ok": False, "error": "nothing to change (send ip and/or overrides)", "code": "bad_request"}
+        has_lim = "limits" in body                  # this deployment's own speed limit (docs/LIMITS-PLAN.md R7); {} clears it
+        if not has_ip and not has_ov and not has_lim:
+            return 400, {"ok": False, "error": "nothing to change (send ip, overrides and/or limits)", "code": "bad_request"}
+        _tlim, _why = limits_clean(body.get("limits")) if has_lim else ({}, None)
+        if _why:
+            return 400, {"ok": False, **_why, "code": "bad_request"}
         ip = (body.get("ip") or "").split("/")[0].strip()
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
@@ -30257,6 +30391,8 @@ def api(method, path, qs, body, deps):
                 t["ip"] = ip
             if has_ov:
                 t["overrides"] = body.get("overrides") or {}   # {} clears back to the interface defaults
+            if has_lim:
+                t["limits"] = _tlim                 # {} clears it (clean_target stores none)
             return t
         targets = [_upd(t) for t in p["targets"]]
         p2 = peer_set(roster, pid, {"targets": targets}, now())
@@ -30264,6 +30400,8 @@ def api(method, path, qs, body, deps):
         # the address is rendered live from the roster; nothing to persist and no plaintext to write.
         if has_ip:
             ev_append(roster_path, "peer", pid, "Changed address", peer_label(roster, p2), f"{node}/{iface} → {ip}")
+        elif has_lim and not has_ov:
+            ev_append(roster_path, "peer", pid, "Changed deployment speed limit", peer_label(roster, p2), f"{node}/{iface}")
         else:
             ev_append(roster_path, "peer", pid, "Changed deployment settings", peer_label(roster, p2), f"{node}/{iface}")
         return 200, {"ok": True, "data": p2}
@@ -36674,6 +36812,8 @@ class Handler(BaseHTTPRequestHandler):
                                 **({"net_share": _nshare} if _nshare else {}),
                                 # DEVICE ACCESS: only while some interface here is not at Everyone and the node can enforce it (D1).
                                 **({"dev_reach": _dreach} if _dreach else {}),
+                                # SPEED LIMITS (docs/LIMITS-PLAN.md §3.4): only while a limit lands on this node — none, no key.
+                                **({"limits": _lims} if (_lims := limits_for_node(roster, nid, desired, snap)) else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for
