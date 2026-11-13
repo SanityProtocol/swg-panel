@@ -34,6 +34,9 @@
   [14] Review round 2 (F59, F61, F62, F68, F69): the marker names the devices loaded and a restart sweeps them listed or
        not; a sweep that never ran waits a minute; a part-applied cap change is sent again; a `limits` that is not a list
        keeps the other errors; uninstall deletes on the marker's devices only.
+  [15] Review round 3 (F71, F72, F75): a sweep and a device batch that hang for their timeout wait a minute from its end;
+       inside a failed cap change's minute, another pool's move keeps its cap as recorded; a device the marker cannot
+       name is not loaded, and is reported.
   [13] The main loop's wiring (the critical invariant): the wire is None each pass, set only from a valid 200 carrying
        `desired`, the call sits outside the sync's try, and the snapshot carries limit_err.
 
@@ -71,6 +74,10 @@ Run: python3 tests/limits_node_selftest.py   (0 = pass)
      sweepspin    a sweep that never ran is retried every pass
      errwipe      a `limits` that is not a list wipes the other errors from limit_err
      unwide       uninstall deletes pref 4097 on every device
+     hungsweep    the sweep's back-off is stamped before the call (a hung tc still blocks every pass)
+     hungdev      a device's back-off is stamped before the call
+     capthrottle  inside the failed minute, every other pool that moves is recorded as unknown
+     markrefuse   a device the marker cannot name is loaded anyway
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, time
 
@@ -92,8 +99,9 @@ PLANTS = {
     "stale": ('''        dels = _lim_dels(dev, have["hooks"]) if have and have["ifindex"] == ifx else []''', '''        dels = []'''),
     "lostclsact": ("        sig = (esig.get(dev), ifx)", "        sig = (esig.get(dev), 0)"),
     "failretry": ("        if f and f[0] == sig and now - f[1] < LIMITS_RETRY_S:", "        if False:"),
-    "failquiet": ('''            err[dev] = msg
-            res["errors"].append("limits %s: %s" % (dev, msg))''', '''            pass'''),
+    "failquiet": ('''"dirty": True, "caps": {}}
+            err[dev] = msg
+            res["errors"].append("limits %s: %s" % (dev, msg))''', '''"dirty": True, "caps": {}}'''),
     "meshdev": ('''    cdevs = sorted(set(str(d) for d in (_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))''',
                 '''    cdevs = sorted(_own_tunnel_devs(node_cfg))'''),
     "sameidx": ('''st["pidx"], _lim_alloc)''',
@@ -113,12 +121,18 @@ PLANTS = {
                         break''', '''                        sp[(dev, a)] = (pe.get("rx_speed") or 0, pe.get("tx_speed") or 0)'''),
     "nohold": ('''            if t is not None and now - t < LIMITS_HOLD_S:''', '''            if t == now:'''),
     "mincap": ('''max(LIMITS_MIN_CAP, pools[k[0]][k[1]] / max(1, n))''', '''pools[k[0]][k[1]] / max(1, n)'''),
-    "capfailkeep": ('''    st["caps"] = {k: (v if k not in old or (ok and k in moved) else (v[0], -1.0) if k in moved else old[k])''',
-                    '''    st["caps"] = {k: (v if True else (v[0], -1.0) if k in moved else old[k])'''),
-    "capunknown": ('''else (v[0], -1.0) if k in moved else old[k])''', '''else old[k])'''),
+    "capfailkeep": ('''    st["caps"] = {k: (v if k not in old or (ok and k in moved) else (v[0], -1.0) if k in failed else old[k])''',
+                    '''    st["caps"] = {k: (v if True else (v[0], -1.0) if k in failed else old[k])'''),
+    "capunknown": ('''else (v[0], -1.0) if k in failed else old[k])''', '''else old[k])'''),
     "marknames": ('''        devs = [d for d in sorted(set(cdevs) | st["markdevs"]) if''', '''        devs = [d for d in sorted(set(cdevs)) if'''),
     "sweepspin": ('''        if st["sweepfail"] and now - st["sweepfail"][0] < LIMITS_RETRY_S:''', '''        if False:'''),
     "errwipe": ('''        st["err"] = dict(st["err"], limits="not a list''', '''        st["err"] = dict(limits="not a list'''),
+    "hungsweep": ('''            st["sweepfail"] = (time.monotonic(), _lim_msg(r))''', '''            st["sweepfail"] = (now, _lim_msg(r))'''),
+    "hungdev": ('''            st["fail"][dev] = (sig, time.monotonic(), msg)''', '''            st["fail"][dev] = (sig, now, msg)'''),
+    "capthrottle": ('''    elif change:                                      # still inside the minute after a failed change: nothing sent, so
+        ok = False''', '''    elif change:                                      # still inside the minute after a failed change: nothing sent, so
+        ok, failed = False, set(moved)'''),
+    "markrefuse": ('''and not _lim_mark_add(st, dev):''', '''and not (_lim_mark_add(st, dev) or True):'''),
     "unwide": ('''done < /var/lib/swg-noded/limits; true''', '''done < /dev/null; for d in $(ls /sys/class/net); do for h in egress ingress; do tc filter del dev "$d" $h pref 4097 >/dev/null 2>&1; done; done; true'''),
     "errcause": ('''    cause = [x for x in ls if not x.startswith("Command failed")]''', '''    cause = []'''),
     "sweepfail": ('''        if r.returncode in (124, 127):                # not run at all''', '''        if False:                # not run at all'''),
@@ -183,6 +197,7 @@ RC = {}                                      # a forced return code for the next
 def fake_run(args, input_text=None, timeout=20, env=None, read=False):
     lines = (input_text or "").splitlines()
     CALLS.append((list(args), lines))
+    NOW[0] += RC.get("advance", 0)               # a hung tc: the call takes its timeout
     if RC.get("rc"):
         return subprocess.CompletedProcess(args, RC["rc"], "", "timed out\n")
     bad = any(("dev %s " % d) in ln for d in FAILDEV for ln in lines) or ("caps" in FAILDEV and lines and
@@ -611,6 +626,61 @@ if _m:
     for _f in os.listdir(_d):
         os.unlink(os.path.join(_d, _f))
     os.rmdir(_d)
+
+print("[15] review round 3")
+reset(mark=True)
+RC.update(rc=124, advance=60)                # tc hangs: the sweep takes its 60 s timeout
+ens(W)
+RC.clear()
+CALLS.clear()
+NOW[0] += 5                                  # the next pass
+ens(W)
+check("a sweep that hung for its timeout is not run again the next pass (F71)", CALLS == [] and "sweep" in N._LIMITS["err"],
+      [c[0] for c in CALLS])
+reset()
+ens(W)
+FAILDEV.add("wg1")
+RC["advance"] = 60
+ens(W3)
+RC.clear()
+FAILDEV.clear()
+CALLS.clear()
+NOW[0] += 5
+ens(W3)
+check("a device batch that hung for its timeout is not run again the next pass (F71)",
+      not any("dev wg1" in ln for ln in tc_lines()) and "wg1" in N._LIMITS["err"], tc_lines())
+# two shared pools: one fails its cap change, the other moves inside that minute (F72)
+reset()
+H = G + [["wg1", ["10.8.0.5/32"], 40, 0, 0, "g:y"], ["wg1", ["10.8.0.6/32"], 40, 0, 0, "g:y"]]
+
+
+def snaph(xb, yb):
+    sp = snap(30, xb, 0)
+    sp["interfaces"]["wg1"] = {"peers": [{"allowed_ips": "10.8.0.5/32", "rx_speed": 0, "tx_speed": mb(30)},
+                                         {"allowed_ips": "10.8.0.6/32", "rx_speed": 0, "tx_speed": mb(yb)}]}
+    return sp
+
+
+ens(H, snaph(0, 0))
+FAILDEV.add("caps")
+ens(H, snaph(20, 0))                         # g:x moves; its change fails
+NOW[0] += 5
+ens(H, snaph(20, 20))                        # g:y moves inside the minute: nothing is sent
+FAILDEV.clear()
+check("inside a failed minute, another pool's move keeps its cap as recorded, not unknown (F72)",
+      N._LIMITS["caps"].get(("g:y", "d")) == (40, 40.0) and N._LIMITS["caps"].get(("g:x", "d")) == (40, -1.0),
+      N._LIMITS["caps"])
+# a device the marker cannot name (F75)
+_mk = N.LIMITS_MARK
+N.LIMITS_MARK = os.path.join(TMP, "no-such-dir", "limits")
+try:
+    reset()
+    r = ens([["awg2", ["10.9.0.2/32"], 10, 0, 0, ""]])
+    check("a device the marker cannot name is not loaded, and is reported (F75)",
+          not any(ln.startswith("filter add") for ln in tc_lines()) and "awg2" in N._LIMITS["err"]
+          and any("awg2" in e for e in r["errors"]), (tc_lines(), N._LIMITS["err"]))
+finally:
+    N.LIMITS_MARK = _mk
 
 print("[13] the main loop's wiring")
 _pass = src[src.index("_relay_plan, _relay_sync_ok = None, False"):]

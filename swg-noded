@@ -5094,7 +5094,8 @@ def _lim_mark_read(st):
 
 def _lim_mark_add(st, dev):
     """Name `dev` in LIMITS_MARK before its first load (atomically), so a later process — or uninstall — sweeps it even when
-    it is not a listed client tunnel then (review F59, F68)."""
+    it is not a listed client tunnel then (review F59, F68). False when it could not be written: the device is then not
+    loaded (F75)."""
     try:
         tmp = LIMITS_MARK + ".tmp"
         with open(tmp, "w") as f:
@@ -5102,8 +5103,10 @@ def _lim_mark_add(st, dev):
         os.replace(tmp, LIMITS_MARK)
         st["mark"] = True
         st["markdevs"] = st["markdevs"] | {dev}
+        return True
     except OSError as e:
-        log(LOG_WARNING, "limits: %s not written (%s) — a restart will not clear limits removed meanwhile", LIMITS_MARK, e)
+        log(LOG_WARNING, "limits: %s not written (%s) — %s not loaded", LIMITS_MARK, e, dev)
+        return False
 
 
 def _lim_unmark(st):
@@ -5156,8 +5159,8 @@ def _ensure_limits(node_cfg, wire, snap, res):
             st["err"] = dict(why, sweep=st["sweepfail"][1])
             return
         r = _lim_tc([ln for d in devs for ln in _lim_dels(d)], force=True)
-        if r.returncode in (124, 127):                # not run at all (a missing filter is rc 1, and fine)
-            st["sweepfail"] = (now, _lim_msg(r))
+        if r.returncode in (124, 127):                # not run at all (a missing filter is rc 1, and fine). Stamped AFTER
+            st["sweepfail"] = (time.monotonic(), _lim_msg(r))   # the call: a hung tc takes its 60 s timeout (F71)
             st["err"] = dict(why, sweep=st["sweepfail"][1])
             res["errors"].append("limits sweep: " + st["sweepfail"][1])
             return
@@ -5186,8 +5189,12 @@ def _ensure_limits(node_cfg, wire, snap, res):
             err[dev] = f[2]
             continue
         lines, capidx, hooks = (_limits_render(dev, ents, pools, inforce, st["pidx"], _lim_alloc) if ents else ([], {}, ()))
-        if ents and dev not in st["markdevs"]:
-            _lim_mark_add(st, dev)
+        if ents and dev not in st["markdevs"] and not _lim_mark_add(st, dev):   # never load what the marker cannot name:
+            msg = "not loaded: %s could not name it" % LIMITS_MARK   # a restart and uninstall would miss it (F75)
+            st["fail"][dev] = (sig, now, msg)
+            err[dev] = msg
+            res["errors"].append("limits %s: %s" % (dev, msg))
+            continue
         dels = _lim_dels(dev, have["hooks"]) if have and have["ifindex"] == ifx else []
         if have and have["dirty"]:                    # what a failed batch left is unknown: delete blind, then load
             _lim_tc(_lim_dels(dev), force=True)
@@ -5195,7 +5202,7 @@ def _ensure_limits(node_cfg, wire, snap, res):
         r = _lim_tc(dels + lines) if dels or lines else None
         if r is not None and r.returncode != 0:
             msg = _lim_msg(r)
-            st["fail"][dev] = (sig, now, msg)
+            st["fail"][dev] = (sig, time.monotonic(), msg)   # after the call (F71)
             st["dev"][dev] = {"sig": None, "ifindex": ifx, "hooks": (), "dirty": True, "caps": {}}
             err[dev] = msg
             res["errors"].append("limits %s: %s" % (dev, msg))
@@ -5216,18 +5223,19 @@ def _ensure_limits(node_cfg, wire, snap, res):
              if k in old and not (old[k][1] > 0 and old[k][0] == lim and abs(cap - old[k][1]) <= 0.1 * old[k][1])]
     change = ["actions change " + _lim_police(want_caps[k][1], ci, "drop/pipe")
               for k in moved for d in st["dev"].values() for ci in d["caps"].get(k, ())]
-    ok = True
+    ok, failed = True, ()
     if change and not (st["capfail"] and now - st["capfail"][0] < LIMITS_RETRY_S):
         r = _lim_tc(change)
         ok = r.returncode == 0
-        st["capfail"] = None if ok else (now, _lim_msg(r))
+        st["capfail"] = None if ok else (time.monotonic(), _lim_msg(r))   # after the call (F71)
         if not ok:
+            failed = set(moved)                       # only what this batch carried may be half-set (F72)
             res["errors"].append("limits caps: " + st["capfail"][1])
-    elif change:                                      # still inside the minute after a failed change
-        ok = False
+    elif change:                                      # still inside the minute after a failed change: nothing sent, so
+        ok = False                                    # what the kernel holds is what was recorded
     else:
         st["capfail"] = None
-    st["caps"] = {k: (v if k not in old or (ok and k in moved) else (v[0], -1.0) if k in moved else old[k])
+    st["caps"] = {k: (v if k not in old or (ok and k in moved) else (v[0], -1.0) if k in failed else old[k])
                   for k, v in want_caps.items()}
     if st["capfail"]:                                 # unfair, never over the limit
         err["caps"] = st["capfail"][1]
