@@ -23,7 +23,16 @@
       by its password's `ip`; a move ≤ 10 % changes nothing, a larger one one `actions change` per member.
   [10] The last limit removed: the dels, the marker gone, then no spawn.
   [11] On a real kernel (only when `sudo -n ip netns` works; SKIP otherwise): the batches load, a changed own rate is in
-       force after the rebuild (R16), a pool's new limit is in force on a device that was not rebuilt, a cap moves.
+       force after the rebuild (R16), a pool's new limit is in force on a device that was not rebuilt, a cap moves, a
+       one-hook device rebuilds, an index at the top of the u32 range loads and the next wraps.
+  [12] Review round (limits-l1 F1–F23): the index range stays under tc's u32; only the hooks a device holds are deleted;
+       one prefix once per device; a combined pool beside a per-direction one; host bits refused; a trailing newline on a
+       pool refused; a `limits` that is not a list changes nothing; a WDTT password on two paths counts once, csqtt by
+       its `ip`; a member that moved within LIMITS_HOLD_S stays counted; a cap never under LIMITS_MIN_CAP; a failed cap
+       change keeps the caps in force; tc's cause reaches limit_err; a sweep that never ran is tried again; a WDTT device
+       left out of the client list for a pass keeps its limits; a node without a limit stats the marker once.
+  [13] The main loop's wiring (the critical invariant): the wire is None each pass, set only from a valid 200 carrying
+       `desired`, the call sits outside the sync's try, and the snapshot carries limit_err.
 
 Run: python3 tests/limits_node_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -37,6 +46,23 @@ Run: python3 tests/limits_node_selftest.py   (0 = pass)
      nopoolset    the pool's limit is not re-set by `actions change`
      capquiet     a quiet member counts as active
      nomemo       the wire is parsed again on every pass
+     onehook      a rebuild deletes both hooks whatever the device holds
+     idxwrap      the index counter runs past tc's u32
+     dupnet       a prefix repeated on one device renders two filters
+     mixkind      a pool with a combined and a per-direction member keeps both
+     strict       host bits are masked into the subnet
+     notlist      a `limits` that is not a list reads as none
+     rawtwice     a WDTT password's speed counts on both its paths
+     nohold       a member counts only on the pass it moved
+     mincap       no floor under a cap
+     capfailkeep  a failed cap change is recorded as in force
+     errcause     limit_err keeps tc's last line only
+     sweepfail    a sweep that never ran is not tried again
+     snatdrop     a device left out of the client list for a pass loses its limits
+     clientsweep  the start sweep runs over every tunnel (mesh links, exits)
+     markstat     the marker is stat'ed on every pass
+     wireall      the main loop starts a pass with an empty wire (a panel outage lifts every limit)
+     noerr        the snapshot leaves out limit_err
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, time
 
@@ -54,30 +80,49 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
-    "sweepalways": ("        if os.path.exists(LIMITS_MARK):              # a process before us loaded limits",
-                    "        if True:              # a process before us loaded limits"),
-    "stale": ('''        dels = _lim_dels(dev) if have and have["ifindex"] == ifx else []''', '''        dels = []'''),
+    "sweepalways": ('''    if not st["started"] and (st["mark"] or plan):''', '''    if not st["started"]:'''),
+    "stale": ('''        dels = _lim_dels(dev, have["hooks"]) if have and have["ifindex"] == ifx else []''', '''        dels = []'''),
     "lostclsact": ("        sig = (esig.get(dev), ifx)", "        sig = (esig.get(dev), 0)"),
     "failretry": ("        if f and f[0] == sig and now - f[1] < LIMITS_RETRY_S:", "        if False:"),
     "failquiet": ('''            err[dev] = msg
             res["errors"].append("limits %s: %s" % (dev, msg))''', '''            pass'''),
-    "meshdev": ('''    cdevs = list(_CLIENT_DEVS.get("list") or [])''', '''    cdevs = sorted(_own_tunnel_devs(node_cfg))'''),
-    "sameidx": ('''    def alloc():
-        st["next"] += 1
-        return st["next"] - 1''', '''    _seq = iter(range(LIMITS_IDX0 + 1000, LIMITS_IDX0 + 100000))
-    def alloc():
-        return next(_seq)'''),
+    "meshdev": ('''    cdevs = sorted(set(str(d) for d in (_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))''',
+                '''    cdevs = sorted(_own_tunnel_devs(node_cfg))'''),
+    "sameidx": ('''st["pidx"], _lim_alloc)''',
+                '''st["pidx"], (lambda _s=iter(range(LIMITS_IDX0 + 1000, LIMITS_IDX0 + 100000)): lambda: next(_s))())'''),
     "nopoolset": ('''    for pool, dirn in sorted(bound):
         lines.append(''', '''    for pool, dirn in []:
         lines.append('''),
     "nomemo": ('''    if wire != st.get("wire") or cdevs != st.get("cdevs"):''', "    if True:"),
-    "capquiet": ("                if lim and bps * 8 / 1e6 >= lim * 0.01:", "                if lim:"),
+    "capquiet": ("            t = now if bps * 8 / 1e6 >= lim * 0.01 else seen.get(k)", "            t = now"),
+    "onehook": ('''        dels = _lim_dels(dev, have["hooks"]) if''', '''        dels = _lim_dels(dev) if'''),
+    "idxwrap": ('''    _LIMITS["next"] = i + 1 if i + 1 < LIMITS_IDX_END else LIMITS_IDX0''', '''    _LIMITS["next"] = i + 1'''),
+    "dupnet": ('''        out = [n for n in dict.fromkeys(out) if (dev, n) not in seen]''', '''        out = out'''),
+    "mixkind": ('''        if p.get("c"):                                # both would''', '''        if False:                                # both would'''),
+    "strict": ('''net = ipaddress.IPv4Network(str(n))''', '''net = ipaddress.IPv4Network(str(n), strict=False)'''),
+    "notlist": ('''    if not isinstance(wire, list):                    # a malformed set''', '''    if False:                    # a malformed set'''),
+    "rawtwice": ('''                        sp[(dev, a)] = (pe.get("rx_speed") or 0, pe.get("tx_speed") or 0)
+                        break''', '''                        sp[(dev, a)] = (pe.get("rx_speed") or 0, pe.get("tx_speed") or 0)'''),
+    "nohold": ('''            if t is not None and now - t < LIMITS_HOLD_S:''', '''            if t == now:'''),
+    "mincap": ('''max(LIMITS_MIN_CAP, pools[k[0]][k[1]] / max(1, n))''', '''pools[k[0]][k[1]] / max(1, n)'''),
+    "capfailkeep": ('''    st["caps"] = {k: (v if k not in old or (ok and k in moved) else old[k]) for k, v in want_caps.items()}''',
+                    '''    st["caps"] = dict(want_caps)'''),
+    "errcause": ('''    cause = [x for x in ls if not x.startswith("Command failed")]''', '''    cause = []'''),
+    "sweepfail": ('''        if r.returncode in (124, 127):                # not run at all''', '''        if False:                # not run at all'''),
+    "snatdrop": ('''(_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))''', '''(_CLIENT_DEVS.get("list") or ())))'''),
+    "clientsweep": ('''        devs = [d for d in cdevs if _LIM_DEV_RE.fullmatch(d)''',
+                    '''        devs = [d for d in sorted(_own_tunnel_devs(node_cfg)) if _LIM_DEV_RE.fullmatch(d)'''),
+    "markstat": ('''    if st["mark"] is None:\n''', '''    if True:\n'''),
+    "wireall": ('''        _lim_wire = None                            # …and the limits''', '''        _lim_wire = []                            # …and the limits'''),
+    "noerr": ('''        snap["limit_err"] = dict(_LIMITS["err"])''', '''        pass'''),
 }
 
 
 def load(src, name):
-    tmp = os.path.join(HERE, ".limits-%s.py" % name)
+    d = tempfile.mkdtemp(prefix="swg-limits-mod-")         # private per run: parallel plant runs never share a module
+    tmp = os.path.join(d, "%s.py" % name)
     open(tmp, "w", encoding="utf-8").write(src)
+    sys.dont_write_bytecode = True
     try:
         spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, tmp))
         mod = importlib.util.module_from_spec(spec)
@@ -88,6 +133,7 @@ def load(src, name):
         return mod
     finally:
         os.unlink(tmp)
+        os.rmdir(d)
 
 
 src = open(NODED, encoding="utf-8").read()
@@ -113,25 +159,38 @@ class _Clock:
     def time(self):
         return NOW[0]
 
+    def monotonic(self):
+        return NOW[0]
+
+
+RC = {}                                      # a forced return code for the next batches (124: timed out)
+
 
 def fake_run(args, input_text=None, timeout=20, env=None, read=False):
     lines = (input_text or "").splitlines()
     CALLS.append((list(args), lines))
-    bad = any(("dev %s " % d) in ln for d in FAILDEV for ln in lines)
-    return subprocess.CompletedProcess(args, 1 if bad else 0, "", "Error: Exclusivity flag on, cannot modify.\n" if bad else "")
+    if RC.get("rc"):
+        return subprocess.CompletedProcess(args, RC["rc"], "", "timed out\n")
+    bad = any(("dev %s " % d) in ln for d in FAILDEV for ln in lines) or ("caps" in FAILDEV and lines and
+                                                                          lines[0].startswith("actions change"))
+    return subprocess.CompletedProcess(args, 1 if bad else 0, "",   # as tc says it: the cause, then the line
+                                       "Error: Exclusivity flag on, cannot modify.\nCommand failed -:2\n" if bad else "")
 
 
 N.run = fake_run
 N.time = _Clock()
-N._lim_ifindex = lambda d: IFX.get(d)
-N._own_tunnel_devs = lambda cfg=None: {"awg2", "wg1", "mesh1", "wgx-exit", "wdtt1"}
-CLIENT = ["awg2", "wg1", "wdtt1"]
+N._dev_ifindex = lambda d: IFX.get(d, 0)
+N._own_tunnel_devs = lambda cfg=None: {"awg2", "wg1", "mesh1", "wgx-exit", "wdtt1", "wdttr1", "csqtt2"}
+CLIENT = ["awg2", "csqtt2", "wdttr1", "wg1", "wdtt1"]
 N._CLIENT_DEVS["list"] = list(CLIENT)
 IDX0 = N.LIMITS_IDX0
 
 
 def reset(mark=False):
-    N._LIMITS.update(started=False, next=IDX0, dev={}, pidx={}, caps={}, fail={}, err={}, wire=None, cdevs=None, plan=None)
+    N._LIMITS.update(started=False, mark=None, next=IDX0, dev={}, pidx={}, caps={}, capfail=None, seen={}, fail={}, err={},
+                     wire=None, cdevs=None, plan=None)
+    N._CLIENT_DEVS["list"] = list(CLIENT)
+    RC.clear()
     if os.path.exists(N.LIMITS_MARK):
         os.unlink(N.LIMITS_MARK)
     if mark:
@@ -139,12 +198,13 @@ def reset(mark=False):
     CALLS.clear()
     FAILDEV.clear()
     IFX.clear()
-    IFX.update({"awg2": 7, "wg1": 8, "wdtt1": 9, "mesh1": 10, "eth0": 2, "wgx-exit": 11})
+    IFX.update({"awg2": 7, "wg1": 8, "wdtt1": 9, "mesh1": 10, "eth0": 2, "wgx-exit": 11, "wdttr1": 12, "csqtt2": 13})
 
 
 def ens(wire, snap=None):
-    res = {"changed": 0, "errors": []}
-    N._ensure_limits({}, wire, snap or {}, res)
+    res = {"changed": 0, "errors": []}                     # a fresh object, as every reply's json gives
+    N._ensure_limits({}, [list(e) if isinstance(e, list) else e for e in wire] if isinstance(wire, list) else wire,
+                     snap or {}, res)
     return res
 
 
@@ -170,7 +230,8 @@ reset(mark=True)
 ens([])
 check("a marker: one blind sweep", len(CALLS) == 1 and "-force" in CALLS[0][0], CALLS)
 swept = sorted({ln.split()[3] for ln in tc_lines()})
-check("the sweep covers the node's tunnels, pref 4097 only", swept == ["awg2", "mesh1", "wdtt1", "wg1", "wgx-exit"]
+check("the sweep covers the client tunnels only (never a mesh link or an exit), pref 4097 only",
+      swept == ["awg2", "csqtt2", "wdtt1", "wdttr1", "wg1"]
       and all(ln.endswith("pref 4097") and ln.startswith("filter del") for ln in tc_lines()), tc_lines())
 check("the marker is removed", not os.path.exists(N.LIMITS_MARK))
 CALLS.clear()
@@ -186,7 +247,8 @@ W = [["awg2", ["10.9.0.2/32"], 20, 5, 0, ""],
      ["wg1", ["10.8.0.6/32"], 8, 0, 0, "g:fam"]]
 r = ens(W)
 check("the marker is written", os.path.exists(N.LIMITS_MARK))
-check("one strict batch per device", [c[0] for c in CALLS] == [["tc", "-batch", "-"]] * 2, [c[0] for c in CALLS])
+check("a first load sweeps first (a wiped marker's leftovers), then one strict batch per device",
+      [c[0] for c in CALLS] == [["tc", "-force", "-batch", "-"]] + [["tc", "-batch", "-"]] * 2, [c[0] for c in CALLS])
 def batch_for(dev):
     return next((ls for _a, ls in CALLS if ("qdisc replace dev %s clsact" % dev) in ls), ["", "", "", "", "", "", "", "", ""])
 
@@ -264,6 +326,8 @@ FAILDEV.add("wg1")
 CALLS.clear()
 r = ens(W3)
 check("reported in limit_err and the pass", "wg1" in N._LIMITS["err"] and any("wg1" in e for e in r["errors"]), (N._LIMITS["err"], r))
+check("limit_err names tc's cause, not only its line", "Exclusivity" in N._LIMITS["err"].get("wg1", "")
+      and "-:2" in N._LIMITS["err"].get("wg1", ""), N._LIMITS["err"])
 check("nothing but the batch ran", len(CALLS) == 1)
 CALLS.clear()
 NOW[0] += 5
@@ -282,21 +346,24 @@ BAD = [["mesh1", ["10.7.0.2/32"], 10, 0, 0, ""], ["eth0", ["10.9.0.2/32"], 10, 0
        ["wgx-exit", ["10.9.0.2/32"], 10, 0, 0, ""], ["awg2\nqdisc del dev eth0 root", ["10.9.0.2/32"], 10, 0, 0, ""],
        ["awg2", ["10.9.0.2/32\nqdisc del dev eth0 root"], 10, 0, 0, ""], ["awg2", ["0.0.0.0/0"], 10, 0, 0, ""],
        ["awg2", ["10.9.0.9/32"], 0.5, 0, 0, ""], ["awg2", ["10.9.0.9/32"], 5, 0, 5, ""], ["awg2", ["10.9.0.9/32"], 5, 0, 0, "a b"],
-       ["awg2", ["fd00::2/128"], 5, 0, 0, ""], ["awg2", ["10.9.0.9/32"], True, 0, 0, ""], "junk"]
+       ["awg2", ["fd00::2/128"], 5, 0, 0, ""], ["awg2", ["10.9.0.9/32"], True, 0, 0, ""], "junk",
+       ["awg2", ["10.9.0.5/24"], 5, 0, 0, ""], ["awg2", ["10.9.0.9/32"], 5, 0, 0, "u:a\n"]]
 ens(BAD)
 check("no spawn at all", CALLS == [], tc_lines())
 check("each reported", {"mesh1", "eth0", "wgx-exit", "awg2", "?", "awg2\nqdisc del dev eth0 root"} <= set(N._LIMITS["err"]),
       N._LIMITS["err"])
 ens(BAD + [W[0]])
 check("a good entry beside them loads, and only it",
-      len(CALLS) == 1 and not any(("mesh1" in ln or "eth0" in ln or "exit" in ln or "fd00" in ln or "0.0.0.0" in ln)
-                                  for ln in CALLS[0][1]), tc_lines())
+      len(CALLS) == 2 and not any(("mesh1" in ln or "eth0" in ln or "exit" in ln or "fd00" in ln or "0.0.0.0" in ln)
+                                  for ln in CALLS[1][1]) and sum("filter add" in ln for ln in CALLS[1][1]) == 2, tc_lines())
 
 print("[8] an absent device")
 reset()
 del IFX["wdtt1"]
 ens([["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""]])
-check("skipped without a word", CALLS == [] and N._LIMITS["err"] == {}, (CALLS, N._LIMITS["err"]))
+check("skipped without a word", not any("wdtt1" in ln for ln in tc_lines() if not ln.startswith("filter del"))
+      and N._LIMITS["err"] == {}, (CALLS, N._LIMITS["err"]))
+CALLS.clear()
 IFX["wdtt1"] = 9
 ens([["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""]])
 check("loaded when it appears", len(CALLS) == 1 and "dev wdtt1 " in CALLS[0][1][1], CALLS)
@@ -345,22 +412,159 @@ CALLS.clear()
 ens([]); ens([])
 check("then no spawn", CALLS == [], CALLS)
 
+print("[12] review round")
+import re as _re
+_m = _re.search(r"secrets\.randbelow\(1 << (\d+)\) << (\d+)", src)
+check("the start index leaves room under tc's u32", _m and N.LIMITS_IDX0 + ((1 << int(_m.group(1))) << int(_m.group(2)))
+      + 10 ** 9 < N.LIMITS_IDX_END <= 0xFFFFFFFF, _m and _m.group(0))
+N._LIMITS["next"] = N.LIMITS_IDX_END - 1
+check("the counter wraps before the end", (N._lim_alloc(), N._lim_alloc()) == (N.LIMITS_IDX_END - 1, N.LIMITS_IDX0))
+reset()
+OH = [["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""], ["awg2", ["10.9.0.2/32"], 0, 5, 0, ""]]
+ens(OH)
+CALLS.clear()
+OH[0][2], OH[1][3] = 12, 6
+r = ens(OH)
+check("a one-hook device deletes only the hook it holds", sorted(ln for ln in tc_lines() if ln.startswith("filter del"))
+      == ["filter del dev awg2 ingress pref 4097", "filter del dev wdtt1 egress pref 4097"], tc_lines())
+CALLS.clear()
+ens([])
+check("…and so does its removal", sorted(tc_lines()) == ["filter del dev awg2 ingress pref 4097",
+                                                          "filter del dev wdtt1 egress pref 4097"], tc_lines())
+reset()
+ens([["awg2", ["10.9.0.2/32", "10.9.0.2/32"], 10, 0, 0, ""], ["awg2", ["10.9.0.7/32", "10.9.0.2/32"], 5, 0, 0, ""]])
+adds = [ln.split()[11] for ln in tc_lines() if ln.startswith("filter add")]
+check("a prefix is loaded once per device", sorted(adds) == ["10.9.0.2/32", "10.9.0.7/32"], adds)
+reset()
+ens([["awg2", ["10.9.0.4/32"], 0, 0, 40, "g:x"], ["wg1", ["10.8.0.5/32"], 30, 0, 0, "g:x"]])
+egress = [ln for ln in tc_lines() if " egress " in ln and ln.startswith("filter add")]
+check("a pool with a combined and a per-direction member: the combined, one filter a prefix and hook",
+      len(egress) == 2 and all("rate 40000kbit" in ln for ln in egress) and N._LIMITS["err"] == {}, tc_lines())
+reset()
+ens(W)
+CALLS.clear()
+ens({})
+check("a `limits` that is not a list changes nothing and is reported", CALLS == [] and "limits" in N._LIMITS["err"]
+      and set(N._LIMITS["dev"]) == {"awg2", "wg1"}, (CALLS, N._LIMITS["err"]))
+# speeds: a RAW-capable WDTT password is two entries, one device
+reset()
+R = [["awg2", ["10.9.0.4/32"], 40, 0, 0, "u:a"], ["wdtt1", ["10.66.0.7/32"], 40, 0, 0, "u:a"],
+     ["wdttr1", ["10.67.0.7/32"], 40, 0, 0, "u:a"], ["csqtt2", ["10.68.0.3/32"], 40, 0, 0, "u:a"]]
+
+
+def snapr(a, w, c):
+    return {"interfaces": {"awg2": {"peers": [{"allowed_ips": "10.9.0.4/32", "rx_speed": 0, "tx_speed": mb(a)}]}},
+            "wdtt": [{"iface": "wdtt1", "raw_iface": "wdttr1", "passwords": {
+                "pw": {"ip": "10.66.0.7", "raw_ip": "10.67.0.7", "rx_speed": 0, "tx_speed": mb(w)}}}],
+            "csqtt": [{"iface": "csqtt2", "passwords": {"q": {"ip": "10.68.0.3", "rx_speed": 0, "tx_speed": mb(c)}}}]}
+
+
+ens(R, snapr(30, 0, 0))
+ens(R, snapr(30, 20, 0))
+check("a WDTT password on two paths counts once", N._LIMITS["caps"].get(("u:a", "d")) == (40, 20.0), N._LIMITS["caps"])
+ens(R, snapr(30, 20, 10))
+check("a csqtt member by its `ip`", N._LIMITS["caps"].get(("u:a", "d"))[1] == 40 / 3, N._LIMITS["caps"])
+NOW[0] += 10
+ens(R, snapr(30, 20, 0))                     # csqtt's bytes arrive every 30 s: quiet between, still a member
+check("a member that moved within LIMITS_HOLD_S stays counted", N._LIMITS["caps"].get(("u:a", "d"))[1] == 40 / 3,
+      N._LIMITS["caps"])
+NOW[0] += N.LIMITS_HOLD_S
+ens(R, snapr(30, 20, 0))
+check("…and after it, not", N._LIMITS["caps"].get(("u:a", "d")) == (40, 20.0), N._LIMITS["caps"])
+pl = [("awg2", "10.9.%d.%d/32" % (i // 200, i % 200), "10.9.%d.%d" % (i // 200, i % 200), 0, 1.0, 0, "p") for i in range(30)]
+sn = {"interfaces": {"awg2": {"peers": [{"allowed_ips": "10.9.%d.%d/32" % (i // 200, i % 200), "rx_speed": mb(0.5),
+                                         "tx_speed": 0} for i in range(30)]}}}
+cp = N._limits_caps(pl, {"p": {"n": 30, "u": 1.0}}, sn, frozenset(["awg2"]), {}, 0.0)
+check("a cap never under LIMITS_MIN_CAP (tc refuses ~4 kbit with a 128 KB burst)", cp == {("p", "u"): (1.0, N.LIMITS_MIN_CAP)}, cp)
+# a failed cap change
+reset()
+ens(G, snap(30, 0, 0))
+FAILDEV.add("caps")
+CALLS.clear()
+r = ens(G, snap(30, 20, 0))
+check("a failed cap change keeps the caps in force, and says so", N._LIMITS["caps"][("g:x", "d")] == (40, 40.0)
+      and "Exclusivity" in N._LIMITS["err"].get("caps", "") and len(CALLS) == 1, (N._LIMITS["caps"], N._LIMITS["err"]))
+CALLS.clear()
+NOW[0] += 5
+ens(G, snap(30, 20, 0))
+check("not tried again within a minute", CALLS == [] and "caps" in N._LIMITS["err"], CALLS)
+FAILDEV.clear()
+NOW[0] += N.LIMITS_RETRY_S
+ens(G, snap(30, 20, 0))
+check("then tried, and in force", len(CALLS) == 1 and N._LIMITS["caps"][("g:x", "d")] == (40, 20.0)
+      and "caps" not in N._LIMITS["err"], (CALLS, N._LIMITS["err"]))
+# a sweep that never ran
+reset(mark=True)
+RC["rc"] = 124
+ens(W)
+check("a sweep that timed out loads nothing and is reported", len(CALLS) == 1 and "sweep" in N._LIMITS["err"]
+      and os.path.exists(N.LIMITS_MARK), (CALLS, N._LIMITS["err"]))
+RC.clear()
+CALLS.clear()
+ens(W)
+check("…and is tried again", len(CALLS) == 3 and "-force" in CALLS[0][0], [c[0] for c in CALLS])
+# a WDTT device left out of the client list for one pass (its SNAT write failed)
+reset()
+WD = [["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""]]
+ens(WD)
+CALLS.clear()
+N._CLIENT_DEVS["list"] = [d for d in CLIENT if d != "wdtt1"]
+ens(WD)
+check("a loaded device out of the client list for a pass keeps its limits", CALLS == [] and N._LIMITS["err"] == {},
+      (CALLS, N._LIMITS["err"]))
+N._CLIENT_DEVS["list"] = list(CLIENT)
+# a node without a limit: the marker is stat'ed once
+reset()
+_ex, _stats = os.path.exists, [0]
+
+
+def _counting(p):
+    _stats[0] += p == N.LIMITS_MARK
+    return _ex(p)
+
+
+N.os.path.exists = _counting
+try:
+    for _ in range(4):
+        ens([])
+finally:
+    N.os.path.exists = _ex
+check("a node without a limit stats the marker once a process", _stats[0] <= 1 and CALLS == [], (_stats, CALLS))
+
+print("[13] the main loop's wiring")
+_pass = src[src.index("_relay_plan, _relay_sync_ok = None, False"):]
+_pass = _pass[:_pass.index("_iv = 1.0 if _busy else interval")]
+_i_none = _pass.find("\n        _lim_wire = None ")
+_i_set = _pass.find('_lim_wire = reply.get("limits", [])')
+_valid = _pass.rfind('if status == 200 and isinstance(reply.get("desired"), dict):', 0, _i_set)
+check("each pass starts with no wire", _i_none >= 0, _i_none)
+check("the wire is set only from a valid 200 carrying `desired`", _i_set > 0 and _pass.count("_lim_wire = ") == 2
+      and 0 < _valid and _pass[_valid:_i_set].count("\n") <= 3, _pass[_valid:_i_set + 40] if _valid > 0 else "no guard")
+_call = _pass.find("\n        if _lim_wire is not None:")
+check("the call sits outside the sync's try, at the loop's level", _call > _i_set
+      and "_ensure_limits(node_cfg, _lim_wire, snap, _lres)" in _pass[_call:_call + 800], _call)
+check("the snapshot carries limit_err", 'snap["limit_err"] = dict(_LIMITS["err"])' in src)
+
 
 print("[11] a real kernel")
 NS = "swglimtest%d" % os.getpid()
-ok = subprocess.run(["sudo", "-n", "ip", "netns", "add", NS], capture_output=True).returncode == 0
+try:
+    ok = subprocess.run(["sudo", "-n", "ip", "netns", "add", NS], capture_output=True).returncode == 0
+except OSError:                              # no sudo binary at all
+    ok = False
 if not ok:
     print("  SKIP — no `sudo -n ip netns` here")
 else:
     try:
         def nsx(args, inp=None):
             return subprocess.run(["sudo", "-n", "ip", "netns", "exec", NS] + args, input=inp, capture_output=True, text=True)
-        for d in ("awg2", "wg1"):
+        for d in ("awg2", "wg1", "wdtt1"):
             nsx(["ip", "link", "add", d, "type", "dummy"])
             nsx(["ip", "link", "set", d, "up"])
         N.run = lambda args, input_text=None, timeout=20, env=None, read=False: nsx(list(args), input_text)
-        N._lim_ifindex = lambda d: (lambda r: int(r.stdout) if r.returncode == 0 and r.stdout.strip().isdigit() else None)(
+        N._dev_ifindex = lambda d: (lambda r: int(r.stdout) if r.returncode == 0 and r.stdout.strip().isdigit() else 0)(
             nsx(["cat", "/sys/class/net/%s/ifindex" % d]))
+        N._LIMITS["dev"].clear()
 
         def rate(i):
             r = nsx(["tc", "actions", "get", "action", "police", "index", str(i)])
@@ -385,6 +589,19 @@ else:
         caps = [i for d in N._LIMITS["dev"].values() for i in d["caps"].get(("u:alice", "c"), ())]
         check("a cap moves to limit ÷ 2 on both members", len(caps) == 2 and all(rate(i) == "30Mbit" for i in caps),
               [rate(i) for i in caps])
+        W5 = W4 + [["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""]]
+        r = ens(W5)
+        W5[-1][2] = 12
+        r = ens(W5)
+        flt = nsx(["tc", "filter", "show", "dev", "wdtt1", "egress"]).stdout
+        check("a download-only device rebuilds (only its egress deleted)", r["errors"] == [] and "rate 12Mbit" in flt,
+              (r, flt[:300]))
+        N._LIMITS["next"] = N.LIMITS_IDX_END - 1
+        W5[-1][2] = 14
+        r = ens(W5)
+        flt = nsx(["tc", "filter", "show", "dev", "wdtt1", "egress"]).stdout
+        check("an index at the top of the range loads, the next wraps", r["errors"] == [] and "rate 14Mbit" in flt
+              and N._LIMITS["next"] == N.LIMITS_IDX0, (r, N._LIMITS["next"]))
         ens([])
         check("removed: no filter of ours left", "4097" not in nsx(["tc", "filter", "show", "dev", "awg2", "egress"]).stdout
               and "4097" not in nsx(["tc", "filter", "show", "dev", "wg1", "ingress"]).stdout)

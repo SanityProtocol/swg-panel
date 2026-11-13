@@ -4879,18 +4879,25 @@ def _reach_drop_table(res):
 # two members or more each also gets a cap = limit ÷ members that moved ≥ 1 % of it (§3.2), re-set from the snapshot.
 LIMITS_PREF = 4097
 LIMITS_IDX0 = 0x53470000                      # our policer indices start here ("SG"), a range no tool of the host picks
-# …at a random offset in it per process: a policer an earlier process left (its marker wiped with STATE_DIR, §3.7) must not
-# be BOUND by a filter of ours under its index — a bind takes the old policer's rate, not ours (R16)
+LIMITS_IDX_END = 0xFFFF0000                   # …and stay under it: tc's action index is a u32 (review F1: past it, every add fails)
+# …from a random offset per process (≤ 2^28, so ~2.6e9 indices stay before the end): a policer an earlier process left (its
+# marker wiped with STATE_DIR, §3.7) must not be BOUND by a filter of ours under its index — a bind takes the old policer's
+# rate, not ours (R16). Past the end the count wraps to IDX0: by then every index near it was freed billions of adds ago.
 LIMITS_MARK = os.path.join(STATE_DIR, "limits")   # this node may hold our filters: the start sweep runs only with it (R3)
-LIMITS_RETRY_S = 60                           # a device whose batch failed is tried again at most this often
+LIMITS_RETRY_S = 60                           # a device (or the caps) whose batch failed is tried again at most this often
+LIMITS_HOLD_S = 35                            # a pool member counts as moving this long after it last did: a WDTT / csqtt
+                                              # password's bytes arrive every 10 / 30 s, and a cap must not flap between
 LIMITS_MAX_MBIT = 100000
-_LIM_DEV_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,15}$")
-_LIM_POOL_RE = re.compile(r"^[A-Za-z0-9_:.-]{1,64}$")
-# dev: {dev: {sig, ifindex, dirty, caps: {(pool, dir): [cap index…]}}} as loaded · pidx: {(pool, dir): its policer index}
-# caps: {(pool, dir): (limit, cap)} in force · fail: {dev: (sig, t, why)} · err: what the snapshot reports (`limit_err`)
+LIMITS_MIN_CAP = 0.1                          # Mbit/s: tc refuses a rate under ~4 kbit with a 128 KB burst; a cap is only
+                                              # fairness — the pool's own policer holds the limit
+_LIM_DEV_RE = re.compile(r"[A-Za-z0-9_.@-]{1,15}")    # fullmatch: no trailing newline (these reach a root tc's stdin)
+_LIM_POOL_RE = re.compile(r"[A-Za-z0-9_:.-]{1,64}")
+# dev: {dev: {sig, ifindex, hooks, dirty, caps: {(pool, dir): [cap index…]}}} as loaded · pidx: {(pool, dir): its policer
+# index} · caps: {(pool, dir): (limit, cap)} in force · seen: {(dev, prefix, dir): when it last moved} · fail: {dev: (sig, t,
+# why)} · err: what the snapshot reports (`limit_err`) · mark: whether LIMITS_MARK exists (read once, then kept here)
 # wire, cdevs → plan: the last wire and client tunnels, and what _limits_plan made of them (R4: unchanged = not parsed again)
-_LIMITS = {"started": False, "next": LIMITS_IDX0 + (secrets.randbelow(1 << 28) << 4), "dev": {}, "pidx": {}, "caps": {},
-           "fail": {}, "err": {}, "wire": None, "cdevs": None, "plan": None}
+_LIMITS = {"started": False, "mark": None, "next": LIMITS_IDX0 + (secrets.randbelow(1 << 24) << 4), "dev": {}, "pidx": {},
+           "caps": {}, "capfail": None, "seen": {}, "fail": {}, "err": {}, "wire": None, "cdevs": None, "plan": None}
 
 
 def _lim_num(v):
@@ -4905,30 +4912,32 @@ def _lim_num(v):
 def _limits_plan(wire, client_devs):
     """({dev: [(nets, d, u, c, pool)]}, {pool: {"d"|"u"|"c": limit, "n": members here}}, {dev: why refused}). ⚠️ EVERY
     STRING HERE REACHES THE STDIN OF A ROOT `tc -batch`, where a newline is a new command: a device must be one of this
-    node's client tunnels (R1: never eth0, an exit or a mesh link — so only a name this node gave itself), a prefix must parse as IPv4 and is re-printed by
-    ipaddress, a rate is a number in range, a pool id matches its expression. A refused entry is left out and reported;
-    the others load. Pure, so the selftest reads exactly what the kernel is handed."""
+    node's client tunnels (R1: never eth0, an exit or a mesh link — so only a name this node gave itself), a prefix must
+    parse as an IPv4 network (host bits set = refused, never widened to the subnet) and is re-printed by ipaddress, a rate
+    is a number in range, a pool id matches its expression. A refused entry is left out and reported; the others load. One
+    prefix is loaded once per device (a second filter with the same key is EEXIST, and fails the device's whole batch).
+    Pure, so the selftest reads exactly what the kernel is handed."""
     plan, pools, why = {}, {}, {}
     seen = set()
-    for e in (wire if isinstance(wire, list) else []):
+    for e in wire:
         if not isinstance(e, list) or len(e) != 6:
             why["?"] = "malformed entry"
             continue
         dev, nets, d, u, c, pool = e
-        if not isinstance(dev, str) or dev not in client_devs:   # the node's own names only: a wire string never reaches tc
-            why[str(dev)[:32]] = "not a client tunnel on this node"
+        if not isinstance(dev, str) or dev not in client_devs or not _LIM_DEV_RE.fullmatch(dev):
+            why[str(dev)[:32]] = "not a client tunnel on this node"   # the node's own names only
             continue
         d, u, c = _lim_num(d), _lim_num(u), _lim_num(c)
         if None in (d, u, c) or not (d or u or c) or (c and (d or u)):
             why[dev] = "bad rate"
             continue
-        if not isinstance(pool, str) or (pool and not _LIM_POOL_RE.match(pool)):
+        if not isinstance(pool, str) or (pool and not _LIM_POOL_RE.fullmatch(pool)):
             why[dev] = "bad pool"
             continue
         out = []
         for n in (nets if isinstance(nets, list) else [])[:64]:
             try:
-                net = ipaddress.IPv4Network(str(n), strict=False)
+                net = ipaddress.IPv4Network(str(n))
             except (ValueError, TypeError):
                 out = None
                 break
@@ -4939,16 +4948,21 @@ def _limits_plan(wire, client_devs):
         if not out:
             why[dev] = "bad prefix"
             continue
-        if (dev, out[0]) in seen:
+        out = [n for n in dict.fromkeys(out) if (dev, n) not in seen]
+        if not out:                                   # every prefix already loaded here by an earlier entry
             continue
-        seen.add((dev, out[0]))
+        seen.update((dev, n) for n in out)
         plan.setdefault(dev, []).append((tuple(out), d, u, c, pool))
         if pool:
             p = pools.setdefault(pool, {"n": 0})
             p["n"] += 1
             for k, v in (("d", d), ("u", u), ("c", c)):
-                if v:                                 # members disagreeing (a panel bug): the lowest holds
+                if v:                                 # members disagreeing (a panel bug): the lowest holds…
                     p[k] = min(p.get(k, v), v)
+    for p in pools.values():                          # …and a combined figure beside a per-direction one keeps the combined:
+        if p.get("c"):                                # both would put two filters with one key on a hook (EEXIST)
+            p.pop("d", None)
+            p.pop("u", None)
     for dev, ents in plan.items():                    # every member carries its pool's one limit
         plan[dev] = [(nets, pools[pool].get("d", 0), pools[pool].get("u", 0), pools[pool].get("c", 0), pool) if pool
                      else (nets, d, u, c, pool) for nets, d, u, c, pool in ents]
@@ -4963,11 +4977,13 @@ def _lim_police(mbit, idx, verdict):
 
 
 def _limits_render(dev, ents, pools, caps, pidx, alloc):
-    """(lines, {(pool, dir): [cap index…]}) — one device's whole `tc -batch`. ⚠️ A DEVICE'S OWN AND CAP POLICERS TAKE FRESH
-    INDICES ON EVERY REBUILD (R16): a policer outlives its last filter for a moment (released by a work queue), and a filter
-    added under its index in that moment BINDS it — the new rate ignored (measured: 20 → 5 Mbit read 20 after a rebuild).
-    A pool's index is stable, since other devices bind it; every pool this device binds is re-set by `actions change`."""
-    lines, capidx, bound = ["qdisc replace dev %s clsact" % dev], {}, set()
+    """(lines, {(pool, dir): [cap index…]}, hooks) — one device's whole `tc -batch`, and the hooks it puts filters on (only
+    those are deleted again: `filter del` on a hook with none fails, and stops a batch). ⚠️ A DEVICE'S OWN AND CAP
+    POLICERS TAKE FRESH INDICES ON EVERY REBUILD (R16): a policer outlives its last filter for a moment (released by a work
+    queue), and a filter added under its index in that moment BINDS it — the new rate ignored (measured: 20 → 5 Mbit read
+    20 after a rebuild). A pool's index is stable, since other devices bind it; every pool this device binds is re-set by
+    `actions change`."""
+    lines, capidx, bound, hooks = ["qdisc replace dev %s clsact" % dev], {}, set(), set()
     for nets, d, u, c, pool in ents:
         shared = bool(pool) and pools[pool]["n"] >= 2
         for dirn, rate in (("c", c), ("d", d), ("u", u)):
@@ -4984,66 +5000,82 @@ def _limits_render(dev, ents, pools, caps, pidx, alloc):
             else:
                 acts = _lim_police(rate, alloc(), "drop/ok")
             for hook in (("egress", "ingress") if dirn == "c" else ("egress",) if dirn == "d" else ("ingress",)):
+                hooks.add(hook)
                 for net in nets:
                     lines.append("filter add dev %s %s pref %d protocol ip flower %s %s %s" % (
                         dev, hook, LIMITS_PREF, "dst_ip" if hook == "egress" else "src_ip", net, acts))
     for pool, dirn in sorted(bound):
         lines.append("actions change " + _lim_police(pools[pool][dirn], pidx[(pool, dirn)], "drop/ok"))
-    return lines, capidx
+    return lines, capidx, tuple(sorted(hooks))
 
 
-def _limits_speeds(snap):
-    """{(device, address): (rx B/s, tx B/s)} from what this pass's snapshot already read (R5): a kernel peer by the first
-    entry of its allowed_ips, a WDTT / csqtt password by its `ip` and `raw_ip`. No read of its own."""
+def _limits_speeds(snap, devs):
+    """{(device, address): (rx B/s, tx B/s)} on `devs` (the devices holding a shared pool's member) from what this pass's
+    snapshot already read (R5): a kernel peer by the first entry of its allowed_ips, a WDTT / csqtt password by its `ip`
+    — or its `raw_ip` when it has none: one password's bytes are one device's, whichever path carried them, so they are
+    counted once (a RAW-capable device is two entries, and must not read as two members moving). No read of its own."""
     sp = {}
-    for ifn, d in ((snap or {}).get("interfaces") or {}).items():
-        for p in ((d or {}).get("peers") or ()):
+    ifs = (snap or {}).get("interfaces") or {}
+    for ifn in devs:
+        for p in ((ifs.get(ifn) or {}).get("peers") or ()):
             a = str(p.get("allowed_ips") or "").split(",")[0].strip().split("/")[0]
             if a:
                 sp[(ifn, a)] = (p.get("rx_speed") or 0, p.get("tx_speed") or 0)
     for kind in ("wdtt", "csqtt"):
         for inst in ((snap or {}).get(kind) or ()):
-            for pe in ((inst or {}).get("passwords") or {}).values():
+            inst = inst or {}
+            if inst.get("iface") not in devs and inst.get("raw_iface") not in devs:
+                continue
+            for pe in (inst.get("passwords") or {}).values():
+                pe = pe or {}
                 for k, dev in (("ip", inst.get("iface")), ("raw_ip", inst.get("raw_iface"))):
-                    a = str((pe or {}).get(k) or "").split("/")[0]
+                    a = str(pe.get(k) or "").split("/")[0]
                     if a and dev:
                         sp[(dev, a)] = (pe.get("rx_speed") or 0, pe.get("tx_speed") or 0)
+                        break
     return sp
 
 
-def _limits_caps(plan, pools, snap):
-    """{(pool, dir): (limit, cap)} for each pool with two members or more here: limit ÷ the members whose speed in that
-    direction (rx = upload, tx = download, both for `c`) is ≥ 1 % of the limit, never fewer than one (§3.2). One walk of
-    the entries; nothing at all while no pool is shared here."""
+def _limits_caps(mem, pools, snap, sdevs, seen, now):
+    """{(pool, dir): (limit, cap)} for each pool with two members or more here: limit ÷ the members that moved in that
+    direction (rx = upload, tx = download, both for `c`) by ≥ 1 % of the limit within LIMITS_HOLD_S, never fewer than one
+    (§3.2), never under LIMITS_MIN_CAP. `mem` is the shared pools' entries [(dev, prefix, address, d, u, c, pool)], made
+    with the plan; `seen` is kept in place: each moving member's last move. Nothing at all while no pool is shared here."""
     act = {(pool, dirn): 0 for pool, p in pools.items() if p["n"] >= 2 for dirn in ("c", "d", "u") if p.get(dirn)}
     if not act:
+        seen.clear()
         return {}
-    sp = _limits_speeds(snap)
-    for dev, ents in plan.items():
-        for nets, d, u, c, pool in ents:
-            if not pool or pools[pool]["n"] < 2:
+    sp = _limits_speeds(snap, sdevs)
+    live = {}
+    for dev, net, a, d, u, c, pool in mem:
+        rx, tx = sp.get((dev, a), (0, 0))
+        for dirn, lim, bps in (("c", c, rx + tx), ("d", d, tx), ("u", u, rx)):
+            if not lim:
                 continue
-            rx, tx = sp.get((dev, nets[0].split("/")[0]), (0, 0))
-            for dirn, lim, bps in (("c", c, rx + tx), ("d", d, tx), ("u", u, rx)):
-                if lim and bps * 8 / 1e6 >= lim * 0.01:
-                    act[(pool, dirn)] += 1
-    return {k: (pools[k[0]][k[1]], pools[k[0]][k[1]] / max(1, n)) for k, n in act.items()}
-
-
-def _lim_ifindex(dev):
-    try:
-        with open("/sys/class/net/%s/ifindex" % dev) as f:
-            return int(f.read().strip())
-    except (OSError, ValueError):
-        return None
+            k = (dev, net, dirn)
+            t = now if bps * 8 / 1e6 >= lim * 0.01 else seen.get(k)
+            if t is not None and now - t < LIMITS_HOLD_S:
+                live[k] = t
+                act[(pool, dirn)] += 1
+    seen.clear()
+    seen.update(live)
+    return {k: (pools[k[0]][k[1]], max(LIMITS_MIN_CAP, pools[k[0]][k[1]] / max(1, n))) for k, n in act.items()}
 
 
 def _lim_tc(lines, force=False):
     return run(["tc"] + (["-force"] if force else []) + ["-batch", "-"], input_text="\n".join(lines) + "\n", timeout=60)
 
 
-def _lim_dels(dev):
-    return ["filter del dev %s %s pref %d" % (dev, h, LIMITS_PREF) for h in ("egress", "ingress")]
+def _lim_msg(r):
+    """What a failed `tc -batch` says: its cause, then where (tc's last line is always just "Command failed -:N")."""
+    ls = [x.strip() for x in ((r.stderr or "") + "\n" + (r.stdout or "")).splitlines() if x.strip()]
+    cause = [x for x in ls if not x.startswith("Command failed")]
+    where = [x for x in ls if x.startswith("Command failed")]
+    return ("%s (%s)" % (cause[0], where[-1]) if cause and where else (cause or where or ["tc failed"])[0])[:160]
+
+
+def _lim_dels(dev, hooks=("egress", "ingress")):
+    return ["filter del dev %s %s pref %d" % (dev, h, LIMITS_PREF) for h in hooks]
 
 
 def _ensure_limits(node_cfg, wire, snap, res):
@@ -5054,46 +5086,53 @@ def _ensure_limits(node_cfg, wire, snap, res):
     not there is skipped and loaded when it appears (a new ifindex = a lost clsact = rebuilt). A failed batch is tried again
     at most once a minute and reported (`limit_err`): ⚠️ A LIMITER FAILING NEVER CUTS ANYONE — the traffic just flows."""
     st = _LIMITS
-    if not st["started"]:
-        st["started"] = True
-        if os.path.exists(LIMITS_MARK):              # a process before us loaded limits: take them all down, then load
-            devs = sorted(d for d in _own_tunnel_devs(node_cfg) if _LIM_DEV_RE.match(d) and _lim_ifindex(d) is not None)
-            if devs:
-                _lim_tc([ln for d in devs for ln in _lim_dels(d)], force=True)
-    cdevs = list(_CLIENT_DEVS.get("list") or [])
+    if not isinstance(wire, list):                    # a malformed set is ignored and reported, never read as "none"
+        st["err"] = {"limits": "not a list: ignored, what is loaded stays"}
+        return
+    # A device loaded here stays a candidate while it exists: reconcile_egress leaves a WDTT / csqtt device out of its list
+    # for a pass whose SNAT write failed, and that must not lift the device's limits (review F9).
+    cdevs = sorted(set(str(d) for d in (_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))
     if wire != st.get("wire") or cdevs != st.get("cdevs"):   # R4: an unchanged wire over the same tunnels is a compare
-        plan, pools, why = _limits_plan(wire, set(str(d) for d in cdevs))
-        esig = {dev: json.dumps([[list(e[0]), e[1], e[2], e[3], e[4], bool(e[4]) and pools[e[4]]["n"] >= 2] for e in ents],
-                                separators=(",", ":")) for dev, ents in plan.items()}
-        st.update(wire=wire, cdevs=cdevs, plan=(plan, pools, why, esig))
-    plan, pools, why, esig = st["plan"]
+        plan, pools, why = _limits_plan(wire, set(cdevs))
+        esig = {dev: tuple((e, bool(e[4]) and pools[e[4]]["n"] >= 2) for e in ents) for dev, ents in plan.items()}
+        mem = tuple((dev, e[0][0], e[0][0].split("/")[0]) + e[1:] for dev, ents in plan.items() for e in ents
+                    if e[4] and pools[e[4]]["n"] >= 2)   # the shared pools' members, for the caps
+        st.update(wire=wire, cdevs=cdevs, plan=(plan, pools, why, esig, mem, frozenset(m[0] for m in mem)))
+        pidx = {}                                     # a pool's index is stable while it exists; one gone is forgotten
+        for pool, p in sorted(pools.items()):
+            for dirn in ("c", "d", "u"):
+                if p.get(dirn):
+                    pidx[(pool, dirn)] = st["pidx"].get((pool, dirn)) or _lim_alloc()
+        st["pidx"] = pidx
+    plan, pools, why, esig, mem, sdevs = st["plan"]
+    if st["mark"] is None:
+        st["mark"] = os.path.exists(LIMITS_MARK)      # once a process: a node without a limit stats nothing after this
+    if not st["started"] and (st["mark"] or plan):   # a process before us loaded limits, or we are about to: whatever is
+        devs = [d for d in cdevs if _LIM_DEV_RE.fullmatch(d) and _dev_ifindex(d)]   # at pref 4097 on a client tunnel goes
+        if not devs:                                  # first (a wiped marker's leftovers too). Nothing to sweep yet: no
+            return                                    # load either, until the tunnels are listed
+        r = _lim_tc([ln for d in devs for ln in _lim_dels(d)], force=True)
+        if r.returncode in (124, 127):                # not run at all (a missing filter is rc 1, and fine): again next pass
+            st["err"] = dict(why, sweep=_lim_msg(r))
+            return
+        st["started"] = True
     if not plan and not st["dev"]:                    # nothing asked and nothing loaded: no spawn, ever (R3)
         st["err"] = why
-        if os.path.exists(LIMITS_MARK):              # (only once our filters are gone: a failed device stays in st["dev"])
+        if st["mark"]:                                # (only once our filters are gone: a failed device stays in st["dev"])
             with contextlib.suppress(OSError):
                 os.unlink(LIMITS_MARK)
+            st["mark"] = False
         return
-    for pool, p in pools.items():                     # a pool's index is stable while it exists; one gone is forgotten
-        for dirn in ("c", "d", "u"):
-            if p.get(dirn) and (pool, dirn) not in st["pidx"]:
-                st["pidx"][(pool, dirn)] = st["next"]
-                st["next"] += 1
-    st["pidx"] = {k: v for k, v in st["pidx"].items() if pools.get(k[0], {}).get(k[1])}
-    want_caps = _limits_caps(plan, pools, snap)
-
-    def alloc():
-        st["next"] += 1
-        return st["next"] - 1
-
-    now, err = time.time(), dict(why)
+    now, err = time.monotonic(), dict(why)
+    want_caps = _limits_caps(mem, pools, snap, sdevs, st["seen"], now)
     for dev in sorted(set(plan) | set(st["dev"])):
         ents = plan.get(dev) or []
-        ifx = _lim_ifindex(dev)
+        ifx = _dev_ifindex(dev)
         sig = (esig.get(dev), ifx)
         have = st["dev"].get(dev)
-        if have and have["sig"] == sig and not have["dirty"]:
+        if have and have["sig"] == sig:
             continue
-        if ifx is None:                               # gone: its filters went with it; loaded when it comes back
+        if not ifx:                                   # gone: its filters went with it; loaded when it comes back
             st["dev"].pop(dev, None)
             st["fail"].pop(dev, None)
             continue
@@ -5101,54 +5140,68 @@ def _ensure_limits(node_cfg, wire, snap, res):
         if f and f[0] == sig and now - f[1] < LIMITS_RETRY_S:
             err[dev] = f[2]
             continue
-        lines, capidx = (_limits_render(dev, ents, pools, {**want_caps, **st["caps"]}, st["pidx"], alloc)
-                         if ents else ([], {}))
-        if ents and not os.path.exists(LIMITS_MARK):
+        lines, capidx, hooks = (_limits_render(dev, ents, pools, {**want_caps, **st["caps"]}, st["pidx"], _lim_alloc)
+                                if ents else ([], {}, ()))
+        if ents and not st["mark"]:
             try:
                 with open(LIMITS_MARK, "w"):
                     pass
+                st["mark"] = True
             except OSError as e:
                 log(LOG_WARNING, "limits: %s not written (%s) — a restart will not clear limits removed meanwhile", LIMITS_MARK, e)
-        dels = _lim_dels(dev) if have and have["ifindex"] == ifx else []
-        if dels and have["dirty"]:                    # what a failed batch left is unknown: delete blind, then load
-            _lim_tc(dels, force=True)
+        dels = _lim_dels(dev, have["hooks"]) if have and have["ifindex"] == ifx else []
+        if have and have["dirty"]:                    # what a failed batch left is unknown: delete blind, then load
+            _lim_tc(_lim_dels(dev), force=True)
             dels = []
         r = _lim_tc(dels + lines) if dels or lines else None
         if r is not None and r.returncode != 0:
-            msg = ((r.stderr or r.stdout or "").strip().splitlines() or ["tc failed"])[-1][:160]
+            msg = _lim_msg(r)
             st["fail"][dev] = (sig, now, msg)
-            st["dev"][dev] = {"sig": None, "ifindex": ifx, "dirty": True, "caps": {}}
+            st["dev"][dev] = {"sig": None, "ifindex": ifx, "hooks": (), "dirty": True, "caps": {}}
             err[dev] = msg
             res["errors"].append("limits %s: %s" % (dev, msg))
             continue
         st["fail"].pop(dev, None)
         res["changed"] += 1
         if ents:
-            st["dev"][dev] = {"sig": sig, "ifindex": ifx, "dirty": False, "caps": capidx}
+            st["dev"][dev] = {"sig": sig, "ifindex": ifx, "hooks": hooks, "dirty": False, "caps": capidx}
         else:
             st["dev"].pop(dev, None)
     # The caps (§3.2): a pool whose cap moved by more than 10 % (or whose limit changed) is re-set on every member, all in
-    # one batch. A device loaded above already rendered the cap in force, so this is the only place a cap moves.
-    # A pool new here was rendered whole at its cap above (a pool turns shared → every member's signature moves → rebuilt).
-    st["caps"].update({k: v for k, v in want_caps.items() if k not in st["caps"]})
+    # one batch. A device loaded above already rendered the cap in force (a pool new here, at the one wanted: a pool turning
+    # shared moves every member's signature, so each was rebuilt), so this is the only place a cap moves. What is recorded
+    # as in force is what the kernel was told: a failed change keeps the old caps, tried again at most once a minute.
+    old = st["caps"]
     moved = [k for k, (lim, cap) in want_caps.items()
-             if not (st["caps"][k][0] == lim and abs(cap - st["caps"][k][1]) <= 0.1 * st["caps"][k][1])]
+             if k in old and not (old[k][0] == lim and abs(cap - old[k][1]) <= 0.1 * old[k][1])]
     change = ["actions change " + _lim_police(want_caps[k][1], ci, "drop/pipe")
               for k in moved for d in st["dev"].values() for ci in d["caps"].get(k, ())]
-    r = _lim_tc(change) if change else None
-    if r is not None and r.returncode != 0:          # unfair, never over the limit: reported, tried again when it moves
-        st["caperr"] = ((r.stderr or "").strip().splitlines() or ["tc failed"])[-1][:160]
-        res["errors"].append("limits caps: " + st["caperr"])
-    elif r is not None:
-        st["caperr"] = None
-    st["caps"].update({k: want_caps[k] for k in moved})
-    if st.get("caperr") and want_caps:
-        err["caps"] = st["caperr"]
-    st["caps"] = {k: v for k, v in st["caps"].items() if k in want_caps}
+    ok = True
+    if change and not (st["capfail"] and now - st["capfail"][0] < LIMITS_RETRY_S):
+        r = _lim_tc(change)
+        ok = r.returncode == 0
+        st["capfail"] = None if ok else (now, _lim_msg(r))
+        if not ok:
+            res["errors"].append("limits caps: " + st["capfail"][1])
+    elif change:                                      # still inside the minute after a failed change
+        ok = False
+    else:
+        st["capfail"] = None
+    st["caps"] = {k: (v if k not in old or (ok and k in moved) else old[k]) for k, v in want_caps.items()}
+    if st["capfail"]:                                 # unfair, never over the limit
+        err["caps"] = st["capfail"][1]
     st["err"] = err
-    if not plan and not st["dev"] and os.path.exists(LIMITS_MARK):
+    if not plan and not st["dev"] and st["mark"]:
         with contextlib.suppress(OSError):
             os.unlink(LIMITS_MARK)
+        st["mark"] = False
+
+
+def _lim_alloc():
+    """A fresh policer index (R16), wrapping to LIMITS_IDX0 before tc's u32 runs out."""
+    i = _LIMITS["next"]
+    _LIMITS["next"] = i + 1 if i + 1 < LIMITS_IDX_END else LIMITS_IDX0
+    return i
 
 
 def reconcile_dev_reach(node_cfg, wire, res):
@@ -27270,7 +27323,7 @@ def main():
                 _CTR_ADOPT.clear()
             if status == 200 and isinstance(reply.get("desired"), dict):
                 _relay_plan, _relay_sync_ok = reply.get("relay"), True
-                _lim_wire = reply.get("limits") or []   # absent: none (a node without a limit is sent no key)
+                _lim_wire = reply.get("limits", [])   # absent: none (a node without a limit is sent no key)
                 _FAST["start"] = _fast_setting(reply.get("fast_lane", FAST_DEFAULT))   # absent: the default (D3)
                 _newurl = apply_panel_hints(panel, node_cfg, reply)   # pin-gated auto-repoint on a panel host/port change
                 # T-10: and a TRANSFER to a different panel entirely, promoted only once that panel answers

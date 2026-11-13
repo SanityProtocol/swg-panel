@@ -746,6 +746,10 @@ rm_node(){
   info "  removing the panel's system mesh links"
   remove_ifaces /etc/amnezia/amneziawg awg-quick mesh
   remove_ifaces /etc/wireguard        wg-quick  mesh
+  # Speed limits (docs/LIMITS-PLAN.md §3.7): swg-noded's tc policers sit at pref 4097 on the client tunnels, and an interface
+  # KEPT below would go on throttling its clients with nothing left to lift them. Only where the node loaded limits (its
+  # marker, which goes with /var/lib/swg-noded next): a box that never had one runs no tc.
+  [ -e /var/lib/swg-noded/limits ] && run sh -c 'for d in $(ls /sys/class/net); do for h in egress ingress; do tc filter del dev "$d" $h pref 4097 >/dev/null 2>&1; done; done; true'
   rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent /run/swg-agent.lock
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
   # The AppArmor grant the installer added so the wg CLI could read userspace interface sockets is a
