@@ -26317,12 +26317,19 @@ def _vol_used(snap, kind, rid, members, base):
 def _vol_tick(deps, nowv=None):
     """One pass: recompute _VOL_STATE / _VOL_USE from the ledger. Cheap when nothing carries a volume (one roster walk).
     A roster that cannot be read raises: the last verdicts stand (an unreadable file must not lift every cut). A roster not
-    written yet (a new panel: no users.json, no mark) is an empty one — nothing to limit, no error every tick."""
+    written yet (a new panel: no users.json) is an empty one — nothing to limit, no error every tick. Only a stat that says
+    the file is not there decides that: EACCES / EIO keep the verdicts, and a file written since the read is read now."""
     global _VOL_STATE, _VOL_USE, _VOL_HIT, _VOL_BACK
     nowv = int(time.time()) if nowv is None else nowv
     roster, mark = roster_view(deps["roster_path"], repair=False)
-    if roster is None and mark is None and not os.path.exists(deps["roster_path"]):
-        roster = {}
+    if roster is None:
+        try:
+            os.stat(deps["roster_path"])
+            roster, mark = roster_view(deps["roster_path"], repair=False)   # there after all: the first save landed since
+        except FileNotFoundError:
+            roster = {}
+        except OSError:
+            pass
     if roster is None:
         raise ValueError("the roster could not be read — the last verdicts stand")
     if mark is None or _VOL_RECS.get("mark") != mark:   # the records walk once per roster revision (2.5 ms at 10,000 users)

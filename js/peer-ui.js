@@ -490,12 +490,22 @@ export function limitsState(kind, rec) {
   const ids = [rec.id, ...(owner ? [owner.id] : [])];
   const cut = !!(exp && now >= exp) || !!(oexp && now >= oexp) || ids.some(i => v[i] === "cut");
   const slow = !cut && ids.some(i => v[i] === "slow");
-  return { n, cut, slow, cls: cut ? " cut" : slow ? " slow" : n ? " on" : "" };
+  // why, for the tooltip — its own first (that is what this sheet changes), then its owner's, named
+  const why = !!(exp && now >= exp) ? "date" : v[rec.id] === "cut" ? "vol" : !!(oexp && now >= oexp) ? "odate"
+    : owner && v[owner.id] === "cut" ? "ovol" : v[rec.id] === "slow" ? "slow" : slow ? "oslow" : "";
+  return { n, cut, slow, why, owner: owner ? owner.name || "" : "", cls: cut ? " cut" : slow ? " slow" : n ? " on" : "" };
 }
+const LIMS_WHY = {
+  date: () => T("Cut off now: its access date has passed"),
+  vol: () => T("Cut off now: a volume limit is used up"),
+  odate: name => T("Cut off now: {name}'s subscription has ended", { name }),
+  ovol: name => T("Cut off now: {name} has used up a volume limit", { name }),
+  slow: () => T("Slowed to 1 Mbit/s now: a volume limit is used up"),
+  oslow: name => T("Slowed to 1 Mbit/s now: {name} has used up a volume limit", { name }),
+};
 function LimitsButton({ kind, id, rec }) {
   const st = limitsState(kind, rec);
-  const title = st.cut ? T("Cut off now: its access date has passed or its volume limit is used up")
-    : st.slow ? T("Slowed to 1 Mbit/s now: its volume limit is used up") : T("Access date, speed limit and volume limit");
+  const title = st.why ? LIMS_WHY[st.why](st.owner) : T("Access date, speed limit and volume limit");
   return html`<button class=${"btn btn-exp btn-lims" + st.cls} title=${title} onClick=${() => openLimits(kind, id)}><${Ic} i="gauge"/> ${T("Limits")}${
     st.n ? html`<span class="lims-n">${st.n}</span>` : null}</button>`;
 }

@@ -36,6 +36,8 @@ Run: python3 tests/limits_volume_selftest.py   (0 = pass)
      strict     an unreadable history directory reads as "no row" (a whole lifetime counted)
      rostergone an unreadable roster lifts every cut
      newpanel   a panel with no users.json yet fails every tick
+     statany    a users.json the panel cannot stat (EACCES) reads as no roster, lifting every cut
+     firstsave  a users.json written between the read and the stat fails the tick
      restartev  a restart logs every limit already reached again
      slowpool   a slowed person gets 1 Mbit/s per device (no shared pool)
      cutwire    a cut alone builds the speed wire
@@ -77,7 +79,9 @@ PLANTS = {   # name: (file, anchor, replacement)
     "groupone": ("swg-panel-server", "[n for m in members for n in snap[3].get(m, ())]", "[n for m in members[:1] for n in snap[3].get(m, ())]"),
     "openday": ("swg-panel-server", "    if lday < first:\n        return \"none\"\n", ""),
     "strict": ("swg-panel-server", "            if strict:\n                raise\n            return None", "            return None"),
-    "newpanel": ("swg-panel-server", "    if roster is None and mark is None and not os.path.exists(deps[\"roster_path\"]):\n        roster = {}\n", ""),
+    "newpanel": ("swg-panel-server", "        except FileNotFoundError:\n            roster = {}\n", "        except FileNotFoundError:\n            pass\n"),
+    "statany": ("swg-panel-server", "        except FileNotFoundError:\n            roster = {}\n        except OSError:\n            pass\n", "        except OSError:\n            roster = {}\n"),
+    "firstsave": ("swg-panel-server", "            roster, mark = roster_view(deps[\"roster_path\"], repair=False)   # there after all: the first save landed since\n", "            pass\n"),
     "rostergone": ("swg-panel-server", "    if roster is None:\n        raise ValueError(\"the roster could not be read — the last verdicts stand\")", "    roster = roster or {}"),
     "restartev": ("swg-panel-server", "    if _VOL_HIT is not None and hit != _VOL_HIT:", "    _VOL_HIT = _VOL_HIT or {}\n    if hit != _VOL_HIT:"),
     "slowpool": ("swg-panel-server", "lim, pool, src = VOL_SLOW, spool, \"s\"", "lim, pool, src = VOL_SLOW, \"\", \"s\""),
@@ -302,6 +306,7 @@ try:
     L._row_at_or_before, L.dir = keep, kdir
     del L._pending_rows
     rv = P.roster_view
+    open(RP, "w").write("[not a roster")            # there, and not readable as one
     P.roster_view = lambda path, repair=True: (None, 99)
     try:
         P._vol_tick(DEPS, NOW)
@@ -316,6 +321,26 @@ try:
     except Exception as e:
         raised = repr(e)
     check("a panel with no users.json yet ticks without an error (an empty roster: nothing limited)", raised is False and P._VOL_STATE == {}, raised)
+    P._VOL_STATE = {"ua": "cut"}
+    shut = os.path.join(TMP, "shut"); os.makedirs(shut); open(os.path.join(shut, "users.json"), "w").write("{}")
+    os.chmod(shut, 0)                                  # a state directory the panel cannot search: stat says EACCES, not "absent"
+    try:
+        P._vol_tick({"roster_path": os.path.join(shut, "users.json"), "sub_dir": DEPS["sub_dir"]}, NOW)
+        raised = False
+    except Exception:
+        raised = True
+    finally:
+        os.chmod(shut, 0o700)
+    check("a users.json the panel cannot reach (EACCES) keeps the cuts — only a missing file is an empty roster",
+          (raised and P._VOL_STATE == {"ua": "cut"}) or os.geteuid() == 0, P._VOL_STATE)
+    seq = [(None, None), (ROSTER, 77)]                 # the first save lands between the read and the stat
+    P.roster_view = lambda path, repair=True: seq.pop(0) if seq else (ROSTER, 77)
+    try:
+        P._vol_tick({"roster_path": os.path.join(shut, "users.json"), "sub_dir": DEPS["sub_dir"]}, NOW)
+        raised = False
+    except Exception as e:
+        raised = repr(e)
+    check("…and a file written since the read is read then, not an error", raised is False, raised)
     P.roster_view = rv
 
     RS = {"users": usr(ub={"volume": {"d": 1 * GB, "period": "m", "at": "slow"}}), "groups": {},

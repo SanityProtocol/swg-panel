@@ -27747,7 +27747,8 @@ def main():
                 _ensure_limits(node_cfg, _lim_wire, snap, _lres)
             except Exception as _e:
                 _lres["errors"].append("%s: %s" % (type(_e).__name__, _e))
-                _LIMITS["err"] = dict(_LIMITS["err"], exception=str(_e)[:160])
+                _LIMITS["err"] = dict(_LIMITS["err"], exception=("%s: %s" % (type(_e).__name__, _e))[:160])   # as logged: a bare
+                                                                                                            # str() can be '' or "'x'"
             for _e in _lres["errors"]:
                 log(LOG_WARNING, "limits: %s", _e)
         with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the

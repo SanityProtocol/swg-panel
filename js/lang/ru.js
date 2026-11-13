@@ -4985,7 +4985,6 @@ export const STR = {
   "Couldn't add the VK link": "Не удалось добавить ссылку VK",
   "Couldn't save the VK links": "Не удалось сохранить ссылки VK",
   "Subscription expiry": "Срок действия подписки",
-  // budget-ok: a sheet TITLE, not a label — measured at 293px of a 430px head, no clip, no wrap
   "After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires.":
     "После этой даты вся подписка считается истёкшей — на странице будет «Истекла», пиры перестанут отдаваться. Пусто — бессрочно.",
   "After this date just this peer expires (its config stops working); the rest of the user's peers are unaffected. It can't be set later than the user's subscription expiry. Blank = follows the subscription.":
@@ -7888,8 +7887,12 @@ export const STR = {
   "volume used up": "лимит трафика исчерпан",
   "Cut off: the volume limit is used up": "Отключено: лимит трафика исчерпан",
   "{v1} together": "{v1} вместе",
-  "Slowed to 1 Mbit/s now: its volume limit is used up": "Сейчас скорость снижена до 1 Мбит/с: лимит трафика исчерпан",
-  "Cut off now: its access date has passed or its volume limit is used up": "Сейчас отключено: срок доступа прошёл или лимит трафика исчерпан",
+  "Slowed to 1 Mbit/s now: {name} has used up a volume limit": "Сейчас скорость снижена до 1 Мбит/с: у {name} исчерпан лимит трафика",
+  "Slowed to 1 Mbit/s now: a volume limit is used up": "Сейчас скорость снижена до 1 Мбит/с: лимит трафика исчерпан",
+  "Cut off now: {name} has used up a volume limit": "Сейчас отключено: у {name} исчерпан лимит трафика",
+  "Cut off now: {name}'s subscription has ended": "Сейчас отключено: у {name} закончилась подписка",
+  "Cut off now: a volume limit is used up": "Сейчас отключено: лимит трафика исчерпан",
+  "Cut off now: its access date has passed": "Сейчас отключено: срок доступа прошёл",
   "Access date, speed limit and volume limit": "Срок доступа, ограничение скорости и лимит трафика",
   "Limits saved.": "Ограничения сохранены.",
   "Limits": "Ограничения",

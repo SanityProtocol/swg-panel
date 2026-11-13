@@ -151,21 +151,38 @@ class Panel:
         open(os.path.join(st, "users.json"), "w").write("{}\n")
         fl = os.path.join(self.dir, "fleet.json")
         json.dump({"nodes_path": self.nodes_path, "roster_path": os.path.join(st, "users.json"), "stats_dir": sd}, open(fl, "w"))
-        self.port = free_port()
-        self.log = open(os.path.join(self.dir, "panel.log"), "w+")
-        self.proc = subprocess.Popen([sys.executable, RUNNER, server], stdout=self.log, stderr=subprocess.STDOUT,
-                                     env={**os.environ, "SWG_PANEL_FLEET": fl, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
-                                          "SWG_PANEL_PORT": str(self.port), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "",
-                                          "SWG_PANEL_TLS_KEY": "", "SWG_PANEL_STATE_TTL": "0", "SWG_NO_REEXEC": "1",
-                                          "OMIT_SEED": str(seed)})
-        for _ in range(300):
+        # ⚠️ free_port() lets the port go before the panel binds it: in the parallel suite another gate's server can take it
+        # first, answer /healthz, and refuse our nodes (limits-l4: KeyError 'data'). The first request must be OUR panel's —
+        # it knows our nodes — else this one is stopped and started again on a fresh port.
+        for attempt in range(5):
+            self.port = free_port()
+            self.log = open(os.path.join(self.dir, "panel.log"), "w+")
+            self.proc = subprocess.Popen([sys.executable, RUNNER, server], stdout=self.log, stderr=subprocess.STDOUT,
+                                         env={**os.environ, "SWG_PANEL_FLEET": fl, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
+                                              "SWG_PANEL_PORT": str(self.port), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "",
+                                              "SWG_PANEL_TLS_KEY": "", "SWG_PANEL_STATE_TTL": "0", "SWG_NO_REEXEC": "1",
+                                              "OMIT_SEED": str(seed)})
+            up = False
+            for _ in range(300):
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:%d/healthz" % self.port, timeout=2); up = True; break
+                except Exception:
+                    if self.proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
             try:
-                urllib.request.urlopen("http://127.0.0.1:%d/healthz" % self.port, timeout=2); break
-            except Exception:
-                if self.proc.poll() is not None:
-                    sys.exit("panel exited: " + open(self.log.name).read()[-2000:])
-                time.sleep(0.1)
-        self.tok = {n: self.req("/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in NODES_IDS}
+                got = self.req("/api/nodes/rotate", {"id": NODES_IDS[0]})[1] if up and self.proc.poll() is None else {}
+            except Exception:                          # a stranger that hung up, or ours dying on the bind
+                got = {}
+            if isinstance(got, dict) and isinstance(got.get("data"), dict) and got["data"].get("token") and self.proc.poll() is None:
+                break
+            if self.proc.poll() is None:
+                self.proc.kill()
+            self.proc.wait()
+            if attempt == 4:
+                sys.exit("panel did not come up as ours on 5 ports: " + open(self.log.name).read()[-2000:])
+        self.tok = {NODES_IDS[0]: got["data"]["token"]}
+        self.tok.update({n: self.req("/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in NODES_IDS[1:]})
         self.settings_path = os.path.join(st, "panel-settings.json")
 
     def req(self, path, data=None, token=None):
@@ -228,8 +245,8 @@ def mask(o, port=None):
         return [mask(v, port) for v in o]
     if isinstance(o, (int, float)) and not isinstance(o, bool) and (o > 1.7e9 or (port and o == port)):
         return "T"
-    if isinstance(o, str) and port and str(port) in o:
-        return o.replace(str(port), "PORT")
+    if isinstance(o, str) and port and str(port) in o:   # the port as its own number (":8123/"), never digits inside a key
+        return re.sub(r"(?<![0-9A-Za-z])%d(?![0-9A-Za-z])" % port, "PORT", o)   # or a hash — the base and the new panel differ there
     return o
 
 
