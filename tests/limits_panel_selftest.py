@@ -15,7 +15,9 @@
       revision on the shared view.
   [6] Real panels: with no limit the sync reply is byte-identical to origin/dev's build (8edb7878) (but what two
       instances of that build disagree on); the doors (users/update, groups/update, peers/update, update-target) store a
-      limit and refuse a bad one; then the reply of the node a limit lands on carries `limits`, another node's does not.
+      limit and refuse a bad one; then the reply of the node a limit lands on carries `limits`, another node's does not;
+      the limit events (a device's, an address and a limit in one save), and peers/create never storing a deployment's.
+  [7] A group that arrives by transfer keeps its limit (limits-l2 review F1).
 
 Run: python3 tests/limits_panel_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -29,7 +31,12 @@ Run: python3 tests/limits_panel_selftest.py   (0 = pass)
      v6         IPv6 prefixes are sent
      keyalways  the reply carries `limits` even when empty
      door       update-target ignores `limits`
-     twopath    a device's own limit on two paths is one policer a path
+     twopath    a deployment's own limit on two paths is one policer a path
+     devpool    a device's own limit on two interfaces of one node is two budgets
+     xfergroup  a transfer drops a new group's limit
+     deploylim  peers/create stores a deployment limit from its body
+     devevent   peers/update does not log a device's limit
+     bothevent  update-target with an address and a limit logs only the address
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -65,7 +72,12 @@ PLANTS = {
     "v6": ('''                nets = [n for n in nets if n and ":" not in n]''', '''                nets = [n for n in nets if n]'''),
     "keyalways": ('''**({"limits": _lims} if (_lims := limits_for_node(roster, nid, desired, snap)) else {}),''',
                   '''**({"limits": limits_for_node(roster, nid, desired, snap)}),'''),
-    "twopath": ('''            if not pool and len(pairs) > 1:''', '''            if False:'''),
+    "twopath": ('''            if src == "t" and len(pairs) > 1:''', '''            if False:'''),
+    "devpool": ('''        if sum(r[6] == "p" for r in rows) > 1:''', '''        if False:'''),
+    "xfergroup": ('''                                    "limits": limits_clean(g.get("limits"))[0]})''', '''                                    })'''),
+    "deploylim": ('''            t.pop("limits", None)                       # a deployment's limit''', '''            pass                       # a deployment's limit'''),
+    "devevent": ('''            ev_append(roster_path, "peer", pid, "Changed device speed limit", peer_label(roster, p2))''', '''            pass'''),
+    "bothevent": ('''        if has_lim and (has_ip or not has_ov):''', '''        if has_lim and not has_ip and not has_ov:'''),
     "door": ('''            if has_lim:
                 t["limits"] = _tlim''', '''            if False:
                 t["limits"] = _tlim'''),
@@ -222,9 +234,34 @@ def sec4():
     finally:
         P.keyless_sources = real
     ks = [x for x in w if x[0].startswith("wdtt1")]
-    check("[4] a device's own limit on two paths is one pool (t:<hash>), not one policer a path",
-          len(ks) == 2 and ks[0][5] == ks[1][5] and ks[0][5].startswith("t:") and ks[0][2] == 8
+    check("[4] a device's own limit on two paths is one pool (p:<hash>), not one policer a path",
+          len(ks) == 2 and ks[0][5] == ks[1][5] and ks[0][5].startswith("p:") and ks[0][2] == 8
           and len(ks[0][5]) <= 64, ks)
+    r["peers"]["pk"].pop("limits")
+    r["peers"]["pk"]["targets"][0]["limits"] = {"u": 3}   # the deployment's own: one pool for its two paths (limits-l1 F17)
+    P.keyless_sources = lambda p, t, idx: ([("wdtt1", "10.66.0.2/32"), ("wdtt1r", "10.67.0.2/32")], "")
+    try:
+        w = P.limits_for_node(r, "n1", P.desired_for_node(r, "n1"), {"wdtt": []})
+    finally:
+        P.keyless_sources = real
+    ks = [x for x in w if x[0].startswith("wdtt1")]
+    check("[4] a deployment's own limit on two paths is one pool (t:<hash>)",
+          len(ks) == 2 and ks[0][5] == ks[1][5] and ks[0][5].startswith("t:") and ks[0][3] == 3, ks)
+    r2 = roster()                                    # one device on two interfaces of one node (limits-l2 F4)
+    pa = r2["peers"]["pa2"]
+    pa["targets"].append(dict(pa["targets"][0], iface="wg1", ip="10.8.0.30"))
+    w = P.limits_for_node(r2, "n1", P.desired_for_node(r2, "n1"))
+    ks = [x for x in w if x[1][0] in ("10.9.0.3/32", "10.8.0.30/32")]
+    check("[4] a device's own limit on two interfaces of one node is ONE pool (p:<hash>): the device's budget",
+          len(ks) == 2 and ks[0][5] == ks[1][5] and ks[0][5].startswith("p:") and ks[0][2] == 8, (ks, w))
+
+
+def sec7():
+    print("[7] a transfer keeps a group's limit")
+    r = roster()
+    P.transfer_merge_groups(r, {"gnew": {"name": "Arrived", "users": ["ua"], "limits": {"d": 7}}})
+    check("[7] a group that arrives by transfer keeps its speed limit", r["groups"]["gnew"].get("limits") == {"d": 7},
+          r["groups"].get("gnew"))
 
 
 def sec5():
@@ -348,10 +385,20 @@ def sec6():
           and got.get(("10.9.0.4/32",)) == ["awg2", ["10.9.0.4/32"], 0, 2, 0, ""]
           and got.get(("10.9.0.5/32",)) == ["awg2", ["10.9.0.5/32"], 20, 5, 0, "g:g2"], r1.get("limits"))
     check("[6] a node none lands on: no key", "limits" not in r2, r2.get("limits"))
+    evs = lambda: [e.get("verb") for e in P._ev_load(os.path.join(TMP, "panel-new", "state", "users.json"))]
+    check("[6] peers/update logs a device's limit", "Changed device speed limit" in evs(), evs())
+    c, o = req(port, "/api/peers/update-target", {"peer_id": "pb", "node": "n1", "iface": "awg2", "ip": "10.9.0.44",
+                                                  "limits": {"u": 4}})
+    check("[6] update-target with an address and a limit logs both", c == 200 and evs()[-2:] == [
+        "Changed address", "Changed deployment speed limit"], (c, o, evs()[-3:]))
+    c, o = req(port, "/api/peers/create", {"pubkey": "h" * 43 + "=", "psk": "i" * 43 + "=", "title": "x", "user_id": "ua",
+                                           "targets": [{"node": "n1", "iface": "awg2", "ip": "10.9.0.60", "limits": {"d": 5}}]})
+    check("[6] a Deploy (peers/create) never stores a deployment's limit (update-target's alone, R7)",
+          c == 200 and not any(t.get("limits") for t in o["data"]["targets"]), (c, o))
 
 
 try:
-    for n, f in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6)):
+    for n, f in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7)):
         guarded(n, f)
 finally:
     for p in PROCS:

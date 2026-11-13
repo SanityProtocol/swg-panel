@@ -7126,6 +7126,7 @@ export const STR = {
   "Captured node fingerprint": "Снят отпечаток ноды",
   "Changed deployment settings": "Изменены настройки развёртывания",
   "Changed deployment speed limit": "Изменено ограничение скорости развёртывания",
+  "Changed device speed limit": "Изменено ограничение скорости устройства",
   "Changed group speed limit": "Изменено ограничение скорости группы",
   "Cloudflare Origin (cf15) TLS needs a Cloudflare Origin CA token (Zone:SSL + Certificates:Edit) — add it before switching.": "Для TLS Cloudflare Origin (cf15) нужен токен Origin CA (Zone:SSL + Certificates:Edit) — добавьте его до переключения.",
   "Cloudflare TLS needs a Cloudflare DNS API token (Zone:DNS:Edit + Zone:Read) — add it before switching, otherwise it issues a self-signed certificate Cloudflare rejects (526).": "Для TLS Cloudflare нужен токен DNS API (Zone:DNS:Edit + Zone:Read) — добавьте его до переключения, иначе будет выпущен самоподписанный сертификат, который Cloudflare отклонит (526).",
