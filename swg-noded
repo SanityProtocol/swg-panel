@@ -3367,10 +3367,13 @@ def net_deps():
 
     `reach`: this node enforces who may open connections to its devices (DEVICE-ACCESS §10). A panel sends `dev_reach` only
     to a node that says so; anywhere else the interface reads "not enforced" (A10). `2`: it also reads the compact reply, each
-    user's sources once and zones naming users (DEVICE-ACCESS §14) — a panel sends that shape only to a node reporting 2."""
+    user's sources once and zones naming users (DEVICE-ACCESS §14) — a panel sends that shape only to a node reporting 2.
+
+    `limits`: this node loads the panel's speed limits (docs/LIMITS-PLAN.md, limits-l3) — the panel's editors warn where a
+    limit would not be enforced. Read from here, not from `noded_version`: a dev build reports the last release's."""
     res, known = _resolvers()
     return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1, "carried": 1,
-            "reach": 2}
+            "reach": 2, "limits": 1}
 
 
 # ───────────────────────── networks: the route reconciler ─────────────────────────

@@ -470,7 +470,7 @@ const ifaceLevelOf = t => {
 const nodeEnforces = nid => ((Store.stats[nid] || {}).net_deps || {}).reach >= 2 && Store.recon.nodeStatus[nid] === "live";
 // A7: an instance whose REPORTED build cannot prove who owns a device acts as Nobody; one that proves only its WireGuard path
 // does so for the devices on its RAW TUN — the node names the INSTANCE, so its RAW tun is found through the node's wdtt_cfg.
-const unvouchedTarget = t => {
+export const unvouchedTarget = t => {
   const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
   if ((nr.reach_unvouched || []).includes(t.iface)) return true;
   return (nr.reach_unvouched_raw || []).some(ifn => ((nr.wdtt_cfg || {})[ifn] || {}).raw_iface === t.iface);

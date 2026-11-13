@@ -7802,6 +7802,55 @@ export const STR = {
   "Sort by": "Сортировка",
   "Ascending": "По возрастанию",
   "Descending": "По убыванию",
+
+  // ── speed limits (docs/LIMITS-PLAN.md, limits-l3) ──
+  // «Загрузка / отдача» from the DEVICE's side, as the limit is set. {node} is a node's own name: «на {node}» only. {src} is the
+  // short source (lim|…) in the genitive, so it reads after a figure: «↓ 20 Мбит/с · группы Семья».
+  "Speed limit": "Ограничение скорости",
+  "col|Speed limit": "Ограничение",
+  "No limit": "Без ограничения",
+  "no limit": "без лимита",   // a placeholder in a ~116 px box: «без ограничения» is cut
+  "Download / upload": "Загрузка / отдача",
+  "Combined": "Общее",
+  "lim|Download": "Загрузка",
+  "lim|Upload": "Отдача",
+  "Both ways together": "Оба направления вместе",
+  "Mbit/s": "Мбит/с",
+  "{v1} Mbit/s both ways": "{v1} Мбит/с на оба направления",
+  "download {v1}": "загрузка {v1}",
+  "upload {v1}": "отдача {v1}",
+  "lim|own": "своё",
+  "lim|device": "устройства",
+  "lim|user {name}": "пользователя {name}",
+  "lim|group {name}": "группы {name}",
+  "This replaces the device's limit ({lim}).": "Заменяет ограничение устройства ({lim}).",
+  "Without one of its own, the device's limit applies: {lim}.": "Без собственного действует ограничение устройства: {lim}.",
+  "This replaces {name}'s limit ({lim}).": "Заменяет ограничение пользователя {name} ({lim}).",
+  "Without one of its own, {name}'s limit applies: {lim}.": "Без собственного действует ограничение пользователя {name}: {lim}.",
+  "This replaces group {name}'s limit ({lim}).": "Заменяет ограничение группы {name} ({lim}).",
+  "Without one of its own, group {name}'s limit applies: {lim}.": "Без собственного действует ограничение группы {name}: {lim}.",
+  "Held at its speed limit: {lim} ({src})": "Упирается в ограничение скорости: {lim} ({src})",
+  "Not enforced on {node}: it runs a version without speed limits. Update it.": "Не действует на {node}: там версия без ограничений скорости. Обновите ноду.",
+  "Not enforced on {nodes}: they run a version without speed limits. Update them.": "Не действует на {nodes}: там версия без ограничений скорости. Обновите эти ноды.",
+  "Not enforced for {targets}: this server build can't prove which address a device has.": "Не действует для {targets}: эта сборка сервера не может подтвердить, какой адрес у устройства.",
+  "Speed limit not applied on {dev}: {why}. Nothing is cut; traffic there runs unlimited.": "Ограничение скорости не применено на {dev}: {why}. Никто не отключён, трафик там идёт без ограничения.",
+  "Enter a download or an upload limit, or choose No limit.": "Укажите ограничение на загрузку или отдачу либо выберите «Без ограничения».",
+  "One budget for all of this person's devices on a server, shared between the ones in use. On two servers they can reach it on each.":
+    "Один бюджет на все устройства человека на сервере, общий для тех, что сейчас в работе. На двух серверах он может использовать его полностью на каждом.",
+  "One budget for everyone in the group on a server, shared between the devices in use. On two servers the group can reach it on each. A person in two limited groups gets the lower limit, and a person's own limit replaces the group's.":
+    "Один бюджет на всю группу на сервере, общий для устройств, что сейчас в работе. На двух серверах группа может использовать его полностью на каждом. Человек в двух группах с ограничением получает меньшее, а собственное ограничение человека заменяет групповое.",
+  "For this device on each server it is on. Download and upload are the device's own.": "Для этого устройства на каждом его сервере. Загрузка и отдача — со стороны устройства.",
+  "For this deployment only. Removing the deployment removes its limit too.": "Только для этого развёртывания. Удалите развёртывание — уйдёт и его ограничение.",
+  "Speed limit for this deployment": "Ограничение скорости этого развёртывания",
+  "Speed limit for this deployment: {lim}": "Ограничение скорости этого развёртывания: {lim}",
+  "Speed limit — {v1} on {v2}": "Ограничение скорости — {v1} на {v2}",
+  "The gauge sets that deployment's own speed limit.": "Значок спидометра задаёт собственное ограничение скорости развёртывания.",
+  "This deployment's own speed limit: {lim}": "Собственное ограничение скорости развёртывания: {lim}",
+  "Saving removes this deployment and its own speed limit ({lim}).": "При сохранении развёртывание удалится вместе со своим ограничением скорости ({lim}).",
+  "Removing {target} removes its own speed limit. Deployed again, it follows the device's limit.":
+    "Вместе с {target} удалится и его собственное ограничение скорости. При повторном развёртывании действует ограничение устройства.",
+  "Removing {targets} removes their own speed limits. Deployed again, they follow the device's limit.":
+    "Вместе с {targets} удалятся и их собственные ограничения скорости. При повторном развёртывании действует ограничение устройства.",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

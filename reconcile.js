@@ -243,6 +243,7 @@ function reconcile(roster, stats, now, cfg) {
                // roster's own). effectiveClientParams needs them to rebuild a config from the encrypted blob,
                // and dropping them here is what made the panel's QR disagree with the peer's subscription page.
                overrides: t.overrides || null,
+               limits: t.limits || null,   // THIS deployment's own speed limit (docs/LIMITS-PLAN.md R7), carried as stored
                status: st, fault: faultKind, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
@@ -353,6 +354,7 @@ function reconcile(roster, stats, now, cfg) {
       // time, which is what made it look like it worked.
       private: p.private === true,      // the owner keeps this device and its networks to themselves (§18.6)
       router: p.router === true,        // a router: several devices behind this address — the torrent guard never flags it (S11b)
+      limits: p.limits || null,         // the device's own speed limit (docs/LIMITS-PLAN.md §3.4) — read by js/limits.js
       overrides: p.overrides || null,   // peer-wide render overrides (the fallback under each target's own) — see the target field
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
@@ -392,7 +394,8 @@ function reconcile(roster, stats, now, cfg) {
     return {
       id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "", vk_link: u.vk_link || "",
       vk_links: Array.isArray(u.vk_links) ? u.vk_links : (u.vk_link ? [u.vk_link] : []),   // full ordered set (primary first) — the VK-links manager reads all of these
-      vk_pool: u.vk_pool || {},   // pool-id → URL for the links that came from the shared pool, so Manage can mark them apart from personal ones
+      vk_pool: u.vk_pool || {},
+      limits: u.limits || null,   // the user's own speed limit (§3.4) — a group's is read from Store.groups()   // pool-id → URL for the links that came from the shared pool, so Manage can mark them apart from personal ones
 
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),

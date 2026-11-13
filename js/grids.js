@@ -31,6 +31,7 @@ import {
   confirmCorrectDeployment, openRecreateRekey, peerBlockBtn,
 } from "./peer-actions.js";
 import { PeerTrafficCell } from "./traffic-ui.js";
+import { limitHeld, heldTitle } from "./limits.js";
 import { openPeerConfigs, ReachedByBody } from "./peer-ui.js";
 import { openEditPeer, openPeerView, openPeerNetworks } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -144,7 +145,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
           })()}
           <td data-label=${T("col|Online")} class="c-online"><span class="when">${seen(tgtSeenAge(t))}</span></td>
           ${(() => { const xf = tgtXfer(t); return html`
-          <td data-label=${T("col|Rate")} class="c-rate">${rateCell(xf ? xf.rx_speed : 0, xf ? xf.tx_speed : 0)}</td>
+          ${(held => html`<td data-label=${T("col|Rate")} class=${"c-rate" + (held ? " held" : "")} title=${held ? heldTitle(held) : null}>${rateCell(xf ? xf.rx_speed : 0, xf ? xf.tx_speed : 0)}</td>`)(live ? limitHeld(p, t) : null)}
           <td data-label=${T("col|Total")} class="c-total">${ranged && !live
             ? html`<${PeerTrafficCell} pid=${p.id} owner=${owner} wire=${xf} iface=${t.iface}
                 ungrouped=${!grouped && !loc && p.targets.length > 1}

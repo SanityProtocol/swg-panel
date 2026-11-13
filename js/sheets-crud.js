@@ -34,6 +34,7 @@ import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
 import { openPeerConfigs, ReachedByBody, openUserEdit, openGroup, VaultUnlockPanel } from "./peer-ui.js";
 import { TrafficBlock, goneDevices } from "./traffic-ui.js";
 import { trafficTotals, trafficModalView } from "./traffic.js";
+import { LimitField, LimitGauge, HeldMark, useLimit, fallbackFor, limitGaps, limSame, limClean, limText, effLimit, srcShort } from "./limits.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -241,6 +242,8 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
   // a plain tag.
   const pubHave = useMemo(() => new Set(((pubPeer && pubPeer.targets) || []).map(t => tkey(t.node, t.iface))),
                           [pubPeer && pubPeer.targets]);
+  // A deployment's own speed limit on its row (docs/LIMITS-PLAN.md R7): it lives on the deployment, so unticking the row drops it.
+  const ownLim = k => { const d = pubPeer && (pubPeer.targets || []).find(x => tkey(x.node, x.iface) === k); return d ? limClean(d.limits) : null; };
   const all = useMemo(allTargets, [Store.describe, Store.stats]);
   // locked: launched from one interface — show only that target, no toggling, just the IP.
   const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
@@ -307,6 +310,8 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
       <div class="topt-right hasprim">
         ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity} gen3=${tgt3(t)}/>` : html`<${Tag} kind=${ity} label=${ity} gen3=${tgt3(t)}/>`}
         ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
+        ${ownLim(k) ? html`<span class=${"tg tg-lim" + (s ? "" : " gone")} title=${s ? T("This deployment's own speed limit: {lim}", { lim: limText(ownLim(k)) })
+            : T("Saving removes this deployment and its own speed limit ({lim}).", { lim: limText(ownLim(k)) })}><${Ic} i="gauge"/>${limText(ownLim(k))}</span>` : null}
         ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
           // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
           // target is seeded straight from the peer, so it never went through toggle and rendered an editable
@@ -532,6 +537,7 @@ export function AddTargetSheet({ peer, back, child }) {
   const netDev = peer.title || ((peer.user_id && Store.user(peer.user_id)) || {}).name || T("This device");
   const netsAdded = nets.length > 0 && added.some(needsIp);
   const netsGone = nets.length ? removed.filter(t => !isSelfContainedKind(targetType(t))) : [];
+  const limGone = removed.filter(t => limClean(t.limits));   // R7: a deployment's own limit goes with it; added back, it follows the device
 
   // a refusal as the operator reads it: which deployment, which change, and why
   const failText = f => Store.nodeName(f.node) + "/" + T(f.op === "remove" ? "{v1} (remove)" : f.op === "address" ? "{v1} (address)" : "{v1} (add)", { v1: f.iface })
@@ -660,6 +666,9 @@ export function AddTargetSheet({ peer, back, child }) {
             : T("store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.")}</span></div>` : null}
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>
           <${TargetPicker} initial=${initial} pubPeer=${peer} onChange=${setChosen}/></div>
+        ${limGone.length ? html`<div class="notice warn"><${Ic} i="gauge"/><span>${limGone.length === 1
+            ? T("Removing {target} removes its own speed limit. Deployed again, it follows the device's limit.", { target: limGone[0].iface + " · " + Store.nodeName(limGone[0].node) })
+            : T("Removing {targets} removes their own speed limits. Deployed again, they follow the device's limit.", { targets: limGone.map(t => t.iface + " · " + Store.nodeName(t.node)).join(", ") })}</span></div>` : null}
         ${netsAdded ? html`<div class="notice warn"><${Ic} i="network"/><span>${peer.share
             ? T("{device} carries {nets}. On a node you add, they're carried there too — for the same people as now.", { device: netDev, nets: nets.join(", ") })
             : T("{device} carries {nets}. On a node you add, they're carried there too, and every device on that node can reach them. Open Networks to limit who.", { device: netDev, nets: nets.join(", ") })}</span></div>` : null}
@@ -740,9 +749,11 @@ export function PeerViewSheet({ pid, node, iface }) {
           <span class=${t.raw_ip ? "pv-addr-raw" : ""}><span class="k">${T("col|Address")}</span> <span class="addr">${t.ip || "—"}</span>${t.raw_ip
             ? html` <span class="tg tg-raw" title=${T("This peer's address on the RAW datapath — it holds both at once")}>RAW ${t.raw_ip}</span>`
             : null}</span>
-          <span><span class="k">${T("col|Rate")}</span> ${rateCell(xfer ? xfer.rx_speed : 0, xfer ? xfer.tx_speed : 0)}</span>
+          <span><span class="k">${T("col|Rate")}</span> ${rateCell(xfer ? xfer.rx_speed : 0, xfer ? xfer.tx_speed : 0)}<${HeldMark} peer=${p} t=${t}/></span>
           <span><span class="k">${T("col|Total")}</span> ${xferCell(...dlul(xfer ? xfer.rx_bytes : 0, xfer ? xfer.tx_bytes : 0))}</span>
           <span><span class="k">${T("col|Online")}</span> ${seen(tgtSeenAge(t))}</span>
+          ${/* last, so the phone's nth-child layout of the six above holds; it spans the row, so "which group won" is never cut */""}
+          ${(e => e ? html`<span class="pv-lim"><span class="k">${T("col|Speed limit")}</span><${Ic} i="gauge"/> ${limText(e.lim)} <span class="faint">${srcShort(e)}</span></span>` : null)(effLimit(p, t))}
         </div></div>`;
     })}</div>
     ${editLocked ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("Editing is off while a deployment sits on a missing or misconfigured interface. A peer edit (keys, AmneziaWG params, DNS, address) applies to every deployment, so it would leave this peer inconsistent. To edit it, either Restore / Fix the interface above, or open Targets and remove that interface from this peer.")}</span></div>` : null}
@@ -856,6 +867,9 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const [priv, setPriv] = useState(peer.private === true);
   const [router, setRouter] = useState(peer.router === true);   // several devices behind this address (S11b)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
+  const lim = useLimit(peer.limits);                // the device's own speed limit (docs/LIMITS-PLAN.md §3.4)
+  const [tlims, setTlims] = useState({});           // "node|iface" -> a deployment's own limit as staged by its gauge (R7); absent = as stored
+  const tlimChanged = t => { const k = tkey(t.node, t.iface); return k in tlims && !limSame(tlims[k], t.limits); };
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
   const [orig, setOrig] = useState(null);          // the loaded config values — Save stays off until one differs
   const [rotating, setRotating] = useState(false); // Rotate in flight → the button disables + says so
@@ -902,7 +916,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     || ((userId || "") !== (peer.user_id || ""))   //    fields, it does not watch input events
     || (expDate !== expiryInputVal(peer.ownExpiry || 0))
     || (live.targets || []).some(ipChangedFor)
-    || Object.keys(topts).some(optsChanged);
+    || Object.keys(topts).some(optsChanged)
+    || lim.changed || (live.targets || []).some(tlimChanged);
   const ownerExp = userId ? +(((Store.recon.users || []).find(u => u.id === userId) || {}).expiry || 0) : 0;
   const save = async () => {
     if (anyIpBad) return setMsg({ k: "err", t: T("Each address must be a valid IPv4.") });
@@ -910,6 +925,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     const expSec = expiryFromInput(expDate);
     // A peer can't outlive its subscription (the server enforces it too — check here for a clean message).
     if (expSec && ownerExp && expSec > ownerExp) return setMsg({ k: "err", t: T("Expiry can't be later than the subscription's (") + fmtDate(ownerExp) + ")." });
+    const limits = lim.changed ? lim.take() : undefined;   // the field shows why when it does not parse
+    if (limits === null) return;
     setBusy(true); setMsg({ k: "work", t: T("saving…") });
     let fails = 0;
     try {
@@ -924,6 +941,14 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       }
       if (router !== (peer.router === true)) {
         const r = await api.peerUpdate({ peer_id: peer.id, router }); if (!r.ok) fails++;
+      }
+      if (limits) {                                  // the device's own speed limit; {} clears it
+        const r = await api.peerUpdate({ peer_id: peer.id, limits }); if (!r.ok) { fails++; if (r.error) setMsg({ k: "err", t: srvText(r) }); }
+      }
+      for (const t of (live.targets || peer.targets)) {   // a deployment's own limit: update-target is its only door (R7)
+        if (!tlimChanged(t)) continue;
+        const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });
+        if (!r.ok) { fails++; if (r.error) setMsg({ k: "err", t: srvText(r) }); }
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written
@@ -1090,6 +1115,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— this peer only; blank = {fallback}", { fallback: ownerExp ? T("follows the subscription") : T("never") })}</span></label>
       <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class=${"hint"}>${T("On this date the peer stops working (it reappears if you extend it).")}${ownerExp ? T(" Can't be later than the subscription's expiry ({v1}).", { v1: fmtDate(ownerExp) }) : ""}</div></div>
+    <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="device"
+      fallback=${fallbackFor("device", { user_id: userId || null })} gaps=${limitGaps(live.targets)}/>
     ${/* ⚠️ Reuses `Switch` and the .toggle-row label shape the panel already uses for a boolean with an explanation
           under it, rather than drawing a new control. The hint is the whole promise in one line, because "private"
           on its own would leave an operator guessing whether it hides the device or only its networks. */""}
@@ -1143,6 +1170,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             ${sc
               ? html`<span class="topt-ip faint" title=${ity === "csqtt" ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto IP")}</span>`
               : html`<input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>`}
+            <${LimitGauge} peer=${live} t=${t} value=${k in tlims ? tlims[k] : t.limits} onApply=${v => setTlims(m => ({ ...m, [k]: v }))}/>
             ${(!sc && confs[k]) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${topts[k]} onSave=${v => setOptsFor(k, v)}/>` : null}
           </div>
         </div>`;
@@ -1153,8 +1181,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         // same signal the warning below uses.
         ? (editable
             ? T("Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.")
-            : T("Changing an address moves the peer on that interface."))
-        : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
+            : T("Changing an address moves the peer on that interface.")) + " " + T("The gauge sets that deployment's own speed limit.")
+        : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.") + " " + T("The gauge sets that deployment's own speed limit.")}</div>
     </div>
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
     ${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}

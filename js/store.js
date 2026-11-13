@@ -576,7 +576,8 @@ export const Store = {
     if (this._groupsOf !== this.roster) {
       const g = (this.roster && this.roster.groups) || {}, us = (this.roster && this.roster.users) || {};
       this._groupsList = Object.keys(g).filter(id => g[id] && typeof g[id] === "object")
-        .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]) }))
+        .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]),
+                      limits: g[id].limits || null }))   // the group's speed limit (docs/LIMITS-PLAN.md §3.4)
         .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       this._groupsById = new Map(this._groupsList.map(x => [x.id, x]));
       this._groupsOf = this.roster;

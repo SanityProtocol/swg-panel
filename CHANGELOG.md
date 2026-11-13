@@ -7,6 +7,15 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **Speed limits on users, groups, devices and deployments.** Edit user, the group editor and Edit peer each have a
+  Speed limit: download and upload separately, or one combined figure, in Mbit/s; a deployment gets its own from the gauge
+  on its row in Edit peer. The most specific one applies — a deployment's own, then the device's, then the user's, then
+  the lowest of their groups' — and each editor says which one a record falls back to. A user's or a group's limit is one
+  budget per server, shared between the devices in use, so someone on two servers can reach it on each. The node enforces
+  it in the kernel, with no cost to a node or a device without one. Live tints a device's rate amber while a limit is
+  holding it, the device's view shows the limit each deployment runs under, an editor warns about a node whose version
+  cannot enforce it, and a limiter a node could not load shows among its issues — nothing is cut then; the traffic runs
+  unlimited.
 - **A node short of CPU hands established connections to the kernel's fast path.** When a node's CPU stays at its start
   or more under real traffic — 70 % by default, set per node in Node settings → Datapath → Fast lane (50 to 90 %, or
   Off) — a connection past its first 32 packets skips the firewall rules entirely, and the CPU they cost is freed. Every
