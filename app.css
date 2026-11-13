@@ -1360,6 +1360,14 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .btn-exp:hover{color:var(--ink);border-color:color-mix(in srgb,var(--dim) 45%,var(--line-solid))}
 .btn-exp.on{color:#e0a85f;background:color-mix(in srgb,#e0a85f 10%,transparent);border-color:color-mix(in srgb,#e0a85f 34%,transparent)}
 .btn-exp.on:hover{background:color-mix(in srgb,#e0a85f 16%,transparent);border-color:color-mix(in srgb,#e0a85f 46%,transparent)}
+/* Limits (limits-l5): something set = the brand's tint, slowed now = amber, cut off now = the danger red; the count of what is set */
+.btn-lims.on{color:var(--sel-ink);background:color-mix(in srgb,var(--brand) 9%,transparent);border-color:color-mix(in srgb,var(--brand) 32%,transparent)}
+.btn-lims.on:hover{background:color-mix(in srgb,var(--brand) 15%,transparent);border-color:color-mix(in srgb,var(--brand) 46%,transparent)}
+.btn-lims.slow{color:var(--amber);background:color-mix(in srgb,var(--amber) 10%,transparent);border-color:color-mix(in srgb,var(--amber) 36%,transparent)}
+.btn-lims.cut{color:var(--dangling);background:color-mix(in srgb,var(--dangling) 10%,transparent);border-color:color-mix(in srgb,var(--dangling) 34%,transparent)}
+.btn-lims.slow:hover,.btn-lims.cut:hover{background:color-mix(in srgb,currentColor 16%,transparent)}
+.lims-n{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;margin-left:2px;border-radius:9px;font:600 11px/1 var(--mono);
+  color:inherit;background:color-mix(in srgb,currentColor 16%,transparent)}
 .btn-danger:hover{background:color-mix(in srgb,var(--dangling) 20%,transparent)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
 .btn-warn{background:color-mix(in srgb,#C0821A 11%,transparent);color:#C0821A;border:1px solid color-mix(in srgb,#C0821A 34%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:5px}

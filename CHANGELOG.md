@@ -7,6 +7,10 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **A Limits button on a user's and a device's QR page.** It replaces Set expiry and holds all three: the access date, the
+  speed limit and the volume limit (with what is used so far), in one sheet with one Save. The button shows how many are
+  set, and turns amber while the person or device is slowed and red while it is cut off. Edit user and Edit peer keep the
+  same fields.
 - **Volume limits on users, groups and devices.** Edit user, the group editor and Edit peer each have a Volume limit:
   download and upload, or one combined figure, in GB, per day, week (from Monday), month, or in total, and at the limit the
   device is either cut off or slowed to 1 Mbit/s (one 1 Mbit/s for all of a person's devices on a server). A group's limit

@@ -22,10 +22,13 @@
  *     limits-l4: a slowed device's limit in force is 1 Mbit/s in one pool for its person (Live's "held", the peer view), a date
  *     passed is the reason before a volume cut, the status lines say a volume cut, the group editor stops on a bad volume, the
  *     used line asks for the drafted period and only with a limit drafted
+ * [9] the Limits button and sheet (limits-l5): in both QR footers; the button counts what is set (expiry, speed, volume) and says
+ *     cut off / slowed / set; the sheet sends only what changed and its Close goes through the discard guard
  *
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
- *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown
+ *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
+ *                                              limscut|limsn|limsguard|limsexp|limsfoot
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -63,6 +66,11 @@ const PLANTS = {   // name: [file, anchor, replacement]
   groupguard: ["js/peer-ui.js", "    const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null || volume === null) return;", "    const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null) return;"],   // [8]
   usedperiod: ["js/limits.js", " + \"&period=\" + period)", ")"],                                                                   // [8]
   usedown: ["js/limits.js", "${id && own ? html`<${UsedLine}", "${id ? html`<${UsedLine}"],                                                     // [8]
+  limscut: ["js/peer-ui.js", "  const cut = (exp && now_s() >= exp) || v[rec.id] === \"cut\";", "  const cut = !!(exp && now_s() >= exp);"],   // [9]
+  limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
+  limsguard: ["js/peer-ui.js", "foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),", "foot=${footRow({ onCancel: closeModal, cancelLabel: T(\"Close\"),"],   // [9]
+  limsexp: ["js/peer-ui.js", "const body = { ...(expChanged ? { expiry: sec } : {}),", "const body = { expiry: sec,"],   // [9]
+  limsfoot: ["js/peer-ui.js", "<span class=\"grow\"></span><${LimitsButton} kind=\"user\" id=${uid} rec=${u}/>", "<span class=\"grow\"></span>"],   // [9]
   crash: ["swg-panel-server", "\"cut\", v1=_w) if _k == \"exception\" else", "\"cut\", v1=_w) if _k == \"exception!\" else"],                         // [5]
 };
 const made = [];
@@ -289,10 +297,31 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
     ss.cls === "s-expired" && /volume limit/.test(ss.text) && ps && ps.cls === "s-expired" && us && us.cls === "s-expired", [ss, ps, us]);
   Store.vol = keepVol;
   check("the group editor stops on a volume it cannot save, as Edit user and Edit peer do",
-    source("js/peer-ui.js").split("if (limits === null || volume === null) return;").length === 3);
+    source("js/peer-ui.js").includes("const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null || volume === null) return;"));
   const ls = source("js/limits.js");
   check("the used line asks for the drafted period, and only with a limit drafted (no ledger-off warning on every editor)",
     ls.includes('encodeURIComponent(id) + "&period=" + period)') && ls.includes("${id && own ? html`<${UsedLine}"));
+
+  console.log("\n[9] the Limits button and sheet");
+  const PU = await load("js/peer-ui.js");
+  const keepVol2 = Store.vol, past = Math.floor(Date.now() / 1000) - 60, later = past + 86400 * 30;
+  Store.vol = { u1: "cut", u2: "slow" };
+  const lst = (kind, rec) => PU.limitsState(kind, rec);
+  const a = lst("user", { id: "u0" }), b = lst("user", { id: "u0", expiry: later, limits: { d: 20 }, volume: { d: 5e9, period: "m", at: "cut" } });
+  check("nothing set: no count, no state; all three set: 3, 'set'", a.n === 0 && a.cls === "" && b.n === 3 && b.cls === " on", [a, b]);
+  check("a volume cut or a passed date reads cut off; a volume slow reads slowed", lst("user", { id: "u1" }).cls === " cut"
+    && lst("user", { id: "u0", expiry: past }).cls === " cut" && lst("user", { id: "u2" }).cls === " slow", [lst("user", { id: "u1" }), lst("user", { id: "u0", expiry: past })]);
+  check("…a device by its OWN expiry (ownExpiry), not its subscription's", lst("peer", { id: "p0", ownExpiry: later }).n === 1 && lst("peer", { id: "p0", expiry: later }).n === 0);
+  check("…and a stored value the panel would refuse is not counted", lst("user", { id: "u0", limits: { d: 0 }, volume: { d: 1 } }).n === 0);
+  Store.vol = keepVol2;
+  const pus = source("js/peer-ui.js");
+  check("both QR footers carry the Limits button (the expiry-only button is gone)", pus.includes('<${LimitsButton} kind="peer" id=${pid} rec=${p}/>')
+    && pus.includes('<span class="grow"></span><${LimitsButton} kind="user" id=${uid} rec=${u}/>') && !pus.includes("openSetExpiry("));
+  check("the sheet sends only what changed, and its Close asks before dropping an edit",
+    pus.includes("const body = { ...(expChanged ? { expiry: sec } : {}), ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) };")
+    && pus.includes("foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),"));
+  for (const k of ["Limits", "Limits saved.", "Access until", "Access date, speed limit and volume limit",
+                   "Cut off now: its access date has passed or its volume limit is used up", "Slowed to 1 Mbit/s now: its volume limit is used up"]) RUKEYS.add(k);
 
   console.log("\n[7] Russian");
   const keys = new Set(RUKEYS);

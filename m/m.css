@@ -120,6 +120,8 @@ html[data-ui="m"] {
   /* typed in: the full height, kept until it closes (ui.js attachTypingHold) — the field stays put while the rest changes */
   & .sheet.m-typed { height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px); }
   & .sheet.m-springback { transition: transform .22s var(--ease); }
+  /* Limits (limits-l5): three to a row leaves its cell no room for the count beside the label — the colour says the state */
+  & :is(.sheet-foot, .editfoot) .btn-lims .lims-n { display: none; }
 
   /* ───── sheet footers (the operator's rule, 2026-10-21): the dismiss button (Close / Cancel / Back — .btn-dismiss) and the
      main action share the BOTTOM line, dismiss left, in equal halves; every other action sits above in a grid of equal cells,

@@ -43,7 +43,7 @@ import { searchMatch, userStats, userStatTag, groupShares, shareDeviceName, name
          peerAudience, peerAudCached, peerAudFetch, reachableByGroup } from "./views.js";
 import { AppDropdown, OsDropdown, ForkTag, turnForkPlatforms, WDTT_COLOR, appNameColor, turnEnabled,
          _OS_TABS } from "./turn.js";
-import { LimitField, useLimit, fallbackFor, limitGaps, targetsOfUsers, VolumeField, useVolume } from "./limits.js";
+import { LimitField, useLimit, fallbackFor, limitGaps, targetsOfUsers, VolumeField, useVolume, limClean, volClean } from "./limits.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -472,54 +472,91 @@ export function VkLinksSheet({ user }) {
       ? html`<div class="hint">${T("Apps differ: some use every link, some only the first few, some only the primary — the star sets which comes first.")}</div>` : null}
   </div>`;
 }
-// Quick "Set expiry" — a small date picker reachable straight from the QR modal (no trip to the edit screen).
-// A user sets the SUBSCRIPTION expiry; a peer sets its OWN expiry, capped at the user's (can't outlive it).
-export function openSetExpiry(kind, id) { pushModal(html`<${SetExpirySheet} kind=${kind} id=${id}/>`); }
-export function SetExpirySheet({ kind, id }) {
+// ── Limits (docs/LIMITS-PLAN.md "limits-l5 design"): everything that limits a user or a device, from its QR modal — when its
+// access ends, how fast it may go, how much it may use. The same fields as Edit user / Edit peer (the operator keeps both
+// places), one Save that sends only what changed. Replaced the expiry-only sheet.
+export function openLimits(kind, id) {
+  const dirtyRef = { current: false };
+  pushModal(html`<${LimitsSheet} kind=${kind} id=${id} dirtyRef=${dirtyRef}/>`);
+}
+// The footer button's state, from what the poll already holds: how many of expiry / speed / volume the record carries, and
+// whether one acts now — cut off (its date passed, or its volume used up) or slowed.
+export function limitsState(kind, rec) {
+  if (!rec) return { n: 0, cls: "" };
+  const exp = +((kind === "user" ? rec.expiry : rec.ownExpiry) || 0), v = Store.vol || {};
+  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);
+  const cut = (exp && now_s() >= exp) || v[rec.id] === "cut";
+  return { n, cut, cls: cut ? " cut" : v[rec.id] === "slow" ? " slow" : n ? " on" : "" };
+}
+function LimitsButton({ kind, id, rec }) {
+  const st = limitsState(kind, rec);
+  const title = st.cut ? T("Cut off now: its access date has passed or its volume limit is used up")
+    : st.cls === " slow" ? T("Slowed to 1 Mbit/s now: its volume limit is used up") : T("Access date, speed limit and volume limit");
+  return html`<button class=${"btn btn-exp btn-lims" + st.cls} title=${title} onClick=${() => openLimits(kind, id)}><${Ic} i="gauge"/> ${T("Limits")}${
+    st.n ? html`<span class="lims-n">${st.n}</span>` : null}</button>`;
+}
+export function LimitsSheet({ kind, id, dirtyRef }) {
   const isUser = kind === "user";
-  const rec = isUser ? Store.user(id) : Store.peer(id);   // Store.peer already returns the RECONCILED peer (carries ownExpiry)
-  const cur = isUser ? ((rec && rec.expiry) || 0) : ((rec && rec.ownExpiry) || 0);
-  const owner = !isUser && rec && rec.user_id ? Store.user(rec.user_id) : null;
-  const ownerExp = owner ? (owner.expiry || 0) : 0;   // a peer can't be set to outlive its user's subscription
-  const [d, setD] = useState(expiryInputVal(cur));
-  const [busy, setBusy] = useState(false);
+  const rec = isUser ? Store.user(id) : Store.peer(id);   // Store.peer is the RECONCILED peer (ownExpiry, limits, volume)
+  const [seed] = useState(() => rec ? expiryInputVal(+((isUser ? rec.expiry : rec.ownExpiry) || 0)) : "");
+  const [d, setD] = useState(seed);
+  const lim = useLimit(rec ? rec.limits : null);
+  const vol = useVolume(rec ? rec.volume : null);
+  const [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const closeRef = useRef(null);                           // Close goes through the sheet's guard: an edit is never dropped unasked
   if (!rec) { closeModal(); return null; }
+  const owner = !isUser && rec.user_id ? Store.user(rec.user_id) : null;
+  const ownerExp = owner ? +(owner.expiry || 0) : 0;   // a device can't outlive its user's subscription
+  const maxPeer = isUser ? Store.peersOfUser(id).reduce((m, p) => Math.max(m, +(p.ownExpiry || 0)), 0) : 0;
+  const expChanged = d !== seed;
+  dirtyRef.current = expChanged || lim.changed || vol.changed;
   const save = async () => {
-    setBusy(true);
     const sec = expiryFromInput(d);
-    const r = isUser ? await api.userUpdate({ id, expiry: sec }) : await api.peerUpdate({ peer_id: id, expiry: sec });
-    setBusy(false);
-    if (!r || r.ok === false) { toast(srvText(r) || T("Couldn't set the expiry"), "err"); return; }
-    subUsersForget(); await Store.poll(); closeModal();
-    toast(sec ? T("Expiry set to {v1}", { v1: fmtDate(sec) }) : T("Expiry cleared"), "ok");
+    if (expChanged && sec && ownerExp && sec > ownerExp) { setErr(T("Expiry can't be later than the subscription's (") + fmtDate(ownerExp) + ")."); return; }
+    if (expChanged && sec && maxPeer && sec < maxPeer) { setErr(T("Subscription expiry can't be earlier than a peer's expiry ({date}).", { date: fmtDate(maxPeer) })); return; }
+    const limits = lim.changed ? lim.take() : undefined;   // each sent only when it changed; {} clears it
+    const volume = vol.changed ? vol.take() : undefined;
+    if (limits === null || volume === null) return;          // the field shows why
+    const body = { ...(expChanged ? { expiry: sec } : {}), ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) };
+    const r = await sheetSend(() => isUser ? api.userUpdate({ id, ...body }) : api.peerUpdate({ peer_id: id, ...body }), setErr, setBusy);
+    if (!r.ok) return;                                       // refused: the sheet stays, in the panel's words, every edit kept
+    dirtyRef.current = false;
+    subUsersForget(); closeModal(); Store.poll().catch(() => {});
+    toast(T("Limits saved."), "ok");
   };
   const nm = rec.name || rec.title || "";
-  return html`<${Sheet} title=${(isUser ? T("Subscription expiry") : T("Peer expiry")) + (nm ? " · " + nm : "")} width=${430} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
-      foot=${footRow({ onCancel: closeModal, disabled: busy, onAction: save, action: T("Save") })}>
-    <p class="hint" style="margin:2px 0 14px">${isUser
-      ? T("After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires.")
-      : T("After this date just this peer expires (its config stops working); the rest of the user's peers are unaffected. It can't be set later than the user's subscription expiry. Blank = follows the subscription.")}</p>
-    <div class="daterow"><input type="date" class="datein" min=${expiryInputVal(now_s())} max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${d} onInput=${e => setD(e.target.value)}/>${d ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setD("")}>${T("Clear")}</button>` : null}</div>
+  return html`<${Sheet} title=${T("Limits") + (nm ? " · " + nm : "")} width=${620} dirtyRef=${dirtyRef} closeRef=${closeRef} onClose=${closeModal} onBack=${closeModal}
+      subject=${{ kind: isUser ? "user" : "peer", id }} err=${err}
+      foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T("Close"), disabled: busy || !dirtyRef.current, onAction: save, action: T("Save") })}>
+    <div class="field"><label>${T("Access until")}</label>
+      <div class="daterow"><input type="date" class="datein" min=${expiryInputVal(now_s())} max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${d}
+        onInput=${e => setD(e.target.value)}/>${d ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setD("")}>${T("Clear")}</button>` : null}</div>
+      <div class="hint">${isUser
+        ? T("After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires.")
+        : T("After this date just this peer expires (its config stops working); the rest of the user's peers are unaffected. It can't be set later than the user's subscription expiry. Blank = follows the subscription.")}</div></div>
+    ${isUser
+      ? html`<${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="user" fallback=${fallbackFor("user", rec)} gaps=${() => limitGaps(targetsOfUsers([id]))}/>
+        <${VolumeField} draft=${vol.draft} onChange=${vol.set} err=${vol.err} level="user" kind="user" id=${id}/>`
+      : html`<${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="device" fallback=${fallbackFor("device", { user_id: rec.user_id || null })} gaps=${() => limitGaps(rec.targets)}/>
+        <${VolumeField} draft=${vol.draft} onChange=${vol.set} err=${vol.err} level="device" kind="peer" id=${id}/>`}
   <//>`;
 }
 // Live footer for the QR modals — re-renders on each poll (useStore), so the Block/Unblock label flips right
-// after the action without the modal being reopened. "Set expiry" sits to the LEFT of Block.
+// after the action without the modal being reopened. "Limits" sits to the LEFT of Block.
 export function QRPeerFoot({ pid }) {
   useStore();
   const p = Store.peer(pid);
   if (!p) return null;
-  const hasExp = !!(p.ownExpiry && p.ownExpiry > 0);
-  return html`<${Fragment}><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("peer", pid)}><${Ic} i="clock"/> ${hasExp ? T("Reset expiry") : T("Set expiry")}</button>${peerBlockBtn(p)}<//>`;
+  return html`<${Fragment}><span class="grow"></span><${LimitsButton} kind="peer" id=${pid} rec=${p}/>${peerBlockBtn(p)}<//>`;
 }
 export function QRUserFoot({ uid }) {
   useStore();
   const u = Store.user(uid);
   if (!u) return null;
-  const hasExp = !!(u.expiry && u.expiry > 0);
   const peers = Store.peersOfUser(uid);
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const count = plural(peers.length, "peer") + (nCfg > 1 ? " (" + T("{v1} configs)", { v1: nCfg }) : "");
-  return html`<${Fragment}><span class="qrfoot-count">${count}</span><${UserCounts} user=${u} className="qrfoot-ucounts"/><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("user", uid)}><${Ic} i="clock"/> ${hasExp ? T("Reset expiry") : T("Set expiry")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(u)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(u)}<//>`;
+  return html`<${Fragment}><span class="qrfoot-count">${count}</span><${UserCounts} user=${u} className="qrfoot-ucounts"/><span class="grow"></span><${LimitsButton} kind="user" id=${uid} rec=${u}/><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(u)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(u)}<//>`;
 }
 export function openUserEdit(user) {
   // Wider than the default sheet: this one carries the widest thing in the panel that is not a table — the user's networks, a row
