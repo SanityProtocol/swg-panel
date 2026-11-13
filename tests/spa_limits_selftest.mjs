@@ -28,7 +28,7 @@
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
- *                                              limscut|limsn|limsguard|limsexp|limsfoot
+ *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -66,7 +66,9 @@ const PLANTS = {   // name: [file, anchor, replacement]
   groupguard: ["js/peer-ui.js", "    const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null || volume === null) return;", "    const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null) return;"],   // [8]
   usedperiod: ["js/limits.js", " + \"&period=\" + period)", ")"],                                                                   // [8]
   usedown: ["js/limits.js", "${id && own ? html`<${UsedLine}", "${id ? html`<${UsedLine}"],                                                     // [8]
-  limscut: ["js/peer-ui.js", "  const cut = (exp && now_s() >= exp) || v[rec.id] === \"cut\";", "  const cut = !!(exp && now_s() >= exp);"],   // [9]
+  limscut: ["js/peer-ui.js", "  const cut = !!(exp && now >= exp) || !!(oexp && now >= oexp) || ids.some(i => v[i] === \"cut\");", "  const cut = !!(exp && now >= exp) || !!(oexp && now >= oexp);"],   // [9]
+  limsowner: ["js/peer-ui.js", "  const ids = [rec.id, ...(owner ? [owner.id] : [])];", "  const ids = [rec.id];"],   // [9]
+  limsclean: ["js/peer-ui.js", "  useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });", ""],   // [9]
   limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
   limsguard: ["js/peer-ui.js", "foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),", "foot=${footRow({ onCancel: closeModal, cancelLabel: T(\"Close\"),"],   // [9]
   limsexp: ["js/peer-ui.js", "const body = { ...(expChanged ? { expiry: sec } : {}),", "const body = { expiry: sec,"],   // [9]
@@ -312,11 +314,20 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   check("a volume cut or a passed date reads cut off; a volume slow reads slowed", lst("user", { id: "u1" }).cls === " cut"
     && lst("user", { id: "u0", expiry: past }).cls === " cut" && lst("user", { id: "u2" }).cls === " slow", [lst("user", { id: "u1" }), lst("user", { id: "u0", expiry: past })]);
   check("…a device by its OWN expiry (ownExpiry), not its subscription's", lst("peer", { id: "p0", ownExpiry: later }).n === 1 && lst("peer", { id: "p0", expiry: later }).n === 0);
+  const ou = ((Store.recon && Store.recon.users) || []).find(u => !u.expiry && Store.user(u.id));   // an owner the store knows
+  Store.vol = { [ou && ou.id]: "slow" };
+  const lp = lst("peer", { id: "p9", user_id: ou && ou.id });
+  check("a device counts its owner: slowed with them (the count stays its own)", !!ou && lp.cls === " slow" && lp.n === 0, [ou && ou.id, lp]);
+  Store.vol = { [ou && ou.id]: "cut" };
+  check("…cut off with them", lst("peer", { id: "p9", user_id: ou && ou.id }).cls === " cut", lst("peer", { id: "p9", user_id: ou && ou.id }));
   check("…and a stored value the panel would refuse is not counted", lst("user", { id: "u0", limits: { d: 0 }, volume: { d: 1 } }).n === 0);
   Store.vol = keepVol2;
   const pus = source("js/peer-ui.js");
   check("both QR footers carry the Limits button (the expiry-only button is gone)", pus.includes('<${LimitsButton} kind="peer" id=${pid} rec=${p}/>')
     && pus.includes('<span class="grow"></span><${LimitsButton} kind="user" id=${uid} rec=${u}/>') && !pus.includes("openSetExpiry("));
+  check("an edit undone asks nothing on Close (the sheet's own typed flag is handed back), and editing the date clears its refusal",
+    pus.includes("useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });")
+    && pus.includes('onInput=${e => { setD(e.target.value); setErr(""); }}'));
   check("the sheet sends only what changed, and its Close asks before dropping an edit",
     pus.includes("const body = { ...(expChanged ? { expiry: sec } : {}), ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) };")
     && pus.includes("foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),"));

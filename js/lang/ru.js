@@ -4229,8 +4229,6 @@ export const STR = {
   "Subscription expiry can't be earlier than a peer's expiry ({date}).":
     "Срок действия подписки не может быть раньше срока действия пира ({date}).",
   "Clear": "Очистить",
-  "Reset expiry": "Сбросить срок",
-  "Set expiry": "Срок действия",
   // budget-ok: sheet-foot button, foot has a grow spacer
   // Five buttons share one flex row in the user-edit footer. With the literal «Удалить пользователя» the row
   // overflowed by 158px; the card is already the user's, so the noun is redundant. Measured after the change.
@@ -4986,11 +4984,8 @@ export const STR = {
   "Couldn't create the subscription link": "Не удалось создать ссылку на подписку",
   "Couldn't add the VK link": "Не удалось добавить ссылку VK",
   "Couldn't save the VK links": "Не удалось сохранить ссылки VK",
-  "Couldn't set the expiry": "Не удалось задать срок",
-  "Expiry cleared": "Срок снят",
   "Subscription expiry": "Срок действия подписки",
   // budget-ok: a sheet TITLE, not a label — measured at 293px of a 430px head, no clip, no wrap
-  "Peer expiry": "Срок действия пира",
   "After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires.":
     "После этой даты вся подписка считается истёкшей — на странице будет «Истекла», пиры перестанут отдаваться. Пусто — бессрочно.",
   "After this date just this peer expires (its config stops working); the rest of the user's peers are unaffected. It can't be set later than the user's subscription expiry. Blank = follows the subscription.":
@@ -5983,7 +5978,6 @@ export const STR = {
     "{v1} получит свежий QR и конфиг — их нужно раздать заново.",
   "Peer .{v1}": "Пир .{v1}",
   "Peer": "Пир",
-  "Expiry set to {v1}": "Срок задан: {v1}",
   "{v1} configs)": "{v1} конфигов)",
   "Edit · {v1}": "Правка · {v1}",
   "Turn configs · {v1}": "Конфиги turn · {v1}",

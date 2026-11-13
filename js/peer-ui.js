@@ -479,23 +479,28 @@ export function openLimits(kind, id) {
   const dirtyRef = { current: false };
   pushModal(html`<${LimitsSheet} kind=${kind} id=${id} dirtyRef=${dirtyRef}/>`);
 }
-// The footer button's state, from what the poll already holds: how many of expiry / speed / volume the record carries, and
-// whether one acts now — cut off (its date passed, or its volume used up) or slowed.
+// The footer button's state, from what the poll already holds: how many of expiry / speed / volume the record carries (its
+// own), and whether one acts on it now — cut off (a date passed, or a volume used up) or slowed. A device counts its owner's
+// too: a subscription that lapsed, or a person cut or slowed, stops or slows every device they hold (reconcile, effLimit).
 export function limitsState(kind, rec) {
   if (!rec) return { n: 0, cls: "" };
-  const exp = +((kind === "user" ? rec.expiry : rec.ownExpiry) || 0), v = Store.vol || {};
+  const now = now_s(), v = Store.vol || {}, exp = +((kind === "user" ? rec.expiry : rec.ownExpiry) || 0);
   const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);
-  const cut = (exp && now_s() >= exp) || v[rec.id] === "cut";
-  return { n, cut, cls: cut ? " cut" : v[rec.id] === "slow" ? " slow" : n ? " on" : "" };
+  const owner = kind === "peer" && rec.user_id ? Store.user(rec.user_id) : null, oexp = owner ? +(owner.expiry || 0) : 0;
+  const ids = [rec.id, ...(owner ? [owner.id] : [])];
+  const cut = !!(exp && now >= exp) || !!(oexp && now >= oexp) || ids.some(i => v[i] === "cut");
+  const slow = !cut && ids.some(i => v[i] === "slow");
+  return { n, cut, slow, cls: cut ? " cut" : slow ? " slow" : n ? " on" : "" };
 }
 function LimitsButton({ kind, id, rec }) {
   const st = limitsState(kind, rec);
   const title = st.cut ? T("Cut off now: its access date has passed or its volume limit is used up")
-    : st.cls === " slow" ? T("Slowed to 1 Mbit/s now: its volume limit is used up") : T("Access date, speed limit and volume limit");
+    : st.slow ? T("Slowed to 1 Mbit/s now: its volume limit is used up") : T("Access date, speed limit and volume limit");
   return html`<button class=${"btn btn-exp btn-lims" + st.cls} title=${title} onClick=${() => openLimits(kind, id)}><${Ic} i="gauge"/> ${T("Limits")}${
     st.n ? html`<span class="lims-n">${st.n}</span>` : null}</button>`;
 }
 export function LimitsSheet({ kind, id, dirtyRef }) {
+  useStore();                                              // the record, its owner's cap and the gaps follow the poll
   const isUser = kind === "user";
   const rec = isUser ? Store.user(id) : Store.peer(id);   // Store.peer is the RECONCILED peer (ownExpiry, limits, volume)
   const [seed] = useState(() => rec ? expiryInputVal(+((isUser ? rec.expiry : rec.ownExpiry) || 0)) : "");
@@ -503,7 +508,8 @@ export function LimitsSheet({ kind, id, dirtyRef }) {
   const lim = useLimit(rec ? rec.limits : null);
   const vol = useVolume(rec ? rec.volume : null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
-  const closeRef = useRef(null);                           // Close goes through the sheet's guard: an edit is never dropped unasked
+  const closeRef = useRef(null), cleanRef = useRef(null);  // Close goes through the sheet's guard: an edit is never dropped unasked
+  useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });   // …and an edit undone asks nothing
   if (!rec) { closeModal(); return null; }
   const owner = !isUser && rec.user_id ? Store.user(rec.user_id) : null;
   const ownerExp = owner ? +(owner.expiry || 0) : 0;   // a device can't outlive its user's subscription
@@ -525,12 +531,12 @@ export function LimitsSheet({ kind, id, dirtyRef }) {
     toast(T("Limits saved."), "ok");
   };
   const nm = rec.name || rec.title || "";
-  return html`<${Sheet} title=${T("Limits") + (nm ? " · " + nm : "")} width=${620} dirtyRef=${dirtyRef} closeRef=${closeRef} onClose=${closeModal} onBack=${closeModal}
+  return html`<${Sheet} title=${T("Limits") + (nm ? " · " + nm : "")} width=${620} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef} onClose=${closeModal} onBack=${closeModal}
       subject=${{ kind: isUser ? "user" : "peer", id }} err=${err}
       foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T("Close"), disabled: busy || !dirtyRef.current, onAction: save, action: T("Save") })}>
     <div class="field"><label>${T("Access until")}</label>
       <div class="daterow"><input type="date" class="datein" min=${expiryInputVal(now_s())} max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${d}
-        onInput=${e => setD(e.target.value)}/>${d ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setD("")}>${T("Clear")}</button>` : null}</div>
+        onInput=${e => { setD(e.target.value); setErr(""); }}/>${d ? html`<button class="btn btn-ghost btn-mini" onClick=${() => { setD(""); setErr(""); }}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${isUser
         ? T("After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires.")
         : T("After this date just this peer expires (its config stops working); the rest of the user's peers are unaffected. It can't be set later than the user's subscription expiry. Blank = follows the subscription.")}</div></div>
