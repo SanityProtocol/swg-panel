@@ -26316,10 +26316,13 @@ def _vol_used(snap, kind, rid, members, base):
 
 def _vol_tick(deps, nowv=None):
     """One pass: recompute _VOL_STATE / _VOL_USE from the ledger. Cheap when nothing carries a volume (one roster walk).
-    A roster that cannot be read raises: the last verdicts stand (an unreadable file must not lift every cut)."""
+    A roster that cannot be read raises: the last verdicts stand (an unreadable file must not lift every cut). A roster not
+    written yet (a new panel: no users.json, no mark) is an empty one — nothing to limit, no error every tick."""
     global _VOL_STATE, _VOL_USE, _VOL_HIT, _VOL_BACK
     nowv = int(time.time()) if nowv is None else nowv
     roster, mark = roster_view(deps["roster_path"], repair=False)
+    if roster is None and mark is None and not os.path.exists(deps["roster_path"]):
+        roster = {}
     if roster is None:
         raise ValueError("the roster could not be read — the last verdicts stand")
     if mark is None or _VOL_RECS.get("mark") != mark:   # the records walk once per roster revision (2.5 ms at 10,000 users)
@@ -30041,7 +30044,8 @@ def api(method, path, qs, body, deps):
             snap = _vol_snap()
             dn, up = _vol_used(snap, kind, rid, members, _vol_base(first, snap[4], nowv))
         except Exception as e:                       # the ledger busy, or its directory unreadable: no figure, never a guess
-            return 503, {"ok": False, "code": "busy", "error": "the traffic history could not be read: %s" % e}
+            log(LOG_WARNING, "volume: /api/volume could not read the traffic history: %s" % e)
+            return 503, {"ok": False, "code": "busy", "error": "the traffic history could not be read"}
         return 200, {"ok": True, "data": {"used": {"d": dn, "u": up}, "period": per, "until": _ld_midnight(nxt) if nxt else 0,
                                           "day": nxt or 0, "state": cur["state"] if cur and cur["vol"]["period"] == per else "",
                                           **({"vol": dict(cur["vol"])} if cur else {})}}

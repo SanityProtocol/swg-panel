@@ -35,6 +35,7 @@ Run: python3 tests/limits_volume_selftest.py   (0 = pass)
      openday    the period's base read before the ledger has reached its first day (yesterday charged to today)
      strict     an unreadable history directory reads as "no row" (a whole lifetime counted)
      rostergone an unreadable roster lifts every cut
+     newpanel   a panel with no users.json yet fails every tick
      restartev  a restart logs every limit already reached again
      slowpool   a slowed person gets 1 Mbit/s per device (no shared pool)
      cutwire    a cut alone builds the speed wire
@@ -76,6 +77,7 @@ PLANTS = {   # name: (file, anchor, replacement)
     "groupone": ("swg-panel-server", "[n for m in members for n in snap[3].get(m, ())]", "[n for m in members[:1] for n in snap[3].get(m, ())]"),
     "openday": ("swg-panel-server", "    if lday < first:\n        return \"none\"\n", ""),
     "strict": ("swg-panel-server", "            if strict:\n                raise\n            return None", "            return None"),
+    "newpanel": ("swg-panel-server", "    if roster is None and mark is None and not os.path.exists(deps[\"roster_path\"]):\n        roster = {}\n", ""),
     "rostergone": ("swg-panel-server", "    if roster is None:\n        raise ValueError(\"the roster could not be read — the last verdicts stand\")", "    roster = roster or {}"),
     "restartev": ("swg-panel-server", "    if _VOL_HIT is not None and hit != _VOL_HIT:", "    _VOL_HIT = _VOL_HIT or {}\n    if hit != _VOL_HIT:"),
     "slowpool": ("swg-panel-server", "lim, pool, src = VOL_SLOW, spool, \"s\"", "lim, pool, src = VOL_SLOW, \"\", \"s\""),
@@ -307,6 +309,13 @@ try:
     except Exception:
         raised = True
     check("an unreadable roster raises: the cuts stand", raised and P._VOL_STATE == {"ua": "cut"}, P._VOL_STATE)
+    P.roster_view = lambda path, repair=True: (None, None)   # a new panel: no users.json written yet
+    try:
+        P._vol_tick({"roster_path": os.path.join(TMP, "none-yet", "users.json"), "sub_dir": DEPS["sub_dir"]}, NOW)
+        raised = False
+    except Exception as e:
+        raised = repr(e)
+    check("a panel with no users.json yet ticks without an error (an empty roster: nothing limited)", raised is False and P._VOL_STATE == {}, raised)
     P.roster_view = rv
 
     RS = {"users": usr(ub={"volume": {"d": 1 * GB, "period": "m", "at": "slow"}}), "groups": {},
