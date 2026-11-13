@@ -31,6 +31,9 @@
        its `ip`; a member that moved within LIMITS_HOLD_S stays counted; a cap never under LIMITS_MIN_CAP; a failed cap
        change keeps the caps in force; tc's cause reaches limit_err; a sweep that never ran is tried again; a WDTT device
        left out of the client list for a pass keeps its limits; a node without a limit stats the marker once.
+  [14] Review round 2 (F59, F61, F62, F68, F69): the marker names the devices loaded and a restart sweeps them listed or
+       not; a sweep that never ran waits a minute; a part-applied cap change is sent again; a `limits` that is not a list
+       keeps the other errors; uninstall deletes on the marker's devices only.
   [13] The main loop's wiring (the critical invariant): the wire is None each pass, set only from a valid 200 carrying
        `desired`, the call sits outside the sync's try, and the snapshot carries limit_err.
 
@@ -63,6 +66,11 @@ Run: python3 tests/limits_node_selftest.py   (0 = pass)
      markstat     the marker is stat'ed on every pass
      wireall      the main loop starts a pass with an empty wire (a panel outage lifts every limit)
      noerr        the snapshot leaves out limit_err
+     capunknown   a failed cap change keeps the old caps as known (a part-applied change is never re-sent)
+     marknames    the start sweep ignores the devices the marker names
+     sweepspin    a sweep that never ran is retried every pass
+     errwipe      a `limits` that is not a list wipes the other errors from limit_err
+     unwide       uninstall deletes pref 4097 on every device
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, time
 
@@ -105,13 +113,18 @@ PLANTS = {
                         break''', '''                        sp[(dev, a)] = (pe.get("rx_speed") or 0, pe.get("tx_speed") or 0)'''),
     "nohold": ('''            if t is not None and now - t < LIMITS_HOLD_S:''', '''            if t == now:'''),
     "mincap": ('''max(LIMITS_MIN_CAP, pools[k[0]][k[1]] / max(1, n))''', '''pools[k[0]][k[1]] / max(1, n)'''),
-    "capfailkeep": ('''    st["caps"] = {k: (v if k not in old or (ok and k in moved) else old[k]) for k, v in want_caps.items()}''',
-                    '''    st["caps"] = dict(want_caps)'''),
+    "capfailkeep": ('''    st["caps"] = {k: (v if k not in old or (ok and k in moved) else (v[0], -1.0) if k in moved else old[k])''',
+                    '''    st["caps"] = {k: (v if True else (v[0], -1.0) if k in moved else old[k])'''),
+    "capunknown": ('''else (v[0], -1.0) if k in moved else old[k])''', '''else old[k])'''),
+    "marknames": ('''        devs = [d for d in sorted(set(cdevs) | st["markdevs"]) if''', '''        devs = [d for d in sorted(set(cdevs)) if'''),
+    "sweepspin": ('''        if st["sweepfail"] and now - st["sweepfail"][0] < LIMITS_RETRY_S:''', '''        if False:'''),
+    "errwipe": ('''        st["err"] = dict(st["err"], limits="not a list''', '''        st["err"] = dict(limits="not a list'''),
+    "unwide": ('''done < /var/lib/swg-noded/limits; true''', '''done < /dev/null; for d in $(ls /sys/class/net); do for h in egress ingress; do tc filter del dev "$d" $h pref 4097 >/dev/null 2>&1; done; done; true'''),
     "errcause": ('''    cause = [x for x in ls if not x.startswith("Command failed")]''', '''    cause = []'''),
     "sweepfail": ('''        if r.returncode in (124, 127):                # not run at all''', '''        if False:                # not run at all'''),
     "snatdrop": ('''(_CLIENT_DEVS.get("list") or ())) | set(st["dev"]))''', '''(_CLIENT_DEVS.get("list") or ())))'''),
-    "clientsweep": ('''        devs = [d for d in cdevs if _LIM_DEV_RE.fullmatch(d)''',
-                    '''        devs = [d for d in sorted(_own_tunnel_devs(node_cfg)) if _LIM_DEV_RE.fullmatch(d)'''),
+    "clientsweep": ('''        devs = [d for d in sorted(set(cdevs) | st["markdevs"]) if''',
+                    '''        devs = [d for d in sorted(set(_own_tunnel_devs(node_cfg)) | st["markdevs"]) if'''),
     "markstat": ('''    if st["mark"] is None:\n''', '''    if True:\n'''),
     "wireall": ('''        _lim_wire = None                            # …and the limits''', '''        _lim_wire = []                            # …and the limits'''),
     "noerr": ('''        snap["limit_err"] = dict(_LIMITS["err"])''', '''        pass'''),
@@ -137,7 +150,8 @@ def load(src, name):
 
 
 src = open(NODED, encoding="utf-8").read()
-if PLANT:
+UNPLANTS = {"unwide"}                       # planted in uninstall.sh, which [14] reads
+if PLANT and PLANT not in UNPLANTS:
     cut, new = PLANTS[PLANT]
     assert src.count(cut) == 1, "plant anchor for %s missing or not unique — would FALSE-PASS" % PLANT
     src = src.replace(cut, new, 1)
@@ -187,7 +201,7 @@ IDX0 = N.LIMITS_IDX0
 
 
 def reset(mark=False):
-    N._LIMITS.update(started=False, mark=None, next=IDX0, dev={}, pidx={}, caps={}, capfail=None, seen={}, fail={}, err={},
+    N._LIMITS.update(started=False, mark=None, markdevs=set(), sweepfail=None, next=IDX0, dev={}, pidx={}, caps={}, capfail=None, seen={}, fail={}, err={},
                      wire=None, cdevs=None, plan=None)
     N._CLIENT_DEVS["list"] = list(CLIENT)
     RC.clear()
@@ -482,7 +496,8 @@ ens(G, snap(30, 0, 0))
 FAILDEV.add("caps")
 CALLS.clear()
 r = ens(G, snap(30, 20, 0))
-check("a failed cap change keeps the caps in force, and says so", N._LIMITS["caps"][("g:x", "d")] == (40, 40.0)
+check("a failed cap change records the cap as unknown (some members may be set), and says so",
+      N._LIMITS["caps"][("g:x", "d")] == (40, -1.0)
       and "Exclusivity" in N._LIMITS["err"].get("caps", "") and len(CALLS) == 1, (N._LIMITS["caps"], N._LIMITS["err"]))
 CALLS.clear()
 NOW[0] += 5
@@ -501,8 +516,13 @@ check("a sweep that timed out loads nothing and is reported", len(CALLS) == 1 an
       and os.path.exists(N.LIMITS_MARK), (CALLS, N._LIMITS["err"]))
 RC.clear()
 CALLS.clear()
+NOW[0] += 5
 ens(W)
-check("…and is tried again", len(CALLS) == 3 and "-force" in CALLS[0][0], [c[0] for c in CALLS])
+check("…not again within a minute (a hung tc must not block every pass, F61)", CALLS == [] and "sweep" in N._LIMITS["err"],
+      [c[0] for c in CALLS])
+NOW[0] += N.LIMITS_RETRY_S
+ens(W)
+check("…and then tried again", len(CALLS) == 3 and "-force" in CALLS[0][0], [c[0] for c in CALLS])
 # a WDTT device left out of the client list for one pass (its SNAT write failed)
 reset()
 WD = [["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""]]
@@ -515,21 +535,82 @@ check("a loaded device out of the client list for a pass keeps its limits", CALL
 N._CLIENT_DEVS["list"] = list(CLIENT)
 # a node without a limit: the marker is stat'ed once
 reset()
-_ex, _stats = os.path.exists, [0]
+_rd, _stats = N._lim_mark_read, [0]
 
 
-def _counting(p):
-    _stats[0] += p == N.LIMITS_MARK
-    return _ex(p)
+def _counting(st):
+    _stats[0] += 1
+    return _rd(st)
 
 
-N.os.path.exists = _counting
+N._lim_mark_read = _counting
 try:
     for _ in range(4):
         ens([])
 finally:
-    N.os.path.exists = _ex
+    N._lim_mark_read = _rd
 check("a node without a limit stats the marker once a process", _stats[0] <= 1 and CALLS == [], (_stats, CALLS))
+
+print("[14] review round 2")
+reset()
+ens([["wdtt1", ["10.66.0.2/32"], 10, 0, 0, ""], ["awg2", ["10.9.0.2/32"], 10, 0, 0, ""]])
+names = open(N.LIMITS_MARK).read().split()
+check("the marker names every device loaded", names == ["awg2", "wdtt1"], names)
+N._LIMITS.update(started=False, mark=None, markdevs=set(), dev={}, wire=None, cdevs=None, plan=None)   # a new process
+N._CLIENT_DEVS["list"] = [d for d in CLIENT if d != "wdtt1"]           # wdtt1's SNAT write failed on its first pass
+CALLS.clear()
+ens([])
+swept = sorted({ln.split()[3] for ln in tc_lines()})
+check("a restart sweeps a device the marker names though it is not listed this pass (F59)", "wdtt1" in swept and
+      not os.path.exists(N.LIMITS_MARK), (swept, os.path.exists(N.LIMITS_MARK)))
+N._CLIENT_DEVS["list"] = list(CLIENT)
+# a part-applied cap change is sent again when the wanted cap returns (F62)
+reset()
+ens(G, snap(30, 0, 0))
+FAILDEV.add("caps")
+ens(G, snap(30, 20, 0))
+FAILDEV.clear()
+NOW[0] += N.LIMITS_HOLD_S + 1
+CALLS.clear()
+ens(G, snap(30, 0, 0))                       # the wanted cap is back to the old one
+NOW[0] += N.LIMITS_RETRY_S
+ens(G, snap(30, 0, 0))
+check("a part-applied cap change is sent again, whatever is wanted then", any(ln.startswith("actions change")
+      and "rate 40000kbit" in ln for ln in tc_lines()) and N._LIMITS["caps"][("g:x", "d")] == (40, 40.0),
+      (tc_lines(), N._LIMITS["caps"]))
+# a `limits` that is not a list keeps the other errors (F69)
+reset()
+ens(W)
+FAILDEV.add("wg1")
+W6 = [list(e) for e in W]
+W6[4][2] = 7
+ens(W6)
+FAILDEV.clear()
+r = ens({})
+check("a `limits` that is not a list keeps the other errors, and says so once", "wg1" in N._LIMITS["err"]
+      and "limits" in N._LIMITS["err"] and len(r["errors"]) == 1 and ens({})["errors"] == [], (N._LIMITS["err"], r))
+# uninstall clears exactly the devices the marker names (F68)
+_un = open(os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
+if PLANT in UNPLANTS:
+    assert _un.count(PLANTS[PLANT][0]) == 1, "plant anchor for %s missing or not unique — would FALSE-PASS" % PLANT
+    _un = _un.replace(PLANTS[PLANT][0], PLANTS[PLANT][1], 1)
+_m = _re.search(r"\[ -e /var/lib/swg-noded/limits \] && run sh -c '([^']*)'", _un)
+check("uninstall has the marker-gated delete", _m is not None)
+if _m:
+    _d = tempfile.mkdtemp(prefix="swg-limits-un-")
+    open(os.path.join(_d, "limits"), "w").write("awg2\nwdtt1\nbad name\n")
+    open(os.path.join(_d, "tc"), "w").write("#!/bin/sh\necho \"$*\" >> %s/tc.log\n" % _d)
+    os.chmod(os.path.join(_d, "tc"), 0o755)
+    subprocess.run(["sh", "-c", _m.group(1).replace("/var/lib/swg-noded/limits", os.path.join(_d, "limits"))],
+                   env={**os.environ, "PATH": _d + ":" + os.environ.get("PATH", "")})
+    _log = open(os.path.join(_d, "tc.log")).read().split("\n") if os.path.exists(os.path.join(_d, "tc.log")) else []
+    check("uninstall deletes pref 4097 on the devices the marker names, and only there",
+          sorted(x for x in _log if x) == ["filter del dev awg2 egress pref 4097", "filter del dev awg2 ingress pref 4097",
+                                           "filter del dev wdtt1 egress pref 4097", "filter del dev wdtt1 ingress pref 4097"],
+          _log)
+    for _f in os.listdir(_d):
+        os.unlink(os.path.join(_d, _f))
+    os.rmdir(_d)
 
 print("[13] the main loop's wiring")
 _pass = src[src.index("_relay_plan, _relay_sync_ok = None, False"):]

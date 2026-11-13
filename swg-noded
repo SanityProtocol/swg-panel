@@ -4883,7 +4883,8 @@ LIMITS_IDX_END = 0xFFFF0000                   # …and stay under it: tc's actio
 # …from a random offset per process (≤ 2^28, so ~2.6e9 indices stay before the end): a policer an earlier process left (its
 # marker wiped with STATE_DIR, §3.7) must not be BOUND by a filter of ours under its index — a bind takes the old policer's
 # rate, not ours (R16). Past the end the count wraps to IDX0: by then every index near it was freed billions of adds ago.
-LIMITS_MARK = os.path.join(STATE_DIR, "limits")   # this node may hold our filters: the start sweep runs only with it (R3)
+LIMITS_MARK = os.path.join(STATE_DIR, "limits")   # this node may hold our filters: the start sweep runs only with it (R3);
+                                              # it names every device a process loaded (the sweep's and uninstall's list)
 LIMITS_RETRY_S = 60                           # a device (or the caps) whose batch failed is tried again at most this often
 LIMITS_HOLD_S = 35                            # a pool member counts as moving this long after it last did: a WDTT / csqtt
                                               # password's bytes arrive every 10 / 30 s, and a cap must not flap between
@@ -4894,9 +4895,10 @@ _LIM_DEV_RE = re.compile(r"[A-Za-z0-9_.@-]{1,15}")    # fullmatch: no trailing n
 _LIM_POOL_RE = re.compile(r"[A-Za-z0-9_:.-]{1,64}")
 # dev: {dev: {sig, ifindex, hooks, dirty, caps: {(pool, dir): [cap index…]}}} as loaded · pidx: {(pool, dir): its policer
 # index} · caps: {(pool, dir): (limit, cap)} in force · seen: {(dev, prefix, dir): when it last moved} · fail: {dev: (sig, t,
-# why)} · err: what the snapshot reports (`limit_err`) · mark: whether LIMITS_MARK exists (read once, then kept here)
+# why)} · err: what the snapshot reports (`limit_err`) · mark: whether LIMITS_MARK exists (read once, then kept here),
+# markdevs: the devices it names · sweepfail: when a start sweep last failed to run
 # wire, cdevs → plan: the last wire and client tunnels, and what _limits_plan made of them (R4: unchanged = not parsed again)
-_LIMITS = {"started": False, "mark": None, "next": LIMITS_IDX0 + (secrets.randbelow(1 << 24) << 4), "dev": {}, "pidx": {},
+_LIMITS = {"started": False, "mark": None, "markdevs": set(), "sweepfail": None, "next": LIMITS_IDX0 + (secrets.randbelow(1 << 24) << 4), "dev": {}, "pidx": {},
            "caps": {}, "capfail": None, "seen": {}, "fail": {}, "err": {}, "wire": None, "cdevs": None, "plan": None}
 
 
@@ -5078,6 +5080,40 @@ def _lim_dels(dev, hooks=("egress", "ingress")):
     return ["filter del dev %s %s pref %d" % (dev, h, LIMITS_PREF) for h in hooks]
 
 
+def _lim_mark_read(st):
+    """Read LIMITS_MARK once a process: whether it is there, and the devices it names (an unreadable one counts as there)."""
+    try:
+        with open(LIMITS_MARK) as f:
+            names = f.read().split()
+        st["mark"], st["markdevs"] = True, {n for n in names if _LIM_DEV_RE.fullmatch(n)}
+    except FileNotFoundError:
+        st["mark"], st["markdevs"] = False, set()
+    except OSError:
+        st["mark"], st["markdevs"] = True, set()
+
+
+def _lim_mark_add(st, dev):
+    """Name `dev` in LIMITS_MARK before its first load (atomically), so a later process — or uninstall — sweeps it even when
+    it is not a listed client tunnel then (review F59, F68)."""
+    try:
+        tmp = LIMITS_MARK + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("".join(d + "\n" for d in sorted(st["markdevs"] | {dev})))
+        os.replace(tmp, LIMITS_MARK)
+        st["mark"] = True
+        st["markdevs"] = st["markdevs"] | {dev}
+    except OSError as e:
+        log(LOG_WARNING, "limits: %s not written (%s) — a restart will not clear limits removed meanwhile", LIMITS_MARK, e)
+
+
+def _lim_unmark(st):
+    """Nothing of ours is loaded: the marker goes (a no-limit node then runs no tc at its next start)."""
+    if st["mark"]:
+        with contextlib.suppress(OSError):
+            os.unlink(LIMITS_MARK)
+    st["mark"], st["markdevs"] = False, set()
+
+
 def _ensure_limits(node_cfg, wire, snap, res):
     """Converge this node's speed limits on the panel's `limits` (§3.1). Runs after the sync's `try`, on the value saved from
     a VALID reply (R2) — no reply, no call, so a panel outage changes nothing. Compares what it was sent with what it
@@ -5087,7 +5123,9 @@ def _ensure_limits(node_cfg, wire, snap, res):
     at most once a minute and reported (`limit_err`): ⚠️ A LIMITER FAILING NEVER CUTS ANYONE — the traffic just flows."""
     st = _LIMITS
     if not isinstance(wire, list):                    # a malformed set is ignored and reported, never read as "none"
-        st["err"] = {"limits": "not a list: ignored, what is loaded stays"}
+        if "limits" not in st["err"]:
+            res["errors"].append("the panel's limits are not a list: ignored, what is loaded stays")
+        st["err"] = dict(st["err"], limits="not a list: ignored, what is loaded stays")
         return
     # A device loaded here stays a candidate while it exists: reconcile_egress leaves a WDTT / csqtt device out of its list
     # for a pass whose SNAT write failed, and that must not lift the device's limits (review F9).
@@ -5106,25 +5144,32 @@ def _ensure_limits(node_cfg, wire, snap, res):
         st["pidx"] = pidx
     plan, pools, why, esig, mem, sdevs = st["plan"]
     if st["mark"] is None:
-        st["mark"] = os.path.exists(LIMITS_MARK)      # once a process: a node without a limit stats nothing after this
+        _lim_mark_read(st)                            # once a process: a node without a limit stats nothing after this
+    now = time.monotonic()
     if not st["started"] and (st["mark"] or plan):   # a process before us loaded limits, or we are about to: whatever is
-        devs = [d for d in cdevs if _LIM_DEV_RE.fullmatch(d) and _dev_ifindex(d)]   # at pref 4097 on a client tunnel goes
-        if not devs:                                  # first (a wiped marker's leftovers too). Nothing to sweep yet: no
-            return                                    # load either, until the tunnels are listed
-        r = _lim_tc([ln for d in devs for ln in _lim_dels(d)], force=True)
-        if r.returncode in (124, 127):                # not run at all (a missing filter is rc 1, and fine): again next pass
-            st["err"] = dict(why, sweep=_lim_msg(r))
+        # at pref 4097 goes first — on every device the marker names (an earlier process's, listed or not this pass: F59)
+        # and every client tunnel (a wiped marker's leftovers). Nothing to sweep yet: no load either, until one is there.
+        devs = [d for d in sorted(set(cdevs) | st["markdevs"]) if _LIM_DEV_RE.fullmatch(d) and _dev_ifindex(d)]
+        if not devs:
             return
-        st["started"] = True
+        if st["sweepfail"] and now - st["sweepfail"][0] < LIMITS_RETRY_S:   # a sweep that never ran: once a minute (F61)
+            st["err"] = dict(why, sweep=st["sweepfail"][1])
+            return
+        r = _lim_tc([ln for d in devs for ln in _lim_dels(d)], force=True)
+        if r.returncode in (124, 127):                # not run at all (a missing filter is rc 1, and fine)
+            st["sweepfail"] = (now, _lim_msg(r))
+            st["err"] = dict(why, sweep=st["sweepfail"][1])
+            res["errors"].append("limits sweep: " + st["sweepfail"][1])
+            return
+        st["started"], st["sweepfail"] = True, None
     if not plan and not st["dev"]:                    # nothing asked and nothing loaded: no spawn, ever (R3)
         st["err"] = why
         if st["mark"]:                                # (only once our filters are gone: a failed device stays in st["dev"])
-            with contextlib.suppress(OSError):
-                os.unlink(LIMITS_MARK)
-            st["mark"] = False
+            _lim_unmark(st)
         return
-    now, err = time.monotonic(), dict(why)
+    err = dict(why)
     want_caps = _limits_caps(mem, pools, snap, sdevs, st["seen"], now)
+    inforce = {**want_caps, **{k: v for k, v in st["caps"].items() if v[1] > 0}}   # a cap of -1: unknown (F62), rendered as wanted
     for dev in sorted(set(plan) | set(st["dev"])):
         ents = plan.get(dev) or []
         ifx = _dev_ifindex(dev)
@@ -5140,15 +5185,9 @@ def _ensure_limits(node_cfg, wire, snap, res):
         if f and f[0] == sig and now - f[1] < LIMITS_RETRY_S:
             err[dev] = f[2]
             continue
-        lines, capidx, hooks = (_limits_render(dev, ents, pools, {**want_caps, **st["caps"]}, st["pidx"], _lim_alloc)
-                                if ents else ([], {}, ()))
-        if ents and not st["mark"]:
-            try:
-                with open(LIMITS_MARK, "w"):
-                    pass
-                st["mark"] = True
-            except OSError as e:
-                log(LOG_WARNING, "limits: %s not written (%s) — a restart will not clear limits removed meanwhile", LIMITS_MARK, e)
+        lines, capidx, hooks = (_limits_render(dev, ents, pools, inforce, st["pidx"], _lim_alloc) if ents else ([], {}, ()))
+        if ents and dev not in st["markdevs"]:
+            _lim_mark_add(st, dev)
         dels = _lim_dels(dev, have["hooks"]) if have and have["ifindex"] == ifx else []
         if have and have["dirty"]:                    # what a failed batch left is unknown: delete blind, then load
             _lim_tc(_lim_dels(dev), force=True)
@@ -5170,10 +5209,11 @@ def _ensure_limits(node_cfg, wire, snap, res):
     # The caps (§3.2): a pool whose cap moved by more than 10 % (or whose limit changed) is re-set on every member, all in
     # one batch. A device loaded above already rendered the cap in force (a pool new here, at the one wanted: a pool turning
     # shared moves every member's signature, so each was rebuilt), so this is the only place a cap moves. What is recorded
-    # as in force is what the kernel was told: a failed change keeps the old caps, tried again at most once a minute.
+    # as in force is what the kernel was told. A failed change may have set some members before the line that failed (the
+    # batch is strict), so its caps are recorded as unknown (-1): sent again, once a minute, whatever is wanted then (F62).
     old = st["caps"]
     moved = [k for k, (lim, cap) in want_caps.items()
-             if k in old and not (old[k][0] == lim and abs(cap - old[k][1]) <= 0.1 * old[k][1])]
+             if k in old and not (old[k][1] > 0 and old[k][0] == lim and abs(cap - old[k][1]) <= 0.1 * old[k][1])]
     change = ["actions change " + _lim_police(want_caps[k][1], ci, "drop/pipe")
               for k in moved for d in st["dev"].values() for ci in d["caps"].get(k, ())]
     ok = True
@@ -5187,14 +5227,13 @@ def _ensure_limits(node_cfg, wire, snap, res):
         ok = False
     else:
         st["capfail"] = None
-    st["caps"] = {k: (v if k not in old or (ok and k in moved) else old[k]) for k, v in want_caps.items()}
+    st["caps"] = {k: (v if k not in old or (ok and k in moved) else (v[0], -1.0) if k in moved else old[k])
+                  for k, v in want_caps.items()}
     if st["capfail"]:                                 # unfair, never over the limit
         err["caps"] = st["capfail"][1]
     st["err"] = err
     if not plan and not st["dev"] and st["mark"]:
-        with contextlib.suppress(OSError):
-            os.unlink(LIMITS_MARK)
-        st["mark"] = False
+        _lim_unmark(st)
 
 
 def _lim_alloc():
