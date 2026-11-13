@@ -11080,7 +11080,8 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
                            "until {v1} is back", v1=_xn))
     # SPEED LIMITS (docs/LIMITS-PLAN.md §3.7): what the node's limiter could not do, in its own words (`limit_err`). It fails
     # open — a limiter it could not load cuts nobody — so each line says what still holds: a device's entry not loaded runs
-    # unlimited, a failed sweep loads nothing yet, a refused list keeps what was loaded, a failed cap keeps every limit.
+    # unlimited, a failed sweep loads nothing yet, a refused list keeps what was loaded, a failed cap keeps every limit, and a
+    # limiter that raised (`exception`) may have stopped partway — its changes may not all be in force, and nothing is cut.
     _le = snap.get("limit_err")
     for _k in (sorted(_le) if isinstance(_le, dict) else ()):
         _w = str(_le[_k] or "")[:160]
@@ -11090,6 +11091,8 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
                       if _k == "limits" else
                       perr("speed limits are not loaded yet ({v1}) — nothing is cut, traffic runs unlimited until they are",
                            v1=_w) if _k == "sweep" else
+                      perr("speed limits: the node's limiter failed ({v1}) — its changes may not all be in force; nothing is "
+                           "cut", v1=_w) if _k == "exception" else
                       perr("speed limit not applied on {v1}: {v2} — nothing is cut, traffic there runs unlimited",
                            v1=str(_k)[:32], v2=_w))
     return issues

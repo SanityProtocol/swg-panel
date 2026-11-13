@@ -7841,6 +7841,7 @@ export const STR = {
   "speed limit not applied on {v1}: {v2} — nothing is cut, traffic there runs unlimited": "ограничение скорости не применено на {v1}: {v2} — никто не отключён, трафик там идёт без ограничения",
   "speed limits: sharing a limit between its devices failed ({v1}) — every limit still holds, the shares may be uneven": "ограничения скорости: не удалось поделить ограничение между устройствами ({v1}) — каждое ограничение соблюдается, но доли могут быть неравными",
   "speed limits: the panel's last list was refused ({v1}) — the limits loaded before stay": "ограничения скорости: последний список от панели отклонён ({v1}) — действуют загруженные раньше",
+  "speed limits: the node's limiter failed ({v1}) — its changes may not all be in force; nothing is cut": "ограничения скорости: сбой ограничителя на ноде ({v1}) — изменения могли примениться не полностью; никто не отключён",
   "speed limits are not loaded yet ({v1}) — nothing is cut, traffic runs unlimited until they are": "ограничения скорости ещё не загружены ({v1}) — никто не отключён, трафик идёт без ограничения, пока их нет",
   "Enter a download or an upload limit, or choose No limit.": "Укажите ограничение на загрузку или отдачу либо выберите «Без ограничения».",
   "One budget for all of this person's devices on a server, shared between the ones in use. On two servers they can reach it on each.":

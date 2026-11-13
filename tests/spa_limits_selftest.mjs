@@ -19,7 +19,7 @@
  * [7] Russian: every string js/limits.js, the doors and the node issues say has a Russian line
  *
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
- *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|clean
+ *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|clean
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -48,6 +48,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}", "    dirtyRef=${{ current: false }}"],   // [6]
   r7: ["js/sheets-crud.js", "  const limGone = removed.filter(t => limClean(t.limits));", "  const limGone = [];"],                                         // [6]
   issues: ["swg-panel-server", "    for _k in (sorted(_le) if isinstance(_le, dict) else ()):", "    for _k in ():"],                                        // [5]
+  crash: ["swg-panel-server", "\"cut\", v1=_w) if _k == \"exception\" else", "\"cut\", v1=_w) if _k == \"exception!\" else"],                         // [5]
 };
 const made = [];
 const JS_URL = pathToFileURL(path.join(ROOT, "js") + path.sep).href;
@@ -200,19 +201,20 @@ print(json.dumps({u: [l, p] for u, (l, p) in li["user"].items()}))`;
   Store.nodes[0].reach_unvouched = [];
   // limit_err: the panel's own node issues (every reader of a node's issues sees it, translated like the rest)
   let srvFile = path.join(ROOT, "swg-panel-server");
-  if (MODE === "issues") { const d = fs.mkdtempSync(path.join(os.tmpdir(), "spa-limits-")); made.push(d); srvFile = path.join(d, "swg-panel-server"); fs.writeFileSync(srvFile, source("swg-panel-server")); }
+  if (MODE && PLANTS[MODE][0] === "swg-panel-server") { const d = fs.mkdtempSync(path.join(os.tmpdir(), "spa-limits-")); made.push(d); srvFile = path.join(d, "swg-panel-server"); fs.writeFileSync(srvFile, source("swg-panel-server")); }
   const iss = JSON.parse(execFileSync("python3", ["-c", `
 import importlib.machinery, importlib.util, json, sys
 ld = importlib.machinery.SourceFileLoader("swgp", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgp", ld))
 try: ld.exec_module(m)
 except SystemExit: pass
-print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "rc 124", "limits": "not a list", "sweep": "rc 127"}}), m._node_issues({}, {})]))`, srvFile], { env }).toString());
+print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "rc 124", "exception": "KeyError: 'x'", "limits": "not a list", "sweep": "rc 127"}}), m._node_issues({}, {})]))`, srvFile], { env }).toString());
   const [li, none] = iss, says = (i, re) => !!li[i] && re.test(li[i].error);
-  check("limit_err is a node issue, a line a key, in the node's words", li.length === 4 && li.every(x => x.error_key && x.error_vars), li);
+  check("limit_err is a node issue, a line a key, in the node's words", li.length === 5 && li.every(x => x.error_key && x.error_vars), li);
   check("…a device's entry: traffic there runs unlimited", says(0, /awg0: tc: no .*runs unlimited/));
   check("…a failed cap: every limit still holds (never \"unlimited\")", says(1, /every limit still holds/) && !says(1, /unlimited/));
-  check("…a refused list: what was loaded stays", says(2, /loaded before stay/) && !says(2, /unlimited/));
-  check("…a failed sweep: nothing loaded yet", says(3, /not loaded yet/));
+  check("…a limiter that raised: said as itself, never read as a device called \"exception\"", says(2, /limiter failed \(KeyError.*nothing is cut/) && !says(2, /applied on exception|unlimited/));
+  check("…a refused list: what was loaded stays", says(3, /loaded before stay/) && !says(3, /unlimited/));
+  check("…a failed sweep: nothing loaded yet", says(4, /not loaded yet/));
   check("…and nothing without it", none.length === 0, none);
   for (const x of li) RUKEYS.add(x.error_key);
 
