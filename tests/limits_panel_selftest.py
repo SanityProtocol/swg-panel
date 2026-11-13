@@ -17,7 +17,7 @@
       instances of that build disagree on); the doors (users/update, groups/update, peers/update, update-target) store a
       limit and refuse a bad one; then the reply of the node a limit lands on carries `limits`, another node's does not;
       the limit events (a device's, an address and a limit in one save), and peers/create never storing a deployment's.
-  [7] A group that arrives by transfer keeps its limit (limits-l2 review F1).
+  [7] A group that arrives by Node Transfer keeps its limit — transfer_plan → bundle → merge (limits-l2 review F1, F10).
 
 Run: python3 tests/limits_panel_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -34,9 +34,12 @@ Run: python3 tests/limits_panel_selftest.py   (0 = pass)
      twopath    a deployment's own limit on two paths is one policer a path
      devpool    a device's own limit on two interfaces of one node is two budgets
      xfergroup  a transfer drops a new group's limit
-     deploylim  peers/create stores a deployment limit from its body
+     deploylim  a /api/peers/ request's targets keep their limits (create, add-target, adopt, the Deploy)
      devevent   peers/update does not log a device's limit
-     bothevent  update-target with an address and a limit logs only the address
+     bothevent  update-target with overrides and a limit logs only the limit
+     dropall    the central strip takes the body's own limit too (update-target's)
+     xferbundle transfer_plan leaves a group's limit out of the bundle
+     samelim    update-target logs a limit change when the limit sent is the stored one
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -75,9 +78,18 @@ PLANTS = {
     "twopath": ('''            if src == "t" and len(pairs) > 1:''', '''            if False:'''),
     "devpool": ('''        if sum(r[6] == "p" for r in rows) > 1:''', '''        if False:'''),
     "xfergroup": ('''                                    "limits": limits_clean(g.get("limits"))[0]})''', '''                                    })'''),
-    "deploylim": ('''            t.pop("limits", None)                       # a deployment's limit''', '''            pass                       # a deployment's limit'''),
+    "deploylim": ('''        _drop_target_limits(body)
+    fleet = deps["fleet"]''', '''        pass
+    fleet = deps["fleet"]'''),
+    "dropall": ('''    for v in body.values():
+        for t in''', '''    for v in list(body.values()) + [body]:
+        for t in'''),
+    "xferbundle": ('''            if _gl:                                   # its speed limit goes with it''', '''            if False:                                   # its speed limit goes with it'''),
+    "samelim": ('''        if has_lim and (_tlim or None) != (cur.get("limits") or None):''', '''        if has_lim:'''),
     "devevent": ('''            ev_append(roster_path, "peer", pid, "Changed device speed limit", peer_label(roster, p2))''', '''            pass'''),
-    "bothevent": ('''        if has_lim and (has_ip or not has_ov):''', '''        if has_lim and not has_ip and not has_ov:'''),
+    "bothevent": ('''        if has_ov:
+            ev_append(roster_path, "peer", pid, "Changed deployment settings"''', '''        if has_ov and not has_lim:
+            ev_append(roster_path, "peer", pid, "Changed deployment settings"'''),
     "door": ('''            if has_lim:
                 t["limits"] = _tlim''', '''            if False:
                 t["limits"] = _tlim'''),
@@ -258,10 +270,19 @@ def sec4():
 
 def sec7():
     print("[7] a transfer keeps a group's limit")
-    r = roster()
-    P.transfer_merge_groups(r, {"gnew": {"name": "Arrived", "users": ["ua"], "limits": {"d": 7}}})
-    check("[7] a group that arrives by transfer keeps its speed limit", r["groups"]["gnew"].get("limits") == {"d": 7},
-          r["groups"].get("gnew"))
+    P.load_sub_escrow = lambda deps: {}
+    P.load_sub_users = lambda deps: {}
+    P.load_sub_blobs = lambda deps, uid: {}
+    P._panel_public_url = lambda deps: "https://a.example"
+    src = roster()
+    src["groups"]["g2"]["limits"] = {"d": 7}
+    nodes = {"n1": {"id": "n1", "name": "n1"}, "n2": {"id": "n2", "name": "n2"}}
+    plan = P.transfer_plan({"now": lambda: 0}, nodes, "n1", {}, {}, src)        # the sending panel…
+    bundle = P.transfer_bundle({}, nodes, "n1", plan)
+    dst = {"users": {u: dict(v) for u, v in src["users"].items()}, "peers": {}, "groups": {}}
+    P.transfer_merge_groups(dst, bundle.get("groups"))                          # …the receiving one
+    check("[7] a group that arrives by Node Transfer keeps its speed limit (transfer_plan → bundle → merge)",
+          (dst["groups"].get("g2") or {}).get("limits") == {"d": 7}, (plan.get("groups"), dst["groups"]))
 
 
 def sec5():
@@ -391,6 +412,24 @@ def sec6():
                                                   "limits": {"u": 4}})
     check("[6] update-target with an address and a limit logs both", c == 200 and evs()[-2:] == [
         "Changed address", "Changed deployment speed limit"], (c, o, evs()[-3:]))
+    n0 = len(evs())
+    c, o = req(port, "/api/peers/update-target", {"peer_id": "pb", "node": "n1", "iface": "awg2", "ip": "10.9.0.45",
+                                                  "limits": {"u": 4}})
+    check("[6] a limit sent again unchanged beside an edit logs no limit change", c == 200 and evs()[n0:] == ["Changed address"],
+          evs()[n0:])
+    n0 = len(evs())
+    c, o = req(port, "/api/peers/update-target", {"peer_id": "pb", "node": "n1", "iface": "awg2",
+                                                  "overrides": {"mtu": 1280}, "limits": {"u": 6}})
+    check("[6] overrides and a limit in one save: a line each", c == 200 and evs()[n0:] == [
+        "Changed deployment settings", "Changed deployment speed limit"], evs()[n0:])
+    body = {"peer_id": "pb", "target": {"node": "n1", "iface": "wg1", "ip": "10.8.0.99", "limits": {"d": 3}},
+            "targets": [{"node": "n1", "iface": "wg1", "limits": {"d": 3}}], "add": [{"node": "n2", "iface": "x", "limits": {}}]}
+    P._drop_target_limits(body)
+    check("[6] any target a /api/peers/ request carries drops its limit (adopt, create, add-target, the Deploy: F11, F16)",
+          not any("limits" in t for t in [body["target"]] + body["targets"] + body["add"]), body)
+    ub = {"peer_id": "pb", "node": "n1", "iface": "awg2", "limits": {"d": 3}}
+    P._drop_target_limits(ub)
+    check("[6] …never update-target's own (the body's)", ub.get("limits") == {"d": 3}, ub)
     c, o = req(port, "/api/peers/create", {"pubkey": "h" * 43 + "=", "psk": "i" * 43 + "=", "title": "x", "user_id": "ua",
                                            "targets": [{"node": "n1", "iface": "awg2", "ip": "10.9.0.60", "limits": {"d": 5}}]})
     check("[6] a Deploy (peers/create) never stores a deployment's limit (update-target's alone, R7)",

@@ -9732,10 +9732,10 @@ def limits_for_node(roster, node_id, desired, snap=None):
         return []
     given, out, kidx = None, [], None                 # given: built only once a limited wg/awg deployment needs it
     for pid, p in _peers_on(roster, node_id):
-        own = limits_clean(p.get("limits"))[0]
         user = li["user"].get(p.get("user_id")) if p.get("user_id") else None
-        if not own and not user and not any(isinstance(t, dict) and t.get("limits") for t in (p.get("targets") or ())):
-            continue
+        if not p.get("limits") and not user and not any(isinstance(t, dict) and t.get("limits") for t in (p.get("targets") or ())):
+            continue                                  # nothing limits this device: no cleaning, no target walk
+        own = limits_clean(p.get("limits"))[0]
         rows = []
         for t in (p.get("targets") or ()):
             if not isinstance(t, dict) or t.get("node") != node_id:
@@ -13401,6 +13401,9 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
         mem = sorted(u for u in (g.get("users") or []) if u in users) if isinstance(g, dict) else []
         if mem:
             groups[gid] = {"name": g.get("name") or "", "users": mem}
+            _gl = limits_clean(g.get("limits"))[0]
+            if _gl:                                   # its speed limit goes with it (LIMITS-PLAN §3.4; review limits-l2 F10)
+                groups[gid]["limits"] = _gl
 
     return {"record": clean, "strip": stripped,
             "users": users, "groups": groups, "peers": peers, "escrow": escrow, "sub_users": sub_users, "blobs": blobs,
@@ -26206,7 +26209,20 @@ def addr_taken(roster, pid, node, iface, ip):
 
 # ───────────────────────── API ─────────────────────────
 
+def _drop_target_limits(body):
+    """A deployment's speed limit is /api/peers/update-target's alone (docs/LIMITS-PLAN.md R7: its refusal, its event): a
+    target a request carries — `target`, or one in a list (`targets`, the Deploy's `add`) — never brings one, whatever the
+    door (review limits-l2 F11, F16: create, add-target, adopt and the Deploy, and any door added later). One level down
+    only: update-target's own `limits` is the body's, and a transfer bundle nests its peers deeper."""
+    for v in body.values():
+        for t in (v if isinstance(v, list) else [v]):
+            if isinstance(t, dict) and "node" in t and "iface" in t:
+                t.pop("limits", None)
+
+
 def api(method, path, qs, body, deps):
+    if method == "POST" and isinstance(body, dict) and path.startswith("/api/peers/"):
+        _drop_target_limits(body)
     fleet = deps["fleet"]; roster_path = deps["roster_path"]
     nodes = nodes_load(deps["nodes_path"])
     snaps = deps.get("node_snaps") or {}; seen = deps.get("node_seen") or {}
@@ -29910,7 +29926,6 @@ def api(method, path, qs, body, deps):
             if is_system_iface(deps, nodes, t["node"], t["iface"]):
                 return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=t["iface"]), "code": "system_iface"}
             t["type"] = iface_kind(deps, nodes, snaps, t["node"], t["iface"], t.get("type") or "")
-            t.pop("limits", None)                       # a deployment's limit is update-target's alone (LIMITS-PLAN R7)
             if is_keyless_kind(t["type"]):
                 t["ip"] = ""            # the server mints the client address on connect — there is none to assign
             elif not t.get("ip"):
@@ -29967,8 +29982,6 @@ def api(method, path, qs, body, deps):
         # Its checks are target_add_refusal's and network_takeover's, which /api/peers/targets runs too.
         pid = body.get("peer_id") or ""
         target = body.get("target") or {}
-        if isinstance(target, dict):
-            target.pop("limits", None)                  # a deployment's limit is update-target's alone (LIMITS-PLAN R7)
         for f in ("node", "iface"):
             if not target.get(f):
                 return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
@@ -30043,8 +30056,6 @@ def api(method, path, qs, body, deps):
             seen.add(key(x))
         if twice:                                        # peer_set does not dedupe: a doubled add would store two targets on one iface
             return 400, {"ok": False, **perr("duplicate target {v1}", v1="/".join(twice)), "code": "bad_request"}
-        for x in lists["add"]:                           # a deployment's limit is update-target's alone (LIMITS-PLAN R7)
-            x.pop("limits", None)
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
@@ -30417,12 +30428,14 @@ def api(method, path, qs, body, deps):
         p2 = peer_set(roster, pid, {"targets": targets}, now())
         roster_save(roster_path, roster)
         # the address is rendered live from the roster; nothing to persist and no plaintext to write.
+        # Each change leaves its own line (review limits-l2 F6, F13); a limit only when it moved (F12: a client that always
+        # sends the deployment's limit beside an edit must not log limit changes that never happened).
         if has_ip:
             ev_append(roster_path, "peer", pid, "Changed address", peer_label(roster, p2), f"{node}/{iface} → {ip}")
-        if has_lim and (has_ip or not has_ov):          # beside an address edit too: each change leaves its own line
-            ev_append(roster_path, "peer", pid, "Changed deployment speed limit", peer_label(roster, p2), f"{node}/{iface}")
-        elif not has_ip:
+        if has_ov:
             ev_append(roster_path, "peer", pid, "Changed deployment settings", peer_label(roster, p2), f"{node}/{iface}")
+        if has_lim and (_tlim or None) != (cur.get("limits") or None):
+            ev_append(roster_path, "peer", pid, "Changed deployment speed limit", peer_label(roster, p2), f"{node}/{iface}")
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/delete":
