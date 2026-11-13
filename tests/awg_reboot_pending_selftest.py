@@ -27,6 +27,8 @@ Run: python3 tests/awg_reboot_pending_selftest.py      (0 = pass)
      --plant upd-aptcand    update.sh skips the heal although apt can fetch the headers (review F1) → RED on [2]
      --plant upd-norefresh  the headers candidate read before this run refreshed apt's lists (verify F10) → RED on [2]
      --plant lib-compile    headers alone read as "buildable" though the module is recorded as not compiling (verify F7–F9) → RED
+     --plant noded-compile  the same in swg-noded's twin (verify F18) → RED on [3]
+     --plant panel-compile  the same in the panel's twin (verify F18) → RED on [4]
 """
 import builtins, importlib.machinery, importlib.util, io, os, re, shutil, subprocess, sys, tempfile
 from unittest import mock
@@ -193,6 +195,11 @@ def load(name, path):
         pass
     return m
 _NODED = os.path.join(ROOT, "swg-noded")
+if PLANT == "noded-compile":   # round 1's form in swg-noded: headers alone mean "buildable" (verify F7, F18)
+    _p = os.path.join(tempfile.mkdtemp(prefix="rbplant-"), "swg-noded")
+    open(_p, "w").write(plant(rd("swg-noded"), 'if os.path.exists("/lib/modules/%s/build" % kr) and not _awg_record("awg-module-failed"):',
+                              'if os.path.exists("/lib/modules/%s/build" % kr):'))
+    _NODED = _p
 if PLANT == "noded-strmax":
     _p = os.path.join(tempfile.mkdtemp(prefix="rbplant-"), "swg-noded")
     open(_p, "w").write(plant(rd("swg-noded"), "    new = max(ks, key=_kver_key)\n    return new if _kver_key(new) > _kver_key(kr) and _awg_ko_for(new) else \"\"",
@@ -200,6 +207,11 @@ if PLANT == "noded-strmax":
     _NODED = _p
 PSRC = rd("swg-panel-server")
 _PANEL = os.path.join(ROOT, "swg-panel-server")
+if PLANT == "panel-compile":   # the same in the panel's twin (verify F8, F18)
+    _p = os.path.join(tempfile.mkdtemp(prefix="rbplant-"), "swg-panel-server")
+    PSRC = plant(PSRC, 'if os.path.exists("/lib/modules/%s/build" % kr) and not _host_awg_record("awg-module-failed"):',
+                 'if os.path.exists("/lib/modules/%s/build" % kr):')
+    open(_p, "w").write(PSRC); _PANEL = _p
 if PLANT == "repair-pill":
     _p = os.path.join(tempfile.mkdtemp(prefix="rbplant-"), "swg-panel-server")
     PSRC = plant(PSRC, ' and not _awg_reboot_why(_awg_datapath(snap))\n', '\n')
@@ -323,7 +335,7 @@ check("panel: the same order as sort -V", sorted(names, key=P._kver_key) == sv, 
 shutil.rmtree(T, ignore_errors=True)
 if PLANT:
     want = {"upd-noreboot": {2}, "upd-aptcand": {2}, "upd-norefresh": {2}, "lib-lexsort": {1, 2}, "lib-headers": {1, 2},
-            "lib-compile": {1, 2}, "noded-strmax": {3},
+            "lib-compile": {1, 2}, "noded-compile": {3}, "panel-compile": {4}, "noded-strmax": {3},
             "repair-pill": {5}}[PLANT]   # lexsort: [2] drives the same lib
     got = {n for n, _ in FAILS}
     print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d in %s)" % (len(FAILS), sorted(got))) if FAILS and got <= want

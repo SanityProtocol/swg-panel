@@ -2345,7 +2345,7 @@ _awg_ko_for(){ # <kernel> — 0 when an AmneziaWG module file is there for it, w
     if [ -e "$f" ]; then return 0; fi
   done
   return 1; }
-awg_reboot_kernel(){ # print the kernel a reboot starts, when it has the AmneziaWG module and the running kernel has neither one nor its headers (rc 1 otherwise)
+awg_reboot_kernel(){ # print the kernel a reboot starts, when it has the AmneziaWG module and the running kernel has none, nor a way to build one (no headers, or a compile record) (rc 1 otherwise)
   # User report 2026-11-13: a box still on its install kernel (6.8.0-35, its headers gone from the archive) with 6.8.0-149 and
   # its DKMS module installed beside it. No update can build for the running kernel; only a reboot fixes it. The newest kernel
   # that has its image in /boot is the one GRUB boots by default — a newer one without the module would not help, nor would
