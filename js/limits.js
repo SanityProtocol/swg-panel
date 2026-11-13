@@ -3,13 +3,13 @@
 // module is the read side and the one editor control: what a record's limit is, which one wins for a deployment, whether a
 // deployment is held at it now, and where a limit would not be enforced. It reads only what the roster and the snapshots already
 // carry — nothing on the 5 s poll is added for it (SCALE-PLAN U1).
-import { Store } from "./store.js";
+import { Store, api } from "./store.js";
 import { tgtXfer, isSelfContainedTgt } from "./model.js";
 import { namedFew } from "./views.js";
 import { Ic, Sheet, footRow, pushModal, closeModal, dlul } from "./ui.js";
-import { T } from "./i18n.js";
+import { T, locale } from "./i18n.js";
 import { h } from "preact";
-import { useState } from "preact/hooks";
+import { useState, useEffect } from "preact/hooks";
 import htm from "htm";
 const html = htm.bind(h);
 
@@ -178,6 +178,8 @@ export function HeldMark({ peer, t }) {
 }
 // The peer view's limit cell: what this deployment runs under, from where, and — where it does not hold — that it does not.
 export function LimitCell({ peer, t }) {
+  const v = Store.vol, slowed = !!v && (v[peer.id] === "slow" || (!!peer.user_id && v[peer.user_id] === "slow"));
+  if (slowed) return html`<span class="pv-lim"><span class="k">${T("col|Speed limit")}</span><${Ic} i="gauge"/> ${T("{v1} Mbit/s both ways", { v1: 1 })} <span class="limgap">${T("volume used up")}</span></span>`;
   const e = effLimit(peer, t);
   if (!e) return null;
   const g = gapOf(t);
@@ -275,3 +277,106 @@ function TargetLimitSheet({ peer, t, value, onApply }) {
       fallback=${fallbackFor("deployment", t, peer)} gaps=${() => limitGaps([t])}/>
   <//>`;
 }
+
+
+// ── volume limits (docs/LIMITS-PLAN.md §3.5, limits-l4) ──────────────────────────────────────────────────────────────────────
+// Stored {d, u} or {c} in BYTES with a period (d | w | m | n) and what happens at the end (cut | slow); edited in GB (10^9).
+// Every level applies (a device's own, its user's, a group's one budget), so the field says what it counts and shows what is
+// used so far — asked from /api/volume when the editor opens, never on the 5 s poll.
+const GB = 1e9, VOL_MIN_GB = 0.1, VOL_MAX_GB = 1e6;
+const okGb = v => typeof v === "number" && isFinite(v) && v >= VOL_MIN_GB && v <= VOL_MAX_GB;
+export function volClean(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const amt = ["d", "u", "c"].filter(k => k in raw);
+  if (!amt.length || ("c" in raw && amt.length > 1) || Object.keys(raw).some(k => !["d", "u", "c", "period", "at"].includes(k))) return null;
+  if (!["d", "w", "m", "n"].includes(raw.period) || !["cut", "slow", undefined].includes(raw.at)) return null;
+  return amt.every(k => typeof raw[k] === "number" && raw[k] >= VOL_MIN_GB * GB && raw[k] <= VOL_MAX_GB * GB) ? raw : null;
+}
+const volCanon = v => { v = volClean(v); return !v ? "" : ["d", "u", "c"].filter(k => k in v).map(k => k + v[k]).join("") + v.period + (v.at || "cut"); };
+export const volSame = (a, b) => volCanon(a) === volCanon(b);
+const gbNum = b => String(+(b / GB).toFixed(3));
+export function volDraft(v) {
+  v = volClean(v);
+  const base = { d: "", u: "", c: "", period: "m", at: "cut" };
+  return !v ? { mode: "none", ...base } : { mode: "c" in v ? "c" : "du", ...base, ...Object.fromEntries(["d", "u", "c"].filter(k => k in v).map(k => [k, gbNum(v[k])])),
+    period: v.period, at: v.at || "cut" };
+}
+export function volFromDraft(dr) {
+  if (dr.mode === "none") return { vol: {} };
+  const range = () => ({ err: T("A volume limit must be between {v1} and {v2} GB", { v1: "0.1", v2: "1000000" }) });
+  const keys = dr.mode === "c" ? ["c"] : ["d", "u"], out = {};
+  for (const k of keys) {
+    const v = parseBox(dr[k]);
+    if (v === null) continue;
+    if (v === "sep") return { err: T("Write a limit without a thousands separator: 1000, or 1.5 for a fraction.") };
+    if (!okGb(v)) return range();
+    out[k] = Math.round(v * GB);
+  }
+  if (!Object.keys(out).length) return dr.mode === "c" ? range() : { err: T("Enter a download or an upload limit, or choose No limit.") };
+  return { vol: { ...out, period: dr.period, at: dr.at } };
+}
+export function useVolume(stored) {
+  const [seed] = useState(() => volDraft(stored));
+  const [draft, setDraft] = useState(seed);
+  const [err, setErr] = useState("");
+  const out = volFromDraft(draft);
+  return { draft, err, changed: !!out.err || !volSame(out.vol, volFromDraft(seed).vol),
+           set: d => { setDraft(d); setErr(""); },
+           take: () => { if (out.err) { setErr(out.err); return null; } return out.vol; } };
+}
+const PERIOD = { d: () => T("vol|today"), w: () => T("vol|this week"), m: () => T("vol|this month"), n: () => T("vol|in total") };
+export const gbText = b => T("{v1} GB", { v1: String(+(b / GB).toFixed(b >= 10 * GB ? 1 : 2)) });
+// What is used so far, as the last tick saw it: {used: {d, u}, vol, until, state} — or {off} when the ledger is off.
+function useVolUse(kind, id) {
+  const [u, setU] = useState(null);
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    api.get("/api/volume?kind=" + kind + "&id=" + encodeURIComponent(id)).then(r => { if (live && r && r.ok) setU(r.data || {}); }).catch(() => {});
+    return () => { live = false; };
+  }, [kind, id]);
+  return u;
+}
+function UsedLine({ kind, id }) {
+  const u = useVolUse(kind, id);
+  if (!u) return null;
+  if (u.off) return html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The traffic history is off on this panel, so no volume limit is enforced.")}</span></div>`;
+  if (!u.used) return null;
+  const v = u.vol || {}, words = [v.d != null || v.c != null ? T("download {v1}", { v1: gbText(u.used.d) }) : "", v.u != null || v.c != null ? T("upload {v1}", { v1: gbText(u.used.u) }) : ""].filter(Boolean).join(", ");
+  return html`<div class=${"hint volused" + (u.state ? " at" : "")}><${Ic} i="gauge"/> ${T("Used {when}: {used}.", { when: PERIOD[v.period] ? PERIOD[v.period]() : "", used: words })}${
+    u.state === "cut" ? " " + T("Cut off now.") : u.state === "slow" ? " " + T("Slowed to 1 Mbit/s now.") : ""}${
+    u.until ? " " + T("Resets {v1}.", { v1: new Date(u.until * 1000).toLocaleDateString(locale(), { month: "short", day: "numeric" }).replace(/\.$/, "") }) : ""}</div>`;
+}
+const VHINTS = {
+  user: () => T("Counts all of this person's devices together, on every server."),
+  group: () => T("One budget for everyone in the group together, on every server. A person's own limit and their devices' count too: whichever runs out first applies."),
+  device: () => T("This device on every server together. Its person's and group's limits count too."),
+};
+// kind/id: the record the used line is asked for (none for a group not created yet).
+export function VolumeField({ draft, onChange, level, err, kind, id }) {
+  const set = p => onChange({ ...draft, ...p });
+  const pill = (key, m, label) => html`<button type="button" role="radio" aria-checked=${draft[key] === m} class=${"seg" + (draft[key] === m ? " on" : "")}
+    onClick=${() => set({ [key]: m })}>${label}</button>`;
+  const box = (k, label) => html`<label class="limin"><span class="limin-k">${label}</span>
+    <input type="text" inputmode="decimal" value=${draft[k]} placeholder=${k === "c" ? "" : T("no limit")} aria-label=${label}
+      class=${err && badGb(parseBox(draft[k])) ? "bad" : ""} onInput=${e => set({ [k]: e.target.value })}/><span class="limin-u">${T("GB")}</span></label>`;
+  const own = draft.mode !== "none";
+  return html`<div class="field limfield volfield">
+    <label>${T("Volume limit")}</label>
+    <div class="segrow" role="radiogroup" aria-label=${T("Volume limit")}>
+      ${pill("mode", "none", T("No limit"))}${pill("mode", "du", T("Download / upload"))}${pill("mode", "c", T("Combined"))}
+    </div>
+    ${own ? html`
+      <div class="limrow">${draft.mode === "du" ? html`${box("d", T("lim|Download"))}${box("u", T("lim|Upload"))}` : box("c", T("Both ways together"))}</div>
+      <div class="volopts">
+        <span class="limin-k">${T("vol|Period")}</span>
+        <div class="segrow" role="radiogroup" aria-label=${T("vol|Period")}>${pill("period", "d", T("vol|Day"))}${pill("period", "w", T("vol|Week"))}${pill("period", "m", T("vol|Month"))}${pill("period", "n", T("vol|Total"))}</div>
+        <span class="limin-k">${T("At the limit")}</span>
+        <div class="segrow" role="radiogroup" aria-label=${T("At the limit")}>${pill("at", "cut", T("Cut off"))}${pill("at", "slow", T("Slow to 1 Mbit/s"))}</div>
+      </div>` : null}
+    ${err ? html`<div class="hint err">${err}</div>` : null}
+    <div class="hint">${VHINTS[level]()}${own ? " " + (draft.period === "n" ? T("Total never resets.") : T("A week starts on Monday; days follow the panel's time zone.")) : ""}</div>
+    ${id ? html`<${UsedLine} kind=${kind} id=${id}/>` : null}
+  </div>`;
+}
+const badGb = v => v !== null && (v === "sep" || !okGb(v));

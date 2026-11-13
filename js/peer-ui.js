@@ -43,7 +43,7 @@ import { searchMatch, userStats, userStatTag, groupShares, shareDeviceName, name
          peerAudience, peerAudCached, peerAudFetch, reachableByGroup } from "./views.js";
 import { AppDropdown, OsDropdown, ForkTag, turnForkPlatforms, WDTT_COLOR, appNameColor, turnEnabled,
          _OS_TABS } from "./turn.js";
-import { LimitField, useLimit, fallbackFor, limitGaps, targetsOfUsers } from "./limits.js";
+import { LimitField, useLimit, fallbackFor, limitGaps, targetsOfUsers, VolumeField, useVolume } from "./limits.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -1159,13 +1159,14 @@ function GroupSheet({ gid, seed }) {
   const [members, setMembers] = useState(() => (gid ? base.current.users : (seed || [])).slice());
   const [q, setQ] = useState(""), [page, setPage] = useState(1), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
   const lim = useLimit(g ? g.limits : null);   // an existing group's speed limit (a new group gets one once it exists: create takes none)
+  const vol = useVolume(g ? g.volume : null);  // …and its volume limit, the same way
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null);
   const nameOf = new Map(Store.recon.users.map(u => [u.id, u.name]));      // one pass, not a search per member per comparison
   const uname = id => nameOf.get(id) || "";
   const byName = (a, b) => uname(a).localeCompare(uname(b));
   const list = members.filter(id => nameOf.has(id)).sort(byName);
   const add = list.filter(u => !base.current.users.includes(u)), remove = base.current.users.filter(u => !members.includes(u));
-  dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0 || (!!gid && lim.changed);
+  dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0 || (!!gid && (lim.changed || vol.changed));
   if (gid && !g) return html`<${Sheet} title=${T("Group · {name}", { name: base.current.name })}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Close")}</button><//>`}>
     <div class="empty"><b>${T("This group no longer exists.")}</b></div><//>`;
@@ -1185,11 +1186,12 @@ function GroupSheet({ gid, seed }) {
     const nm = name.trim();
     if (!nm) { setErr(T("Give the group a name.")); return; }
     const limits = gid && lim.changed ? lim.take() : undefined;   // sent only when it changed; {} clears it
+    const volume = gid && vol.changed ? vol.take() : undefined;
     if (limits === null) return;
     setBusy(true); setErr("");
     let r = null;
     try {
-      r = gid ? await api.groupUpdate({ id: gid, ...(nm !== base.current.name ? { name: nm } : {}), add, remove, ...(limits ? { limits } : {}) })
+      r = gid ? await api.groupUpdate({ id: gid, ...(nm !== base.current.name ? { name: nm } : {}), add, remove, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) })
               : await api.groupCreate({ name: nm, users: list });
     } catch (e) { r = null; }
     setBusy(false);
@@ -1226,7 +1228,8 @@ function GroupSheet({ gid, seed }) {
         <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`
       : html`<div class="sharegrid-empty gempty">${T("No members yet — add people with the search above.")}</div>`}
     </div>
-    ${gid ? html`<${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="group" gaps=${() => limitGaps(targetsOfUsers(list))}/>` : null}
+    ${gid ? html`<${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="group" gaps=${() => limitGaps(targetsOfUsers(list))}/>
+      <${VolumeField} draft=${vol.draft} onChange=${vol.set} err=${vol.err} level="group" kind="group" id=${gid}/>` : null}
     ${shares.length ? html`<div class="hint">${T("Networks shared with this group: {devices}. Everyone you add reaches them; anyone you remove loses them, unless they're shared with them another way.",
       { devices: namedFew(shares.map(shareDeviceName)) })}</div>` : null}
     ${err ? html`<div class="formmsg err">${err}</div>` : null}
@@ -1241,9 +1244,10 @@ export function UserEditCard({ user, done, dirtyRef }) {
   const [expDate, setExpDate] = useState(expiryInputVal(user.expiry || 0));   // subscription expiry (blank = never)
   const [busy, setBusy] = useState(false), [saveErr, setSaveErr] = useState("");
   const lim = useLimit(user.limits);                                         // the user's own speed limit (docs/LIMITS-PLAN.md §3.4)
+  const vol = useVolume(user.volume);                                        // …and volume limit (§3.5)
   const showVk = Store.peersOfUser(user.id).some(p => targetsWantVk(p.targets));   // a peer behind a turn-proxy, or on a WDTT server
-  const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0) || lim.changed;   // VK links save on their own (VkLinkField) → not part of this
-  if (dirtyRef) dirtyRef.current = lim.changed;
+  const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0) || lim.changed || vol.changed;   // VK links save on their own (VkLinkField) → not part of this
+  if (dirtyRef) dirtyRef.current = lim.changed || vol.changed;
   const save = async () => {
     if (!name.trim()) { toast(T("Name can't be empty."), "err"); return; }
     const expSec = expiryFromInput(expDate);
@@ -1254,8 +1258,9 @@ export function UserEditCard({ user, done, dirtyRef }) {
     // Sent before the editor closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept — it used to
     // close first and lose them. (VK links are owned by VkLinkField — saved on their own.)
     const limits = lim.changed ? lim.take() : undefined;                      // sent only when it changed; {} clears it
-    if (limits === null) return;
-    const r = await sheetSend(() => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec, ...(limits ? { limits } : {}) }), setSaveErr, setBusy);
+    const volume = vol.changed ? vol.take() : undefined;
+    if (limits === null || volume === null) return;
+    const r = await sheetSend(() => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) }), setSaveErr, setBusy);
     if (!r.ok) return;
     done(); Store.poll().catch(() => {});
   };
@@ -1285,6 +1290,7 @@ export function UserEditCard({ user, done, dirtyRef }) {
       <div class="daterow"><input type="date" class="datein" value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${T("On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.")}</div></div>
     <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="user" fallback=${fallbackFor("user", user)} gaps=${() => limitGaps(targetsOfUsers([user.id]))}/>
+    <${VolumeField} draft=${vol.draft} onChange=${vol.set} err=${vol.err} level="user" kind="user" id=${user.id}/>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}

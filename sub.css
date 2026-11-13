@@ -751,3 +751,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
    "https: /1.1.1.1" — the value was right the whole time, only the rendering lied. (`->`, `!=`, `::` and `www`
    ligate too.) Turn them off wherever literal text is shown or typed; prose keeps its ordinary fi/fl. */
 input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0, "calt" 0; }
+
+/* volume limit: used / left above the devices (the panel's usage.json) */
+.usage-line { margin: 0 auto 12px; max-width: 46em; text-align: center; font-size: 13px; color: var(--ink-2, var(--ink)); opacity: .85; }
+.usage-line.at { color: #d9822b; opacity: 1; }

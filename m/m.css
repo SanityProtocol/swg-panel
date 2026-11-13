@@ -560,6 +560,10 @@ html[data-ui="m"] {
   & .pv-dep-grid > span:nth-child(6) { grid-column: 3; grid-row: 2; justify-self: end; color: var(--dim); }
   & .pv-dep-grid > span:nth-child(5) { grid-column: 1 / -1; grid-row: 3; font-size: 12px; color: var(--dim); }
   & .pv-dep-grid > span.pv-lim { grid-column: 1 / -1; grid-row: 4; font-size: 12px; color: var(--dim); }   /* limits-l3: last, its own row */
+  /* volume limit (limits-l4): each label over its pills, which wrap — the desktop's two columns do not fit 390px */
+  & .volopts { grid-template-columns: 1fr; gap: 4px 0; }
+  & .volopts .segrow { flex-wrap: wrap; row-gap: 6px; }
+  & .volopts .limin-k + .segrow { margin-bottom: 8px; }
   & .pv-dep-grid > span:nth-child(5)::before { content: "\03A3"; margin-right: 6px; color: var(--faint); }
 
   /* ───── a mesh link's sheet (iface.js ConnectionEditSheet) and the sheets like it: the link's facts as rows, its label left

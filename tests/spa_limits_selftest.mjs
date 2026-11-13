@@ -17,9 +17,11 @@
  *     a deployment's through update-target only; Edit peer and Edit user guard a changed limit on close; the gauge is not the
  *     gear; Peer targets says a removed row takes its own limit with it (R7)
  * [7] Russian: every string js/limits.js, the doors and the node issues say has a Russian line
+ * [8] volume limits (limits-l4): the draft in GB → bytes as volume_clean takes it, a thousands separator refused; the device's
+ *     volume carried; /api/state's `vol` read as expired (with its reason) for a device and its owner's other devices
  *
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
- *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|clean
+ *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -43,11 +45,14 @@ const PLANTS = {   // name: [file, anchor, replacement]
   sep: ["js/limits.js", "SEP_RE.test(s) ? \"sep\" :", "false ? \"sep\" :"],                                                                             // [1]
   seed: ["js/limits.js", "!limSame(out.lim, limFromDraft(seed).lim)", "!limSame(out.lim, stored)"],                                                        // [6]
   gcarry: ["js/store.js", "                      limits: g[id].limits || null }))", "                      limits: null }))"],                         // [2]
-  usersend: ["js/peer-ui.js", "expiry: expSec, ...(limits ? { limits } : {}) }), setSaveErr, setBusy);", "expiry: expSec }), setSaveErr, setBusy);"],    // [6]
+  usersend: ["js/peer-ui.js", "expiry: expSec, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) }), setSaveErr, setBusy);", "expiry: expSec, ...(volume ? { volume } : {}) }), setSaveErr, setBusy);"],    // [6]
   tgtdoor: ["js/sheets-crud.js", "iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });", "iface: t.iface });"],                                       // [6]
-  dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}", "    dirtyRef=${{ current: false }}"],   // [6]
+  dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}", "    dirtyRef=${{ current: false }}"],   // [6]
   r7: ["js/sheets-crud.js", "  const limGone = removed.filter(t => limClean(t.limits));", "  const limGone = [];"],                                         // [6]
   issues: ["swg-panel-server", "    for _k in (sorted(_le) if isinstance(_le, dict) else ()):", "    for _k in ():"],                                        // [5]
+  volcut: ["reconcile.js", "|| (!!vol && vol[pid] === \"cut\");", ";"],                                                                         // [8]
+  volcarry: ["reconcile.js", "      volume: p.volume || null,", "      volume: null,"],                                                                  // [8]
+  volgb: ["js/limits.js", "    out[k] = Math.round(v * GB);", "    out[k] = Math.round(v);"],                                                           // [8]
   crash: ["swg-panel-server", "\"cut\", v1=_w) if _k == \"exception\" else", "\"cut\", v1=_w) if _k == \"exception!\" else"],                         // [5]
 };
 const made = [];
@@ -223,27 +228,46 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   const has = (what, s, needle) => check(what, s.includes(needle), needle);
   has("the user editor opens on the stored limit", pu, "const lim = useLimit(user.limits);");
   has("…sends it only when it changed", pu, "const limits = lim.changed ? lim.take() : undefined;");
-  has("…in the users/update body", pu, "expiry: expSec, ...(limits ? { limits } : {}) }), setSaveErr, setBusy);");
-  has("…and a change enables Save", pu, "|| lim.changed;");
-  has("the group editor: an existing group's limit, sent when it changed", pu, "remove, ...(limits ? { limits } : {}) })");
-  has("…a change marks it dirty", pu, "|| (!!gid && lim.changed);");
-  has("Edit peer: the device's limit through peers/update", sc, "const r = await api.peerUpdate({ peer_id: peer.id, limits });");
+  has("…in the users/update body", pu, "expiry: expSec, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) }), setSaveErr, setBusy);");
+  has("…and a change enables Save", pu, "|| lim.changed || vol.changed;");
+  has("the group editor: an existing group's limit, sent when it changed", pu, "remove, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) })");
+  has("…a change marks it dirty", pu, "|| (!!gid && (lim.changed || vol.changed));");
+  has("Edit peer: the device's limit through peers/update", sc, "const r = await api.peerUpdate({ peer_id: peer.id, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) });");
   has("…a deployment's through update-target only, when staged and changed", sc, "if (!tlimChanged(t)) continue;\n        const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });");
-  has("…either change enables Save", sc, "|| lim.changed || (live.targets || []).some(tlimChanged);");
-  has("…and guards the close (the pills are buttons, a deployment's is staged in its own sheet)", sc, "    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}");
-  has("Edit user guards a changed limit on close", pu, "  if (dirtyRef) dirtyRef.current = lim.changed;");
+  has("…either change enables Save", sc, "|| lim.changed || vol.changed || (live.targets || []).some(tlimChanged);");
+  has("…and guards the close (the pills are buttons, a deployment's is staged in its own sheet)", sc, "    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}");
+  has("Edit user guards a changed limit on close", pu, "  if (dirtyRef) dirtyRef.current = lim.changed || vol.changed;");
   has("a field's change is against what it opened on, never a later poll's copy", lj, "!limSame(out.lim, limFromDraft(seed).lim)");
   check("the deployment's gauge is not the gear (a gate waits for .topt-gear as the sign a config loaded)", !/class=\$\{"[^"]*topt-gear/.test(lj));
   has("Peer targets: R7, a removed row's own limit is named", sc, "  const limGone = removed.filter(t => limClean(t.limits));");
   check("…and its notice is drawn", sc.includes("${limGone.length ? html`<div class=\"notice warn\">"));
   check("noded says it loads limits", fs.readFileSync(path.join(ROOT, "swg-noded"), "utf8").includes('"reach": 2, "limits": 1}'));
 
+  console.log("\n[8] volume limits");
+  const vd = d => L.volFromDraft({ mode: "du", d: "", u: "", c: "", period: "m", at: "cut", ...d });
+  check("download 12.5 GB a month → bytes", JSON.stringify(vd({ d: "12,5" }).vol) === '{"d":12500000000,"period":"m","at":"cut"}', vd({ d: "12,5" }));
+  check("combined, a week, slow", JSON.stringify(L.volFromDraft({ mode: "c", c: "5", period: "w", at: "slow" }).vol) === '{"c":5000000000,"period":"w","at":"slow"}');
+  check("refused: under 0.1 GB, a thousands separator, nothing typed", !!vd({ d: "0.05" }).err && !!vd({ d: "1,000" }).err && !!vd({}).err);
+  check("no limit → {}", JSON.stringify(L.volFromDraft({ mode: "none" }).vol) === "{}");
+  check("a stored volume opens as itself, and reads the same", L.volSame(vd({ d: "12.5" }).vol, L.volFromDraft(L.volDraft({ d: 12500000000, period: "m", at: "cut" })).vol)
+    && !L.volSame({ d: 12500000000, period: "m", at: "cut" }, { d: 12500000000, period: "w", at: "cut" }));
+  const rv = { ...roster, peers: { ...roster.peers, pb: { ...roster.peers.pb, volume: { d: 5 * 1e9, period: "m", at: "cut" } } } };
+  const rcv = R.reconcile(rv, stats, Date.now(), { nodeSeen: { n1: now, n2: now }, vol: { pb: "cut", ud: "cut" } });
+  const pbv = rcv.peers.find(p => p.id === "pb"), pdv = rcv.peers.find(p => p.id === "pd");
+  check("a device's own volume reaches the browser", JSON.stringify(pbv.volume) === '{"d":5000000000,"period":"m","at":"cut"}', pbv.volume);
+  check("a cut device is expired (still online until its node drops it, as for a date)", pbv.expired === true && pbv.selfExpired === true, [pbv.expired, pbv.status]);
+  check("…a cut owner's devices too", pdv.expired === true && pdv.userExpired === true, [pdv.expired, pdv.status]);
+  check("…and an uncut device is not", rcv.peers.find(p => p.id === "pa").expired === false);
+  const rcq = R.reconcile({ ...rv, peers: { pb: rv.peers.pb } }, { n1: { generated_at: now, interfaces: { awg0: { meta: {}, peers: [] } } } }, Date.now(), { nodeSeen: { n1: now }, vol: { pb: "cut" } });
+  const pbq = rcq.peers.find(p => p.id === "pb");
+  check("…once its node has dropped it: expired, with the volume as the reason", pbq.status === "expired" && /volume limit/.test(pbq.reason || ""), [pbq.status, pbq.reason]);
+
   console.log("\n[7] Russian");
   const keys = new Set(RUKEYS);
   for (const f of ["js/limits.js"]) for (const m of fs.readFileSync(path.join(ROOT, f), "utf8").matchAll(/\bT\("((?:[^"\\]|\\.)+)"/g)) keys.add(m[1]);
   for (const k of ["The gauge sets that deployment's own speed limit.", "col|Speed limit",
                    "Removing {target} removes its own speed limit. Deployed again, it starts without one.",
-                   "Removing {targets} removes their own speed limits. Deployed again, they start without one.", "The speed limit wasn't saved.",
+                   "Removing {targets} removes their own speed limits. Deployed again, they start without one.", "A limit wasn't saved.",
                    "This deployment's own speed limit: {lim}", "Saving removes this deployment and its own speed limit ({lim})."]) keys.add(k);
   const missing = [...keys].filter(k => typeof RU[k] !== "string" || !RU[k]);
   check("a Russian line for each of " + keys.size + " strings", missing.length === 0, missing);

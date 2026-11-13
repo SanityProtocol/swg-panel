@@ -34,7 +34,7 @@ import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
 import { openPeerConfigs, ReachedByBody, openUserEdit, openGroup, VaultUnlockPanel } from "./peer-ui.js";
 import { TrafficBlock, goneDevices } from "./traffic-ui.js";
 import { trafficTotals, trafficModalView } from "./traffic.js";
-import { LimitField, LimitGauge, HeldMark, LimitCell, useLimit, fallbackFor, limitGaps, limSame, limClean, limWords } from "./limits.js";
+import { LimitField, LimitGauge, HeldMark, LimitCell, useLimit, fallbackFor, limitGaps, limSame, limClean, limWords, VolumeField, useVolume } from "./limits.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -871,6 +871,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const [router, setRouter] = useState(peer.router === true);   // several devices behind this address (S11b)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const lim = useLimit(peer.limits);                // the device's own speed limit (docs/LIMITS-PLAN.md §3.4)
+  const vol = useVolume(peer.volume);               // …and its own volume limit (§3.5)
   const [tlims, setTlims] = useState({});           // "node|iface" -> a deployment's own limit as staged by its gauge (R7); absent = as stored
   const tlimChanged = t => { const k = tkey(t.node, t.iface); return k in tlims && !limSame(tlims[k], t.limits); };
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
@@ -920,7 +921,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     || (expDate !== expiryInputVal(peer.ownExpiry || 0))
     || (live.targets || []).some(ipChangedFor)
     || Object.keys(topts).some(optsChanged)
-    || lim.changed || (live.targets || []).some(tlimChanged);
+    || lim.changed || vol.changed || (live.targets || []).some(tlimChanged);
   const ownerExp = userId ? +(((Store.recon.users || []).find(u => u.id === userId) || {}).expiry || 0) : 0;
   const save = async () => {
     if (anyIpBad) return setMsg({ k: "err", t: T("Each address must be a valid IPv4.") });
@@ -929,7 +930,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     // A peer can't outlive its subscription (the server enforces it too — check here for a clean message).
     if (expSec && ownerExp && expSec > ownerExp) return setMsg({ k: "err", t: T("Expiry can't be later than the subscription's (") + fmtDate(ownerExp) + ")." });
     const limits = lim.changed ? lim.take() : undefined;   // the field shows why when it does not parse
-    if (limits === null) return;
+    const volume = vol.changed ? vol.take() : undefined;
+    if (limits === null || volume === null) return;
     setBusy(true); setMsg({ k: "work", t: T("saving…") });
     let fails = 0, limErr = "";   // a refused limit keeps the sheet open with the panel's reason (everything else is saved)
     try {
@@ -945,13 +947,14 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       if (router !== (peer.router === true)) {
         const r = await api.peerUpdate({ peer_id: peer.id, router }); if (!r.ok) fails++;
       }
-      if (limits) {                                  // the device's own speed limit; {} clears it
-        const r = await api.peerUpdate({ peer_id: peer.id, limits }); if (!r.ok) limErr = srvText(r) || T("The speed limit wasn't saved.");
+      if (limits || volume) {                        // the device's own speed and volume limits; {} clears one
+        const r = await api.peerUpdate({ peer_id: peer.id, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) });
+        if (!r.ok) limErr = srvText(r) || T("A limit wasn't saved.");
       }
       for (const t of (live.targets || peer.targets)) {   // a deployment's own limit: update-target is its only door (R7)
         if (!tlimChanged(t)) continue;
         const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });
-        if (!r.ok) limErr = srvText(r) || T("The speed limit wasn't saved.");
+        if (!r.ok) limErr = srvText(r) || T("A limit wasn't saved.");
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written
@@ -1105,7 +1108,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // Sheet still caps itself at calc(100vw - 32px), so this is a ceiling and not a floor.
   // dirtyRef: a limit's pills are buttons and a deployment's is staged in a sheet of its own — the input listener sees neither
   return html`<${Sheet} title=${T("Edit peer")} width=${880} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}
+    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}
     foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${hasKeyed
         ? html`<button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${(live.routes || []).length ? T("Networks · {n}", { n: live.routes.length }) : T("Networks")}</button>` : isMobile() ? html`<button class="btn btn-danger m-pdel" onClick=${() => confirmDeletePeer(peer, null, true)}>${T("Delete")}</button>` : null}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
@@ -1123,6 +1126,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       <div class=${"hint"}>${T("On this date the peer stops working (it reappears if you extend it).")}${ownerExp ? T(" Can't be later than the subscription's expiry ({v1}).", { v1: fmtDate(ownerExp) }) : ""}</div></div>
     <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="device"
       fallback=${fallbackFor("device", { user_id: userId || null })} gaps=${() => limitGaps(live.targets)}/>
+    <${VolumeField} draft=${vol.draft} onChange=${vol.set} err=${vol.err} level="device" kind="peer" id=${peer.id}/>
     ${/* ⚠️ Reuses `Switch` and the .toggle-row label shape the panel already uses for a boolean with an explanation
           under it, rather than drawing a new control. The hint is the whole promise in one line, because "private"
           on its own would leave an operator guessing whether it hides the device or only its networks. */""}

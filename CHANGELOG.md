@@ -7,6 +7,14 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **Volume limits on users, groups and devices.** Edit user, the group editor and Edit peer each have a Volume limit:
+  download and upload, or one combined figure, in GB, per day, week (from Monday), month, or in total, and at the limit the
+  device is either cut off or slowed to 1 Mbit/s. A group's limit is one budget for all its members; a person's own, their
+  device's and their group's limits all apply, and whichever runs out first acts. The editor shows what has been used this
+  period and when it resets. The panel counts from its traffic history every 30 seconds, with nothing on the nodes; a cut-off
+  works like an expiry, WDTT and csqtt included, and lifts on its own when the period resets. The subscription page shows
+  used and left, and a cut-off person sees "Limit reached" with the day access returns. With the traffic history off, no
+  volume limit is enforced, and the editor says so.
 - **Speed limits on users, groups, devices and deployments.** Edit user, the group editor and Edit peer each have a
   Speed limit: download and upload separately, or one combined figure, in Mbit/s; a deployment gets its own from the gauge
   on its row in Edit peer. The most specific one applies — a deployment's own, then the device's, then the user's, then

@@ -386,6 +386,7 @@ export const Store = {
     this.tls = d.tls || this.tls || {};   // cert expiry + renewal health → the Access & TLS card
 
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
+    this.vol = d.vol || null;                          // volume limits at their end: {id: "cut" | "slow"}, absent when none
     this.panelUpdateRef = d.panel_update_ref || "";   // the host updater's branch when not main (swg-update's baked ref)
     this.turnUpdates = d.turn_updates || this.turnUpdates || [];   // [{fork,kind,node,installed,latest,ids}] — deployed turn-family servers behind their newest build, one row per (fork, node). Held forks are already excluded server-side.
     if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
@@ -455,6 +456,7 @@ export const Store = {
     // panelNow() this is one machine's clock at both ends of every window reconcile measures — see reconcile.js.
     const nodeSeen = {}; for (const n of (this.nodes || [])) if (n && n.last_seen != null) nodeSeen[n.id] = n.last_seen;
     this.recon = reconcile(this.roster, this.stats, panelNow(), { retiring, systemIfaces, nodeSeen, rotating: new Set(Object.keys(this.rotating)),
+      vol: this.vol,
       probSince: this._probSince,
       ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
       // Both detectors raise the SAME badge ("restricted") from different evidence, and each stays
@@ -577,7 +579,7 @@ export const Store = {
       const g = (this.roster && this.roster.groups) || {}, us = (this.roster && this.roster.users) || {};
       this._groupsList = Object.keys(g).filter(id => g[id] && typeof g[id] === "object")
         .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]),
-                      limits: g[id].limits || null }))   // the group's speed limit (docs/LIMITS-PLAN.md §3.4)
+                      limits: g[id].limits || null, volume: g[id].volume || null }))   // the group's speed limit (docs/LIMITS-PLAN.md §3.4)
         .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       this._groupsById = new Map(this._groupsList.map(x => [x.id, x]));
       this._groupsOf = this.roster;

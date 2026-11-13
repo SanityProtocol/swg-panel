@@ -286,8 +286,11 @@ function reconcile(roster, stats, now, cfg) {
     const nowSec = now / 1000;
     const peerExp = +p.expiry || 0, userExp = (user && +user.expiry) || 0;
     const effExpiry = (peerExp && userExp) ? Math.min(peerExp, userExp) : (peerExp || userExp);   // the earlier binding date
-    const selfExpired = peerExp > 0 && nowSec >= peerExp;
-    const userExpired = userExp > 0 && nowSec >= userExp;
+    // A volume limit used up (/api/state `vol`, docs/LIMITS-PLAN.md R10) is expiry: the panel drops the device just the same.
+    const vol = cfg.vol || null;
+    const volCut = !!vol && (vol[pid] === "cut" || (!!p.user_id && vol[p.user_id] === "cut"));
+    const selfExpired = (peerExp > 0 && nowSec >= peerExp) || (!!vol && vol[pid] === "cut");
+    const userExpired = (userExp > 0 && nowSec >= userExp) || (!!vol && !!p.user_id && vol[p.user_id] === "cut");
     const expired = !blocked && (selfExpired || userExpired);
     const warnS = (cfg.expiryWarnDays != null ? cfg.expiryWarnDays : 3) * 86400;
     const expiring = !blocked && !expired && effExpiry > 0 && nowSec >= (effExpiry - warnS);   // inside the warn window, not yet past
@@ -325,7 +328,7 @@ function reconcile(roster, stats, now, cfg) {
         : T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
     }
     else if (status === "broken") reason = T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface");
-    else if (status === "expired") reason = selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
+    else if (status === "expired") reason = volCut ? T("its volume limit is used up") : selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
 
     // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: each deployment tracks how long it has been
     // dangling/broken (per-target block above, gated by restoreGraceMs) so a just-created peer, a brief node
@@ -356,6 +359,7 @@ function reconcile(roster, stats, now, cfg) {
       private: p.private === true,      // the owner keeps this device and its networks to themselves (§18.6)
       router: p.router === true,        // a router: several devices behind this address — the torrent guard never flags it (S11b)
       limits: p.limits || null,         // the device's own speed limit (docs/LIMITS-PLAN.md §3.4) — read by js/limits.js
+      volume: p.volume || null,         // …and its own volume limit (§3.5)
       overrides: p.overrides || null,   // peer-wide render overrides (the fallback under each target's own) — see the target field
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
@@ -385,7 +389,7 @@ function reconcile(roster, stats, now, cfg) {
     // The user's own access lifecycle overwrites ONLY a neutral rollup — "ready" (peers configured, none connected)
     // or "empty" (no peers). A meaningful rollup (online / dangling / …) stands, the same rule as per-peer.
     const uExp = +u.expiry || 0, nowSecU = now / 1000, warnSU = (cfg.expiryWarnDays != null ? cfg.expiryWarnDays : 3) * 86400;
-    const uExpired = !u.disabled && uExp > 0 && nowSecU >= uExp;
+    const uExpired = !u.disabled && ((uExp > 0 && nowSecU >= uExp) || (!!cfg.vol && cfg.vol[uid] === "cut"));
     const uExpiring = !u.disabled && !uExpired && uExp > 0 && nowSecU >= (uExp - warnSU);
     if (status === "ready" || status === "empty") {
       if (u.disabled) status = "disabled";
@@ -397,6 +401,7 @@ function reconcile(roster, stats, now, cfg) {
       vk_links: Array.isArray(u.vk_links) ? u.vk_links : (u.vk_link ? [u.vk_link] : []),   // full ordered set (primary first) — the VK-links manager reads all of these
       vk_pool: u.vk_pool || {},   // pool-id → URL for the links that came from the shared pool, so Manage can mark them apart from personal ones
       limits: u.limits || null,   // the user's own speed limit (§3.4) — a group's is read from Store.groups()
+      volume: u.volume || null,   // …and volume limit (§3.5)
 
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),

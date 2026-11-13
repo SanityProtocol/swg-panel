@@ -414,6 +414,11 @@ class State:
         d = load_json(os.path.join(self.sub_dir, "users.json"), {})
         return d if isinstance(d, dict) else {}
 
+    def sub_usage(self):
+        """usage.json — the panel's volume limits: {"users": {uid: {used, limit, dir, period, until, state}}, "cut": [id…]}."""
+        d = load_json(os.path.join(self.sub_dir, "usage.json"), {})
+        return d if isinstance(d, dict) else {}
+
     def sub_blobs(self, uid):
         safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(uid))
         d = load_json(os.path.join(self.sub_dir, "blobs", safe + ".json"), {})
@@ -825,7 +830,7 @@ def token_lookup_rec(users, token):
 # live per request so a panel toggle takes effect at once.
 _READ_TTL = 3.0
 _read_lock = threading.Lock()
-_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None, "nodes": None}
+_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None, "nodes": None, "usage": {}, "cut": frozenset()}
 
 def _shared_read(state):
     now = time.monotonic()
@@ -840,7 +845,11 @@ def _shared_read(state):
         nodes = state.nodes()
         describe = state.describe(nodes)
         users = state.sub_users()
-        c.update({"at": time.monotonic(), "roster": roster, "describe": describe, "users": users, "nodes": nodes})
+        usage = state.sub_usage()                      # volume limits (the panel's usage.json), read beside the roster (R11)
+        cut = usage.get("cut") if isinstance(usage.get("cut"), list) else []
+        c.update({"at": time.monotonic(), "roster": roster, "describe": describe, "users": users, "nodes": nodes,
+                  "usage": usage.get("users") if isinstance(usage.get("users"), dict) else {},
+                  "cut": frozenset(x for x in cut if isinstance(x, str))})
         return roster, describe, users, nodes
 
 
@@ -875,7 +884,10 @@ def _rate_ok(ident):
 
 def is_expired(rec, nowv):
     """True if rec (a user or a peer) has an expiry date that has already passed. 0/absent = never expires.
-    Evaluated live on every request — no scheduler; a peer/sub reappears the instant the date is extended."""
+    Evaluated live on every request — no scheduler; a peer/sub reappears the instant the date is extended. A user or device
+    whose volume limit is used up (usage.json "cut", read with the roster) is expired too, as the panel's is_expired says."""
+    if _READ_CACHE["cut"] and isinstance(rec, dict) and rec.get("id") in _READ_CACHE["cut"]:
+        return True
     exp = (rec or {}).get("expiry") or 0
     return bool(exp) and nowv >= int(exp)
 
@@ -908,8 +920,10 @@ def read_data(state, token):
         return {"disabled": True, "user": {"name": user.get("name") or ""}, **theme}
     # EXPIRED subscription: same treatment as blocked, but the page shows "Subscription expired". Expiry is a live
     # date test (the sub record stays enabled), so it's evaluated here on every request rather than at set-time.
+    vol = _READ_CACHE["usage"].get(uid) if isinstance(_READ_CACHE["usage"].get(uid), dict) else None
+    vol = {"volume": vol} if vol else {}               # used / left of a volume limit, the page shows it (§3.6)
     if is_expired(user, nowv):
-        return {"expired": True, "user": {"name": user.get("name") or ""}, **theme}
+        return {"expired": True, "user": {"name": user.get("name") or "", **vol}, **theme}
     live = {pid: p for pid, p in (roster.get("peers") or {}).items()
             if isinstance(p, dict) and p.get("user_id") == uid}
     blobs = state.sub_blobs(uid)                        # per-user file — small, read fresh so a new peer shows at once
@@ -1035,7 +1049,7 @@ def read_data(state, token):
     peers_out.sort(key=_peer_key)
     subs = state.subscriptions()
     langs = subs.get("languages") if isinstance(subs.get("languages"), dict) else {}
-    return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
+    return {"user": {"name": user.get("name") or "", **vol}, "peers": peers_out,
             "networks": sub_networks(roster, uid, describe, nodes, nowv),   # what their devices reach beyond the internet (§18)
             # PER-USER VK link only — subscriptions NEVER fall back to the panel-wide vk_link (that one is for
             # the admin's own testing + unassigned peers). Empty here → the sub page shows a "create one" warning.

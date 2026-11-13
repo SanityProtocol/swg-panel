@@ -85,6 +85,10 @@
       notFound: "Link not found", notFoundSub: "This subscription doesn’t exist, was revoked, or subscriptions are turned off.",
       subDisabledSub: "This subscription has been turned off\nPlease contact your administrator",
       subBlockedWord: "BLOCKED", subExpiredWord: "EXPIRED",
+      volWord: "LIMIT REACHED", volSubUntil: "Your data limit is used up\nAccess returns on {date}",
+      volSubNever: "Your data limit is used up\nPlease contact your administrator",
+      volUsed: "{used} of {limit} GB used {when}", volResets: "resets {date}", volSlowed: "slowed to 1 Mbit/s",
+      volDay: "today", volWeek: "this week", volMonth: "this month", volTotal: "in total",
       pickDevices: "Your devices", pickOpen: "Jump to any device or connection", close: "Close", connections: "Connections",
       subExpiredSub: "This subscription has expired\nPlease contact your administrator",
       err: "Something went wrong", errServer: "Couldn’t load this subscription (server error). Please try again later.",
@@ -156,6 +160,10 @@
       notFound: "Ссылка не найдена", notFoundSub: "Эта подписка не существует, была отозвана или подписки отключены.",
       subDisabledSub: "Эта подписка отключена\nОбратитесь к администратору",
       subBlockedWord: "ЗАБЛОКИРОВАНО", subExpiredWord: "ИСТЕКЛО",
+      volWord: "ЛИМИТ ИСЧЕРПАН", volSubUntil: "Лимит трафика исчерпан\nДоступ вернётся {date}",
+      volSubNever: "Лимит трафика исчерпан\nОбратитесь к администратору",
+      volUsed: "Использовано {used} из {limit} ГБ {when}", volResets: "сброс {date}", volSlowed: "скорость снижена до 1 Мбит/с",
+      volDay: "сегодня", volWeek: "за неделю", volMonth: "за месяц", volTotal: "всего",
       pickDevices: "Ваши устройства", pickOpen: "Перейти к любому устройству или подключению", close: "Закрыть", connections: "Подключения",
       subExpiredSub: "Срок действия этой подписки истёк\nОбратитесь к администратору",
       err: "Что-то пошло не так", errServer: "Не удалось загрузить подписку (ошибка сервера). Попробуйте позже.",
@@ -2724,13 +2732,24 @@
       showState(t("subBlockedWord"), t("subDisabledSub"), "blocked");
       return Promise.resolve();
     }
+    // A volume limit (the panel's usage.json): used up = this page's EXPIRED, said as the limit, with the day access returns.
+    var vol = data.user && data.user.volume, volDate = function (s) { return new Date(s * 1000).toLocaleDateString(LANG === "ru" ? "ru-RU" : undefined); };
     if (data.expired) {
       document.getElementById("peers").hidden = true;
-      showState(t("subExpiredWord"), t("subExpiredSub"), "expired");
+      if (vol && vol.state === "cut") showState(t("volWord"), vol.until ? t("volSubUntil").replace("{date}", volDate(vol.until)) : t("volSubNever"), "expired");
+      else showState(t("subExpiredWord"), t("subExpiredSub"), "expired");
       return Promise.resolve();
     }
     var wrap = document.getElementById("peers");
     wrap.innerHTML = "";
+    if (vol && vol.limit) {                          // used / left of a volume limit, above the devices
+      var gb = function (b) { return String(+(b / 1e9).toFixed(b >= 1e10 ? 1 : 2)); };
+      var when = { d: "volDay", w: "volWeek", m: "volMonth", n: "volTotal" }[vol.period] || "volMonth";
+      var line = t("volUsed").replace("{used}", gb(vol.used)).replace("{limit}", gb(vol.limit)).replace("{when}", t(when));
+      if (vol.state === "slow") line += " · " + t("volSlowed");
+      else if (vol.until) line += " · " + t("volResets").replace("{date}", volDate(vol.until));
+      wrap.appendChild(el("p", "usage-line" + (vol.state ? " at" : ""), line));
+    }
     var peers = data.peers || [];
     if (!peers.length) {
       showState(t("noConfigs"), t("noConfigsSub"));
