@@ -151,7 +151,7 @@ PLANTS = {
     "markstat": ('''    if st["mark"] is None:\n''', '''    if True:\n'''),
     "wireall": ('''        _lim_wire = None                            # …and the limits''', '''        _lim_wire = []                            # …and the limits'''),
     "noerr": ('''        snap["limit_err"] = dict(_LIMITS["err"])''', '''        pass'''),
-    "exctype": ('''exception=("%s: %s" % (type(_e).__name__, _e))[:160])''', '''exception=str(_e)[:160])'''),
+    "exctype": ('''exception=_m[:160])''', '''exception=str(_e)[:160])'''),
 }
 
 
@@ -707,7 +707,7 @@ check("the call sits outside the sync's try, at the loop's level", _call > _i_se
       and "_ensure_limits(node_cfg, _lim_wire, snap, _lres)" in _pass[_call:_call + 800], _call)
 check("the snapshot carries limit_err", 'snap["limit_err"] = dict(_LIMITS["err"])' in src)
 check("a limiter that raised reports what the log says, type first (a bare str() reads '' or \"'x'\" on the node's line)",
-      '''_LIMITS["err"] = dict(_LIMITS["err"], exception=("%s: %s" % (type(_e).__name__, _e))[:160])''' in src)
+      '''_m = "%s: %s" % (type(_e).__name__, _e)''' in src and '''_LIMITS["err"] = dict(_LIMITS["err"], exception=_m[:160])''' in src)
 
 
 print("[16] a failed SNAT write keeps the device a client tunnel (limits-l1 F65, the cause behind F9)")

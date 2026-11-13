@@ -493,7 +493,7 @@ export function limitsState(kind, rec) {
   // why, for the tooltip — its own first (that is what this sheet changes), then its owner's, named
   const why = !!(exp && now >= exp) ? "date" : v[rec.id] === "cut" ? "vol" : !!(oexp && now >= oexp) ? "odate"
     : owner && v[owner.id] === "cut" ? "ovol" : v[rec.id] === "slow" ? "slow" : slow ? "oslow" : "";
-  return { n, cut, slow, why, owner: owner ? owner.name || "" : "", cls: cut ? " cut" : slow ? " slow" : n ? " on" : "" };
+  return { n, cut, slow, why, owner: owner ? owner.name || T("lim|its owner") : "", cls: cut ? " cut" : slow ? " slow" : n ? " on" : "" };
 }
 const LIMS_WHY = {
   date: () => T("Cut off now: its access date has passed"),

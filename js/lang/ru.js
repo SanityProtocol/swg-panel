@@ -7887,6 +7887,7 @@ export const STR = {
   "volume used up": "лимит трафика исчерпан",
   "Cut off: the volume limit is used up": "Отключено: лимит трафика исчерпан",
   "{v1} together": "{v1} вместе",
+  "lim|its owner": "владельца",
   "Slowed to 1 Mbit/s now: {name} has used up a volume limit": "Сейчас скорость снижена до 1 Мбит/с: у {name} исчерпан лимит трафика",
   "Slowed to 1 Mbit/s now: a volume limit is used up": "Сейчас скорость снижена до 1 Мбит/с: лимит трафика исчерпан",
   "Cut off now: {name} has used up a volume limit": "Сейчас отключено: у {name} исчерпан лимит трафика",

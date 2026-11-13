@@ -38,6 +38,7 @@ Run: python3 tests/limits_volume_selftest.py   (0 = pass)
      newpanel   a panel with no users.json yet fails every tick
      statany    a users.json the panel cannot stat (EACCES) reads as no roster, lifting every cut
      firstsave  a users.json written between the read and the stat fails the tick
+     reread     a users.json that is there and does not parse is parsed twice a tick
      restartev  a restart logs every limit already reached again
      slowpool   a slowed person gets 1 Mbit/s per device (no shared pool)
      cutwire    a cut alone builds the speed wire
@@ -81,6 +82,7 @@ PLANTS = {   # name: (file, anchor, replacement)
     "strict": ("swg-panel-server", "            if strict:\n                raise\n            return None", "            return None"),
     "newpanel": ("swg-panel-server", "        except FileNotFoundError:\n            roster = {}\n", "        except FileNotFoundError:\n            pass\n"),
     "statany": ("swg-panel-server", "        except FileNotFoundError:\n            roster = {}\n        except OSError:\n            pass\n", "        except OSError:\n            roster = {}\n"),
+    "reread": ("swg-panel-server", "    if roster is None and mark is None:                # no file at the read", "    if roster is None:                # no file at the read"),
     "firstsave": ("swg-panel-server", "            roster, mark = roster_view(deps[\"roster_path\"], repair=False)   # there after all: the first save landed since\n", "            pass\n"),
     "rostergone": ("swg-panel-server", "    if roster is None:\n        raise ValueError(\"the roster could not be read — the last verdicts stand\")", "    roster = roster or {}"),
     "restartev": ("swg-panel-server", "    if _VOL_HIT is not None and hit != _VOL_HIT:", "    _VOL_HIT = _VOL_HIT or {}\n    if hit != _VOL_HIT:"),
@@ -307,13 +309,15 @@ try:
     del L._pending_rows
     rv = P.roster_view
     open(RP, "w").write("[not a roster")            # there, and not readable as one
-    P.roster_view = lambda path, repair=True: (None, 99)
+    reads = []
+    P.roster_view = lambda path, repair=True: reads.append(path) or (None, 99)
     try:
         P._vol_tick(DEPS, NOW)
         raised = False
     except Exception:
         raised = True
     check("an unreadable roster raises: the cuts stand", raised and P._VOL_STATE == {"ua": "cut"}, P._VOL_STATE)
+    check("…read once a tick, not twice (only a read that found no file looks again)", len(reads) == 1, reads)
     P.roster_view = lambda path, repair=True: (None, None)   # a new panel: no users.json written yet
     try:
         P._vol_tick({"roster_path": os.path.join(TMP, "none-yet", "users.json"), "sub_dir": DEPS["sub_dir"]}, NOW)

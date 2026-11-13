@@ -152,11 +152,13 @@ class Panel:
         fl = os.path.join(self.dir, "fleet.json")
         json.dump({"nodes_path": self.nodes_path, "roster_path": os.path.join(st, "users.json"), "stats_dir": sd}, open(fl, "w"))
         # ⚠️ free_port() lets the port go before the panel binds it: in the parallel suite another gate's server can take it
-        # first, answer /healthz, and refuse our nodes (limits-l4: KeyError 'data'). The first request must be OUR panel's —
-        # it knows our nodes — else this one is stopped and started again on a fresh port.
+        # first, answer /healthz, and refuse our nodes (limits-l4: KeyError 'data'). The first request — a READ, so a stranger's
+        # state is never touched — must show OUR nodes, else this one is stopped and started again on a fresh port. One log for
+        # every attempt, each headed, so a run that gives up shows why each try failed.
+        self.log = open(os.path.join(self.dir, "panel.log"), "w+")
         for attempt in range(5):
             self.port = free_port()
-            self.log = open(os.path.join(self.dir, "panel.log"), "w+")
+            self.log.write("── attempt %d, port %d\n" % (attempt + 1, self.port)); self.log.flush()
             self.proc = subprocess.Popen([sys.executable, RUNNER, server], stdout=self.log, stderr=subprocess.STDOUT,
                                          env={**os.environ, "SWG_PANEL_FLEET": fl, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
                                               "SWG_PANEL_PORT": str(self.port), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "",
@@ -170,19 +172,21 @@ class Panel:
                     if self.proc.poll() is not None:
                         break
                     time.sleep(0.1)
+            ids = set()
             try:
-                got = self.req("/api/nodes/rotate", {"id": NODES_IDS[0]})[1] if up and self.proc.poll() is None else {}
+                got = self.req("/api/nodes")[1] if up and self.proc.poll() is None else {}
+                ns = (got.get("data") or {}).get("nodes") if isinstance(got, dict) else None
+                ids = {n.get("id") for n in (ns.values() if isinstance(ns, dict) else ns or ()) if isinstance(n, dict)}
             except Exception:                          # a stranger that hung up, or ours dying on the bind
-                got = {}
-            if isinstance(got, dict) and isinstance(got.get("data"), dict) and got["data"].get("token") and self.proc.poll() is None:
+                pass
+            if set(NODES_IDS) <= ids and self.proc.poll() is None:
                 break
             if self.proc.poll() is None:
                 self.proc.kill()
             self.proc.wait()
             if attempt == 4:
-                sys.exit("panel did not come up as ours on 5 ports: " + open(self.log.name).read()[-2000:])
-        self.tok = {NODES_IDS[0]: got["data"]["token"]}
-        self.tok.update({n: self.req("/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in NODES_IDS[1:]})
+                sys.exit("panel did not come up as ours on 5 ports: " + open(self.log.name).read()[-4000:])
+        self.tok = {n: self.req("/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in NODES_IDS}
         self.settings_path = os.path.join(st, "panel-settings.json")
 
     def req(self, path, data=None, token=None):

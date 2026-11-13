@@ -27746,9 +27746,9 @@ def main():
             try:                                    # drop no read the pass still needs (run(), SCALE-PLAN C1)
                 _ensure_limits(node_cfg, _lim_wire, snap, _lres)
             except Exception as _e:
-                _lres["errors"].append("%s: %s" % (type(_e).__name__, _e))
-                _LIMITS["err"] = dict(_LIMITS["err"], exception=("%s: %s" % (type(_e).__name__, _e))[:160])   # as logged: a bare
-                                                                                                            # str() can be '' or "'x'"
+                _m = "%s: %s" % (type(_e).__name__, _e)   # type first: a bare str() can be '' or "'x'"
+                _lres["errors"].append(_m)
+                _LIMITS["err"] = dict(_LIMITS["err"], exception=_m[:160])   # the node's issues line says what the log says
             for _e in _lres["errors"]:
                 log(LOG_WARNING, "limits: %s", _e)
         with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the

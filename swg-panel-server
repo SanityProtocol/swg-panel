@@ -26318,11 +26318,12 @@ def _vol_tick(deps, nowv=None):
     """One pass: recompute _VOL_STATE / _VOL_USE from the ledger. Cheap when nothing carries a volume (one roster walk).
     A roster that cannot be read raises: the last verdicts stand (an unreadable file must not lift every cut). A roster not
     written yet (a new panel: no users.json) is an empty one — nothing to limit, no error every tick. Only a stat that says
-    the file is not there decides that: EACCES / EIO keep the verdicts, and a file written since the read is read now."""
+    the file is not there decides that: EACCES / EIO keep the verdicts, and a file written since the read is read now —
+    only when the read found no file (one that is there and does not parse is not parsed twice a tick)."""
     global _VOL_STATE, _VOL_USE, _VOL_HIT, _VOL_BACK
     nowv = int(time.time()) if nowv is None else nowv
     roster, mark = roster_view(deps["roster_path"], repair=False)
-    if roster is None:
+    if roster is None and mark is None:                # no file at the read (a file there that would not parse: no second parse)
         try:
             os.stat(deps["roster_path"])
             roster, mark = roster_view(deps["roster_path"], repair=False)   # there after all: the first save landed since

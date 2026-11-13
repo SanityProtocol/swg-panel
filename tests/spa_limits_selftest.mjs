@@ -28,7 +28,7 @@
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
- *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy
+ *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -68,6 +68,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   usedown: ["js/limits.js", "${id && own ? html`<${UsedLine}", "${id ? html`<${UsedLine}"],                                                     // [8]
   limscut: ["js/peer-ui.js", "  const cut = !!(exp && now >= exp) || !!(oexp && now >= oexp) || ids.some(i => v[i] === \"cut\");", "  const cut = !!(exp && now >= exp) || !!(oexp && now >= oexp);"],   // [9]
   limsowner: ["js/peer-ui.js", "  const ids = [rec.id, ...(owner ? [owner.id] : [])];", "  const ids = [rec.id];"],   // [9]
+  limsnoname: ["js/peer-ui.js", "owner: owner ? owner.name || T(\"lim|its owner\") : \"\",", "owner: owner ? owner.name || \"\" : \"\","],   // [9]
   limswhy: ["js/peer-ui.js", ": owner && v[owner.id] === \"cut\" ? \"ovol\" : v[rec.id] === \"slow\" ? \"slow\" : slow ? \"oslow\" : \"\";", ": owner && v[owner.id] === \"cut\" ? \"vol\" : v[rec.id] === \"slow\" ? \"slow\" : slow ? \"slow\" : \"\";"],   // [9]
   limsclean: ["js/peer-ui.js", "  useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });", ""],   // [9]
   limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
@@ -321,6 +322,12 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   check("a device counts its owner: slowed with them (the count stays its own)", !!ou && lp.cls === " slow" && lp.n === 0, [ou && ou.id, lp]);
   check("…and its tooltip names them as the cause", lp.why === "oslow" && lp.owner === (ou && ou.name || ""), lp);
   Store.vol = { [ou && ou.id]: "cut" };
+  const nn = ((Store.recon && Store.recon.users) || []).find(u => u.id === (ou && ou.id));
+  const keepName = nn ? nn.name : null;
+  if (nn) nn.name = "";
+  const ln = lst("peer", { id: "p9", user_id: ou && ou.id });
+  if (nn) nn.name = keepName;
+  check("…an owner with no name is 'its owner', never an empty name in the sentence", !!nn && ln.owner === "its owner", ln);
   check("…cut off with them, named", lst("peer", { id: "p9", user_id: ou && ou.id }).why === "ovol", lst("peer", { id: "p9", user_id: ou && ou.id }));
   check("…cut off with them", lst("peer", { id: "p9", user_id: ou && ou.id }).cls === " cut", lst("peer", { id: "p9", user_id: ou && ou.id }));
   check("…and a stored value the panel would refuse is not counted", lst("user", { id: "u0", limits: { d: 0 }, volume: { d: 1 } }).n === 0);
@@ -337,7 +344,7 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   for (const k of ["Limits", "Limits saved.", "Access until", "Access date, speed limit and volume limit",
                    "Cut off now: its access date has passed", "Cut off now: a volume limit is used up", "Cut off now: {name}'s subscription has ended",
                    "Cut off now: {name} has used up a volume limit", "Slowed to 1 Mbit/s now: a volume limit is used up",
-                   "Slowed to 1 Mbit/s now: {name} has used up a volume limit"]) RUKEYS.add(k);
+                   "Slowed to 1 Mbit/s now: {name} has used up a volume limit", "lim|its owner"]) RUKEYS.add(k);
 
   console.log("\n[7] Russian");
   const keys = new Set(RUKEYS);
