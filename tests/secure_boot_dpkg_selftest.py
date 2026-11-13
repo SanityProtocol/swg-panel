@@ -499,7 +499,7 @@ check("dpkg: nothing pending, or no report, or a malformed one → silent",
       and issues({"dpkg": {"pending": "amneziawg-dkms"}}) == [])
 PS = rd("swg-panel-server")
 check("'repair node' is not offered for Secure Boot — and still is for a module that does not compile (an update retries when something moved)",
-      '_awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") != "key"\n' in PS)
+      '_awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") not in ("key", "reboot")\n' in PS)
 ru = rd("js/lang/ru.js")
 keys = re.findall(r'(?:perr\(|if _dp\.get\("fallback"\) else\s+)("(?:AmneziaWG: Secure|AmneziaWG\'s kernel module does not|the package manager on|a package manager run)[^"]*")', PS)
 keys += re.findall(r'T\(("An update cannot fix this — the key[^"]*")\)', rd("js/screen-overview.js"))

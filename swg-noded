@@ -16938,6 +16938,37 @@ def _awg_key_refused():
     return v
 
 
+def _kver_key(k):
+    """A kernel release as `sort -V` orders it — 6.8.0-149-generic after 6.8.0-35-generic: each run of digits by its value."""
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"(\d+)", k))
+
+
+def _awg_ko_for(kr):
+    """An AmneziaWG module file for kernel `kr`, where DKMS and `make install` put one (lib/common.sh _awg_ko_for reads the same)."""
+    for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
+        try:
+            if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _awg_reboot_kernel():
+    """The kernel a reboot starts — the newest installed one with its image in /boot, which GRUB boots by default — when it is
+    newer than the running kernel and has the AmneziaWG module; "" otherwise. Asked only when the running kernel has none.
+    User report 2026-11-13: a box on its install kernel, whose headers the archive no longer had, with a newer kernel and its
+    module waiting; the panel said "update the node to rebuild the module", and no update could. lib/common.sh awg_reboot_kernel."""
+    try:
+        ks = [k for k in os.listdir("/lib/modules") if os.path.exists("/boot/vmlinuz-" + k)]
+    except Exception:
+        return ""
+    if not ks:
+        return ""
+    new = max(ks, key=_kver_key)
+    return new if _kver_key(new) > _kver_key(os.uname().release) and _awg_ko_for(new) else ""
+
+
 def _awg_unloadable_why(built):
     """(why, mok) for a module that is NOT loaded — "key": built, and the kernel refuses its key (asked of the kernel, see
     _awg_key_refused; mok = the certificate to enrol, "" when unknown); "compile": no module file, and the installer recorded
@@ -17072,16 +17103,7 @@ def node_datapath_health(interfaces=None):
                     loaded = any(ln.startswith("amneziawg ") for ln in f)
             except Exception:
                 pass
-            built = False
-            if not loaded:
-                kr = os.uname().release
-                for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
-                    try:
-                        if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
-                            built = True
-                            break
-                    except Exception:
-                        continue
+            built = not loaded and _awg_ko_for(os.uname().release)
             # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D2.
             # `userspace`, only while non-empty — the managed AmneziaWG interfaces running on the fallback RIGHT NOW, by the
             # kernel's own answer: tun_flags exists on a tun device and on no amneziawg/wireguard device.
@@ -17099,6 +17121,11 @@ def node_datapath_health(interfaces=None):
             # Nor when the kernel refuses it for its key (Secure Boot): with no fallback there are no userspace interfaces to
             # tell by, and "built" alone read as healthy while no awg interface could come up.
             why, mok = (None, "") if loaded else _awg_unloadable_why(built)
+            # "reboot" before "compile": the kernel that has the module is installed and boots next; a reboot fixes a running
+            # kernel that does not compile it, too.
+            rk = "" if (loaded or built) else _awg_reboot_kernel()
+            if rk:
+                why, mok = "reboot", ""
             ent = {"needed": True, "ok": bool(loaded or (built and not us and why != "key"))}
             # `fallback`, only while not ok — is there a userspace datapath awg-quick falls back to? Without it "no module"
             # and "no module AND nothing to fall back to" read the same, and only the second means awg interfaces cannot come
@@ -17108,11 +17135,14 @@ def node_datapath_health(interfaces=None):
                     os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
                 # `why`, only when the installer recorded it for THIS kernel: "key" (built, refused by Secure Boot — `mok`
                 # is the key to enrol) or "compile" (does not compile here yet). Either way an update cannot fix it, and
-                # the panel says so instead of "update the node to rebuild the module".
+                # the panel says so instead of "update the node to rebuild the module". Or "reboot": the newest installed
+                # kernel has the module and this one has none — `kernel` names it.
                 if why:
                     ent["why"] = why
                     if mok:
                         ent["mok"] = mok
+                    if rk:
+                        ent["kernel"] = rk
             if us:
                 ent["userspace"] = us
             out["awg"] = ent

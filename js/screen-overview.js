@@ -1152,11 +1152,13 @@ export function ServiceIssueSheet({ issues }) {
           <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span></div>
         <div class="svc-msg">${i.msg}.</div>
         ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>${svcLogCmd(i.unit)}</code></div>`
+          : i.fix === false && i.kind === "reboot" ? html`<div class="svc-cmd"><code>uname -r</code> · <code>dkms status</code></div>`
           : i.fix === false ? html`<div class="svc-cmd"><code>mokutil --sb-state</code> · <code>modprobe amneziawg</code></div>`
           : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
       </div>`)}
       <div class="svc-foot">${certOnly
         ? T("The subscription service is installed — what is missing is its certificate, which only a reissue can create. “Run update” cannot fix this one.")
+        : noUpdate && list.every(i => i.id === "subcert" || i.kind === "reboot") ? T("An update cannot fix this — the kernel module is built for the newer kernel, and only a reboot starts it. Until then awg interfaces stay on the userspace datapath, if it is installed.")
         : noUpdate ? T("An update cannot fix this — the key has to be enrolled once at the box's console, after a reboot. Until then awg interfaces stay on the userspace datapath, if it is installed.")
         : T("“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.")}</div>
     </div>

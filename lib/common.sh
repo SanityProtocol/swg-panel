@@ -2339,6 +2339,27 @@ awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (ke
 awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
 awg_blacklisted(){ modprobe -c 2>/dev/null | grep -cE '^blacklist[[:space:]]+amneziawg$' >/dev/null; }   # the operator's own (modprobe.d) — -c reads to the end: -q quit at the match, modprobe died of SIGPIPE, and under pipefail the blacklist read as absent
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
+_awg_ko_for(){ # <kernel> — 0 when an AmneziaWG module file is there for it, where DKMS and `make install` put one (swg-noded reads the same three)
+  local L="${SWG_LIB_MODULES:-/lib/modules}/$1" f
+  for f in "$L"/updates/dkms/amneziawg.ko* "$L"/updates/amneziawg.ko* "$L"/kernel/drivers/net/amneziawg.ko*; do
+    if [ -e "$f" ]; then return 0; fi
+  done
+  return 1; }
+awg_reboot_kernel(){ # print the kernel a reboot starts, when it has the AmneziaWG module and the running kernel has none (rc 1 otherwise)
+  # User report 2026-11-13: a box still on its install kernel (6.8.0-35, its headers gone from the archive) with 6.8.0-149 and
+  # its DKMS module installed beside it. No update can build for the running kernel; only a reboot fixes it. The newest kernel
+  # that has its image in /boot is the one GRUB boots by default — a newer one without the module would not help, nor would
+  # an older one that has it.
+  local cur k new=""; cur="$(uname -r)"
+  if _awg_ko_for "$cur"; then return 1; fi
+  for k in "${SWG_LIB_MODULES:-/lib/modules}"/*; do
+    k="${k##*/}"
+    if [ -e "${SWG_BOOT:-/boot}/vmlinuz-$k" ]; then new="$(printf '%s\n%s\n' "$new" "$k" | sort -V | tail -n1)"; fi
+  done
+  [ -n "$new" ] && [ "$new" != "$cur" ] || return 1
+  [ "$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -n1)" = "$new" ] || return 1
+  _awg_ko_for "$new" || return 1
+  printf '%s' "$new"; }
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
   # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot: the package is
   # configured): the package's postinst failed, so dpkg holds it half-configured — whatever module file this kernel has

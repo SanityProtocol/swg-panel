@@ -61,7 +61,7 @@ ALLOWED_CHUNKS = {
         "turn",                                           # "turn ×2" — a node page's interface summary on a phone (S13)
     },
     "commands, paths and files the operator types or greps": {
-        "docker compose up -d", "systemctl status", "dkms status", "modprobe amneziawg", "mokutil --sb-state",
+        "docker compose up -d", "systemctl status", "dkms status", "modprobe amneziawg", "mokutil --sb-state", "uname -r",
         "swg-passwd", "swg-noded", "swg-node → ports:", "wg-keys.dat", "https://vk.ru/call/join/…",
         "ssh_user", "server_ip", "GET", "/metrics", "/api/v1/health", "/api/v1/servers", "/api/v1/servers/{id}/peers",
         "/api/v1/peers", "/api/v1/summary",

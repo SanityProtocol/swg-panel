@@ -101,6 +101,12 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **A node waiting for a reboot is told to reboot, not to update.** When the running kernel had no AmneziaWG module but
+  a newer installed kernel had one built, the panel said "running Update rebuilds it", and every update spent minutes on
+  a build that could not succeed (the running kernel's headers were no longer available). The panel now names the kernel
+  that has the module and says to reboot the server, with no "Run update" or "repair node" button for it, and an update
+  skips the build and says the same in one line.
+
 - **Moving a device to a full turn server no longer leaves it on neither.** Peer targets applied a Deploy as separate
   steps: the new deployments, then the address changes, then the removals. When the new server refused the device (its
   address pool was full), the old deployment was still removed. A Deploy is now applied as a whole or not at all: if any

@@ -913,6 +913,36 @@ def _host_awg_record(name):
 
 
 _MOK_PATH_RE = re.compile(r"^/[\w./+-]{1,200}$")   # a key path a node or the installer's record names — a plain path or nothing
+_KREL_RE = re.compile(r"^[\w.+~-]{1,80}$")          # a kernel release a node names (6.8.0-149-generic) — that shape or nothing
+
+
+def _kver_key(k):
+    """A kernel release as `sort -V` orders it — 6.8.0-149-generic after 6.8.0-35-generic: each run of digits by its value."""
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"(\d+)", k))
+
+
+def _awg_ko_for(kr):
+    """An AmneziaWG module file for kernel `kr`, where DKMS and `make install` put one (swg-noded's twin)."""
+    for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
+        try:
+            if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _awg_reboot_kernel():
+    """The kernel a reboot starts — the newest installed one with its image in /boot, which GRUB boots by default — when it is
+    newer than the running kernel and has the AmneziaWG module; "" otherwise (swg-noded's twin; user report 2026-11-13)."""
+    try:
+        ks = [k for k in os.listdir("/lib/modules") if os.path.exists("/boot/vmlinuz-" + k)]
+    except Exception:
+        return ""
+    if not ks:
+        return ""
+    new = max(ks, key=_kver_key)
+    return new if _kver_key(new) > _kver_key(os.uname().release) and _awg_ko_for(new) else ""
 
 
 def _host_boot_id():
@@ -957,15 +987,7 @@ def host_datapath_health(ttl=20):
                     loaded = any(ln.startswith("amneziawg ") for ln in f)
             except Exception:
                 pass
-            built = False
-            if not loaded:
-                kr = os.uname().release
-                for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
-                    try:
-                        if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
-                            built = True; break
-                    except Exception:
-                        continue
+            built = not loaded and _awg_ko_for(os.uname().release)
             # `why` — what the installer and swg-noded recorded (the panel, unprivileged, cannot ask the kernel): Secure Boot
             # refused the built module in THIS boot — swg-noded re-asks after every boot and keeps the record in step — or
             # it does not compile on this kernel.
@@ -974,10 +996,15 @@ def host_datapath_health(ttl=20):
             out["awg"] = {"needed": True, "ok": bool(loaded or (built and not _key)), "updating": upd}
             if not out["awg"]["ok"]:   # D2: degraded (a fallback runs the interfaces) vs down — the SPA words the two apart
                 out["awg"]["fallback"] = any(os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
+            # …or a reboot pending: no module for this kernel, the newest installed kernel has one (before "compile": the
+            # reboot fixes a running kernel that does not compile it, too).
+            _rk = "" if (loaded or built) else _awg_reboot_kernel()
             if _key:
                 out["awg"]["why"] = "key"
                 if _MOK_PATH_RE.match(_ref.get("mok") or ""):
                     out["awg"]["mok"] = _ref["mok"]
+            elif _rk:
+                out["awg"].update(why="reboot", kernel=_rk)
             elif not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):
                 out["awg"]["why"] = "compile"
     except Exception:
@@ -10739,6 +10766,11 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
             issues.append(perr("AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console"
                                if _dp.get("fallback") else
                                "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces can't come up. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console", v1=_mok))
+        elif _dp.get("why") == "reboot" and _KREL_RE.match(str(_dp.get("kernel") or "")):
+            # A reboot pending (the node's word, a kernel-shaped name or the generic sentence below): no update helps.
+            issues.append(perr("AmneziaWG: the kernel module is ready for kernel {v1}, installed but not running yet — awg interfaces run on the slower fallback datapath until the node is rebooted. An update cannot fix this"
+                               if _dp.get("fallback") else
+                               "AmneziaWG: the kernel module is ready for kernel {v1}, installed but not running yet — awg interfaces can't come up until the node is rebooted. An update cannot fix this", v1=_dp["kernel"]))
         elif _dp.get("why") == "compile":
             issues.append(perr("AmneziaWG's kernel module does not compile on this node's kernel yet — awg interfaces run on the slower fallback datapath; an update tries again when a new kernel or a newer AmneziaWG build arrives"
                                if _dp.get("fallback") else
@@ -26690,9 +26722,10 @@ def api(method, path, qs, body, deps):
                         # recreates a crashed container / userspace datapath. True when there's such an issue AND the node is up.
                         "repairable": bool(
                             # …not when Secure Boot refuses the module: no update can enrol its key, and a "repair node"
-                            # button would promise one does. A module that does not compile keeps it — an update retries
+                            # button would promise one does. Nor when a reboot is pending: only the reboot starts the
+                            # kernel that has the module. A module that does not compile keeps it — an update retries
                             # as soon as a newer build or kernel is there, and says "nothing new" in a line when not.
-                            _awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") != "key"
+                            _awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") not in ("key", "reboot")
                             and (not _awg_datapath(snap).get("ok") or _awg_datapath(snap).get("userspace"))
                             or ((snap.get("kind") or c.get("kind")) == "docker"
                                 and (any((e or {}).get("down") for e in (snap.get("interfaces") or {}).values())
