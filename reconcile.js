@@ -146,6 +146,7 @@ function reconcile(roster, stats, now, cfg) {
                  // alternative to `ip` — the peer holds both at once — so it rides alongside rather than
                  // replacing it. "" whenever the instance runs no raw datapath.
                  raw_ip: (dev && dev.raw_ip) || "",
+                 limits: t.limits || null,   // its own speed limit (R7), as the wg/awg branch below carries it
                  status: st, online: st === "online", observed: null, via: null, viaTurn: null,
                  // keyless per-peer speed (byte-delta the node computes per password) — no wg wire counter exists, so
                  // this is a SEPARATE field from `observed` (which carries wg semantics 8+ widgets read). Overview
@@ -394,8 +395,8 @@ function reconcile(roster, stats, now, cfg) {
     return {
       id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "", vk_link: u.vk_link || "",
       vk_links: Array.isArray(u.vk_links) ? u.vk_links : (u.vk_link ? [u.vk_link] : []),   // full ordered set (primary first) — the VK-links manager reads all of these
-      vk_pool: u.vk_pool || {},
-      limits: u.limits || null,   // the user's own speed limit (§3.4) — a group's is read from Store.groups()   // pool-id → URL for the links that came from the shared pool, so Manage can mark them apart from personal ones
+      vk_pool: u.vk_pool || {},   // pool-id → URL for the links that came from the shared pool, so Manage can mark them apart from personal ones
+      limits: u.limits || null,   // the user's own speed limit (§3.4) — a group's is read from Store.groups()
 
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),

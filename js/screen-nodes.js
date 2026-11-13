@@ -35,7 +35,6 @@ import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsP
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet, csqttRunLine } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
-import { limitIssues } from "./limits.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
          AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, openNodeRollback, openNodeTransferWatch,
@@ -119,11 +118,7 @@ function platformPill(nrec) {
   <//>`;
 }
 
-export function HealthDot({ issues, i18n, nid }) {
-  // A limiter the node could not load (limit_err, docs/LIMITS-PLAN.md §3.7) joins the panel's own issues: read from the node's
-  // snapshot here, already in the browser's words, after the panel's lines so their i18n indexes still line up.
-  const extra = nid ? limitIssues(nid) : [];
-  if (extra.length) issues = [...(issues || []), ...extra];
+export function HealthDot({ issues, i18n }) {
   if (!issues || !issues.length) return null;
   const n = issues.length;
   // The lines were rendered RAW, so the bubble read half-translated: its header went through T() while every
@@ -312,7 +307,7 @@ export function NodeDetail({ node: rawName }) {
     <${NodeRail} active=${name}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n} nid=${nrec.id}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
@@ -1826,7 +1821,7 @@ export function NodeCard({ n, reorder }) {
         : st === "online" ? html`<span class="reporting">${T("reporting")}</span>`
         : st === "offline" ? html`<span class="nstat offline"><${Ic} i="info"/> ${T("tag|offline")}</span>`
         : html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, procErr(n), st !== "online" && st !== "offline") : null}
-      <span style="margin-left:8px"><${HealthDot} issues=${n.issues} i18n=${n.issues_i18n} nid=${n.id}/></span>
+      <span style="margin-left:8px"><${HealthDot} issues=${n.issues} i18n=${n.issues_i18n}/></span>
       ${n.superseded_box ? html`<span style="margin-left:14px"><${SupersededTag} n=${n}/></span>` : null}
       ${n.transfer ? html`<span style="margin-left:14px"><${TransferTag} n=${n}/></span>` : null}
       ${removing ? html`<span class="nstat removing" style="margin-left:14px"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span>` : null}

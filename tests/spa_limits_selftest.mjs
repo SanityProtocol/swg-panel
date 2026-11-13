@@ -8,13 +8,18 @@
  *     (two limited groups → the lower; a tie → the lower group id; a user's own beats a group's), and effLimit() takes a
  *     deployment's own, then the device's, then the user's
  * [4] read-outs: limText follows the panel's throughput perspective (u is the rx side), the editor's words are the device's;
- *     held at a limit from the device's download (tx) and upload (rx), a pool held by its members' SUM on that node
- * [5] where a limit is not enforced: a live node without net_deps.limits, never a stale one; limit_err as node issues
- * [6] the doors (read as shipped): each editor sends `limits` only when it changed, a deployment's through update-target only;
- *     Peer targets says a removed row takes its own limit with it (R7); the node's issues badge reads limit_err
- * [7] Russian: every string js/limits.js and the doors say has a Russian line
+ *     held at a limit from the device's download (tx) and upload (rx); a shared pool's member at ITS share (the limit ÷ the
+ *     members moving, as the node caps it), never by another's traffic; never a WDTT / csqtt deployment, never where the limit
+ *     does not hold; the Live grid tints the held direction only
+ * [5] where a limit is not enforced: a live node without net_deps.limits, never a stale one; a keyless build vouched for no
+ *     path, or for WireGuard but not RAW, once per interface; limit_err as the panel's node issues, a sentence per kind
+ * [6] the doors (read as shipped): each editor sends `limits` only when the operator changed it (never a later poll's copy),
+ *     a deployment's through update-target only; Edit peer and Edit user guard a changed limit on close; the gauge is not the
+ *     gear; Peer targets says a removed row takes its own limit with it (R7)
+ * [7] Russian: every string js/limits.js, the doors and the node issues say has a Russian line
  *
- * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|rcarry|gcarry|gapkey|usersend|tgtdoor|r7|clean
+ * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
+ *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|clean
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -27,14 +32,22 @@ const MODE = process.argv.includes("--perturb") ? process.argv[process.argv.inde
 const PLANTS = {   // name: [file, anchor, replacement]
   lowest: ["js/limits.js", "if (l && (!out || lower(l, out.lim))) out = { lim: l, src: \"group\", name: g.name, gid: g.id", "if (l && (!out || !lower(l, out.lim))) out = { lim: l, src: \"group\", name: g.name, gid: g.id"],   // [3]
   persp: ["js/limits.js", "const [dn, up] = dlul(l.u || 0, l.d || 0);", "const [dn, up] = [l.d || 0, l.u || 0];"],                                   // [4]
-  heldsum: ["js/limits.js", "const k = t.node + \"|\" + e.pool, a =", "const k = t.node + \"|\" + e.pool + p.id, a ="],                               // [4]
+  heldsum: ["js/limits.js", "const k = t.node + \"|\" + e.pool;", "const k = t.node + \"|\" + e.pool + p.id;"],                                     // [4]
+  share: ["js/limits.js", "mine >= HELD_AT * lim / Math.max(1, mem.filter(m => of(m) >= lim * 0.01).length);", "mem.reduce((a, m) => a + of(m), 0) >= HELD_AT * lim;"],   // [4]
+  keyheld: ["js/limits.js", "  if (!t || isSelfContainedTgt(t) || gapOf(t)) return null;", "  if (!t) return null;"],                                         // [4]
   clean: ["js/limits.js", "  return ks.every(k => okRate(raw[k])) ? raw : null;", "  return raw;"],                                                       // [1]
-  gapkey: ["js/limits.js", "if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) old.add(t.node);", "if (!(((Store.stats[t.node] || {}).net_deps || {}).reach)) old.add(t.node);"],   // [5]
-  rcarry: ["reconcile.js", "               limits: t.limits || null,", "               limits: null,"],                                                  // [2]
+  gapkey: ["js/limits.js", "if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return \"old\";", "if (!(((Store.stats[t.node] || {}).net_deps || {}).reach)) return \"old\";"],   // [5]
+  rawgap: ["js/limits.js", ": (nr.reach_unvouched_raw || []).includes(t.iface) ? \"raw\" : null;", ": null;"],                                           // [5]
+  rcarry: ["reconcile.js", "limits: t.limits || null,   // THIS deployment's own", "limits: null,   // THIS deployment's own"],                                                  // [2]
+  kcarry: ["reconcile.js", "                 limits: t.limits || null,   // its own speed limit (R7)", "                 limits: null,   // its own speed limit (R7)"],   // [2]
+  sep: ["js/limits.js", "SEP_RE.test(s) ? \"sep\" :", "false ? \"sep\" :"],                                                                             // [1]
+  seed: ["js/limits.js", "!limSame(out.lim, limFromDraft(seed).lim)", "!limSame(out.lim, stored)"],                                                        // [6]
   gcarry: ["js/store.js", "                      limits: g[id].limits || null }))", "                      limits: null }))"],                         // [2]
   usersend: ["js/peer-ui.js", "expiry: expSec, ...(limits ? { limits } : {}) }), setSaveErr, setBusy);", "expiry: expSec }), setSaveErr, setBusy);"],    // [6]
   tgtdoor: ["js/sheets-crud.js", "iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });", "iface: t.iface });"],                                       // [6]
+  dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}", "    dirtyRef=${{ current: false }}"],   // [6]
   r7: ["js/sheets-crud.js", "  const limGone = removed.filter(t => limClean(t.limits));", "  const limGone = [];"],                                         // [6]
+  issues: ["swg-panel-server", "    for _k in (sorted(_le) if isinstance(_le, dict) else ()):", "    for _k in ():"],                                        // [5]
 };
 const made = [];
 const JS_URL = pathToFileURL(path.join(ROOT, "js") + path.sep).href;
@@ -67,6 +80,7 @@ try {
   const { Store } = await spa("store.js");
   const SP = await load("js/store.js");          // the planted copy when gcarry is planted, else the same module
   const RU = (await spa("lang/ru.js")).STR;
+  const RUKEYS = new Set();
 
   console.log("\n[1] the draft");
   const fd = d => L.limFromDraft({ mode: "du", d: "", u: "", c: "", ...d });
@@ -74,6 +88,8 @@ try {
   check("a blank direction is unlimited", JSON.stringify(fd({ d: "", u: "2,5" }).lim) === '{"u":2.5}', fd({ u: "2,5" }));
   check("both blank asks for a figure", !!fd({}).err && !fd({}).lim);
   check("under 1 and over 100000 are refused", !!fd({ d: "0.5" }).err && !!fd({ d: "100001" }).err && !!fd({ d: "abc" }).err);
+  check("a thousands separator is refused, never read as a decimal point (\"1,000\" is not 1)", !!fd({ d: "1,000" }).err && !fd({ d: "1,000" }).lim
+    && /thousands/.test(fd({ u: "2,500" }).err || "") && JSON.stringify(fd({ d: "1,5" }).lim) === '{"d":1.5}', [fd({ d: "1,000" }), fd({ d: "1,5" })]);
   check("combined → {c}", JSON.stringify(L.limFromDraft({ mode: "c", c: "40" }).lim) === '{"c":40}');
   check("no limit → {} (the door clears)", JSON.stringify(L.limFromDraft({ mode: "none" }).lim) === "{}");
   check("a stored limit opens as itself", JSON.stringify(L.limDraft({ d: 8, u: 2 })) === JSON.stringify({ mode: "du", d: "8", u: "2", c: "" })
@@ -86,8 +102,9 @@ try {
   const now = Math.floor(Date.now() / 1000);
   const tg = (node, lim) => ({ node, iface: "awg0", ip: "10.9.0.2/32", type: "awg", ...(lim ? { limits: lim } : {}) });
   const roster = {
-    users: { ua: { name: "anna", limits: { d: 20, u: 5 } }, ub: { name: "boris" }, uc: { name: "carol" }, ud: { name: "dora" }, ue: { name: "erin" }, uf: { name: "fred" } },
-    groups: { g1: { name: "Family", users: ["ub", "uc", "ud", "uf"], limits: { c: 40 } }, g2: { name: "Work", users: ["uc", "ua"], limits: { d: 10 } },
+    users: { ua: { name: "anna", limits: { d: 20, u: 5 } }, ub: { name: "boris" }, uc: { name: "carol" }, ud: { name: "dora" }, ue: { name: "erin" }, uf: { name: "fred" },
+             ug: { name: "gina" } },
+    groups: { g1: { name: "Family", users: ["ub", "uc", "ud", "uf"], limits: { c: 40 } }, g2: { name: "Work", users: ["uc", "ua", "ug"], limits: { d: 10 } },
               g0: { name: "Tie", users: ["ud"], limits: { c: 40 } } },
     peers: {
       pa: { user_id: "ua", pubkey: "PKA", created_at: now - 9999, targets: [tg("n1")] },
@@ -97,30 +114,39 @@ try {
       pt: { user_id: "uc", pubkey: "PKT", created_at: now - 9999, limits: { d: 50 }, targets: [tg("n1", { d: 8, u: 2 }), { ...tg("n2"), ip: "10.9.0.3/32" }] },
       pe: { user_id: "ue", pubkey: "PKE", created_at: now - 9999, targets: [tg("n2")] },
       pf: { user_id: "uf", pubkey: "PKF", created_at: now - 9999, targets: [tg("n1")] },
+      pg: { user_id: "ug", pubkey: "PKG", created_at: now - 9999, targets: [tg("n1")] },
+      pk: { user_id: "ue", pubkey: "", csqtt_password: "CPW", created_at: now - 9999, targets: [{ node: "n1", iface: "csqtt0", type: "csqtt", limits: { c: 5 } }] },
+      pw: { user_id: "ue", pubkey: "", wdtt_password: "WPW", created_at: now - 9999, targets: [{ node: "n1", iface: "wdtt1", type: "wdtt" }] },
+      pw2: { user_id: "ue", pubkey: "", wdtt_password: "WPW2", created_at: now - 9999, targets: [{ node: "n1", iface: "wdtt1", type: "wdtt" }] },
     },
   };
   const peerObs = (pk, rx, tx) => ({ public_key: pk, allowed_ips: "", rx_bytes: 1, tx_bytes: 1, rx_speed: rx, tx_speed: tx, handshake_age: 5, online: true, endpoint: "198.51.100.9:1" });
   const stats = {
     n1: { generated_at: now, net_deps: { limits: 1, reach: 2 }, limit_err: { awg0: "tc: RTNETLINK answers: Operation not supported", caps: "x" },
-          interfaces: { awg0: { meta: {}, peers: [peerObs("PKA", 100000, 2400000), peerObs("PKB", 2000000, 2000000), peerObs("PKC", 0, 0),
-                                                 peerObs("PKD", 1000000, 1000000), peerObs("PKT", 0, 0), peerObs("PKF", 250000, 250000)] } } },
-    n2: { generated_at: now, net_deps: { reach: 2 }, interfaces: { awg0: { meta: {}, peers: [peerObs("PKT", 0, 0), peerObs("PKE", 0, 0)] } } },
+          interfaces: { awg0: { meta: {}, peers: [peerObs("PKA", 100000, 2400000), peerObs("PKB", 2000000, 2000000), peerObs("PKC", 0, 25000),
+                                                 peerObs("PKD", 1000000, 1000000), peerObs("PKT", 0, 0), peerObs("PKF", 250000, 250000),
+                                                 peerObs("PKG", 0, 625000)] } },
+          csqtt: [{ iface: "csqtt0", passwords: { CPW: { ip: "10.30.0.2", online: true, rx_speed: 0, tx_speed: 1000000 } } }],
+          wdtt: [{ iface: "wdtt1", passwords: { WPW: { ip: "10.31.0.2", online: true } } }] },
+    n2: { generated_at: now, net_deps: { reach: 2 }, interfaces: { awg0: { meta: {}, peers: [peerObs("PKT", 0, 7000000), peerObs("PKE", 0, 0)] } } },
   };
   const rc = R.reconcile(roster, stats, Date.now(), { nodeSeen: { n1: now, n2: now } });
   const pt = rc.peers.find(p => p.id === "pt");
   check("a deployment's own limit reaches the browser", JSON.stringify(pt.targets.find(t => t.node === "n1").limits) === '{"d":8,"u":2}', pt.targets);
   check("…a device's own", JSON.stringify(pt.limits) === '{"d":50}', pt.limits);
   check("…a user's own", JSON.stringify((rc.users.find(u => u.id === "ua") || {}).limits) === '{"d":20,"u":5}');
+  check("…a WDTT / csqtt deployment's own (the keyless branch builds its own target)", JSON.stringify(rc.peers.find(p => p.id === "pk").targets[0].limits) === '{"c":5}', rc.peers.find(p => p.id === "pk").targets);
   check("…and none where none is stored", rc.peers.find(p => p.id === "pb").limits === null && rc.users.find(u => u.id === "ub").limits === null);
   SP.Store.roster = roster;
   check("a group's limit, through Store.groups()", JSON.stringify((SP.Store.groups().find(g => g.id === "g1") || {}).limits) === '{"c":40}', SP.Store.groups());
 
   // the real Store, as the screens hold it
   Store.roster = roster; Store.stats = stats; Store.recon = rc;
+  Store.nodes = [{ id: "n1", name: "n1", reach_unvouched: [], reach_unvouched_raw: ["wdtt1"] }, { id: "n2", name: "n2" }];
   Store.panelSettings = {};
 
   console.log("\n[3] precedence, against the panel's own");
-  const env = { ...process.env, SWG_NO_REEXEC: "1" };
+  var env = { ...process.env, SWG_NO_REEXEC: "1" };
   const py = `
 import importlib.machinery, importlib.util, json, sys
 ld = importlib.machinery.SourceFileLoader("swgp", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgp", ld))
@@ -148,10 +174,18 @@ print(json.dumps({u: [l, p] for u, (l, p) in li["user"].items()}))`;
   Store.panelSettings = {};
   check("the editor's words are the device's", L.limWords({ d: 20, u: 5 }) === "download 20, upload 5 Mbit/s", L.limWords({ d: 20, u: 5 }));
   const held = (pid, node) => { const p = rc.peers.find(x => x.id === pid); return L.limitHeld(p, p.targets.find(t => t.node === node)); };
-  check("anna downloading 19.2 Mbit/s against 20 down is held", !!held("pa", "n1"));
+  const ha = held("pa", "n1");
+  check("anna downloading 19.2 Mbit/s against 20 down is held — on her download (tx) only", !!ha && ha.tx && !ha.rx, ha && [ha.rx, ha.tx]);
+  check("…the Live grid tints that direction alone: ↑ in the server's perspective", L.heldCls(ha) === " held-up", L.heldCls(ha));
+  Store.panelSettings = { throughput_perspective: "peers" };
+  check("…↓ in the peers' (a phone, which shows only ↓, shows it)", L.heldCls(ha) === " held-dn", L.heldCls(ha));
+  Store.panelSettings = {};
   check("dora, alone in her pool (the tie went to group Tie) at 16 of 40 combined, is not", !held("pd", "n1"));
-  check("boris (32) + fred (4) on Family's one 40 Mbit pool: both held, though neither alone is", !!held("pb", "n1") && !!held("pf", "n1"));
-  check("carol, quiet in her own pool (Work), is not", !held("pc", "n1"));
+  check("boris (32) and fred (4) both moving on Family's 40: the node caps each at 20 — boris is held, fred is not", !!held("pb", "n1") && !held("pf", "n1"));
+  check("gina at 5 of Work's 10 down while carol moves 0.2: each capped at 5, so gina is held though the pool's sum (5.2) is far below it",
+    !!held("pg", "n1") && !held("pc", "n1"));
+  check("a csqtt deployment is never judged (its rates are 10–30 s counter deltas)", L.limitHeld(rc.peers.find(p => p.id === "pk"), rc.peers.find(p => p.id === "pk").targets[0]) === null);
+  check("a node that does not enforce limits shows none held (pt at 56 of its device's 50 on n2)", !held("pt", "n2"));
 
   console.log("\n[5] where a limit is not enforced");
   const gaps = L.limitGaps(pt.targets);
@@ -159,12 +193,31 @@ print(json.dumps({u: [l, p] for u, (l, p) in li["user"].items()}))`;
   rc.nodeStatus.n2 = "stale";
   check("…never a stale one", L.limitGaps(pt.targets).old.length === 0);
   rc.nodeStatus.n2 = "live";
-  const iss = L.limitIssues("n1");
-  check("limit_err reads as node issues, one a key", iss.length === 2 && iss[0].includes("awg0") && iss[0].includes("Operation not supported") && iss[1].includes("caps"), iss);
-  check("…none without it", L.limitIssues("n2").length === 0);
+  const kw = rc.peers.find(p => p.id === "pw").targets[0], kw2 = rc.peers.find(p => p.id === "pw2").targets[0];
+  check("a WDTT build vouched for WireGuard but not RAW is named, once however many devices sit there", JSON.stringify(L.limitGaps([kw, kw2]).unv) === '["wdtt1 (RAW) · n1"]', L.limitGaps([kw, kw2]));
+  Store.nodes[0].reach_unvouched = ["wdtt1"];
+  check("…one vouched for no path, as itself", JSON.stringify(L.limitGaps([kw]).unv) === '["wdtt1 · n1"]', L.limitGaps([kw]));
+  Store.nodes[0].reach_unvouched = [];
+  // limit_err: the panel's own node issues (every reader of a node's issues sees it, translated like the rest)
+  let srvFile = path.join(ROOT, "swg-panel-server");
+  if (MODE === "issues") { const d = fs.mkdtempSync(path.join(os.tmpdir(), "spa-limits-")); made.push(d); srvFile = path.join(d, "swg-panel-server"); fs.writeFileSync(srvFile, source("swg-panel-server")); }
+  const iss = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+ld = importlib.machinery.SourceFileLoader("swgp", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgp", ld))
+try: ld.exec_module(m)
+except SystemExit: pass
+print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "rc 124", "limits": "not a list", "sweep": "rc 127"}}), m._node_issues({}, {})]))`, srvFile], { env }).toString());
+  const [li, none] = iss, says = (i, re) => !!li[i] && re.test(li[i].error);
+  check("limit_err is a node issue, a line a key, in the node's words", li.length === 4 && li.every(x => x.error_key && x.error_vars), li);
+  check("…a device's entry: traffic there runs unlimited", says(0, /awg0: tc: no .*runs unlimited/));
+  check("…a failed cap: every limit still holds (never \"unlimited\")", says(1, /every limit still holds/) && !says(1, /unlimited/));
+  check("…a refused list: what was loaded stays", says(2, /loaded before stay/) && !says(2, /unlimited/));
+  check("…a failed sweep: nothing loaded yet", says(3, /not loaded yet/));
+  check("…and nothing without it", none.length === 0, none);
+  for (const x of li) RUKEYS.add(x.error_key);
 
   console.log("\n[6] the doors, as shipped");
-  const pu = source("js/peer-ui.js"), sc = source("js/sheets-crud.js"), sn = source("js/screen-nodes.js");
+  const pu = source("js/peer-ui.js"), sc = source("js/sheets-crud.js"), lj = source("js/limits.js");
   const has = (what, s, needle) => check(what, s.includes(needle), needle);
   has("the user editor opens on the stored limit", pu, "const lim = useLimit(user.limits);");
   has("…sends it only when it changed", pu, "const limits = lim.changed ? lim.take() : undefined;");
@@ -175,17 +228,20 @@ print(json.dumps({u: [l, p] for u, (l, p) in li["user"].items()}))`;
   has("Edit peer: the device's limit through peers/update", sc, "const r = await api.peerUpdate({ peer_id: peer.id, limits });");
   has("…a deployment's through update-target only, when staged and changed", sc, "if (!tlimChanged(t)) continue;\n        const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });");
   has("…either change enables Save", sc, "|| lim.changed || (live.targets || []).some(tlimChanged);");
+  has("…and guards the close (the pills are buttons, a deployment's is staged in its own sheet)", sc, "    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}");
+  has("Edit user guards a changed limit on close", pu, "  if (dirtyRef) dirtyRef.current = lim.changed;");
+  has("a field's change is against what it opened on, never a later poll's copy", lj, "!limSame(out.lim, limFromDraft(seed).lim)");
+  check("the deployment's gauge is not the gear (a gate waits for .topt-gear as the sign a config loaded)", !/class=\$\{"[^"]*topt-gear/.test(lj));
   has("Peer targets: R7, a removed row's own limit is named", sc, "  const limGone = removed.filter(t => limClean(t.limits));");
   check("…and its notice is drawn", sc.includes("${limGone.length ? html`<div class=\"notice warn\">"));
-  has("the node's issues badge reads limit_err", sn, "<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n} nid=${nrec.id}/>");
   check("noded says it loads limits", fs.readFileSync(path.join(ROOT, "swg-noded"), "utf8").includes('"reach": 2, "limits": 1}'));
 
   console.log("\n[7] Russian");
-  const keys = new Set();
+  const keys = new Set(RUKEYS);
   for (const f of ["js/limits.js"]) for (const m of fs.readFileSync(path.join(ROOT, f), "utf8").matchAll(/\bT\("((?:[^"\\]|\\.)+)"/g)) keys.add(m[1]);
   for (const k of ["The gauge sets that deployment's own speed limit.", "col|Speed limit",
-                   "Removing {target} removes its own speed limit. Deployed again, it follows the device's limit.",
-                   "Removing {targets} removes their own speed limits. Deployed again, they follow the device's limit.",
+                   "Removing {target} removes its own speed limit. Deployed again, it starts without one.",
+                   "Removing {targets} removes their own speed limits. Deployed again, they start without one.", "The speed limit wasn't saved.",
                    "This deployment's own speed limit: {lim}", "Saving removes this deployment and its own speed limit ({lim})."]) keys.add(k);
   const missing = [...keys].filter(k => typeof RU[k] !== "string" || !RU[k]);
   check("a Russian line for each of " + keys.size + " strings", missing.length === 0, missing);

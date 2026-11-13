@@ -2,9 +2,10 @@
 """Self-test: the deployment rows fit their content (operator, 2026-10-20: in the Edit peer sheet a "TURN ×4" badge
 pushed the address and gear off the row, the list grew a sideways scrollbar, and one proxy's name was cropped to its
 middle, "INGS-" of WINGS-N). Renders the REAL app.css in headless Chrome with the markup the two lists carry and
-measures the boxes. The markup is a copy of js/sheets-crud.js — the Edit peer sheet's Deployments list (~line 1064:
-RoleToggle ★, PubTag, TargetFrontBadge, the address or "auto IP", the gear only once its config has loaded) and
-TargetPicker (~line 289: no ★, a "missing" tag on a deployment whose interface is gone) — and of TargetFrontBadge
+measures the boxes. The markup is a copy of js/sheets-crud.js — the Edit peer sheet's Deployments list (~line 1170:
+RoleToggle ★, PubTag, TargetFrontBadge, the address or "auto IP", the speed-limit gauge on every row (limits-l3), the gear
+only once its config has loaded) and TargetPicker (~line 300: no ★, a "missing" tag on a deployment whose interface is
+gone, the gauge mark after the interface of one with its own speed limit) — and of TargetFrontBadge
 (~line 182: one proxy, several behind the hover wrapper, a hidden one with its "off" icon, the name in .tgt-ttl).
 
 Widths are the lists' real ones: a sheet's width less its border (2) and body padding (40); the list's own
@@ -17,14 +18,14 @@ overlay's 18px side padding leaves a 354px sheet → 312.
       a hidden badge keeps its "off" icon whole
   [3] at every width each list's address column lines up — rows with and without a gear, "auto IP" rows, ★ or not —
       and on a phone every usual row of a list keeps the same width (the list scrolls as one)
-  [4] the ★-less picker keeps the narrower column (the ★'s room is not taken from its names)
+  [4] the ★-less picker keeps the narrower column (the ★'s and the gauge's room is not taken from its names)
   [5] at every width every interface and "missing" tag shows whole on one line, clear of the badges, and every node
       name keeps a readable width (whole, or ≥ 7ch with an ellipsis); a long node name is cut instead of widening its
       row; a row whose name area needs more than 220px (a 15-character interface beside "missing" — the #edge list)
       grows instead of overlapping; on a phone every control stays inside its row's border
 
 Hermetic. Run: python3 tests/target_row_layout_selftest.py   (0 = pass)
-     --perturb-width   the ★ list's column back at 296px (sized before the ★ joined it) → RED in [1]/[2]
+     --perturb-width   the ★ list's column without the ★'s room (296 + the gauge's 38) → RED in [1]/[2]
      --perturb-ellip   no ellipsis span rule (the badge's name runs on; the icon is cut) → RED in [2]
      --perturb-align   the address is not anchored right → RED in [3]
      --perturb-gear    a gearless row does not keep the gear's place → RED in [3]
@@ -34,6 +35,7 @@ Hermetic. Run: python3 tests/target_row_layout_selftest.py   (0 = pass)
      --perturb-nmfloor every node name carries the 7ch floor (a short name gets a gap after it) → RED in [5]
      --perturb-nmcut   a node name cannot be cut (a long one runs under the badges) → RED in [5]
      --perturb-tpwrap  an interface may wrap onto two lines → RED in [5]
+     --perturb-limgear a gearless row does not keep the gear's place after the gauge → RED in [3]
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
 """
 import functools, http.server, json, os, shutil, sys, tempfile, threading, time
@@ -50,7 +52,7 @@ def check(name, cond, detail=""):
 
 # plant → (anchor, replacement, the sections that must go red)
 PLANTS = {
-    "--perturb-width": (".targetpick:has(.primtog){--topt-col:340px}", ".targetpick:has(.primtog){--topt-col:296px}", ("[1]", "[2]")),
+    "--perturb-width": (".targetpick:has(.primtog):has(.topt-lim){--topt-col:378px}", ".targetpick:has(.primtog):has(.topt-lim){--topt-col:334px}", ("[1]", "[2]")),
     "--perturb-ellip": (".tgt-front > .tgt-ttl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
                         ".tgt-front > .tgt-ttl{}", ("[2]",)),
     "--perturb-align": (".targetopt .topt-right > .topt-ip{margin-left:auto}", ".targetopt .topt-right > .topt-ip{}", ("[3]",)),
@@ -62,6 +64,7 @@ PLANTS = {
     "--perturb-nmfloor": (".targetopt.missing .nm{min-width:7ch}", ".targetopt .nm{min-width:7ch}", ("[5]",)),
     "--perturb-nmcut": (".targetopt .nm{font-weight:600;flex:0 1 max-content;width:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
                         ".targetopt .nm{font-weight:600;white-space:nowrap}", ("[5]",)),
+    "--perturb-limgear": (".targetopt .topt-right > .topt-lim:last-child{margin-right:38px}", ".targetopt .topt-right > .topt-lim:last-child{}", ("[3]",)),
     "--perturb-tpwrap": (".targetopt .tp{font-size:13.5px;color:var(--faint);font-family:var(--mono);white-space:nowrap}",
                          ".targetopt .tp{font-size:13.5px;color:var(--faint);font-family:var(--mono)}", ("[5]",)),
 }
@@ -87,13 +90,16 @@ def front_plain(name, col):
 ADDR = '<input class="topt-ip" value="%s">'
 AUTO = '<span class="topt-ip faint">auto IP</span>'
 GEAR = '<button type="button" class="btn btn-mini ico topt-gear">⚙</button>'
+GAUGE = '<button type="button" class="btn btn-mini ico topt-lim">⏲</button>'      # Edit peer: a deployment's speed limit
+LIM = '<span class="tp-lim"><svg width="13" height="13" viewBox="0 0 24 24"></svg></span>'   # Peer targets: its own limit
 LONG = "Helsinki relay backup Frankfurt am Main secondary uplink node 2"     # a 64-character node title (the server's limit)
-def row(node, iface, star, chip, fr, addr, gear, missing=False):
+def row(node, iface, star, chip, fr, addr, gear, missing=False, lim=False):
+    """star (not None) = an Edit peer row: its gauge sits after the address. lim = a Peer targets row with its own limit."""
     s = '<button type="button" class="primtog%s"><span class="primstar">%s</span></button>' % ((" on", "★") if star == "on" else ("", "☆")) if star else ""
-    return ('<div class="targetopt sel locked%s"><div class="topt-main"><span class="box">✓</span><span class="nm">%s</span><span class="tp">%s</span>%s</div>'
-            '<div class="topt-right hasprim">%s<button type="button" class="tg tg-%s pubtg">%s</button>%s%s%s</div></div>') % (
-                " missing" if missing else "", node, iface, '<span class="topt-missing">missing</span>' if missing else "",
-                s, chip, chip, fr, addr, GEAR if gear else "")
+    return ('<div class="targetopt sel locked%s"><div class="topt-main"><span class="box">✓</span><span class="nm">%s</span><span class="tp">%s</span>%s%s</div>'
+            '<div class="topt-right hasprim">%s<button type="button" class="tg tg-%s pubtg">%s</button>%s%s%s%s</div></div>') % (
+                " missing" if missing else "", node, iface, LIM if lim else "", '<span class="topt-missing">missing</span>' if missing else "",
+                s, chip, chip, fr, addr, GAUGE if star else "", GEAR if gear else "")
 EDIT = ('<div class="targetpick" id="edit">'
         + row("msk-shadow", "wg11001", "off", "wg", front("", "", many=4), ADDR % "10.8.0.16", True)
         + row("msk-shadow", "wg11002", "off", "wg", front("WINGS-N", "#C98BE0"), ADDR % "10.9.0.16", True)
@@ -103,7 +109,7 @@ EDIT = ('<div class="targetpick" id="edit">'
         + row(LONG, "wg-home-office", "off", "wg", "", ADDR % "10.21.0.7", True)
         + '</div>')
 PICK = ('<div class="targetpick" id="pick">'
-        + row("msk-shadow", "wg11001", None, "wg", front_plain("WINGS-N", "#C98BE0"), ADDR % "10.8.0.17", True)
+        + row("msk-shadow", "wg11001", None, "wg", front_plain("WINGS-N", "#C98BE0"), ADDR % "10.8.0.17", True, lim=True)
         + row("nixos", "awg2", None, "awg", "", ADDR % "10.9.0.162", True)
         + row("msk-main", "wdtt1", None, "wdtt", front_plain("WDTT", "#5FA8E0"), AUTO, False)
         + row("msk-shadow", "wg11003", None, "wg", "", ADDR % "10.8.0.18", False, missing=True)   # its interface is gone: no badge, no gear
@@ -213,7 +219,7 @@ check("[3] a 390px phone: every list's usual rows keep one width — the ordinar
 check("[3] …and only the row whose name area outgrows the floor (a long interface beside \"missing\") is wider",
       [r["w"] > usual(g)[0]["w"] for r in g["rows"]] == [True, False], [(r["w"], r["main"]) for r in g["rows"]])
 print("[4] the ★-less picker")
-check("[4] its column is the ★'s 40px narrower than the edit sheet's", E["rows"][0]["col"] - P["rows"][0]["col"] == 40,
+check("[4] its column is the ★'s 40px and the gauge's 38px narrower than the edit sheet's", E["rows"][0]["col"] - P["rows"][0]["col"] == 78,
       [E["rows"][0]["col"], P["rows"][0]["col"]])
 print("[5] names")
 for w, what in SHEETS:

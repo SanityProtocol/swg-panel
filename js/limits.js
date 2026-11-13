@@ -5,7 +5,7 @@
 // carry — nothing on the 5 s poll is added for it (SCALE-PLAN U1).
 import { Store } from "./store.js";
 import { tgtXfer, isSelfContainedTgt } from "./model.js";
-import { unvouchedTarget, namedFew } from "./views.js";
+import { namedFew } from "./views.js";
 import { Ic, Sheet, footRow, pushModal, closeModal, dlul } from "./ui.js";
 import { T } from "./i18n.js";
 import { h } from "preact";
@@ -13,8 +13,8 @@ import { useState } from "preact/hooks";
 import htm from "htm";
 const html = htm.bind(h);
 
-export const LIMITS_MAX_MBIT = 100000;          // the server's LIMITS_MAX_MBIT
-export const HELD_AT = 0.85;                    // a direction moving at 85 % of its limit or more reads "held at its limit"
+const LIMITS_MAX_MBIT = 100000;                 // the server's LIMITS_MAX_MBIT
+const HELD_AT = 0.85;                           // a direction moving at 85 % of its share of a limit or more reads "held at its limit"
 
 const okRate = v => typeof v === "number" && isFinite(v) && v >= 1 && v <= LIMITS_MAX_MBIT;
 // A stored limit as the server's limits_clean reads it: {d?, u?} or {c}, each 1..100000, else none (a hand edit reads as none).
@@ -48,22 +48,26 @@ export function limWords(l) {
   return [l.d ? T("download {v1}", { v1: num(l.d) }) : "", l.u ? T("upload {v1}", { v1: num(l.u) }) : ""].filter(Boolean).join(", ") + " " + T("Mbit/s");
 }
 
-// A user's limit: their own (pool u:<uid>), else the LOWEST of their groups' (pool g:<gid>) — ties to the group whose id sorts
-// first, as the server walks them. Built once per roster: the Live grid asks it per row.
-let _uCache = null, _uOf = null;
+// The LOWEST of a user's groups' limits (pool g:<gid>) — ties to the group whose id sorts first, as the server walks them.
+function groupLimit(uid) {
+  let out = null;
+  for (const g of Store.groupsByUser(uid).slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    const l = limClean(g.limits);
+    if (l && (!out || lower(l, out.lim))) out = { lim: l, src: "group", name: g.name, gid: g.id, pool: "g:" + g.id };
+  }
+  return out;
+}
+// A user's limit: their own (pool u:<uid>), else their groups' lowest. Kept per roster: the Live grid asks it per row.
+const _uMemo = new WeakMap();
 export function userLimit(uid) {
   if (!uid) return null;
-  if (_uOf !== Store.roster) { _uCache = new Map(); _uOf = Store.roster; }
-  if (_uCache.has(uid)) return _uCache.get(uid);
-  const u = Store.user(uid);
-  let out = null;
-  const own = u && limClean(u.limits);
-  if (own) out = { lim: own, src: "user", name: u.name || "", pool: "u:" + uid };
-  else if (u) {
-    const gs = Store.groupsByUser(uid).slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    for (const g of gs) { const l = limClean(g.limits); if (l && (!out || lower(l, out.lim))) out = { lim: l, src: "group", name: g.name, gid: g.id, pool: "g:" + g.id }; }
-  }
-  _uCache.set(uid, out);
+  const r = Store.roster || {};
+  let m = _uMemo.get(r);
+  if (!m) _uMemo.set(r, (m = new Map()));
+  if (m.has(uid)) return m.get(uid);
+  const u = Store.user(uid), own = u && limClean(u.limits);
+  const out = own ? { lim: own, src: "user", name: u.name || "", pool: "u:" + uid } : u ? groupLimit(uid) : null;
+  m.set(uid, out);
   return out;
 }
 // The limit a deployment runs under (docs/LIMITS-PLAN.md §3.4): its own, else the device's, else the user's or the lowest group's.
@@ -79,13 +83,7 @@ export function effLimit(peer, t) {
 // The limit a record WOULD fall back to without its own — the line under the editor. A user: the lowest group's; a device: the
 // user's (or their group's); a deployment: the device's, else the user's.
 export function fallbackFor(level, rec, peer) {
-  if (level === "user") {
-    let out = null;
-    for (const g of Store.groupsByUser(rec.id).slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
-      const l = limClean(g.limits); if (l && (!out || lower(l, out.lim))) out = { lim: l, src: "group", name: g.name };
-    }
-    return out;
-  }
+  if (level === "user") return groupLimit(rec.id);
   if (level === "device") return rec.user_id ? userLimit(rec.user_id) : null;
   if (level === "deployment") return effLimit(peer, { ...rec, limits: null });
   return null;
@@ -97,82 +95,94 @@ export const srcShort = e => e.src === "deployment" ? T("lim|own") : e.src === "
 function fallbackLine(e, own) {
   const lim = limWords(e.lim);
   if (e.src === "device") return own ? T("This replaces the device's limit ({lim}).", { lim }) : T("Without one of its own, the device's limit applies: {lim}.", { lim });
-  if (e.src === "user") return own ? T("This replaces {name}'s limit ({lim}).", { name: e.name, lim }) : T("Without one of its own, {name}'s limit applies: {lim}.", { name: e.name, lim });
-  return own ? T("This replaces group {name}'s limit ({lim}).", { name: e.name, lim }) : T("Without one of its own, group {name}'s limit applies: {lim}.", { name: e.name, lim });
+  // {lim} first: a name is filled in last, so a name that reads "{lim}" stays a name
+  if (e.src === "user") return own ? T("This replaces {name}'s limit ({lim}).", { lim, name: e.name }) : T("Without one of its own, {name}'s limit applies: {lim}.", { lim, name: e.name });
+  return own ? T("This replaces group {name}'s limit ({lim}).", { lim, name: e.name }) : T("Without one of its own, group {name}'s limit applies: {lim}.", { lim, name: e.name });
 }
 
-// ── held at its limit (Live) ──────────────────────────────────────────────────────────────────────────────────────────────
-// The rates the browser already has, against the limit: a deployment's own policer reads its own rates; a pool (a device on two
-// interfaces, a user, a group) reads the sum of its members' deployments on that node — the shared policer holds the SUM. One
-// index per recon, built only when the roster carries a limit at all.
-let _pIdx = null, _pOf = null;
-const anyLimit = () => {
-  const r = Store.roster || {};
-  const has = o => o && typeof o === "object" && Object.values(o).some(x => x && (x.limits || (x.targets || []).some(t => t && t.limits)));
-  return has(r.users) || has(r.groups) || has(r.peers);
-};
-function poolRates() {
-  if (_pOf === Store.recon) return _pIdx;
-  _pOf = Store.recon; _pIdx = null;
-  if (!anyLimit()) return null;
-  const m = new Map();
-  for (const p of (Store.recon.peers || [])) for (const t of (p.targets || [])) {
-    const e = effLimit(p, t), x = e && tgtXfer(t);
-    if (!x) continue;
-    const k = t.node + "|" + e.pool, a = m.get(k) || m.set(k, { rx: 0, tx: 0 }).get(k);
-    a.rx += x.rx_speed || 0; a.tx += x.tx_speed || 0;
-  }
-  return (_pIdx = m);
+// ── where a limit is not in force ────────────────────────────────────────────────────────────────────────────────────────
+// Why a limit on this deployment does not hold on its node, else null: "old" — the node reports no `limits` in net_deps, a build
+// without them (read from there, not the version string: a dev build reports the last release's); "unv" — a keyless build the
+// node cannot vouch for has no address to limit (§3.3); "raw" — a WDTT build vouched for its WireGuard path only, so a device on
+// its RAW path runs unlimited. Only LIVE nodes: a node not reporting says nothing either way.
+export function gapOf(t) {
+  if (!t || !t.node || Store.recon.nodeStatus[t.node] !== "live") return null;
+  if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return "old";
+  if (!isSelfContainedTgt(t)) return null;
+  const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
+  return (nr.reach_unvouched || []).includes(t.iface) ? "unv" : (nr.reach_unvouched_raw || []).includes(t.iface) ? "raw" : null;
 }
-// {e, dir} when this deployment's limit is holding it now, else null. rx = what the node received (the device's upload), tx = what
-// it sent (the device's download); the limit's d / u are the device's download / upload.
-export function limitHeld(peer, t) {
-  const e = effLimit(peer, t);
-  if (!e) return null;
-  const idx = poolRates(), a = idx && idx.get(t.node + "|" + e.pool);
-  if (!a) return null;
-  const mbit = b => b * 8 / 1e6, l = e.lim;
-  if (l.c) return mbit(a.rx + a.tx) >= HELD_AT * l.c ? e : null;
-  return (l.d && mbit(a.tx) >= HELD_AT * l.d) || (l.u && mbit(a.rx) >= HELD_AT * l.u) ? e : null;
-}
-export const heldTitle = e => T("Held at its speed limit: {lim} ({src})", { lim: limText(e.lim), src: srcShort(e) });
-// The peer view's mark beside its rate; the Live grid has no room for one (a fixed-width column) and tints its figures instead.
-export function HeldMark({ peer, t }) {
-  const e = limitHeld(peer, t);
-  return e ? html`<span class="limheld" title=${heldTitle(e)}><${Ic} i="gauge"/></span>` : null;
-}
-
-// ── where a limit would not be enforced ──────────────────────────────────────────────────────────────────────────────────────
-// A node that reports no `limits` in net_deps runs a build without them (read from there, not the version string: a dev build
-// reports the last release's); a keyless deployment on a build the node cannot vouch for has no address to limit (§3.3). Only
-// LIVE nodes: a node not reporting says nothing either way.
+// Every gap a level's limit meets: the nodes (once each) and the keyless interfaces (once each, however many devices sit there).
 export function limitGaps(targets) {
-  const old = new Set(), unv = [];
+  const old = new Set(), unv = new Map();
   for (const t of targets || []) {
-    if (!t || !t.node || Store.recon.nodeStatus[t.node] !== "live") continue;
-    if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) old.add(t.node);
-    else if (isSelfContainedTgt(t) && unvouchedTarget(t)) unv.push(t);
+    const g = gapOf(t);
+    if (g === "old") old.add(t.node);
+    else if (g) unv.set(t.node + "|" + t.iface + "|" + g, t.iface + (g === "raw" ? " (RAW)" : "") + " · " + Store.nodeName(t.node));
   }
-  return { old: [...old], unv };
+  return { old: [...old], unv: [...unv.values()] };
 }
 // Every deployment a level's limit reaches.
 export const targetsOfUsers = uids => uids.flatMap(u => Store.peersByUser(u)).flatMap(p => p.targets || []);
 function GapNotes({ gaps }) {
+  if (typeof gaps === "function") gaps = gaps();   // worked out only when a limit is drafted (a 10,000-member group)
   if (!gaps) return null;
   return html`${gaps.old.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${gaps.old.length === 1
       ? T("Not enforced on {node}: it runs a version without speed limits. Update it.", { node: Store.nodeName(gaps.old[0]) })
       : T("Not enforced on {nodes}: they run a version without speed limits. Update them.", { nodes: namedFew(gaps.old.map(n => Store.nodeName(n))) })}</span></div>` : null}
     ${gaps.unv.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not enforced for {targets}: this server build can't prove which address a device has.",
-      { targets: namedFew(gaps.unv.map(t => t.iface + " · " + Store.nodeName(t.node))) })}</span></div>` : null}`;
+      { targets: namedFew(gaps.unv) })}</span></div>` : null}`;
 }
 
-// ── a node's own report (limit_err) ──────────────────────────────────────────────────────────────────────────────────────────
-// The node fails open: a limiter it could not load cuts nobody, the traffic just flows. Each line names the device (or `caps`,
-// `sweep`, `limits`) and the node's own words, for the node's issues badge.
-export function limitIssues(nid) {
-  const e = (Store.stats[nid] || {}).limit_err;
-  if (!e || typeof e !== "object") return [];
-  return Object.keys(e).sort().map(k => T("Speed limit not applied on {dev}: {why}. Nothing is cut; traffic there runs unlimited.", { dev: k, why: String(e[k] || "") }));
+// ── held at its limit (Live) ──────────────────────────────────────────────────────────────────────────────────────────────
+// The rates the browser already has, against what the node lets this deployment move. A pool shared by several members on a
+// node (a device on two interfaces, a user, a group) holds their SUM, and the node also caps each member at the limit ÷ the
+// members moving in that direction (≥ 1 % of it, swg-noded _limits_caps) — so a member is held at its share, never by another's
+// traffic. One index per recon (node|pool → its members' [rx, tx] in Mbit/s), made the first time a row asks.
+const mbit = b => (b || 0) * 8 / 1e6;
+const _pools = new WeakMap();
+function poolMembers(node, pool) {
+  const rc = Store.recon;
+  let m = _pools.get(rc);
+  if (!m) {
+    _pools.set(rc, (m = new Map()));
+    for (const p of (rc.peers || [])) for (const t of (p.targets || [])) {
+      const e = effLimit(p, t), x = e && tgtXfer(t);
+      if (!x) continue;
+      const k = t.node + "|" + e.pool;
+      (m.get(k) || m.set(k, []).get(k)).push([mbit(x.rx_speed), mbit(x.tx_speed)]);
+    }
+  }
+  return m.get(node + "|" + pool) || [];
+}
+// {e, rx, tx} when this deployment's limit is holding it now (rx: what the node received, the device's upload, held by u; tx: what
+// it sent, the device's download, held by d; both for c), else null. Never where the limit is not in force, and never for a
+// WDTT / csqtt deployment: its rates are per-pass counter deltas every 10–30 s, which would flash "held" and back.
+export function limitHeld(peer, t) {
+  if (!t || isSelfContainedTgt(t) || gapOf(t)) return null;
+  const e = effLimit(peer, t), x = e && tgtXfer(t);
+  if (!x) return null;
+  const mem = poolMembers(t.node, e.pool), l = e.lim, rx = mbit(x.rx_speed), tx = mbit(x.tx_speed);
+  const at = (lim, mine, of) => !!lim && mine >= HELD_AT * lim / Math.max(1, mem.filter(m => of(m) >= lim * 0.01).length);
+  if (l.c) return at(l.c, rx + tx, m => m[0] + m[1]) ? { e, rx: true, tx: true } : null;
+  const hTx = at(l.d, tx, m => m[1]), hRx = at(l.u, rx, m => m[0]);
+  return hTx || hRx ? { e, rx: hRx, tx: hTx } : null;
+}
+export const heldTitle = h => T("Held at its speed limit: {lim} ({src})", { lim: limText(h.e.lim), src: srcShort(h.e) });
+// The Live grid's rate cell: the held direction's figure turns amber, in the panel's perspective (a phone shows only ↓).
+export const heldCls = h => { if (!h) return ""; const [dn, up] = dlul(h.rx ? 1 : 0, h.tx ? 1 : 0); return (dn ? " held-dn" : "") + (up ? " held-up" : ""); };
+// The peer view's mark beside its rate.
+export function HeldMark({ peer, t }) {
+  const h = limitHeld(peer, t);
+  return h ? html`<span class="limheld" title=${heldTitle(h)}><${Ic} i="gauge"/></span>` : null;
+}
+// The peer view's limit cell: what this deployment runs under, from where, and — where it does not hold — that it does not.
+export function LimitCell({ peer, t }) {
+  const e = effLimit(peer, t);
+  if (!e) return null;
+  const g = gapOf(t);
+  return html`<span class="pv-lim"><span class="k">${T("col|Speed limit")}</span><${Ic} i="gauge"/> ${limText(e.lim)} <span class="faint">${srcShort(e)}</span>${g
+    ? html` <span class="limgap">${g === "raw" ? T("not enforced over RAW") : T("not enforced here")}</span>` : null}</span>`;
 }
 
 // ── the editor ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -182,17 +192,22 @@ export function limDraft(l) {
   l = limClean(l);
   return !l ? { mode: "none", d: "", u: "", c: "" } : l.c ? { mode: "c", d: "", u: "", c: num(l.c) } : { mode: "du", d: l.d ? num(l.d) : "", u: l.u ? num(l.u) : "", c: "" };
 }
+// One box as typed: null when blank, "sep" for a thousands separator ("1,000" — never read as 1), else the number (a decimal comma
+// is a decimal point: «2,5»).
+const SEP_RE = /^\d{1,3}(,\d{3})+$/;
+const parseBox = s => { s = String(s).trim(); return s === "" ? null : SEP_RE.test(s) ? "sep" : +s.replace(",", "."); };
+const badBox = v => v !== null && (v === "sep" || !okRate(v));
 export function limFromDraft(dr) {
-  const one = s => (String(s).trim() === "" ? null : +String(s).trim().replace(",", "."));
-  const bad = v => v !== null && !okRate(v);
+  const range = () => ({ err: T("A speed limit must be between 1 and {v1} Mbit/s", { v1: LIMITS_MAX_MBIT }) });
+  const sep = (...vs) => vs.includes("sep") ? { err: T("Write a limit without a thousands separator: 1000, or 1.5 for a fraction.") } : null;
   if (dr.mode === "c") {
-    const c = one(dr.c);
-    if (c === null || bad(c)) return { err: T("A speed limit must be between 1 and {v1} Mbit/s", { v1: LIMITS_MAX_MBIT }) };
+    const c = parseBox(dr.c);
+    if (c === null || badBox(c)) return sep(c) || range();
     return { lim: { c } };
   }
   if (dr.mode === "du") {
-    const d = one(dr.d), u = one(dr.u);
-    if (bad(d) || bad(u)) return { err: T("A speed limit must be between 1 and {v1} Mbit/s", { v1: LIMITS_MAX_MBIT }) };
+    const d = parseBox(dr.d), u = parseBox(dr.u);
+    if (badBox(d) || badBox(u)) return sep(d, u) || range();
     if (d === null && u === null) return { err: T("Enter a download or an upload limit, or choose No limit.") };
     return { lim: { ...(d !== null ? { d } : {}), ...(u !== null ? { u } : {}) } };
   }
@@ -204,14 +219,14 @@ const HINTS = {
   device: () => T("For this device on each server it is on. Download and upload are the device's own."),
   deployment: () => T("For this deployment only. Removing the deployment removes its limit too."),
 };
-// level: user | group | device | deployment. fallback: what applies without one of its own (fallbackFor), gaps: limitGaps(…).
+// level: user | group | device | deployment. fallback: what applies without one of its own (fallbackFor), gaps: () => limitGaps(…).
 export function LimitField({ draft, onChange, level, fallback, gaps, err }) {
   const set = p => onChange({ ...draft, ...p });
   const seg = (m, label) => html`<button type="button" role="radio" aria-checked=${draft.mode === m} class=${"seg" + (draft.mode === m ? " on" : "")}
     onClick=${() => set({ mode: m })}>${label}</button>`;
   const box = (k, label) => html`<label class="limin"><span class="limin-k">${label}</span>
     <input type="text" inputmode="decimal" value=${draft[k]} placeholder=${k === "c" ? "" : T("no limit")} aria-label=${label}
-      class=${err && String(draft[k]).trim() !== "" && !okRate(+String(draft[k]).replace(",", ".")) ? "bad" : ""}
+      class=${err && badBox(parseBox(draft[k])) ? "bad" : ""}
       onInput=${e => set({ [k]: e.target.value })}/><span class="limin-u">${T("Mbit/s")}</span></label>`;
   const own = draft.mode !== "none";
   return html`<div class="field limfield">
@@ -227,22 +242,26 @@ export function LimitField({ draft, onChange, level, fallback, gaps, err }) {
   </div>`;
 }
 
-// A field's state: the draft, whether it differs from what is stored (a draft that does not parse counts as a change, so Save
-// stays on and shows why), and take(): the limit to send — {} clears it — or null once the error is on screen.
+// A field's state: the draft, whether the operator changed it from what the editor opened on (never from a later poll's copy:
+// another tab's change must not read as this sheet's, nor be sent back over it; a draft that does not parse counts as a change,
+// so Save stays on and shows why), cur: the limit as drafted now (the stored one while the draft does not parse), and take():
+// the limit to send — {} clears it — or null once the error is on screen.
 export function useLimit(stored) {
-  const [draft, setDraft] = useState(() => limDraft(stored));
+  const [seed] = useState(() => limDraft(stored));
+  const [draft, setDraft] = useState(seed);
   const [err, setErr] = useState("");
   const out = limFromDraft(draft);
-  return { draft, err, changed: !!out.err || !limSame(out.lim, stored),
+  return { draft, err, changed: !!out.err || !limSame(out.lim, limFromDraft(seed).lim), cur: out.err ? limClean(stored) : out.lim,
            set: d => { setDraft(d); setErr(""); },
            take: () => { if (out.err) { setErr(out.err); return null; } return out.lim; } };
 }
 
 // A deployment's own limit (R7): a gauge on its row in Edit peer, lit when it has one, opening the sheet below. Staged like the gear's
-// settings: the row's limit is sent with Edit peer's Save, through update-target — the only door a deployment limit has.
+// settings: the row's limit is sent with Edit peer's Save, through update-target — the only door a deployment limit has. `peer` is
+// the device as Edit peer has it drafted (its limit, its owner), so the fallback line says what will apply after that Save.
 export function LimitGauge({ peer, t, value, onApply }) {
   const own = limClean(value);
-  return html`<button type="button" class=${"btn btn-mini ico topt-gear topt-lim" + (own ? " on" : "")}
+  return html`<button type="button" class=${"btn btn-mini ico topt-lim" + (own ? " on" : "")}
     title=${own ? T("Speed limit for this deployment: {lim}", { lim: limWords(own) }) : T("Speed limit for this deployment")}
     aria-label=${T("Speed limit for this deployment")}
     onClick=${e => { e.preventDefault(); e.stopPropagation(); pushModal(html`<${TargetLimitSheet} peer=${peer} t=${t} value=${value} onApply=${onApply}/>`); }}><${Ic} i="gauge"/></button>`;
@@ -251,8 +270,8 @@ function TargetLimitSheet({ peer, t, value, onApply }) {
   const lim = useLimit(value);
   const apply = () => { const l = lim.take(); if (l === null) return; onApply(l); closeModal(); };
   return html`<${Sheet} title=${T("Speed limit — {v1} on {v2}", { v1: t.iface, v2: Store.nodeName(t.node) })} width=${560} onBack=${closeModal}
-    foot=${footRow({ onCancel: closeModal, onAction: apply, action: T("Apply") })}>
+    dirtyRef=${{ current: lim.changed }} foot=${footRow({ onCancel: closeModal, onAction: apply, action: T("Apply") })}>
     <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="deployment"
-      fallback=${fallbackFor("deployment", t, peer)} gaps=${limitGaps([t])}/>
+      fallback=${fallbackFor("deployment", t, peer)} gaps=${() => limitGaps([t])}/>
   <//>`;
 }

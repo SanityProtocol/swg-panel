@@ -7833,7 +7833,10 @@ export const STR = {
   "Not enforced on {node}: it runs a version without speed limits. Update it.": "Не действует на {node}: там версия без ограничений скорости. Обновите ноду.",
   "Not enforced on {nodes}: they run a version without speed limits. Update them.": "Не действует на {nodes}: там версия без ограничений скорости. Обновите эти ноды.",
   "Not enforced for {targets}: this server build can't prove which address a device has.": "Не действует для {targets}: эта сборка сервера не может подтвердить, какой адрес у устройства.",
-  "Speed limit not applied on {dev}: {why}. Nothing is cut; traffic there runs unlimited.": "Ограничение скорости не применено на {dev}: {why}. Никто не отключён, трафик там идёт без ограничения.",
+  "speed limit not applied on {v1}: {v2} — nothing is cut, traffic there runs unlimited": "ограничение скорости не применено на {v1}: {v2} — никто не отключён, трафик там идёт без ограничения",
+  "speed limits: sharing a limit between its devices failed ({v1}) — every limit still holds, the shares may be uneven": "ограничения скорости: не удалось поделить ограничение между устройствами ({v1}) — каждое ограничение соблюдается, но доли могут быть неравными",
+  "speed limits: the panel's last list was refused ({v1}) — the limits loaded before stay": "ограничения скорости: последний список от панели отклонён ({v1}) — действуют загруженные раньше",
+  "speed limits are not loaded yet ({v1}) — nothing is cut, traffic runs unlimited until they are": "ограничения скорости ещё не загружены ({v1}) — никто не отключён, трафик идёт без ограничения, пока их нет",
   "Enter a download or an upload limit, or choose No limit.": "Укажите ограничение на загрузку или отдачу либо выберите «Без ограничения».",
   "One budget for all of this person's devices on a server, shared between the ones in use. On two servers they can reach it on each.":
     "Один бюджет на все устройства человека на сервере, общий для тех, что сейчас в работе. На двух серверах он может использовать его полностью на каждом.",
@@ -7847,10 +7850,14 @@ export const STR = {
   "The gauge sets that deployment's own speed limit.": "Значок спидометра задаёт собственное ограничение скорости развёртывания.",
   "This deployment's own speed limit: {lim}": "Собственное ограничение скорости развёртывания: {lim}",
   "Saving removes this deployment and its own speed limit ({lim}).": "При сохранении развёртывание удалится вместе со своим ограничением скорости ({lim}).",
-  "Removing {target} removes its own speed limit. Deployed again, it follows the device's limit.":
-    "Вместе с {target} удалится и его собственное ограничение скорости. При повторном развёртывании действует ограничение устройства.",
-  "Removing {targets} removes their own speed limits. Deployed again, they follow the device's limit.":
-    "Вместе с {targets} удалятся и их собственные ограничения скорости. При повторном развёртывании действует ограничение устройства.",
+  "Removing {target} removes its own speed limit. Deployed again, it starts without one.":
+    "Вместе с {target} удалится и его собственное ограничение скорости. При повторном развёртывании его не будет.",
+  "Removing {targets} removes their own speed limits. Deployed again, they start without one.":
+    "Вместе с {targets} удалятся и их собственные ограничения скорости. При повторном развёртывании их не будет.",
+  "not enforced here": "здесь не действует",
+  "not enforced over RAW": "не действует через RAW",
+  "Write a limit without a thousands separator: 1000, or 1.5 for a fraction.": "Пишите без разделителя тысяч: 1000, а дробное — 1,5.",
+  "The speed limit wasn't saved.": "Ограничение скорости не сохранено.",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

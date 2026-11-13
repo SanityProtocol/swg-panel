@@ -34,7 +34,7 @@ import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
 import { openPeerConfigs, ReachedByBody, openUserEdit, openGroup, VaultUnlockPanel } from "./peer-ui.js";
 import { TrafficBlock, goneDevices } from "./traffic-ui.js";
 import { trafficTotals, trafficModalView } from "./traffic.js";
-import { LimitField, LimitGauge, HeldMark, useLimit, fallbackFor, limitGaps, limSame, limClean, limText, effLimit, srcShort } from "./limits.js";
+import { LimitField, LimitGauge, HeldMark, LimitCell, useLimit, fallbackFor, limitGaps, limSame, limClean, limWords } from "./limits.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -242,8 +242,10 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
   // a plain tag.
   const pubHave = useMemo(() => new Set(((pubPeer && pubPeer.targets) || []).map(t => tkey(t.node, t.iface))),
                           [pubPeer && pubPeer.targets]);
-  // A deployment's own speed limit on its row (docs/LIMITS-PLAN.md R7): it lives on the deployment, so unticking the row drops it.
-  const ownLim = k => { const d = pubPeer && (pubPeer.targets || []).find(x => tkey(x.node, x.iface) === k); return d ? limClean(d.limits) : null; };
+  // A deployment's own speed limit, marked on its row (docs/LIMITS-PLAN.md R7): it lives on the deployment, so unticking the row
+  // drops it. A gauge beside the interface's name, the figures in its title — the badge column has no room for them.
+  const ownLims = useMemo(() => new Map(((pubPeer && pubPeer.targets) || []).map(t => [tkey(t.node, t.iface), limClean(t.limits)]).filter(e => e[1])),
+                          [pubPeer && pubPeer.targets]);
   const all = useMemo(allTargets, [Store.describe, Store.stats]);
   // locked: launched from one interface — show only that target, no toggling, just the IP.
   const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
@@ -301,17 +303,18 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
     const k = tkey(t.node, t.iface); const s = sel[k];
     const ity = t.missing ? (t.type || "wg") : iTypeOf(t.node, t.iface);   // wg | awg | wdtt (a WDTT iface isn't in `describe`, so key off the name via iTypeOf)
     const chip = isSelfContainedKind(ity) ? seatChip(t, pubPeer && pubHave.has(k)) : null;   // a turn server's "n / cap", ticked or not
+    const ol = ownLims.get(k);
     return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "") + (t.missing ? " missing" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")} onMouseEnter=${nmTip}>${Store.nodeName(t.node)}</span>
         <span class="tp">${t.iface}</span>
+        ${ol ? html`<span class=${"tp-lim" + (s ? "" : " gone")} title=${s ? T("This deployment's own speed limit: {lim}", { lim: limWords(ol) })
+            : T("Saving removes this deployment and its own speed limit ({lim}).", { lim: limWords(ol) })}><${Ic} i="gauge"/></span>` : null}
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
       <div class="topt-right hasprim">
         ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity} gen3=${tgt3(t)}/>` : html`<${Tag} kind=${ity} label=${ity} gen3=${tgt3(t)}/>`}
         ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
-        ${ownLim(k) ? html`<span class=${"tg tg-lim" + (s ? "" : " gone")} title=${s ? T("This deployment's own speed limit: {lim}", { lim: limText(ownLim(k)) })
-            : T("Saving removes this deployment and its own speed limit ({lim}).", { lim: limText(ownLim(k)) })}><${Ic} i="gauge"/>${limText(ownLim(k))}</span>` : null}
         ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
           // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
           // target is seeded straight from the peer, so it never went through toggle and rendered an editable
@@ -537,7 +540,7 @@ export function AddTargetSheet({ peer, back, child }) {
   const netDev = peer.title || ((peer.user_id && Store.user(peer.user_id)) || {}).name || T("This device");
   const netsAdded = nets.length > 0 && added.some(needsIp);
   const netsGone = nets.length ? removed.filter(t => !isSelfContainedKind(targetType(t))) : [];
-  const limGone = removed.filter(t => limClean(t.limits));   // R7: a deployment's own limit goes with it; added back, it follows the device
+  const limGone = removed.filter(t => limClean(t.limits));   // R7: a deployment's own limit goes with it; added back, it has none
 
   // a refusal as the operator reads it: which deployment, which change, and why
   const failText = f => Store.nodeName(f.node) + "/" + T(f.op === "remove" ? "{v1} (remove)" : f.op === "address" ? "{v1} (address)" : "{v1} (add)", { v1: f.iface })
@@ -667,8 +670,8 @@ export function AddTargetSheet({ peer, back, child }) {
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>
           <${TargetPicker} initial=${initial} pubPeer=${peer} onChange=${setChosen}/></div>
         ${limGone.length ? html`<div class="notice warn"><${Ic} i="gauge"/><span>${limGone.length === 1
-            ? T("Removing {target} removes its own speed limit. Deployed again, it follows the device's limit.", { target: limGone[0].iface + " · " + Store.nodeName(limGone[0].node) })
-            : T("Removing {targets} removes their own speed limits. Deployed again, they follow the device's limit.", { targets: limGone.map(t => t.iface + " · " + Store.nodeName(t.node)).join(", ") })}</span></div>` : null}
+            ? T("Removing {target} removes its own speed limit. Deployed again, it starts without one.", { target: limGone[0].iface + " · " + Store.nodeName(limGone[0].node) })
+            : T("Removing {targets} removes their own speed limits. Deployed again, they start without one.", { targets: limGone.map(t => t.iface + " · " + Store.nodeName(t.node)).join(", ") })}</span></div>` : null}
         ${netsAdded ? html`<div class="notice warn"><${Ic} i="network"/><span>${peer.share
             ? T("{device} carries {nets}. On a node you add, they're carried there too — for the same people as now.", { device: netDev, nets: nets.join(", ") })
             : T("{device} carries {nets}. On a node you add, they're carried there too, and every device on that node can reach them. Open Networks to limit who.", { device: netDev, nets: nets.join(", ") })}</span></div>` : null}
@@ -753,7 +756,7 @@ export function PeerViewSheet({ pid, node, iface }) {
           <span><span class="k">${T("col|Total")}</span> ${xferCell(...dlul(xfer ? xfer.rx_bytes : 0, xfer ? xfer.tx_bytes : 0))}</span>
           <span><span class="k">${T("col|Online")}</span> ${seen(tgtSeenAge(t))}</span>
           ${/* last, so the phone's nth-child layout of the six above holds; it spans the row, so "which group won" is never cut */""}
-          ${(e => e ? html`<span class="pv-lim"><span class="k">${T("col|Speed limit")}</span><${Ic} i="gauge"/> ${limText(e.lim)} <span class="faint">${srcShort(e)}</span></span>` : null)(effLimit(p, t))}
+          <${LimitCell} peer=${p} t=${t}/>
         </div></div>`;
     })}</div>
     ${editLocked ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("Editing is off while a deployment sits on a missing or misconfigured interface. A peer edit (keys, AmneziaWG params, DNS, address) applies to every deployment, so it would leave this peer inconsistent. To edit it, either Restore / Fix the interface above, or open Targets and remove that interface from this peer.")}</span></div>` : null}
@@ -928,7 +931,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     const limits = lim.changed ? lim.take() : undefined;   // the field shows why when it does not parse
     if (limits === null) return;
     setBusy(true); setMsg({ k: "work", t: T("saving…") });
-    let fails = 0;
+    let fails = 0, limErr = "";   // a refused limit keeps the sheet open with the panel's reason (everything else is saved)
     try {
       if (title.trim() !== (peer.title || "")) {
         const r = await api.peerUpdate({ peer_id: peer.id, title: title.trim() }); if (!r.ok) fails++;
@@ -943,12 +946,12 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         const r = await api.peerUpdate({ peer_id: peer.id, router }); if (!r.ok) fails++;
       }
       if (limits) {                                  // the device's own speed limit; {} clears it
-        const r = await api.peerUpdate({ peer_id: peer.id, limits }); if (!r.ok) { fails++; if (r.error) setMsg({ k: "err", t: srvText(r) }); }
+        const r = await api.peerUpdate({ peer_id: peer.id, limits }); if (!r.ok) limErr = srvText(r) || T("The speed limit wasn't saved.");
       }
       for (const t of (live.targets || peer.targets)) {   // a deployment's own limit: update-target is its only door (R7)
         if (!tlimChanged(t)) continue;
         const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });
-        if (!r.ok) { fails++; if (r.error) setMsg({ k: "err", t: srvText(r) }); }
+        if (!r.ok) limErr = srvText(r) || T("The speed limit wasn't saved.");
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written
@@ -985,6 +988,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       }
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: String(e.message || e) }); }
     setBusy(false); Store.configEpoch++;
+    if (limErr) { await Store.poll(); return setMsg({ k: "err", t: limErr }); }
     // an already-assigned peer changing owner is destructive (keys rotate) — confirm it now, on
     // Save (so cancelling keeps the previous owner). Title/config above are already persisted.
     const oldUid = peer.user_id || "", newUid = userId || "";
@@ -1099,7 +1103,9 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // Targets, Networks, Rotate keys, Block, Cancel, Save) need ~686px of button plus a QR that is not always there, so 780
   // fitted six labels and nothing more — the moment a peer had configs to show, they were shoulder to shoulder again.
   // Sheet still caps itself at calc(100vw - 32px), so this is a ceiling and not a floor.
+  // dirtyRef: a limit's pills are buttons and a deployment's is staged in a sheet of its own — the input listener sees neither
   return html`<${Sheet} title=${T("Edit peer")} width=${880} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
+    dirtyRef=${{ current: lim.changed || (live.targets || []).some(tlimChanged) }}
     foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${hasKeyed
         ? html`<button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${(live.routes || []).length ? T("Networks · {n}", { n: live.routes.length }) : T("Networks")}</button>` : isMobile() ? html`<button class="btn btn-danger m-pdel" onClick=${() => confirmDeletePeer(peer, null, true)}>${T("Delete")}</button>` : null}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
@@ -1116,7 +1122,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class=${"hint"}>${T("On this date the peer stops working (it reappears if you extend it).")}${ownerExp ? T(" Can't be later than the subscription's expiry ({v1}).", { v1: fmtDate(ownerExp) }) : ""}</div></div>
     <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="device"
-      fallback=${fallbackFor("device", { user_id: userId || null })} gaps=${limitGaps(live.targets)}/>
+      fallback=${fallbackFor("device", { user_id: userId || null })} gaps=${() => limitGaps(live.targets)}/>
     ${/* ⚠️ Reuses `Switch` and the .toggle-row label shape the panel already uses for a boolean with an explanation
           under it, rather than drawing a new control. The hint is the whole promise in one line, because "private"
           on its own would leave an operator guessing whether it hides the device or only its networks. */""}
@@ -1170,7 +1176,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             ${sc
               ? html`<span class="topt-ip faint" title=${ity === "csqtt" ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto IP")}</span>`
               : html`<input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>`}
-            <${LimitGauge} peer=${live} t=${t} value=${k in tlims ? tlims[k] : t.limits} onApply=${v => setTlims(m => ({ ...m, [k]: v }))}/>
+            <${LimitGauge} peer=${{ ...live, user_id: userId || null, limits: lim.cur }} t=${t} value=${k in tlims ? tlims[k] : t.limits} onApply=${v => setTlims(m => ({ ...m, [k]: v }))}/>
             ${(!sc && confs[k]) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${topts[k]} onSave=${v => setOptsFor(k, v)}/>` : null}
           </div>
         </div>`;
@@ -1181,8 +1187,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         // same signal the warning below uses.
         ? (editable
             ? T("Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.")
-            : T("Changing an address moves the peer on that interface.")) + " " + T("The gauge sets that deployment's own speed limit.")
-        : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.") + " " + T("The gauge sets that deployment's own speed limit.")}</div>
+            : T("Changing an address moves the peer on that interface."))
+        : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")} ${T("The gauge sets that deployment's own speed limit.")}</div>
     </div>
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
     ${(hasKeyed && loaded && !editable) ? html`<${VaultUnlockPanel}/><div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}

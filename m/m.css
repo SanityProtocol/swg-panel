@@ -527,7 +527,8 @@ html[data-ui="m"] {
   & .targetopt .topt-right > .tgt-front { flex: 0 1 auto; }
   & .targetopt .topt-right > .topt-ip { order: 5; flex: 1 1 0; width: auto; min-width: 0; margin: 0; min-height: 36px; }
   & .targetopt .topt-right > .topt-ip:last-child { margin-right: 0; }
-  & .targetopt .topt-right > .topt-gear { order: 6; width: 36px; height: 36px; }
+  & .targetopt .topt-right > :is(.topt-lim, .topt-gear) { order: 6; width: 36px; height: 36px; }
+  & .targetopt .topt-right > .topt-lim:last-child { margin-right: 0; }
   /* an unticked turn server's "n / cap" alone is a tag-like word: it stays on the first line, after the type tag (K6) */
   & .targetopt .topt-right > .topt-ip.topt-seat { order: 2; flex: none; min-height: 0; }
   & .targetopt .box { width: 20px; height: 20px; }

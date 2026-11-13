@@ -524,7 +524,9 @@ export function QRUserFoot({ uid }) {
 export function openUserEdit(user) {
   // Wider than the default sheet: this one carries the widest thing in the panel that is not a table — the user's networks, a row
   // per network with its node and device counts — and at 640 those rows wrapped while the fields beside them sat half empty.
-  openModal(html`<${Sheet} title=${T("Edit · {v1}", { v1: user.name })} width=${780} subject=${{ kind: "user", id: user.id }}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
+  // dirtyRef: the speed limit's pills are buttons, which the Sheet's input listener never sees — the card says when it changed
+  const dirtyRef = { current: false };
+  openModal(html`<${Sheet} title=${T("Edit · {v1}", { v1: user.name })} width=${780} subject=${{ kind: "user", id: user.id }} dirtyRef=${dirtyRef}><${UserEditCard} user=${user} done=${closeModal} dirtyRef=${dirtyRef}/><//>`);
 }
 // Every QR/config the user owns, grouped by peer — one horizontal row of deployment QRs per peer (the peer's
 // PRIMARY deployment first, tagged, when it has more than one). Same TargetCard the peer QR modal uses, so a
@@ -1224,14 +1226,14 @@ function GroupSheet({ gid, seed }) {
         <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`
       : html`<div class="sharegrid-empty gempty">${T("No members yet — add people with the search above.")}</div>`}
     </div>
-    ${gid ? html`<${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="group" gaps=${limitGaps(targetsOfUsers(list))}/>` : null}
+    ${gid ? html`<${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="group" gaps=${() => limitGaps(targetsOfUsers(list))}/>` : null}
     ${shares.length ? html`<div class="hint">${T("Networks shared with this group: {devices}. Everyone you add reaches them; anyone you remove loses them, unless they're shared with them another way.",
       { devices: namedFew(shares.map(shareDeviceName)) })}</div>` : null}
     ${err ? html`<div class="formmsg err">${err}</div>` : null}
   <//>`;
 }
 
-export function UserEditCard({ user, done }) {
+export function UserEditCard({ user, done, dirtyRef }) {
   useStore();          // re-render on poll, so the Block/Unblock button flips after the action without reopening
   const [name, setName] = useState(user.name || "");
   const [tag, setTag] = useState(user.tag || "");
@@ -1241,6 +1243,7 @@ export function UserEditCard({ user, done }) {
   const lim = useLimit(user.limits);                                         // the user's own speed limit (docs/LIMITS-PLAN.md §3.4)
   const showVk = Store.peersOfUser(user.id).some(p => targetsWantVk(p.targets));   // a peer behind a turn-proxy, or on a WDTT server
   const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0) || lim.changed;   // VK links save on their own (VkLinkField) → not part of this
+  if (dirtyRef) dirtyRef.current = lim.changed;
   const save = async () => {
     if (!name.trim()) { toast(T("Name can't be empty."), "err"); return; }
     const expSec = expiryFromInput(expDate);
@@ -1281,7 +1284,7 @@ export function UserEditCard({ user, done }) {
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— the whole subscription; blank = never")}</span></label>
       <div class="daterow"><input type="date" class="datein" value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${T("On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.")}</div></div>
-    <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="user" fallback=${fallbackFor("user", user)} gaps=${limitGaps(targetsOfUsers([user.id]))}/>
+    <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="user" fallback=${fallbackFor("user", user)} gaps=${() => limitGaps(targetsOfUsers([user.id]))}/>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
