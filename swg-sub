@@ -415,7 +415,8 @@ class State:
         return d if isinstance(d, dict) else {}
 
     def sub_usage(self):
-        """usage.json — the panel's volume limits: {"users": {uid: {used, limit, dir, period, until, state}}, "cut": [id…]}."""
+        """usage.json — the panel's volume limits: {"users": {uid: {used, limit, dir, period, until, day, state}}, "cut": [id…],
+        "back": {id: YYYYMMDD access returns, 0 never}}."""
         d = load_json(os.path.join(self.sub_dir, "usage.json"), {})
         return d if isinstance(d, dict) else {}
 
@@ -830,7 +831,7 @@ def token_lookup_rec(users, token):
 # live per request so a panel toggle takes effect at once.
 _READ_TTL = 3.0
 _read_lock = threading.Lock()
-_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None, "nodes": None, "usage": {}, "cut": frozenset()}
+_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None, "nodes": None, "usage": {}, "cut": frozenset(), "back": {}}
 
 def _shared_read(state):
     now = time.monotonic()
@@ -849,7 +850,8 @@ def _shared_read(state):
         cut = usage.get("cut") if isinstance(usage.get("cut"), list) else []
         c.update({"at": time.monotonic(), "roster": roster, "describe": describe, "users": users, "nodes": nodes,
                   "usage": usage.get("users") if isinstance(usage.get("users"), dict) else {},
-                  "cut": frozenset(x for x in cut if isinstance(x, str))})
+                  "cut": frozenset(x for x in cut if isinstance(x, str)),
+                  "back": usage.get("back") if isinstance(usage.get("back"), dict) else {}})
         return roster, describe, users, nodes
 
 
@@ -888,8 +890,20 @@ def is_expired(rec, nowv):
     whose volume limit is used up (usage.json "cut", read with the roster) is expired too, as the panel's is_expired says."""
     if _READ_CACHE["cut"] and isinstance(rec, dict) and rec.get("id") in _READ_CACHE["cut"]:
         return True
+    return _date_passed(rec, nowv)
+
+
+def _date_passed(rec, nowv):
+    """True if rec's own expiry date has passed — is_expired without a volume cut: a page that would promise access back
+    on the period's reset must not when the date has run out too (it does not come back then)."""
     exp = (rec or {}).get("expiry") or 0
     return bool(exp) and nowv >= int(exp)
+
+
+def _vol_back(rid):
+    """{"vol_back": day} for a device or user cut off by a volume limit — the local day (YYYYMMDD) access returns, 0 never."""
+    b = _READ_CACHE["back"].get(rid) if rid in _READ_CACHE["cut"] else None
+    return {"vol_back": b if isinstance(b, int) and not isinstance(b, bool) else 0} if rid in _READ_CACHE["cut"] else {}
 
 
 def read_data(state, token):
@@ -923,6 +937,8 @@ def read_data(state, token):
     vol = _READ_CACHE["usage"].get(uid) if isinstance(_READ_CACHE["usage"].get(uid), dict) else None
     vol = {"volume": vol} if vol else {}               # used / left of a volume limit, the page shows it (§3.6)
     if is_expired(user, nowv):
+        if vol and _date_passed(user, nowv):           # its date has passed too: plain EXPIRED, never "access returns on"
+            vol = {"volume": dict(vol["volume"], state="")}
         return {"expired": True, "user": {"name": user.get("name") or "", **vol}, **theme}
     live = {pid: p for pid, p in (roster.get("peers") or {}).items()
             if isinstance(p, dict) and p.get("user_id") == uid}
@@ -1039,7 +1055,8 @@ def read_data(state, token):
                     tg["p2p"] = True
                     tg.update(_p2p_fwd_of(p, tg, describe, roster.get("peers"), pid))
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
-                          "disabled": bool(p.get("disabled")), "expired": _exp})
+                          "disabled": bool(p.get("disabled")), "expired": _exp,
+                          **(_vol_back(pid) if _exp and not _date_passed(p, nowv) else {})})   # cut by its own volume limit
     # active peers first (A-Z by title, untitled by IP), then blocked/expired at the bottom (also A-Z). The sub page
     # renders live-then-dead within this order, so a single title sort here gives both groups their A-Z ordering.
     def _peer_key(po):

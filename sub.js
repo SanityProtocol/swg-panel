@@ -87,6 +87,8 @@
       subBlockedWord: "BLOCKED", subExpiredWord: "EXPIRED",
       volWord: "LIMIT REACHED", volSubUntil: "Your data limit is used up\nAccess returns on {date}",
       volSubNever: "Your data limit is used up\nPlease contact your administrator",
+      volDevUntil: "This device's data limit is used up\nAccess returns on {date}",
+      volDevNever: "This device's data limit is used up\nPlease contact your administrator",
       volUsed: "{used} of {limit} GB used {when}", volResets: "resets {date}", volSlowed: "slowed to 1 Mbit/s",
       volDay: "today", volWeek: "this week", volMonth: "this month", volTotal: "in total",
       pickDevices: "Your devices", pickOpen: "Jump to any device or connection", close: "Close", connections: "Connections",
@@ -162,6 +164,8 @@
       subBlockedWord: "ЗАБЛОКИРОВАНО", subExpiredWord: "ИСТЕКЛО",
       volWord: "ЛИМИТ ИСЧЕРПАН", volSubUntil: "Лимит трафика исчерпан\nДоступ вернётся {date}",
       volSubNever: "Лимит трафика исчерпан\nОбратитесь к администратору",
+      volDevUntil: "Лимит трафика этого устройства исчерпан\nДоступ вернётся {date}",
+      volDevNever: "Лимит трафика этого устройства исчерпан\nОбратитесь к администратору",
       volUsed: "Использовано {used} из {limit} ГБ {when}", volResets: "сброс {date}", volSlowed: "скорость снижена до 1 Мбит/с",
       volDay: "сегодня", volWeek: "за неделю", volMonth: "за месяц", volTotal: "всего",
       pickDevices: "Ваши устройства", pickOpen: "Перейти к любому устройству или подключению", close: "Закрыть", connections: "Подключения",
@@ -2235,9 +2239,16 @@
     // opens the picker, and here the heading does. The wide layout keeps its one button in the header.
     return page;
   }
+  // A volume limit's reset day, YYYYMMDD in the panel's own time zone: shown as that date wherever the reader is (an
+  // instant would read as the day before west of the panel).
+  function volDay(d) {
+    var y = Math.floor(d / 10000), m = Math.floor(d / 100) % 100, dd = d % 100;
+    return new Date(Date.UTC(y, m - 1, dd)).toLocaleDateString(LANG === "ru" ? "ru-RU" : undefined, { timeZone: "UTC" });
+  }
   function deadPeerPage(row) {
     var peer = row.peer;
     var expired = !!peer.expired && !peer.disabled;   // an explicit block wins over a lapsed date if somehow both
+    var volCut = expired && peer.vol_back != null;    // cut by its own volume limit: said as the limit, with the day it returns
     var page = el("section", "ppage");
     page.setAttribute("data-mode", "dead");
     var srow = el("div", "srow");
@@ -2247,8 +2258,9 @@
     var nameEl = el("p", "peer-dead-name", peer.title || t("peer"));
     nameEl.setAttribute("data-pick", "");   // the picker's trigger on a page that has no title bar
     box.appendChild(nameEl);
-    box.appendChild(el("p", "state-word", expired ? t("subExpiredWord") : t("subBlockedWord")));
-    box.appendChild(el("p", "state-sub", expired ? t("subExpiredSub") : t("subDisabledSub")));
+    box.appendChild(el("p", "state-word", volCut ? t("volWord") : expired ? t("subExpiredWord") : t("subBlockedWord")));
+    box.appendChild(el("p", "state-sub", volCut ? (peer.vol_back ? t("volDevUntil").replace("{date}", volDay(peer.vol_back)) : t("volDevNever"))
+                                       : expired ? t("subExpiredSub") : t("subDisabledSub")));
     stage.appendChild(box); cell.appendChild(stage); srow.appendChild(cell); page.appendChild(srow);
     // up/down peer-nav hints so the carousel still walks past this page (render hides the ends)
     page.appendChild(hint("vhint vhint-u", "u")); page.appendChild(hint("vhint vhint-d", "d"));
@@ -2258,7 +2270,7 @@
     // one config stopped working. Its "badge" is the state word, in place of a protocol tag.
     page._pick = { row: row, dead: true, title: peer.title || t("peer"),
                    cells: [{ srv: "", kind: "",
-                             badge: el("span", "scell-tag cp-dead", expired ? t("subExpiredWord") : t("subBlockedWord")) }] };
+                             badge: el("span", "scell-tag cp-dead", volCut ? t("volWord") : expired ? t("subExpiredWord") : t("subBlockedWord")) }] };
     return page;
   }
   function peerProtoPage(mode, row, vkLink, userName) {
@@ -2733,10 +2745,10 @@
       return Promise.resolve();
     }
     // A volume limit (the panel's usage.json): used up = this page's EXPIRED, said as the limit, with the day access returns.
-    var vol = data.user && data.user.volume, volDate = function (s) { return new Date(s * 1000).toLocaleDateString(LANG === "ru" ? "ru-RU" : undefined); };
+    var vol = data.user && data.user.volume;
     if (data.expired) {
       document.getElementById("peers").hidden = true;
-      if (vol && vol.state === "cut") showState(t("volWord"), vol.until ? t("volSubUntil").replace("{date}", volDate(vol.until)) : t("volSubNever"), "expired");
+      if (vol && vol.state === "cut") showState(t("volWord"), vol.day ? t("volSubUntil").replace("{date}", volDay(vol.day)) : t("volSubNever"), "expired");
       else showState(t("subExpiredWord"), t("subExpiredSub"), "expired");
       return Promise.resolve();
     }
@@ -2747,7 +2759,7 @@
       var when = { d: "volDay", w: "volWeek", m: "volMonth", n: "volTotal" }[vol.period] || "volMonth";
       var line = t("volUsed").replace("{used}", gb(vol.used)).replace("{limit}", gb(vol.limit)).replace("{when}", t(when));
       if (vol.state === "slow") line += " · " + t("volSlowed");
-      else if (vol.until) line += " · " + t("volResets").replace("{date}", volDate(vol.until));
+      else if (vol.day) line += " · " + t("volResets").replace("{date}", volDay(vol.day));
       wrap.appendChild(el("p", "usage-line" + (vol.state ? " at" : ""), line));
     }
     var peers = data.peers || [];

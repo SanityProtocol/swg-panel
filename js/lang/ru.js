@@ -7892,6 +7892,8 @@ export const STR = {
   "Resets {v1}.": "Сброс {v1}.",
   "The traffic history is off on this panel, so no volume limit is enforced.": "История трафика на этой панели выключена, поэтому лимиты трафика не действуют.",
   "volume used up": "лимит трафика исчерпан",
+  "Cut off: the volume limit is used up": "Отключено: лимит трафика исчерпан",
+  "{v1} together": "{v1} вместе",
   "its volume limit is used up": "его лимит трафика исчерпан",
   "A volume limit is download and/or upload, or one combined figure, with a period": "Лимит трафика — это загрузка и/или отдача либо одно общее значение, с периодом",
   "A volume limit must be between {v1} and {v2} GB": "Лимит трафика должен быть от {v1} до {v2} ГБ",

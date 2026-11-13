@@ -14,6 +14,11 @@
   [5] Nothing with no volume: no state, no wire, no usage file; the ledger off → nothing is cut.
   [6] usage.json (0640): the users' rows (a group's for its members, the tighter one), the ids cut off; swg-sub's own
       is_expired honours a cut and its page carries used / left; /api/state's `vol` only when not empty (source).
+  [7] Review limits-l4: the base waits for the ledger to reach the period (no yesterday charged to today), an unreadable
+      history or roster keeps the last verdicts, a restart logs nothing again, a slowed person shares ONE 1 Mbit/s pool, a cut
+      alone builds no wire, a stale usage.json goes, a {d, u} row by the direction that tripped, a slow written at once, the
+      return day (several limits: the last to reset), swg-sub's date-passed and device pages, /api/volume for a drafted
+      period, a transferred group keeps its volume.
 
 Run: python3 tests/limits_volume_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
@@ -27,6 +32,19 @@ Run: python3 tests/limits_volume_selftest.py   (0 = pass)
      slowup     slow replaces a lower limit with 1 Mbit/s
      subcut     swg-sub's is_expired ignores usage.json's cut
      novol      /api/state carries `vol` always
+     openday    the period's base read before the ledger has reached its first day (yesterday charged to today)
+     strict     an unreadable history directory reads as "no row" (a whole lifetime counted)
+     rostergone an unreadable roster lifts every cut
+     restartev  a restart logs every limit already reached again
+     slowpool   a slowed person gets 1 Mbit/s per device (no shared pool)
+     cutwire    a cut alone builds the speed wire
+     staleusage a usage.json the last process left stays when nothing is limited
+     updir      a {d, u} row reports download even when upload is the one at its limit
+     slowlate   a slow (no change to who is cut) waits for the 5-minute throttle
+     datepassed a page whose date has passed still promises access back on the reset
+     devback    a device cut by its own limit carries no return day
+     apiperiod  /api/volume ignores the period asked for
+     grouptransfer  a transferred group arrives without its volume limit
 """
 import array, importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -54,12 +72,25 @@ def check(name, cond, detail=""):
 
 PLANTS = {   # name: (file, anchor, replacement)
     "week": ("swg-panel-server", "        a = d - _ldt.timedelta(days=d.weekday())", "        a = d - _ldt.timedelta(days=(d.weekday() + 1) % 7)"),
-    "base": ("swg-panel-server", "            if first is not None:\n                if first not in _VOL_BASE:", "            if False:\n                if first not in _VOL_BASE:"),
-    "groupone": ("swg-panel-server", "[n for m in members for n in by_owner.get(m, ())]", "[n for m in members[:1] for n in by_owner.get(m, ())]"),
+    "base": ("swg-panel-server", "    brx, btx = base if base else ((), ())", "    brx, btx = ((), ())"),
+    "groupone": ("swg-panel-server", "[n for m in members for n in snap[3].get(m, ())]", "[n for m in members[:1] for n in snap[3].get(m, ())]"),
+    "openday": ("swg-panel-server", "    if lday < first:\n        return \"none\"\n", ""),
+    "strict": ("swg-panel-server", "            if strict:\n                raise\n            return None", "            return None"),
+    "rostergone": ("swg-panel-server", "    if roster is None:\n        raise ValueError(\"the roster could not be read — the last verdicts stand\")", "    roster = roster or {}"),
+    "restartev": ("swg-panel-server", "    if _VOL_HIT is not None and hit != _VOL_HIT:", "    _VOL_HIT = _VOL_HIT or {}\n    if hit != _VOL_HIT:"),
+    "slowpool": ("swg-panel-server", "lim, pool, src = VOL_SLOW, spool, \"s\"", "lim, pool, src = VOL_SLOW, \"\", \"s\""),
+    "staleusage": ("swg-panel-server", "    if old is not None and (text == old or", "    if (text == (old or \"\") or"),
+    "updir": ("swg-panel-server", "            dirn = max((k for k in (\"d\", \"u\") if k in v), key=lambda k: u[\"used\"][k] / v[k])", "            dirn = \"d\" if \"d\" in v else \"u\""),
+    "slowlate": ("swg-panel-server", "    key = json.dumps([back, {m: [r[\"limit\"], r[\"dir\"], r[\"period\"], r[\"day\"], r[\"state\"]] for m, r in body.items()}],", "    key = json.dumps([back, {}],"),
+    "datepassed": ("swg-sub", "        if vol and _date_passed(user, nowv):", "        if False:"),
+    "devback": ("swg-sub", "**(_vol_back(pid) if _exp and not _date_passed(p, nowv) else {})})", "})"),
+    "apiperiod": ("swg-panel-server", "        per = per or (cur[\"vol\"][\"period\"] if cur else \"m\")", "        per = cur[\"vol\"][\"period\"] if cur else \"m\""),
+    "grouptransfer": ("swg-panel-server", "            if _gv:                                   # and its volume limit (§3.5; review limits-l4 F5)\n                groups[gid][\"volume\"] = _gv\n", ""),
     "dirswap": ("swg-panel-server", '("d" in v and dn >= v["d"])', '("d" in v and up >= v["d"])'),
     "cutexp": ("swg-panel-server", '    if _VOL_STATE and isinstance(rec, dict) and _VOL_STATE.get(rec.get("id")) == "cut":\n        return True\n', ""),
     "keyless": ("swg-panel-server", 'return bool(_VOL_STATE) and "cut" in (', 'return False and "cut" in ('),
-    "slowwire": ("swg-panel-server", "    if not li[\"any\"] and not vs:\n        return []", "    if not li[\"any\"]:\n        return []"),
+    "slowwire": ("swg-panel-server", "    if not li[\"any\"] and not slowing:\n        return []", "    if not li[\"any\"]:\n        return []"),
+    "cutwire": ("swg-panel-server", "    slowing = bool(vs) and \"slow\" in vs.values()", "    slowing = bool(vs)"),
     "slowup": ("swg-panel-server", "if slow and (not lim or _lim_key(VOL_SLOW) < _lim_key(lim)):", "if slow:"),
     "subcut": ("swg-sub", '    if _READ_CACHE["cut"] and isinstance(rec, dict) and rec.get("id") in _READ_CACHE["cut"]:\n        return True\n', ""),
     "novol": ("swg-panel-server", '**({"vol": dict(_VOL_STATE)} if _VOL_STATE else {}),', '"vol": dict(_VOL_STATE),'),
@@ -126,12 +157,13 @@ try:
             20261108: ([0] * 6, [8 * GB, 3 * GB, 2 * GB, 5 * GB, 6 * GB, 1 * GB])}   # end of the day before this week
     asked = []
 
-    def row(d):
+    def row(d, strict=False):
         asked.append(d)
         k = max((x for x in BASE if x <= d), default=None)
         return (k, array.array("Q", BASE[k][0]), array.array("Q", BASE[k][1])) if k else None
     L = P.LEDGER
     L.on, L.slots, L.C_rx, L.C_tx = True, SLOTS, array.array("Q", C_RX), array.array("Q", C_TX)
+    L.day = 20261113                                   # the day the ledger is in: today (a sync since midnight)
     L._row_at_or_before = row
     EV = []
     P.ev_append = lambda rp, kind, ident, verb, name, *a, **k: EV.append((kind, ident, verb))
@@ -153,8 +185,10 @@ try:
     usr = lambda **kw: {"ua": {"id": "ua", "name": "anna", **kw.get("ua", {})}, "ub": {"id": "ub", "name": "boris", **kw.get("ub", {})},
                          "uc": {"id": "uc", "name": "carol", **kw.get("uc", {})}, "ud": {"id": "ud", "name": "dora", **kw.get("ud", {})}}
     # anna: this month she downloaded (9-1)+(4-1)+(2-1) = 12 GB over three slots (one closed); a 12 GB month cuts her
+    P._VOL_HIT = None                                  # a fresh process: its first tick
     st = tick({"users": usr(ua={"volume": {"d": 12 * GB, "period": "m"}}), "groups": {}, "peers": {}})
     check("a user's month counts every slot she owns, a closed one too (12 GB of 12 → cut)", st == {"ua": "cut"}, st)
+    check("…a fresh process's first tick logs no event for a limit already reached (a restart)", EV == [], EV)
     u = P._VOL_USE.get(("user", "ua"), {})
     check("…used is C now − C at the end of the day before the month (download 12, upload 3 GB)", u.get("used") == {"d": 12 * GB, "u": 3 * GB}, u)
     check("…the period's base is read once, from the day before it began", 20261031 in asked, asked)
@@ -240,6 +274,113 @@ try:
     check("/api/state carries `vol` only when it is not empty", '**({"vol": dict(_VOL_STATE)} if _VOL_STATE else {}),' in sp)
     check("the first verdicts come before the listener (right after the ledger starts)",
           sp.index("    LEDGER.start(Handler.deps)\n") < sp.index("        _vol_tick(Handler.deps)\n") < sp.index("    LISTENERS.add(BIND_HOST, BIND_PORT,"))
+    print("[7] review limits-l4")
+    RA = {"users": usr(ua={"volume": {"d": 3 * GB, "period": "d"}}), "groups": {}, "peers": {}}
+    asked.clear()
+    L.day = 20261112                                   # just past midnight, no sync yet: the ledger is still in yesterday
+    st = tick(RA)
+    check("before the ledger reaches the period's first day nothing is used yet, and no base is read", st == {}
+          and P._VOL_USE[("user", "ua")]["used"] == {"d": 0, "u": 0} and asked == [], [P._VOL_USE.get(("user", "ua")), asked])
+    check("…and nothing is kept: once it has, the day before's row is read", 20261113 not in P._VOL_BASE, P._VOL_BASE)
+    L.day = 20261113
+    P._vol_tick(DEPS, NOW)
+    check("…read then (the day before today)", 20261112 in asked, asked)
+
+    L._row_at_or_before, keep = (lambda d, strict=False: P.TrafficLedger._row_at_or_before(L, d, strict)), L._row_at_or_before
+    L._pending_rows, kdir = (lambda: {}), L.dir
+    L.dir = os.path.join(TMP, "no-such-history")       # listdir fails, as on EMFILE
+    P._VOL_STATE = {"ua": "cut"}
+    ROSTER.update(RA); MARK[0] += 1; P._VOL_BASE.clear()
+    try:
+        P._vol_tick(DEPS, NOW)
+        raised = False
+    except Exception:
+        raised = True
+    check("an unreadable history directory raises: the last verdicts stand, no lifetime counted", raised and P._VOL_STATE == {"ua": "cut"}, P._VOL_STATE)
+    L._row_at_or_before, L.dir = keep, kdir
+    del L._pending_rows
+    rv = P.roster_view
+    P.roster_view = lambda path, repair=True: (None, 99)
+    try:
+        P._vol_tick(DEPS, NOW)
+        raised = False
+    except Exception:
+        raised = True
+    check("an unreadable roster raises: the cuts stand", raised and P._VOL_STATE == {"ua": "cut"}, P._VOL_STATE)
+    P.roster_view = rv
+
+    RS = {"users": usr(ub={"volume": {"d": 1 * GB, "period": "m", "at": "slow"}}), "groups": {},
+          "peers": {"pb": {"id": "pb", "user_id": "ub", "pubkey": "b" * 43 + "=", "targets": [{"node": "n1", "iface": "awg0", "ip": "10.9.0.3"},
+                                                                                              {"node": "n1", "iface": "wg1", "ip": "10.8.0.3"}]},
+                    "pe": {"id": "pe", "user_id": "ub", "pubkey": "e" * 43 + "=", "targets": [{"node": "n1", "iface": "awg0", "ip": "10.9.0.5"}]}}}
+    st = tick(RS)
+    w = P.limits_for_node(RS, "n1", P.desired_for_node(RS, "n1"))
+    pools = {e[5] for e in w}
+    check("a slowed person's devices and paths share ONE 1 Mbit/s pool on the node", st == {"ub": "slow"} and len(w) == 3 and len(pools) == 1
+          and next(iter(pools)).startswith("s:"), w)
+    P._VOL_STATE = {"ua": "cut"}
+    walked, po, dsr = [], P._peers_on, P.desired_for_node(RS, "n1")
+    P._peers_on = lambda r, n: walked.append(n) or po(r, n)
+    check("a cut alone builds no speed wire, and walks no peer (the device is absent from desired)",
+          P.limits_for_node(RS, "n1", dsr) == [] and walked == [], walked)
+    P._peers_on = po
+
+    up = os.path.join(DEPS["sub_dir"], "usage.json")
+    open(up, "w").write('{"cut":["ua"],"users":{}}')
+    P._VOL_USAGE.update(at=0.0, body=None, key=None)   # a fresh process
+    tick({"users": usr(), "groups": {}, "peers": {}})
+    check("a usage.json the last process left goes when nothing is limited", not os.path.exists(up))
+    st = tick({"users": usr(ua={"volume": {"d": 100 * GB, "u": 3 * GB, "period": "m"}}, ub={"volume": {"d": 2 * GB, "period": "d"}}), "groups": G,
+               "peers": {"pc": {"id": "pc", "user_id": "uc", "volume": {"d": 1 * GB, "period": "m"}}}})
+    body = json.load(open(up)) if os.path.exists(up) else {}
+    ua = (body.get("users") or {}).get("ua", {})
+    check("a {d, u} row reports the direction that tripped (upload 3 of 3, not download 12 of 100)", ua.get("dir") == "u" and ua.get("state") == "cut"
+          and ua.get("used") == 3 * GB, ua)
+    ubr = (body.get("users") or {}).get("ub", {})
+    check("cut by its day (back tomorrow) and its group's month: access returns on the 1st, the last to reset", ubr.get("state") == "cut"
+          and ubr.get("day") == 20261201 and (body.get("back") or {}).get("ub") == 20261201, [ubr, body.get("back")])
+    check("…a device cut by its own month: its return day", (body.get("back") or {}).get("pc") == 20261201, body.get("back"))
+    for at, upl in (("cut", 4), ("slow", 3)):          # anna under her limit, then slowed: who is cut does not change
+        tick({"users": usr(ua={"volume": {"d": 100 * GB, "u": upl * GB, "period": "m", "at": at}}, ub={"volume": {"d": 2 * GB, "period": "d"}}),
+              "groups": G, "peers": {"pc": {"id": "pc", "user_id": "uc", "volume": {"d": 1 * GB, "period": "m"}}}})
+    body = json.load(open(up)) if os.path.exists(up) else {}
+    check("a row turning slow is written at once, not after the 5-minute throttle", ((body.get("users") or {}).get("ua") or {}).get("state") == "slow", body.get("users"))
+
+    S._READ_CACHE.update(cut=frozenset(["ua", "pc"]), back={"ua": 20261201, "pc": 20261201}, usage={"ua": {"used": 3, "limit": 3, "dir": "u", "period": "m", "day": 20261201, "state": "cut"}})
+    class St:
+        sub_dir = TMP
+        def enabled(self):
+            return True
+        def subscriptions(self):
+            return {}
+    S._shared_read = lambda st: ({"users": {"ua": {"id": "ua", "name": "anna", "expiry": NOW - 60}},
+                                   "peers": {}}, {}, {"tok": {"enabled": True}}, {})
+    S.token_lookup_rec = lambda users, tok: ("ua", users["tok"]) if tok == "tok" else None
+    S.time.time = lambda: NOW
+    try:
+        d = S.read_data(St(), "tok")
+    except Exception as e:
+        d = {"err": repr(e)}
+    check("swg-sub: a user whose date has passed too is plain EXPIRED, never 'access returns'", (d or {}).get("expired") is True
+          and (((d or {}).get("user") or {}).get("volume") or {}).get("state") == "", d)
+    S.time.time = time.time
+    ss = src_of("swg-sub")
+    check("swg-sub: a device cut by its own limit carries the day it returns", "**(_vol_back(pid) if _exp and not _date_passed(p, nowv) else {})})" in ss
+          and S._vol_back("pc") == {"vol_back": 20261201} and S._vol_back("zz") == {})
+
+    P._VOL_USE.clear()
+    try:
+        r = P.api("GET", "/api/volume", {"kind": ["user"], "id": ["ua"], "period": ["w"]}, {},
+                  {"fleet": {}, "roster_path": RP, "nodes_path": os.path.join(TMP, "nodes.json")})
+    except Exception as e:
+        r = (0, {"err": repr(e)})
+    dd = (r[1] or {}).get("data") or {}
+    check("/api/volume: what a record without a limit used in the period asked (the week: 2 GB down)", r[0] == 200 and dd.get("period") == "w"
+          and dd.get("used", {}).get("d") == 2 * GB and dd.get("day") == 20261116, r)
+    sp = src_of("swg-panel-server")
+    check("a transferred group keeps its volume limit", '                groups[gid]["volume"] = _gv\n' in sp
+          and '"volume": volume_clean(g.get("volume"))[0]})' in sp)
+    check("the doors wake the tick when a verdict's input changed", sp.count("_VOL_WAKE.set()") == 3 and "_VOL_WAKE.wait(VOL_TICK_S)" in sp)
 finally:
     shutil.rmtree(TMP, True)
 

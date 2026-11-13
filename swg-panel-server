@@ -9772,12 +9772,16 @@ def limits_for_node(roster, node_id, desired, snap=None):
     refuses an entry with a prefix it cannot load. Sorted, so the reply's bytes are stable."""
     li = _lim_index(roster)
     vs = _VOL_STATE                                   # a volume "slow" is a 1 Mbit/s limit here (docs/LIMITS-PLAN.md §3.5)
-    if not li["any"] and not vs:
+    slowing = bool(vs) and "slow" in vs.values()      # a cut alone adds no wire: the device is absent from `desired`
+    if not li["any"] and not slowing:
         return []
     given, out, kidx = None, [], None                 # given: built only once a limited wg/awg deployment needs it
     for pid, p in _peers_on(roster, node_id):
         user = li["user"].get(p.get("user_id")) if p.get("user_id") else None
-        slow = bool(vs) and "slow" in (vs.get(pid), vs.get(p.get("user_id")))
+        slow = slowing and "slow" in (vs.get(pid), vs.get(p.get("user_id")))
+        if slow:                                      # ONE 1 Mbit/s for the person's devices here (the device's, slowed by its
+            sk = p.get("user_id") if vs.get(p.get("user_id")) == "slow" else pid   # own limit) — never one per device or path
+            spool = "s:" + hashlib.sha256(str(sk).encode()).hexdigest()[:16]
         if not slow and not p.get("limits") and not user and not any(isinstance(t, dict) and t.get("limits") for t in (p.get("targets") or ())):
             continue                                  # nothing limits this device: no cleaning, no target walk
         own = limits_clean(p.get("limits"))[0]
@@ -9788,7 +9792,7 @@ def limits_for_node(roster, node_id, desired, snap=None):
             tl = limits_clean(t.get("limits"))[0]
             lim, pool, src = (tl, "", "t") if tl else (own, "", "p") if own else (user[0], user[1], "u") if user else (None, "", "")
             if slow and (not lim or _lim_key(VOL_SLOW) < _lim_key(lim)):   # slowed: 1 Mbit/s, unless a limit is lower already
-                lim, pool, src = VOL_SLOW, "", "s"
+                lim, pool, src = VOL_SLOW, spool, "s"
             if not lim:
                 continue
             if _is_self_contained_target(t):
@@ -13481,6 +13485,9 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
             _gl = limits_clean(g.get("limits"))[0]
             if _gl:                                   # its speed limit goes with it (LIMITS-PLAN §3.4; review limits-l2 F10)
                 groups[gid]["limits"] = _gl
+            _gv = volume_clean(g.get("volume"))[0]
+            if _gv:                                   # and its volume limit (§3.5; review limits-l4 F5)
+                groups[gid]["volume"] = _gv
 
     return {"record": clean, "strip": stripped,
             "users": users, "groups": groups, "peers": peers, "escrow": escrow, "sub_users": sub_users, "blobs": blobs,
@@ -13537,8 +13544,9 @@ def transfer_merge_groups(roster, arriving):
             while group_name_taken(roster, name, gid):
                 sfx = " (%d)" % i
                 name, i = base[:GROUP_NAME_MAX - len(sfx)] + sfx, i + 1
-            group_set(roster, gid, {"name": name, "users": sorted(mem),   # a new group comes with its speed limit, as users and
-                                    "limits": limits_clean(g.get("limits"))[0]})   # devices do (one held here keeps its own)
+            group_set(roster, gid, {"name": name, "users": sorted(mem),   # a new group comes with its speed and volume limits,
+                                    "limits": limits_clean(g.get("limits"))[0],    # as users and devices do (one held
+                                    "volume": volume_clean(g.get("volume"))[0]})   # here keeps its own)
         n += 1
     return n
 
@@ -25736,19 +25744,23 @@ class TrafficLedger:
         with self.lock:
             return {dr[0]: (dr[3], dr[4], dr[2]) for dr in self.q_day}
 
-    def _row_at_or_before(self, d):
-        """(date, C_rx, C_tx) of the newest closed day ≤ d, or None — C before the ledger's first closed day is 0."""
+    def _row_at_or_before(self, d, strict=False):
+        """(date, C_rx, C_tx) of the newest closed day ≤ d, or None — C before the ledger's first closed day is 0. `strict`:
+        a history directory that cannot be listed raises instead of reading as "no row" (a volume base must not count a
+        whole lifetime on an EMFILE)."""
         pend = self._pending_rows()
         pd = max((x for x in pend if x <= d), default=0)
-        got = self._row_on_disk(d)
+        got = self._row_on_disk(d, strict)
         if pd and (got is None or got[0] < pd):
             return pd, pend[pd][0], pend[pd][1]
         return got
 
-    def _row_on_disk(self, d):
+    def _row_on_disk(self, d, strict=False):
         try:
             files = sorted((f for f in os.listdir(self.dir) if f.startswith("day-") and f.endswith(".bin")), reverse=True)
         except OSError:
+            if strict:
+                raise
             return None
         for fn in files:
             path = self._p(fn)
@@ -26183,10 +26195,14 @@ VOL_MIN_B, VOL_MAX_B = 10 ** 8, 10 ** 15          # 0.1 GB .. 1 PB
 VOL_SLOW = {"c": 1}                                # "slow": 1 Mbit/s both ways together (§2.2: the slow-down measured)
 VOL_USAGE_EVERY_S = 300                            # subs/usage.json: at most this often, and only when it moved
 _VOL_STATE = {}                                    # {user_or_peer_id: "cut" | "slow"} — READ by is_expired and every sync
-_VOL_USE = {}                                      # {(kind, id): {used, vol, until, state}} — the read-out (/api/volume)
-_VOL_HIT = {}                                      # {(kind, id): "cut" | "slow"} — the records at their limit, for events
-_VOL_BASE = {}                                     # {"day": today, start_day: (C_rx, C_tx)} — a period's base, once a day
-_VOL_USAGE = {"at": 0.0, "body": None}             # the last usage.json written
+_VOL_USE = {}                                      # {(kind, id): {used, vol, until, day, state}} — the last tick's read-out
+_VOL_HIT = None                                    # {(kind, id): "cut" | "slow"} — the records at their limit, for events;
+                                                   # None until the first tick, so a restart does not log them all again
+_VOL_BACK = {}                                     # {id cut off: the local day (YYYYMMDD) access returns, 0 = never}
+_VOL_BASE = {}                                     # {"day": today, start_day: (C_rx, C_tx) | None} — a period's base
+_VOL_LOCK = threading.Lock()                       # _VOL_BASE: the tick and /api/volume
+_VOL_WAKE = threading.Event()                      # a door changed what a verdict rests on: tick now, not in up to 30 s
+_VOL_USAGE = {"at": 0.0, "body": None, "key": None}   # the last usage.json written (None: not yet in this process)
 _VOL_RECS = {"mark": None, "recs": []}             # _vol_records of the roster revision `mark`
 
 
@@ -26244,51 +26260,90 @@ def _vol_records(roster):
     return out
 
 
+def _vol_snap():
+    """The ledger as a volume read needs it: (C_rx, C_tx, {pid: [slot…]}, {owner: [slot…]}, the day the ledger is in). The
+    arrays are copied under the ledger's lock; every sum runs outside it, so a sync's ingest never waits on one."""
+    with LEDGER.lock:
+        crx, ctx, lday = LEDGER.C_rx[:], LEDGER.C_tx[:], LEDGER.day
+        slots = [(s.get("pid"), s.get("owner")) for s in LEDGER.slots]
+    by_pid, by_owner = {}, {}
+    for n, (spid, own) in enumerate(slots):
+        by_pid.setdefault(spid, []).append(n)
+        if own:
+            by_owner.setdefault(own, []).append(n)
+    return crx, ctx, by_pid, by_owner, lday
+
+
+def _vol_base(first, lday, nowv):
+    """C (rx, tx) as it stood when local day `first` began; None = 0 (the ledger has no closed day before it), "none" =
+    nothing counted in the period yet. Until the ledger has moved into `first` (no sync since that midnight) the day before
+    is still open, so it has no row, and an older one would charge the period with that whole day: nothing is used yet,
+    and nothing is kept. Once it has, every day before `first` is closed — on disk or queued, read under _consistent so a
+    flush in flight is not a gap — and the row is read once and kept for the day. A history directory that cannot be read
+    raises: the tick keeps its last verdicts rather than count a whole lifetime."""
+    if first is None:
+        return None
+    if lday < first:
+        return "none"
+    today = _ld_day(nowv)[0]
+    with _VOL_LOCK:
+        if _VOL_BASE.get("day") != today:
+            _VOL_BASE.clear()
+            _VOL_BASE["day"] = today
+        if first in _VOL_BASE:
+            return _VOL_BASE[first]
+    prev = _ld_prev(first)
+    row = LEDGER._consistent(lambda: LEDGER._row_at_or_before(prev, strict=True))
+    base = (row[1], row[2]) if row else None
+    with _VOL_LOCK:
+        if _VOL_BASE.get("day") == today:
+            _VOL_BASE[first] = base
+    return base
+
+
+def _vol_used(snap, kind, rid, members, base):
+    """(download, upload) of one record since `base`: a device's slots, else every slot its members own (closed ones too).
+    Download is what the node sent (C_tx), upload what it received (C_rx)."""
+    if base == "none":
+        return 0, 0
+    crx, ctx = snap[0], snap[1]
+    brx, btx = base if base else ((), ())
+    ns = snap[2].get(rid, ()) if kind == "peer" else [n for m in members for n in snap[3].get(m, ())]
+    up = sum(crx[n] - (brx[n] if n < len(brx) else 0) for n in ns if n < len(crx))
+    dn = sum(ctx[n] - (btx[n] if n < len(btx) else 0) for n in ns if n < len(ctx))
+    return dn, up
+
+
 def _vol_tick(deps, nowv=None):
-    """One pass: recompute _VOL_STATE / _VOL_USE from the ledger. Cheap when nothing carries a volume (one roster walk)."""
-    global _VOL_STATE, _VOL_USE, _VOL_HIT
+    """One pass: recompute _VOL_STATE / _VOL_USE from the ledger. Cheap when nothing carries a volume (one roster walk).
+    A roster that cannot be read raises: the last verdicts stand (an unreadable file must not lift every cut)."""
+    global _VOL_STATE, _VOL_USE, _VOL_HIT, _VOL_BACK
     nowv = int(time.time()) if nowv is None else nowv
     roster, mark = roster_view(deps["roster_path"], repair=False)
-    roster = roster or {}
+    if roster is None:
+        raise ValueError("the roster could not be read — the last verdicts stand")
     if mark is None or _VOL_RECS.get("mark") != mark:   # the records walk once per roster revision (2.5 ms at 10,000 users)
         _VOL_RECS.update(mark=mark, recs=_vol_records(roster))
     recs = _VOL_RECS["recs"]
-    state, use, hit = {}, {}, {}
+    state, use, hit, back = {}, {}, {}, {}
     if recs and LEDGER.on:
-        with LEDGER.lock:                              # two array copies: the sum runs outside, a sync's ingest never waits
-            crx, ctx = LEDGER.C_rx[:], LEDGER.C_tx[:]
-            slots = [(s.get("pid"), s.get("owner")) for s in LEDGER.slots]
-        by_pid, by_owner = {}, {}
-        for n, (spid, own) in enumerate(slots):
-            by_pid.setdefault(spid, []).append(n)
-            if own:
-                by_owner.setdefault(own, []).append(n)
-        today = _ld_day(nowv)[0]
-        if _VOL_BASE.get("day") != today:              # the bases are closed days: read once a day
-            _VOL_BASE.clear()
-            _VOL_BASE["day"] = today
+        snap = _vol_snap()
         for kind, rid, v, name, members in recs:
             first, nxt = _vol_period(v["period"], nowv)
-            base = None
-            if first is not None:
-                if first not in _VOL_BASE:
-                    row = LEDGER._row_at_or_before(_ld_prev(first))
-                    _VOL_BASE[first] = (row[1], row[2]) if row else None
-                base = _VOL_BASE[first]
-            ns = by_pid.get(rid, []) if kind == "peer" else [n for m in members for n in by_owner.get(m, ())]
-            b_rx = lambda n: base[0][n] if base and n < len(base[0]) else 0
-            b_tx = lambda n: base[1][n] if base and n < len(base[1]) else 0
-            up = sum(crx[n] - b_rx(n) for n in ns if n < len(crx))      # the device's upload: what the node received
-            dn = sum(ctx[n] - b_tx(n) for n in ns if n < len(ctx))      # its download: what the node sent
+            dn, up = _vol_used(snap, kind, rid, members, _vol_base(first, snap[4], nowv))
             over = (("c" in v and dn + up >= v["c"]) or ("d" in v and dn >= v["d"]) or ("u" in v and up >= v["u"]))
             st = v["at"] if over else ""
-            use[(kind, rid)] = {"used": {"d": dn, "u": up}, "vol": v, "until": _ld_midnight(nxt) if nxt else 0, "state": st}
+            use[(kind, rid)] = {"used": {"d": dn, "u": up}, "vol": v, "until": _ld_midnight(nxt) if nxt else 0, "day": nxt or 0,
+                                "state": st}
             if st:
                 hit[(kind, rid)] = st
                 for i in ([rid] if kind == "peer" else members):
                     if state.get(i) != "cut":
                         state[i] = st
-    if hit != _VOL_HIT:                                 # one line a record that reached its limit or came back
+                    if st == "cut":                    # access returns when every limit cutting it has reset (0: never)
+                        b = back.get(i)
+                        back[i] = 0 if not nxt or b == 0 else max(b or 0, nxt)
+    if _VOL_HIT is not None and hit != _VOL_HIT:       # one line a record that reached its limit or came back
         rp = deps["roster_path"]
         names = {(k, i): nm for k, i, _v, nm, _m in recs}
         for key in sorted(set(hit) | set(_VOL_HIT)):
@@ -26297,7 +26352,7 @@ def _vol_tick(deps, nowv=None):
                 with contextlib.suppress(Exception):
                     ev_append(rp, key[0], key[1], ("Volume limit reached — cut off" if b == "cut" else "Volume limit reached — slowed")
                               if b else "Volume limit lifted", names.get(key, ""))
-    _VOL_HIT, _VOL_USE = hit, use
+    _VOL_HIT, _VOL_USE, _VOL_BACK = hit, use, back
     if state != _VOL_STATE:
         _VOL_STATE = state                             # swapped whole: a reader never sees half of one
         _invalidate_state_cache()
@@ -26305,29 +26360,42 @@ def _vol_tick(deps, nowv=None):
 
 
 def _vol_usage_write(deps, roster, nowv):
-    """subs/usage.json for swg-sub — {"users": {uid: {used, limit, dir, period, until, state}}, "cut": [id…]}: every user under a
-    volume limit of their own or a group's (the one nearest its limit), and every user or device cut off (swg-sub's own
-    is_expired reads it). Written only when it moved — a cut at once, used figures at most every VOL_USAGE_EVERY_S — and
-    removed when nothing is limited. Failures are logged and retried on the next tick."""
+    """subs/usage.json for swg-sub — {"users": {uid: {used, limit, dir, period, until, day, state}}, "cut": [id…], "back":
+    {id: day}}: every user under a volume limit of their own or a group's — the row that acts (cut, then slow) else the one
+    nearest its limit, a {d, u} limit by its direction nearest the limit — and every user or device cut off with the local
+    day access returns (swg-sub's own is_expired reads "cut"). Written when it moved: who is cut or slowed and every row's
+    limit at once, the used figures alone at most every VOL_USAGE_EVERY_S; removed when nothing is limited — also a file the
+    process before this one left. Failures are logged and retried on the next tick."""
     users = roster.get("users") or {}
+    groups = roster_groups(roster)
+    rank = {"cut": 2, "slow": 1, "": 0}
     body = {}
-    for (kind, rid), u in _VOL_USE.items():
+    for (kind, rid), u in sorted(_VOL_USE.items()):
         if kind == "peer":
             continue
-        members = [rid] if kind == "user" else [m for m in (roster_groups(roster).get(rid) or {}).get("users") or () if m in users]
+        members = [rid] if kind == "user" else [m for m in (groups.get(rid) or {}).get("users") or () if m in users]
         v = u["vol"]
-        lim = v.get("c") or v.get("d") or v.get("u") or 1
-        used = (u["used"]["d"] + u["used"]["u"]) if "c" in v else u["used"]["d"] if "d" in v else u["used"]["u"]
+        if "c" in v:
+            dirn, used, lim = "c", u["used"]["d"] + u["used"]["u"], v["c"]
+        else:
+            dirn = max((k for k in ("d", "u") if k in v), key=lambda k: u["used"][k] / v[k])
+            used, lim = u["used"][dirn], v[dirn]
+        row = {"used": used, "limit": lim, "dir": dirn, "period": v["period"], "until": u["until"], "day": u["day"],
+               "state": u["state"]}
         for m in members:
-            row = {"used": used, "limit": lim, "dir": "c" if "c" in v else "d" if "d" in v else "u", "period": v["period"],
-                   "until": u["until"], "state": u["state"]}
-            if m not in body or (used / lim) > (body[m]["used"] / body[m]["limit"]):
+            o = body.get(m)
+            if o is None or (rank[row["state"]], used / lim) > (rank[o["state"]], o["used"] / o["limit"]):
                 body[m] = row
+    for m, row in list(body.items()):
+        if row["state"] == "cut" and m in _VOL_BACK:   # cut by more than one: back when the last of them resets
+            body[m] = dict(row, day=_VOL_BACK[m], until=_ld_midnight(_VOL_BACK[m]) if _VOL_BACK[m] else 0)
     cut = sorted(i for i, v in _VOL_STATE.items() if v == "cut")
-    text = json.dumps({"users": body, "cut": cut}, sort_keys=True, separators=(",", ":")) if body or cut else ""
-    old = _VOL_USAGE["body"] or ""
-    same_cut = old and json.loads(old).get("cut") == cut
-    if text == old or (text and same_cut and nowv - _VOL_USAGE["at"] < VOL_USAGE_EVERY_S):
+    back = {i: _VOL_BACK.get(i, 0) for i in cut}
+    text = json.dumps({"users": body, "cut": cut, "back": back}, sort_keys=True, separators=(",", ":")) if body or cut else ""
+    key = json.dumps([back, {m: [r["limit"], r["dir"], r["period"], r["day"], r["state"]] for m, r in body.items()}],
+                     sort_keys=True, separators=(",", ":")) if text else ""
+    old = _VOL_USAGE["body"]
+    if old is not None and (text == old or (key == _VOL_USAGE["key"] and nowv - _VOL_USAGE["at"] < VOL_USAGE_EVERY_S)):
         return
     path = _sub_usage_path(deps)
     try:
@@ -26335,14 +26403,15 @@ def _vol_usage_write(deps, roster, nowv):
             atomic_write(path, text, mode=0o640)
         elif os.path.exists(path):
             os.unlink(path)
-        _VOL_USAGE["at"], _VOL_USAGE["body"] = nowv, text
+        _VOL_USAGE.update(at=nowv, body=text, key=key)
     except OSError as e:
         log(LOG_WARNING, "volume: usage.json not written: %s" % e)
 
 
 def _vol_loop(deps):
     while True:
-        time.sleep(VOL_TICK_S)
+        _VOL_WAKE.wait(VOL_TICK_S)                     # every VOL_TICK_S, or at once after a door changed a verdict's input
+        _VOL_WAKE.clear()
         try:
             _vol_tick(deps)
         except Exception as e:                         # a tick that fails keeps the last verdicts; the next one tries again
@@ -29940,15 +30009,42 @@ def api(method, path, qs, body, deps):
             qs = {**qs, "members": [",".join(u for u in (g.get("users") or []) if u in us)]}
         return LEDGER.api(path, qs)
     if method == "GET" and path == "/api/volume":
-        # A record's volume limit as the last tick saw it (docs/LIMITS-PLAN.md §3.6): used this period, the limit, when the
-        # period ends, cut off / slowed. Asked when an editor or a view opens — never on the 5 s poll.
-        kind, rid = (qs.get("kind") or [""])[0], (qs.get("id") or [""])[0]
-        if kind not in ("user", "group", "peer") or not rid:
+        # What a record has used in a period (docs/LIMITS-PLAN.md §3.6), read from the ledger now — so the editor shows it
+        # BEFORE a limit is saved (§3.5: a limit set mid-period counts what is already used): `period` the one being drafted,
+        # else the stored limit's, else the month. Cut off / slowed as the last tick saw it, for the stored limit's period
+        # only. Asked when an editor opens or its period changes — never on the 5 s poll.
+        kind, rid, per = (qs.get("kind") or [""])[0], (qs.get("id") or [""])[0], (qs.get("period") or [""])[0]
+        if kind not in ("user", "group", "peer") or not rid or per not in ("", "d", "w", "m", "n"):
             return 400, {"ok": False, "code": "bad_request", **perr("kind (user, group or peer) and id are required")}
         if not LEDGER.on:
             return 200, {"ok": True, "data": {"off": LEDGER.why_off or "off"}}
-        u = _VOL_USE.get((kind, rid))
-        return 200, {"ok": True, "data": dict(u, used=dict(u["used"])) if u else {}}
+        roster, _mk = roster_view(roster_path, repair=False)
+        if roster is None:
+            return 503, {"ok": False, "code": "busy", "error": "the roster could not be read"}
+        users, members = roster.get("users") or {}, None
+        if kind == "peer" and rid not in (roster.get("peers") or {}):
+            return 404, {"ok": False, "code": "not_found", "error": "unknown peer"}
+        if kind == "user":
+            if rid not in users:
+                return 404, {"ok": False, "code": "not_found", "error": "unknown user"}
+            members = [rid]
+        if kind == "group":
+            g = roster_groups(roster).get(rid)
+            if not isinstance(g, dict):
+                return 404, {"ok": False, "code": "not_found", "error": "unknown group"}
+            members = [u for u in (g.get("users") or ()) if isinstance(u, str) and u in users]
+        cur = _VOL_USE.get((kind, rid))
+        per = per or (cur["vol"]["period"] if cur else "m")
+        nowv = int(time.time())
+        first, nxt = _vol_period(per, nowv)
+        try:
+            snap = _vol_snap()
+            dn, up = _vol_used(snap, kind, rid, members, _vol_base(first, snap[4], nowv))
+        except Exception as e:                       # the ledger busy, or its directory unreadable: no figure, never a guess
+            return 503, {"ok": False, "code": "busy", "error": "the traffic history could not be read: %s" % e}
+        return 200, {"ok": True, "data": {"used": {"d": dn, "u": up}, "period": per, "until": _ld_midnight(nxt) if nxt else 0,
+                                          "day": nxt or 0, "state": cur["state"] if cur and cur["vol"]["period"] == per else "",
+                                          **({"vol": dict(cur["vol"])} if cur else {})}}
     if method == "GET" and path == "/api/stats-usage":
         # Settings → Display → Data: what the traffic history uses on disk — measured (one walk, cached a minute) — what
         # it will grow by, and what turning Infinite history off would delete (the old detail). Answered when the ledger is OFF too: the
@@ -30045,6 +30141,8 @@ def api(method, path, qs, body, deps):
         renamed = "name" in fields
         u = user_set(roster, uid, fields, now())
         roster_save(roster_path, roster)
+        if "volume" in fields:
+            _VOL_WAKE.set()                                  # its verdict now, not on the next 30 s tick
         ev_append(roster_path, "user", uid, "Renamed user" if renamed else "Updated user",
                   u.get("name", ""), "" if renamed else ", ".join(sorted(fields)) or "")
         return 200, {"ok": True, "data": u}
@@ -30164,6 +30262,8 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "group", gid, "Changed group speed limit", g["name"])
         if "volume" in fields:
             ev_append(roster_path, "group", gid, "Changed group volume limit", g["name"])
+        if "volume" in fields or ("users" in fields and g.get("volume")):
+            _VOL_WAKE.set()                                  # its budget or who shares it moved: the verdicts now
         return 200, {"ok": True, "data": dict(g, id=gid)}
 
     if method == "POST" and path == "/api/groups/delete":
@@ -30533,6 +30633,8 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "peer", pid, "Changed device speed limit", peer_label(roster, p2))
         if "volume" in changed and (changed["volume"] or None) != (p.get("volume") or None):
             ev_append(roster_path, "peer", pid, "Changed device volume limit", peer_label(roster, p2))
+        if "volume" in changed or "user_id" in changed:
+            _VOL_WAKE.set()                                  # its own limit, or whose limits count it, moved: the verdicts now
         if "routes" in changed or "share" in changed:   # what the operator has just done, before they walk away (§4.5)
             return 200, {"ok": True, "data": p2, "networks": network_report(roster, pid, deps.get("node_snaps") or {})}
         return 200, {"ok": True, "data": p2}

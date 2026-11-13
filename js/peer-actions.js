@@ -533,10 +533,13 @@ export function expiryFromInput(str) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exe
 // The SUBSCRIPTION's lifecycle sentence for a user (block wins over a lapsed date; the soft "about to expire" warn
 // only shows inside the warn window). `cls` colours the whole line green (active) / orange (about-to-expire) / red
 // (blocked|expired). Block/expiry carry the date they happened / will happen.
+// A user or device cut off by a volume limit (/api/state `vol`): expired, as reconcile.js and the panel's is_expired say.
+const volCut = id => !!id && !!Store.vol && Store.vol[id] === "cut";
 export function subState(user) {
   const now = now_s(), u = user || {}, exp = +(u.expiry || 0);
   if (u.disabled) return { cls: "s-blocked", text: T("Subscription was blocked") + (u.disabledAt ? " " + fmtDate(u.disabledAt) : "") };
   if (exp && now >= exp) return { cls: "s-expired", text: T("Subscription expired on {v1}", { v1: fmtDate(exp) })};
+  if (volCut(u.id)) return { cls: "s-expired", text: T("Cut off: the volume limit is used up") };
   if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: T("Subscription is about to expire on {v1}", { v1: fmtDate(exp) })};
   return { cls: "s-active", text: exp ? T("Subscription is active until {v1}", { v1: fmtDate(exp) }) : T("Subscription is active") };
 }
@@ -547,6 +550,7 @@ export function peerState(peer) {
   const now = now_s(), p = peer || {}, exp = +(p.ownExpiry || 0);
   if (p.selfDisabled) return { cls: "s-blocked", text: T("Peer was blocked") + (p.disabledAt ? " " + fmtDate(p.disabledAt) : "") };
   if (exp && now >= exp) return { cls: "s-expired", text: T("Peer expired on {v1}", { v1: fmtDate(exp) })};
+  if (volCut(p.id)) return { cls: "s-expired", text: T("Cut off: the volume limit is used up") };
   if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: T("Peer is about to expire on {v1}", { v1: fmtDate(exp) })};
   if (exp) return { cls: "s-active", text: T("Peer is active until {v1}", { v1: fmtDate(exp) })};
   return null;
@@ -561,6 +565,7 @@ export function userState(user) {
   const now = now_s(), u = user || {}, exp = +(u.expiry || 0);
   if (u.disabled) return { cls: "s-blocked", text: T("User was blocked") + (u.disabledAt ? " " + fmtDate(u.disabledAt) : "") };
   if (exp && now >= exp) return { cls: "s-expired", text: T("User expired on {v1}", { v1: fmtDate(exp) })};
+  if (volCut(u.id)) return { cls: "s-expired", text: T("Cut off: the volume limit is used up") };
   if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: T("User is about to expire on {v1}", { v1: fmtDate(exp) })};
   return null;
 }

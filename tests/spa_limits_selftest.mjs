@@ -18,10 +18,14 @@
  *     gear; Peer targets says a removed row takes its own limit with it (R7)
  * [7] Russian: every string js/limits.js, the doors and the node issues say has a Russian line
  * [8] volume limits (limits-l4): the draft in GB → bytes as volume_clean takes it, a thousands separator refused; the device's
- *     volume carried; /api/state's `vol` read as expired (with its reason) for a device and its owner's other devices
+ *     volume carried; /api/state's `vol` read as expired (with its reason) for a device and its owner's other devices; review
+ *     limits-l4: a slowed device's limit in force is 1 Mbit/s in one pool for its person (Live's "held", the peer view), a date
+ *     passed is the reason before a volume cut, the status lines say a volume cut, the group editor stops on a bad volume, the
+ *     used line asks for the drafted period and only with a limit drafted
  *
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
- *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean
+ *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
+ *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -44,7 +48,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   kcarry: ["reconcile.js", "                 limits: t.limits || null,   // its own speed limit (R7)", "                 limits: null,   // its own speed limit (R7)"],   // [2]
   sep: ["js/limits.js", "SEP_RE.test(s) ? \"sep\" :", "false ? \"sep\" :"],                                                                             // [1]
   seed: ["js/limits.js", "!limSame(out.lim, limFromDraft(seed).lim)", "!limSame(out.lim, stored)"],                                                        // [6]
-  gcarry: ["js/store.js", "                      limits: g[id].limits || null }))", "                      limits: null }))"],                         // [2]
+  gcarry: ["js/store.js", "limits: g[id].limits || null, volume: g[id].volume || null }))", "limits: null, volume: g[id].volume || null }))"],                         // [2]
   usersend: ["js/peer-ui.js", "expiry: expSec, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) }), setSaveErr, setBusy);", "expiry: expSec, ...(volume ? { volume } : {}) }), setSaveErr, setBusy);"],    // [6]
   tgtdoor: ["js/sheets-crud.js", "iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });", "iface: t.iface });"],                                       // [6]
   dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}", "    dirtyRef=${{ current: false }}"],   // [6]
@@ -53,6 +57,12 @@ const PLANTS = {   // name: [file, anchor, replacement]
   volcut: ["reconcile.js", "|| (!!vol && vol[pid] === \"cut\");", ";"],                                                                         // [8]
   volcarry: ["reconcile.js", "      volume: p.volume || null,", "      volume: null,"],                                                                  // [8]
   volgb: ["js/limits.js", "    out[k] = Math.round(v * GB);", "    out[k] = Math.round(v);"],                                                           // [8]
+  slowlim: ["js/limits.js", "return !sk || (e && !lower(SLOW, e.lim)) ? e :", "return true ? e :"],                                          // [8]
+  volreason: ["reconcile.js", "reason = selfDate ? T(\"this peer's access date has passed\") : userDate ?", "reason = (cfg.vol || {})[pid] === \"cut\" ? T(\"its volume limit is used up\") : selfDate ? T(\"this peer's access date has passed\") : userDate ?"],   // [8]
+  substate: ["js/peer-actions.js", "  if (volCut(u.id)) return { cls: \"s-expired\", text: T(\"Cut off: the volume limit is used up\") };\n  if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: \"s-expiring\", text: T(\"Subscription", "  if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: \"s-expiring\", text: T(\"Subscription"],   // [8]
+  groupguard: ["js/peer-ui.js", "    const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null || volume === null) return;", "    const volume = gid && vol.changed ? vol.take() : undefined;\n    if (limits === null) return;"],   // [8]
+  usedperiod: ["js/limits.js", " + \"&period=\" + period)", ")"],                                                                   // [8]
+  usedown: ["js/limits.js", "${id && own ? html`<${UsedLine}", "${id ? html`<${UsedLine}"],                                                     // [8]
   crash: ["swg-panel-server", "\"cut\", v1=_w) if _k == \"exception\" else", "\"cut\", v1=_w) if _k == \"exception!\" else"],                         // [5]
 };
 const made = [];
@@ -261,6 +271,28 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   const rcq = R.reconcile({ ...rv, peers: { pb: rv.peers.pb } }, { n1: { generated_at: now, interfaces: { awg0: { meta: {}, peers: [] } } } }, Date.now(), { nodeSeen: { n1: now }, vol: { pb: "cut" } });
   const pbq = rcq.peers.find(p => p.id === "pb");
   check("…once its node has dropped it: expired, with the volume as the reason", pbq.status === "expired" && /volume limit/.test(pbq.reason || ""), [pbq.status, pbq.reason]);
+  const rcd = R.reconcile({ ...rv, peers: { pb: { ...rv.peers.pb, expiry: now - 60 } } }, { n1: { generated_at: now, interfaces: { awg0: { meta: {}, peers: [] } } } }, Date.now(), { nodeSeen: { n1: now }, vol: { pb: "cut" } });
+  const pbd = rcd.peers.find(p => p.id === "pb");
+  check("…its own date passed too: the date is the reason (raising the volume would not bring it back)", /access date/.test(pbd.reason || ""), pbd.reason);
+  const keepVol = Store.vol;
+  Store.vol = { uz: "slow" };
+  const se = L.effLimit({ id: "px", user_id: "uz", limits: { d: 20 } }, { node: "n1", iface: "awg0" });
+  check("a slowed person's device runs at 1 Mbit/s both ways, one pool for the person (Live's held, the peer view)",
+    JSON.stringify(se && se.lim) === '{"c":1}' && se.src === "volume" && se.pool === "s:uz", se);
+  Store.vol = { px: "slow" };
+  const sd = L.effLimit({ id: "px", user_id: "uz" }, { node: "n1", iface: "awg0" });
+  check("…a device slowed by its own limit, its own pool", sd && sd.pool === "s:px", sd);
+  const PA = await load("js/peer-actions.js");
+  Store.vol = { uz: "cut", px: "cut" };
+  const ss = PA.subState({ id: "uz" }), ps = PA.peerState({ id: "px" }), us = PA.userState({ id: "uz" });
+  check("the status lines say a volume cut (never 'Subscription is active' beside an expired badge)",
+    ss.cls === "s-expired" && /volume limit/.test(ss.text) && ps && ps.cls === "s-expired" && us && us.cls === "s-expired", [ss, ps, us]);
+  Store.vol = keepVol;
+  check("the group editor stops on a volume it cannot save, as Edit user and Edit peer do",
+    source("js/peer-ui.js").split("if (limits === null || volume === null) return;").length === 3);
+  const ls = source("js/limits.js");
+  check("the used line asks for the drafted period, and only with a limit drafted (no ledger-off warning on every editor)",
+    ls.includes('encodeURIComponent(id) + "&period=" + period)') && ls.includes("${id && own ? html`<${UsedLine}"));
 
   console.log("\n[7] Russian");
   const keys = new Set(RUKEYS);

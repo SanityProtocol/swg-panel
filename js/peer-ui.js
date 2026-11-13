@@ -1187,7 +1187,7 @@ function GroupSheet({ gid, seed }) {
     if (!nm) { setErr(T("Give the group a name.")); return; }
     const limits = gid && lim.changed ? lim.take() : undefined;   // sent only when it changed; {} clears it
     const volume = gid && vol.changed ? vol.take() : undefined;
-    if (limits === null) return;
+    if (limits === null || volume === null) return;
     setBusy(true); setErr("");
     let r = null;
     try {

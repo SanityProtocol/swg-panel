@@ -66,6 +66,8 @@ cannot run has not passed.
 Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-macos      serves a sub.js whose csqtt branch has no client-for-this-OS guard → RED on [1]
      --perturb-volline    serves a sub.js that shows no volume line and no "limit reached" page → RED on [15]
+     --perturb-volday     serves a sub.js that shows a reset day as an instant in the browser's zone → RED on [15]
+     --perturb-voldev     serves a sub.js whose cut device's page says EXPIRED, not its limit → RED on [15]
      --perturb-by         serves a sub.js with the badge's " by " hard-coded again → RED on [2]
      --perturb-autostart  serves a catalog where La Lune on Android does not autostart → RED on [3]
      --perturb-tabs       serves a sub.js that builds a tab for every group, page or not → RED on [1]'s Turn-tab check
@@ -107,6 +109,8 @@ PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-serv
 CHROME = os.environ.get("CHROME") or shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
 P_MACOS = "--perturb-macos" in sys.argv
 P_VOLLINE = "--perturb-volline" in sys.argv
+P_VOLDAY = "--perturb-volday" in sys.argv
+P_VOLDEV = "--perturb-voldev" in sys.argv
 P_BY = "--perturb-by" in sys.argv
 P_AUTO = "--perturb-autostart" in sys.argv
 P_TABS = "--perturb-tabs" in sys.argv
@@ -135,7 +139,7 @@ P_LINE25 = "--perturb-line25" in sys.argv
 P_LL25 = "--perturb-ll25" in sys.argv
 P_LLFIRE = "--perturb-llfire" in sys.argv
 P_LL21 = "--perturb-ll21" in sys.argv
-PERTURB = (P_VOLLINE or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25)
 
 FAILS = []
@@ -303,6 +307,12 @@ if P_VOLLINE:
     perturbed_web('    if (vol && vol.limit) {', '    if (false) {', "the volume line")
     s2 = open(os.path.join(WEB, "sub.js")).read().replace('if (vol && vol.state === "cut") showState', 'if (false) showState')
     open(os.path.join(WEB, "sub.js"), "w").write(s2)
+if P_VOLDAY:
+    perturbed_web('return new Date(Date.UTC(y, m - 1, dd)).toLocaleDateString(LANG === "ru" ? "ru-RU" : undefined, { timeZone: "UTC" });',
+                  'return new Date(Date.UTC(y, m - 1, dd) - 3 * 3600e3).toLocaleDateString(LANG === "ru" ? "ru-RU" : undefined);',
+                  "the reset day as the panel's day (an MSK midnight shown in the browser's zone)")
+if P_VOLDEV:
+    perturbed_web('var volCut = expired && peer.vol_back != null;', 'var volCut = false;', "a device's own volume cut")
 if P_MACOS:
     perturbed_web('if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;', "", "the csqtt client-for-this-OS guard")
 if P_LINE:
@@ -939,21 +949,22 @@ try:
     _u = json.load(open(os.path.join(D, "users.json")))
     _u["users"]["u2"]["id"] = "u2"                     # every roster record carries its id (user_set); the cut keys on it
     J("users.json", _u)
-    _until = int(time.time()) + 10 * 86400
-    J("subs/usage.json", {"users": {"u1": {"used": 12_500_000_000, "limit": 50_000_000_000, "dir": "c", "period": "m", "until": _until, "state": ""},
-                                    "u2": {"used": 5_000_000_000, "limit": 5_000_000_000, "dir": "d", "period": "w", "until": _until, "state": "cut"}},
-                          "cut": ["u2"]})
+    _until = int(time.time()) + 10 * 86400             # the instant (old pages); `day` is the panel's local day, what is shown
+    J("subs/usage.json", {"users": {"u1": {"used": 12_500_000_000, "limit": 50_000_000_000, "dir": "c", "period": "m", "until": _until, "day": 20271201, "state": ""},
+                                    "u2": {"used": 5_000_000_000, "limit": 5_000_000_000, "dir": "d", "period": "w", "until": _until, "day": 20271201, "state": "cut"}},
+                          "cut": ["u2"], "back": {"u2": 20271201}})
     time.sleep(3.5)                                    # swg-sub's shared read lives 3 s
     tab, rd = render("u1", "android", "en")
     line = tab.ev("(document.querySelector('.usage-line') || {}).textContent || ''")
-    check("[15] used / left above the devices", "12.5 of 50 GB used this month" in line and "resets" in line, line)
+    check("[15] used / left above the devices, resetting on the panel's own day", "12.5 of 50 GB used this month" in line and "resets 12/1/2027" in line, line)
     tab.close()
     tab, rd = render("u1", "android", "ru")
     line = tab.ev("(document.querySelector('.usage-line') || {}).textContent || ''")
     check("[15] …in Russian", "Использовано 12.5 из 50 ГБ за месяц" in line, line)
     tab.close()
     tab = Tab(br)
-    tab.goto(ORIGIN + "/healthz")                       # same origin: the page's language is seeded before it loads
+    tab.br.send("Emulation.setTimezoneOverride", {"timezoneId": "America/Los_Angeles"}, session=tab.s)   # west of the panel: an
+    tab.goto(ORIGIN + "/healthz")                       # instant would read as Nov 30; same origin: the language seeded first
     time.sleep(0.3)
     tab.ev("localStorage.setItem('swgsub-lang', 'en'); localStorage.setItem('swgsub-os', 'android'); true")
     tab.goto(ORIGIN + "/" + links["u2"])
@@ -965,7 +976,15 @@ try:
                 break
         time.sleep(0.1)
     check("[15] a user cut off by volume sees LIMIT REACHED and the day access returns, not EXPIRED",
-          "LIMIT REACHED" in st and "Access returns on" in st and "EXPIRED" not in st, st)
+          "LIMIT REACHED" in st and "Access returns on 12/1/2027" in st and "EXPIRED" not in st, st)
+    tab.close()
+    # …and one device cut by its own limit: its page says the limit and the day it returns, the user's other devices stay
+    J("subs/usage.json", {"users": {}, "cut": ["p1"], "back": {"p1": 20271201}})
+    time.sleep(3.5)
+    tab, rd = render("u1", "android", "en")
+    dead = tab.ev("[...document.querySelectorAll('.peer-dead')].map(b => b.textContent).join(' | ')")
+    check("[15] a device cut by its own limit: LIMIT REACHED and its return day, on its own page", "LIMIT REACHED" in dead
+          and "This device's data limit is used up" in dead and "12/1/2027" in dead, dead)
     tab.close()
     os.unlink(os.path.join(D, "subs", "usage.json"))
 finally:

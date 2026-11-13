@@ -288,9 +288,9 @@ function reconcile(roster, stats, now, cfg) {
     const effExpiry = (peerExp && userExp) ? Math.min(peerExp, userExp) : (peerExp || userExp);   // the earlier binding date
     // A volume limit used up (/api/state `vol`, docs/LIMITS-PLAN.md R10) is expiry: the panel drops the device just the same.
     const vol = cfg.vol || null;
-    const volCut = !!vol && (vol[pid] === "cut" || (!!p.user_id && vol[p.user_id] === "cut"));
-    const selfExpired = (peerExp > 0 && nowSec >= peerExp) || (!!vol && vol[pid] === "cut");
-    const userExpired = (userExp > 0 && nowSec >= userExp) || (!!vol && !!p.user_id && vol[p.user_id] === "cut");
+    const selfDate = peerExp > 0 && nowSec >= peerExp, userDate = userExp > 0 && nowSec >= userExp;
+    const selfExpired = selfDate || (!!vol && vol[pid] === "cut");
+    const userExpired = userDate || (!!vol && !!p.user_id && vol[p.user_id] === "cut");
     const expired = !blocked && (selfExpired || userExpired);
     const warnS = (cfg.expiryWarnDays != null ? cfg.expiryWarnDays : 3) * 86400;
     const expiring = !blocked && !expired && effExpiry > 0 && nowSec >= (effExpiry - warnS);   // inside the warn window, not yet past
@@ -328,7 +328,7 @@ function reconcile(roster, stats, now, cfg) {
         : T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
     }
     else if (status === "broken") reason = T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface");
-    else if (status === "expired") reason = volCut ? T("its volume limit is used up") : selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
+    else if (status === "expired") reason = selfDate ? T("this peer's access date has passed") : userDate ? T("the subscription's access date has passed") : T("its volume limit is used up");   // a date first: raising the volume would not bring it back
 
     // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: each deployment tracks how long it has been
     // dangling/broken (per-target block above, gated by restoreGraceMs) so a just-created peer, a brief node

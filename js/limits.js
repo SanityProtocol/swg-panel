@@ -72,7 +72,7 @@ export function userLimit(uid) {
 }
 // The limit a deployment runs under (docs/LIMITS-PLAN.md §3.4): its own, else the device's, else the user's or the lowest group's.
 // A device's own limit is ONE budget for its entries on a node (limits-l2 F4), hence its pool p:<id>.
-export function effLimit(peer, t) {
+function cfgLimit(peer, t) {
   if (!peer || !t) return null;
   const tl = limClean(t.limits);
   if (tl) return { lim: tl, src: "deployment", pool: "t:" + peer.id + "|" + t.iface };
@@ -80,17 +80,27 @@ export function effLimit(peer, t) {
   if (pl) return { lim: pl, src: "device", pool: "p:" + peer.id };
   return peer.user_id ? userLimit(peer.user_id) : null;
 }
+// …and the one in force: a volume limit's "slow" (/api/state `vol`) is 1 Mbit/s both ways, ONE pool for the person's devices on
+// a node (or the device's, slowed by its own limit), unless the configured limit is lower already — swg-panel-server
+// limits_for_node's rule, so Live's "held" and the peer view say what the node runs.
+const SLOW = { c: 1 };
+export function effLimit(peer, t) {
+  const e = cfgLimit(peer, t), v = Store.vol;
+  if (!v || !peer || !t) return e;
+  const sk = peer.user_id && v[peer.user_id] === "slow" ? peer.user_id : v[peer.id] === "slow" ? peer.id : null;
+  return !sk || (e && !lower(SLOW, e.lim)) ? e : { lim: SLOW, src: "volume", pool: "s:" + sk };
+}
 // The limit a record WOULD fall back to without its own — the line under the editor. A user: the lowest group's; a device: the
 // user's (or their group's); a deployment: the device's, else the user's.
 export function fallbackFor(level, rec, peer) {
   if (level === "user") return groupLimit(rec.id);
   if (level === "device") return rec.user_id ? userLimit(rec.user_id) : null;
-  if (level === "deployment") return effLimit(peer, { ...rec, limits: null });
+  if (level === "deployment") return cfgLimit(peer, { ...rec, limits: null });
   return null;
 }
 
 // What a limit's source is called, short (the peer view's cell) and in a sentence (the editor's fallback line).
-export const srcShort = e => e.src === "deployment" ? T("lim|own") : e.src === "device" ? T("lim|device")
+export const srcShort = e => e.src === "volume" ? T("volume used up") : e.src === "deployment" ? T("lim|own") : e.src === "device" ? T("lim|device")
   : e.src === "user" ? T("lim|user {name}", { name: e.name }) : T("lim|group {name}", { name: e.name });
 function fallbackLine(e, own) {
   const lim = limWords(e.lim);
@@ -178,8 +188,6 @@ export function HeldMark({ peer, t }) {
 }
 // The peer view's limit cell: what this deployment runs under, from where, and — where it does not hold — that it does not.
 export function LimitCell({ peer, t }) {
-  const v = Store.vol, slowed = !!v && (v[peer.id] === "slow" || (!!peer.user_id && v[peer.user_id] === "slow"));
-  if (slowed) return html`<span class="pv-lim"><span class="k">${T("col|Speed limit")}</span><${Ic} i="gauge"/> ${T("{v1} Mbit/s both ways", { v1: 1 })} <span class="limgap">${T("volume used up")}</span></span>`;
   const e = effLimit(peer, t);
   if (!e) return null;
   const g = gapOf(t);
@@ -326,26 +334,32 @@ export function useVolume(stored) {
 }
 const PERIOD = { d: () => T("vol|today"), w: () => T("vol|this week"), m: () => T("vol|this month"), n: () => T("vol|in total") };
 export const gbText = b => T("{v1} GB", { v1: String(+(b / GB).toFixed(b >= 10 * GB ? 1 : 2)) });
-// What is used so far, as the last tick saw it: {used: {d, u}, vol, until, state} — or {off} when the ledger is off.
-function useVolUse(kind, id) {
+// What is used in `period`, read from the ledger when asked: {used: {d, u}, period, day, state, vol?} — or {off} when the ledger
+// is off. Asked for the period being drafted, so the figure is there BEFORE a limit is saved (a limit set mid-period counts what
+// is already used, §3.5); cut off / slowed only for the stored limit's own period.
+function useVolUse(kind, id, period) {
   const [u, setU] = useState(null);
   useEffect(() => {
-    if (!id) return;
+    if (!id || !period) return;
     let live = true;
-    api.get("/api/volume?kind=" + kind + "&id=" + encodeURIComponent(id)).then(r => { if (live && r && r.ok) setU(r.data || {}); }).catch(() => {});
+    api.get("/api/volume?kind=" + kind + "&id=" + encodeURIComponent(id) + "&period=" + period)
+      .then(r => { if (live && r && r.ok) setU(r.data || {}); }).catch(() => {});
     return () => { live = false; };
-  }, [kind, id]);
-  return u;
+  }, [kind, id, period]);
+  return u && u.period && u.period !== period ? null : u;
 }
-function UsedLine({ kind, id }) {
-  const u = useVolUse(kind, id);
+// A reset day, YYYYMMDD in the panel's time zone, as that date wherever the browser is.
+const dayText = d => new Date(Date.UTC(Math.floor(d / 10000), Math.floor(d / 100) % 100 - 1, d % 100))
+  .toLocaleDateString(locale(), { month: "short", day: "numeric", timeZone: "UTC" }).replace(/\.$/, "");
+function UsedLine({ kind, id, draft }) {
+  const u = useVolUse(kind, id, draft.period);
   if (!u) return null;
   if (u.off) return html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The traffic history is off on this panel, so no volume limit is enforced.")}</span></div>`;
   if (!u.used) return null;
-  const v = u.vol || {}, words = [v.d != null || v.c != null ? T("download {v1}", { v1: gbText(u.used.d) }) : "", v.u != null || v.c != null ? T("upload {v1}", { v1: gbText(u.used.u) }) : ""].filter(Boolean).join(", ");
-  return html`<div class=${"hint volused" + (u.state ? " at" : "")}><${Ic} i="gauge"/> ${T("Used {when}: {used}.", { when: PERIOD[v.period] ? PERIOD[v.period]() : "", used: words })}${
+  const both = draft.mode === "c", words = [T("download {v1}", { v1: gbText(u.used.d) }), T("upload {v1}", { v1: gbText(u.used.u) })].join(", ");
+  return html`<div class=${"hint volused" + (u.state ? " at" : "")}><${Ic} i="gauge"/> ${T("Used {when}: {used}.", { when: PERIOD[u.period] ? PERIOD[u.period]() : "", used: both ? T("{v1} together", { v1: gbText(u.used.d + u.used.u) }) + " (" + words + ")" : words })}${
     u.state === "cut" ? " " + T("Cut off now.") : u.state === "slow" ? " " + T("Slowed to 1 Mbit/s now.") : ""}${
-    u.until ? " " + T("Resets {v1}.", { v1: new Date(u.until * 1000).toLocaleDateString(locale(), { month: "short", day: "numeric" }).replace(/\.$/, "") }) : ""}</div>`;
+    u.day ? " " + T("Resets {v1}.", { v1: dayText(u.day) }) : ""}</div>`;
 }
 const VHINTS = {
   user: () => T("Counts all of this person's devices together, on every server."),
@@ -376,7 +390,7 @@ export function VolumeField({ draft, onChange, level, err, kind, id }) {
       </div>` : null}
     ${err ? html`<div class="hint err">${err}</div>` : null}
     <div class="hint">${VHINTS[level]()}${own ? " " + (draft.period === "n" ? T("Total never resets.") : T("A week starts on Monday; days follow the panel's time zone.")) : ""}</div>
-    ${id ? html`<${UsedLine} kind=${kind} id=${id}/>` : null}
+    ${id && own ? html`<${UsedLine} kind=${kind} id=${id} draft=${draft}/>` : null}
   </div>`;
 }
 const badGb = v => v !== null && (v === "sep" || !okGb(v));
