@@ -1158,7 +1158,7 @@ export function ServiceIssueSheet({ issues }) {
       </div>`)}
       <div class="svc-foot">${certOnly
         ? T("The subscription service is installed — what is missing is its certificate, which only a reissue can create. “Run update” cannot fix this one.")
-        : noUpdate && list.every(i => i.id === "subcert" || i.kind === "reboot") ? T("An update cannot fix this — the kernel module is built for the newer kernel, and only a reboot starts it. Until then awg interfaces stay on the userspace datapath, if it is installed.")
+        : noUpdate && list.every(i => i.id === "subcert" || i.kind === "reboot") ? T("A reboot fixes this — the kernel module is built for the newer kernel, and the reboot starts it. Until then awg interfaces stay on the userspace datapath, if it is installed.")
         : noUpdate ? T("An update cannot fix this — the key has to be enrolled once at the box's console, after a reboot. Until then awg interfaces stay on the userspace datapath, if it is installed.")
         : T("“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.")}</div>
     </div>

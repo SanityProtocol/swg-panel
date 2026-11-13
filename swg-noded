@@ -16945,7 +16945,8 @@ def _kver_key(k):
 
 def _awg_ko_for(kr):
     """An AmneziaWG module file for kernel `kr`, where DKMS and `make install` put one (lib/common.sh _awg_ko_for reads the same)."""
-    for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
+    for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/extra" % kr,
+              "/lib/modules/%s/kernel/drivers/net" % kr):
         try:
             if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
                 return True
@@ -16956,9 +16957,13 @@ def _awg_ko_for(kr):
 
 def _awg_reboot_kernel():
     """The kernel a reboot starts — the newest installed one with its image in /boot, which GRUB boots by default — when it is
-    newer than the running kernel and has the AmneziaWG module; "" otherwise. Asked only when the running kernel has none.
+    newer than the running kernel and has the AmneziaWG module; "" otherwise. Asked only when the running kernel has none, and
+    answered only when its headers are missing too.
     User report 2026-11-13: a box on its install kernel, whose headers the archive no longer had, with a newer kernel and its
     module waiting; the panel said "update the node to rebuild the module", and no update could. lib/common.sh awg_reboot_kernel."""
+    kr = os.uname().release
+    if os.path.exists("/lib/modules/%s/build" % kr):   # its headers are here: a build can still give it a module now (review F2)
+        return ""
     try:
         ks = [k for k in os.listdir("/lib/modules") if os.path.exists("/boot/vmlinuz-" + k)]
     except Exception:
@@ -16966,7 +16971,7 @@ def _awg_reboot_kernel():
     if not ks:
         return ""
     new = max(ks, key=_kver_key)
-    return new if _kver_key(new) > _kver_key(os.uname().release) and _awg_ko_for(new) else ""
+    return new if _kver_key(new) > _kver_key(kr) and _awg_ko_for(new) else ""
 
 
 def _awg_unloadable_why(built):

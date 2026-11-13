@@ -969,9 +969,10 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # A reboot pending: no module for the running kernel, the newest installed kernel has one (user report 2026-11-13). Every
   # update spent minutes on a build that cannot succeed — the running kernel's headers were gone from the archive — and closed
   # with "install matching linux-headers". Only while amneziawg-go serves the interfaces meanwhile; without it, the heal below
-  # still tries to give them a datapath now.
+  # still tries to give them a datapath now; and while apt can still fetch the running kernel's headers (card review F1), the
+  # heal builds the module for it now, no reboot needed.
   local _rk=""
-  if [ "$_tools" = yes ] && have amneziawg-go && _rk="$(awg_reboot_kernel)"; then
+  if [ "$_tools" = yes ] && have amneziawg-go && _rk="$(awg_reboot_kernel)" && ! awg_headers_candidate; then
     note "AmneziaWG: the kernel module is ready for kernel $_rk, installed but not running yet — reboot this server to start it; awg interfaces stay on the userspace datapath until then (nothing to build for $(uname -r))"
     return 0
   fi
