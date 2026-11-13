@@ -16958,11 +16958,12 @@ def _awg_ko_for(kr):
 def _awg_reboot_kernel():
     """The kernel a reboot starts — the newest installed one with its image in /boot, which GRUB boots by default — when it is
     newer than the running kernel and has the AmneziaWG module; "" otherwise. Asked only when the running kernel has none, and
-    answered only when its headers are missing too.
+    answered only when its headers are missing too, or the module is recorded as not compiling on it.
     User report 2026-11-13: a box on its install kernel, whose headers the archive no longer had, with a newer kernel and its
     module waiting; the panel said "update the node to rebuild the module", and no update could. lib/common.sh awg_reboot_kernel."""
     kr = os.uname().release
-    if os.path.exists("/lib/modules/%s/build" % kr):   # its headers are here: a build can still give it a module now (review F2)
+    # its headers are here: a build can still give it a module now (review F2) — unless it is recorded as not compiling (F7)
+    if os.path.exists("/lib/modules/%s/build" % kr) and not _awg_record("awg-module-failed"):
         return ""
     try:
         ks = [k for k in os.listdir("/lib/modules") if os.path.exists("/boot/vmlinuz-" + k)]

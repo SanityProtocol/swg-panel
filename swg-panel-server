@@ -937,7 +937,8 @@ def _awg_reboot_kernel():
     """The kernel a reboot starts — the newest installed one with its image in /boot, which GRUB boots by default — when it is
     newer than the running kernel and has the AmneziaWG module; "" otherwise (swg-noded's twin; user report 2026-11-13)."""
     kr = os.uname().release
-    if os.path.exists("/lib/modules/%s/build" % kr):   # its headers are here: a build can still give it a module now (review F2)
+    # its headers are here: a build can still give it a module now (review F2) — unless it is recorded as not compiling (F8)
+    if os.path.exists("/lib/modules/%s/build" % kr) and not _host_awg_record("awg-module-failed"):
         return ""
     try:
         ks = [k for k in os.listdir("/lib/modules") if os.path.exists("/boot/vmlinuz-" + k)]
@@ -10769,6 +10770,7 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
         # `why` (the installer's record, via the node): no update fixes these two, so neither sentence promises one —
         # Secure Boot wants the module's key enrolled at the console; a module that does not compile waits for upstream.
         _mok = _dp.get("mok") if isinstance(_dp.get("mok"), str) and _MOK_PATH_RE.match(_dp.get("mok")) else ""   # the node's word
+        _rkn = _awg_reboot_why(_dp)
         if _dp.get("why") == "key" and not _mok:   # the node could not name the certificate — both distros' are named in the sentence
             issues.append(perr("AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key DKMS signed it with once on the node — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console"
                                if _dp.get("fallback") else
@@ -10777,11 +10779,11 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
             issues.append(perr("AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console"
                                if _dp.get("fallback") else
                                "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces can't come up. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console", v1=_mok))
-        elif _awg_reboot_why(_dp):
+        elif _rkn:
             # A reboot pending (the node's word, a kernel-shaped name or the generic sentence below): the reboot is the fix.
             issues.append(perr("AmneziaWG: the kernel module is ready for kernel {v1}, installed but not running yet — awg interfaces run on the slower fallback datapath until the node is rebooted"
                                if _dp.get("fallback") else
-                               "AmneziaWG: the kernel module is ready for kernel {v1}, installed but not running yet — awg interfaces can't come up until the node is rebooted", v1=_awg_reboot_why(_dp)))
+                               "AmneziaWG: the kernel module is ready for kernel {v1}, installed but not running yet — awg interfaces can't come up until the node is rebooted", v1=_rkn))
         elif _dp.get("why") == "compile":
             issues.append(perr("AmneziaWG's kernel module does not compile on this node's kernel yet — awg interfaces run on the slower fallback datapath; an update tries again when a new kernel or a newer AmneziaWG build arrives"
                                if _dp.get("fallback") else

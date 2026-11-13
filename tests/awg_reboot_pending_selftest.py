@@ -25,6 +25,8 @@ Run: python3 tests/awg_reboot_pending_selftest.py      (0 = pass)
      --plant repair-pill    "repair node" offered for a reboot again → RED on [5]
      --plant lib-headers    awg_reboot_kernel ignores the running kernel's headers (review F1/F2) → RED on [1]
      --plant upd-aptcand    update.sh skips the heal although apt can fetch the headers (review F1) → RED on [2]
+     --plant upd-norefresh  the headers candidate read before this run refreshed apt's lists (verify F10) → RED on [2]
+     --plant lib-compile    headers alone read as "buildable" though the module is recorded as not compiling (verify F7–F9) → RED
 """
 import builtins, importlib.machinery, importlib.util, io, os, re, shutil, subprocess, sys, tempfile
 from unittest import mock
@@ -75,14 +77,16 @@ def fs(kernels):
 
 LIBSRC = rd("lib/common.sh")
 if PLANT == "lib-headers":
-    LIBSRC = plant(LIBSRC, 'if _awg_ko_for "$cur" || [ -e "$(_awg_kbuild)" ]; then return 1; fi', 'if _awg_ko_for "$cur"; then return 1; fi')
+    LIBSRC = plant(LIBSRC, 'if _awg_ko_for "$cur" || { [ -e "$(_awg_kbuild)" ] && ! awg_build_failed_here; }; then return 1; fi', 'if _awg_ko_for "$cur"; then return 1; fi')
+if PLANT == "lib-compile":   # round 1's form: headers alone mean "buildable" (verify F7–F9)
+    LIBSRC = plant(LIBSRC, '{ [ -e "$(_awg_kbuild)" ] && ! awg_build_failed_here; }', '[ -e "$(_awg_kbuild)" ]')
 if PLANT == "lib-lexsort":
     LIBSRC = plant(LIBSRC, '''new="$(printf '%s\\n%s\\n' "$new" "$k" | sort -V | tail -n1)"''', '''new="$(printf '%s\\n%s\\n' "$new" "$k" | sort | tail -n1)"''')
     LIBSRC = plant(LIBSRC, '''[ "$(printf '%s\\n%s\\n' "$cur" "$new" | sort -V | tail -n1)" = "$new" ]''', '''[ "$(printf '%s\\n%s\\n' "$cur" "$new" | sort | tail -n1)" = "$new" ]''')
-LIB = grab("lib/common.sh", "_awg_ko_for", "_awg_kbuild", "awg_reboot_kernel", "awg_headers_candidate", "awg_mod_built",
-           "awg_mod_key_rejected", src=LIBSRC)
+LIB = grab("lib/common.sh", "_awg_ko_for", "_awg_kbuild", "awg_reboot_kernel", "awg_build_failed_here", "awg_fail_get",
+           "awg_mod_built", "awg_mod_key_rejected", src=LIBSRC)
 def lib(root, body, running=OLD):
-    stubs = 'uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\n' % running
+    stubs = ('uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\nDRYRUN=false\nAWG_MOD_FAILED="$T/awg-module-failed"\n') % running
     return subprocess.run(["bash", "-c", stubs + LIB + body], capture_output=True, text=True,
                           env=dict(os.environ, T=T, SWG_LIB_MODULES=root + "/mods", SWG_BOOT=root + "/boot"))
 Q = 'k="$(awg_reboot_kernel)" && echo "K=$k" || echo NONE'
@@ -96,6 +100,19 @@ r = lib(fs({OLD: (True, None), NEW: (True, "extra")}), Q)
 check("…and one in extra/ (an external module's modules_install) (review F4)", "K=" + NEW in r.stdout, r.stdout + r.stderr)
 check("CONTROL: the running kernel's headers are here → nothing (a build can still give it a module now, review F1/F2)",
       "NONE" in lib(fs({OLD: (True, None, True), NEW: (True, "dkms")}), Q).stdout)
+def failrec(on, kernel=OLD):
+    f = T + "/awg-module-failed"
+    if on:
+        open(f, "w").write("kernel=%s\nsrc=abc1234\n" % kernel)
+    elif os.path.exists(f):
+        os.remove(f)
+failrec(True)
+r = lib(fs({OLD: (True, None, True), NEW: (True, "dkms")}), Q)
+check("…headers here but the module recorded as not compiling on the running kernel → 6.8.0-149 (the reboot is the only fix, verify F7–F9)",
+      "K=" + NEW in r.stdout, r.stdout + r.stderr)
+failrec(True, kernel="6.8.0-1-generic")
+check("CONTROL: a compile record for ANOTHER kernel does not count", "NONE" in lib(fs({OLD: (True, None, True), NEW: (True, "dkms")}), Q).stdout)
+failrec(False)
 check("CONTROL: the newer kernel has no module → nothing (a reboot would not help)", "NONE" in lib(fs({OLD: (True, None), NEW: (True, None)}), Q).stdout)
 check("CONTROL: the running kernel has the module → nothing", "NONE" in lib(fs({OLD: (True, "dkms"), NEW: (True, "dkms")}), Q).stdout)
 check("CONTROL: the NEWEST kernel (150) has no module, 149 has → nothing (GRUB boots 150)",
@@ -109,30 +126,37 @@ check("CONTROL: no kernels listed at all → nothing", "NONE" in lib(fs({}), Q).
 sec(2, "update.sh's heal, driven")
 USRC = rd("update.sh")
 if PLANT == "upd-aptcand":
-    USRC = plant(USRC, '_rk="$(awg_reboot_kernel)" && ! awg_headers_candidate; then', '_rk="$(awg_reboot_kernel)"; then')
+    USRC = plant(USRC, '[ -z "$_hc" ] || [ "$_hc" = "(none)" ]; }; }; then', 'true; }; }; then')
+if PLANT == "upd-norefresh":   # verify F10: the candidate read from lists this run did not refresh
+    USRC = plant(USRC, '{ apt_refresh; _hc="$(pkg_candidate', '{ _hc="$(pkg_candidate')
 if PLANT == "upd-noreboot":
-    USRC = plant(USRC, 'if [ "$_tools" = yes ] && have amneziawg-go && _rk="$(awg_reboot_kernel)" && ! awg_headers_candidate; then', 'if false; then')
+    USRC = plant(USRC, 'if [ "$_tools" = yes ] && have amneziawg-go && _rk="$(awg_reboot_kernel)" \\\n', 'if false && \\\n')
+PKGC = next(ln for ln in USRC.splitlines() if ln.startswith("pkg_candidate(){")) + "\n"   # the updater's own parser (review F13)
 FN = grab_text(USRC, "ensure_awg_datapath")
 HEAL = ('set -euo pipefail\nDRYRUN=false; HAVE_BNODE=yes; DID_UPDATE=no; DID_FAIL=no\n'
         'ok(){ echo "OK $*"; }\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\nnote(){ echo "NOTE $*"; }\n'
-        'run(){ echo "RUN $*" >> "$T/calls"; }\napt_refresh(){ echo "APT" >> "$T/calls"; }\n'
+        'run(){ echo "RUN $*" >> "$T/calls"; }\n'
         'git_clone_depth1(){ echo "CLONE $1" >> "$T/calls"; return 1; }\n'
         'modprobe(){ echo "modprobe: FATAL: Module amneziawg not found" >&2; return 1; }\nmodinfo(){ return 1; }\n'
         'have(){ case "$1" in awg|awg-quick|dkms|apt-cache) return 0;; amneziawg-go) [ -e "$T/go" ];; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
         'awg_compat_patch_installed(){ return 1; }\nawg_go_needs_install(){ return 1; }\nawg_blacklisted(){ return 1; }\n'
         'awg_nothing_new(){ return 1; }\nawg_ppa_suite(){ echo "HEAL-PPA" >> "$T/calls"; return 1; }\n'
         'awg_build_from_source(){ echo "HEAL-BUILD" >> "$T/calls"; return 1; }\nensure_awg_userspace(){ return 0; }\n'
-        'awg_key_refused_here(){ return 1; }\nawg_fail_get(){ return 1; }\nawg_tools_drive_3x(){ return 0; }\n'
-        'apt-cache(){ if [ -e "$T/cand" ]; then printf "  Installed: (none)\\n  Candidate: 6.8.0-35.35\\n"; '
-        'else printf "  Installed: (none)\\n  Candidate: (none)\\n"; fi; }\n')
-def heal(root, go, cand=False):
-    for f in ("calls", "go", "cand"):
+        'awg_key_refused_here(){ return 1; }\nawg_tools_drive_3x(){ return 0; }\n'
+        # apt's lists as this run's refresh leaves them: $T/cand-stale is a candidate only the UNrefreshed lists still name
+        'apt_refresh(){ echo "APT" >> "$T/calls"; rm -f "$T/cand-stale"; }\n'
+        'apt-cache(){ if [ -e "$T/cand" ] || [ -e "$T/cand-stale" ]; then printf "  Installed: (none)\\n  Candidate: 6.8.0-35.35\\n"; '
+        'else printf "  Installed: (none)\\n  Candidate: (none)\\n"; fi; }\n') + PKGC
+def heal(root, go, cand=False, stale=False):
+    for f in ("calls", "go", "cand", "cand-stale"):
         if os.path.exists(T + "/" + f):
             os.remove(T + "/" + f)
     if go:
         open(T + "/go", "w").close()
     if cand:
         open(T + "/cand", "w").close()
+    if stale:
+        open(T + "/cand-stale", "w").close()
     r = lib(root, HEAL + FN + 'ensure_awg_datapath; echo "RC=$?"\n')
     c = open(T + "/calls").read() if os.path.exists(T + "/calls") else ""
     return r, c
@@ -141,8 +165,16 @@ r, c = heal(PEND, go=True)
 check("a reboot pending, amneziawg-go serving → one note naming 6.8.0-149 and 'reboot', the run ends there",
       "RC=0" in r.stdout and ("NOTE AmneziaWG: the kernel module is ready for kernel %s" % NEW) in r.stdout and "reboot this server" in r.stdout,
       r.stdout + r.stderr)
-check("…no heal: no apt, no package route, no clone, no compile, no 'healing' line",
-      c == "" and "healing" not in r.stdout, c + r.stdout)
+check("…no heal: no package route, no clone, no compile, no 'healing' line — one refresh of apt's lists, nothing else",
+      c == "APT\n" and "healing" not in r.stdout, c + r.stdout)
+r, c = heal(PEND, go=True, stale=True)
+check("…a candidate only the stale lists still name: the lists are refreshed first, then the reboot note (verify F10)",
+      "reboot this server" in r.stdout and "healing" not in r.stdout and c.startswith("APT"), r.stdout + c)
+failrec(True)
+r, c = heal(fs({OLD: (True, None, True), NEW: (True, "dkms")}), go=True, cand=True)
+check("headers here AND to be had, but the module recorded as not compiling → the reboot note, not 'does not compile' (verify F9)",
+      "reboot this server" in r.stdout and "healing" not in r.stdout and "HEAL" not in c, r.stdout + c)
+failrec(False)
 r, c = heal(PEND, go=False)
 check("CONTROL: no amneziawg-go → the heal runs as before (the interfaces need a datapath now)",
       "healing the AmneziaWG kernel module" in r.stdout and "HEAL-BUILD" in c, r.stdout + c)
@@ -207,8 +239,9 @@ class FakeFS:
             x.stop()
 
 sec(3, "swg-noded node_datapath_health")
-def nh(root, loaded=False, why=(None, "")):
-    with FakeFS(root, loaded), mock.patch.object(N, "NODE_KIND", "bare"), mock.patch.object(N, "_awg_unloadable_why", lambda b: why):
+def nh(root, loaded=False, why=(None, ""), rec=False):
+    with FakeFS(root, loaded), mock.patch.object(N, "NODE_KIND", "bare"), mock.patch.object(N, "_awg_unloadable_why", lambda b: why), \
+         mock.patch.object(N, "_awg_record", lambda n: {"kernel": OLD} if rec and n == "awg-module-failed" else None):
         return (N.node_datapath_health({"awg0": {"meta": {"tool": "awg"}}}) or {}).get("awg") or {}
 a = nh(PEND)
 check("the report's box → not ok, fallback, why=reboot, kernel=6.8.0-149", a.get("ok") is False and a.get("fallback") is True
@@ -222,6 +255,9 @@ check("CONTROL: a module for the running kernel → ok, no why", a.get("ok") is 
 a = nh(fs({OLD: (True, None, True), NEW: (True, "dkms")}))
 check("CONTROL: the running kernel's headers are here → no why=reboot (an update builds it now, review F2)",
       a.get("ok") is False and "why" not in a, a)
+a = nh(fs({OLD: (True, None, True), NEW: (True, "dkms")}), why=("compile", ""), rec=True)
+check("…headers here but the module recorded as not compiling → why=reboot, ahead of compile (verify F7)",
+      a.get("why") == "reboot" and a.get("kernel") == NEW, a)
 a = nh(PEND, loaded=True)
 check("CONTROL: the module loaded → ok, no why", a.get("ok") is True and "why" not in a, a)
 a = nh(fs({OLD: (True, None), NEW: (True, "dkms"), NEWER: (True, None)}))
@@ -229,9 +265,10 @@ check("CONTROL: the newest kernel has no module → no why=reboot (the generic s
       and "kernel" not in a, a)
 
 sec(4, "the panel's host_datapath_health")
-def ph(root, loaded=False):
+def ph(root, loaded=False, rec=False):
     P._DATAPATH_SVC.update(at=0.0, data={})
-    with FakeFS(root, loaded), mock.patch.object(P, "IN_DOCKER", False), mock.patch.object(P, "_host_awg_record", lambda n: None):
+    with FakeFS(root, loaded), mock.patch.object(P, "IN_DOCKER", False), \
+         mock.patch.object(P, "_host_awg_record", lambda n: {"kernel": OLD} if rec and n == "awg-module-failed" else None):
         return (P.host_datapath_health() or {}).get("awg") or {}
 a = ph(PEND)
 check("the report's box → not ok, why=reboot, kernel=6.8.0-149", a.get("ok") is False and a.get("why") == "reboot" and a.get("kernel") == NEW, a)
@@ -239,6 +276,9 @@ a = ph(fs({OLD: (True, "updates"), NEW: (True, "dkms")}))
 check("CONTROL: a module for the running kernel → ok, no why", a.get("ok") is True and "why" not in a, a)
 a = ph(fs({OLD: (True, None, True), NEW: (True, "dkms")}))
 check("CONTROL: the running kernel's headers are here → no why=reboot", a.get("ok") is False and "why" not in a, a)
+a = ph(fs({OLD: (True, None, True), NEW: (True, "dkms")}), rec=True)
+check("…headers here but the module recorded as not compiling → why=reboot, not compile (verify F8)",
+      a.get("why") == "reboot" and a.get("kernel") == NEW, a)
 a = ph(fs({OLD: (True, None), NEW: (True, None)}))
 check("CONTROL: no kernel has the module → not ok, no why", a.get("ok") is False and "why" not in a, a)
 
@@ -282,7 +322,8 @@ check("panel: the same order as sort -V", sorted(names, key=P._kver_key) == sv, 
 
 shutil.rmtree(T, ignore_errors=True)
 if PLANT:
-    want = {"upd-noreboot": {2}, "upd-aptcand": {2}, "lib-lexsort": {1, 2}, "lib-headers": {1, 2}, "noded-strmax": {3},
+    want = {"upd-noreboot": {2}, "upd-aptcand": {2}, "upd-norefresh": {2}, "lib-lexsort": {1, 2}, "lib-headers": {1, 2},
+            "lib-compile": {1, 2}, "noded-strmax": {3},
             "repair-pill": {5}}[PLANT]   # lexsort: [2] drives the same lib
     got = {n for n, _ in FAILS}
     print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d in %s)" % (len(FAILS), sorted(got))) if FAILS and got <= want

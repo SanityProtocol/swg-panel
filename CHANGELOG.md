@@ -105,7 +105,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   a newer installed kernel had one built, the panel said "running Update rebuilds it", and every update spent minutes on
   a build that could not succeed (the running kernel's headers were no longer available). The panel now names the kernel
   that has the module and says to reboot the server, with no "Run update" or "repair node" button for it, and an update
-  skips the build when the running kernel's headers can no longer be had, and says the same in one line.
+  skips the build when it cannot succeed (the running kernel's headers can no longer be had, or the module does not
+  compile on it) and says the same in one line.
 
 - **Moving a device to a full turn server no longer leaves it on neither.** Peer targets applied a Deploy as separate
   steps: the new deployments, then the address changes, then the removals. When the new server refused the device (its

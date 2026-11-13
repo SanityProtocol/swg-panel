@@ -2349,9 +2349,10 @@ awg_reboot_kernel(){ # print the kernel a reboot starts, when it has the Amnezia
   # User report 2026-11-13: a box still on its install kernel (6.8.0-35, its headers gone from the archive) with 6.8.0-149 and
   # its DKMS module installed beside it. No update can build for the running kernel; only a reboot fixes it. The newest kernel
   # that has its image in /boot is the one GRUB boots by default — a newer one without the module would not help, nor would
-  # an older one that has it. With the running kernel's headers here a build can still give it a module now, without a reboot.
+  # an older one that has it. With the running kernel's headers here a build can still give it a module now, without a reboot —
+  # unless the module is recorded as not compiling on it (card review F7–F9: then the reboot is the only fix).
   local cur k new=""; cur="$(uname -r)"
-  if _awg_ko_for "$cur" || [ -e "$(_awg_kbuild)" ]; then return 1; fi
+  if _awg_ko_for "$cur" || { [ -e "$(_awg_kbuild)" ] && ! awg_build_failed_here; }; then return 1; fi
   for k in "${SWG_LIB_MODULES:-/lib/modules}"/*; do
     k="${k##*/}"
     if [ -e "${SWG_BOOT:-/boot}/vmlinuz-$k" ]; then new="$(printf '%s\n%s\n' "$new" "$k" | sort -V | tail -n1)"; fi
@@ -2360,10 +2361,7 @@ awg_reboot_kernel(){ # print the kernel a reboot starts, when it has the Amnezia
   [ "$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -n1)" = "$new" ] || return 1
   _awg_ko_for "$new" || return 1
   printf '%s' "$new"; }
-awg_headers_candidate(){ # 0 when apt can install the running kernel's headers (a build can still give it a module now)
-  local c; have apt-cache || return 1
-  c="$(LC_ALL=C apt-cache policy "linux-headers-$(uname -r)" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p)"
-  [ -n "$c" ] && [ "$c" != "(none)" ]; }
+awg_build_failed_here(){ awg_fail_get src >/dev/null || awg_fail_get pkg >/dev/null; }   # the module is recorded as not compiling on THIS kernel
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
   # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot: the package is
   # configured): the package's postinst failed, so dpkg holds it half-configured — whatever module file this kernel has
