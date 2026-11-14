@@ -32,7 +32,7 @@
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
  *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname|
- *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow|iplanded
+ *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow|iplanded|typedclear|ipnorm
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -50,7 +50,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   keyheld: ["js/limits.js", "  if (!t || isSelfContainedTgt(t) || gapOf(t)) return null;", "  if (!t) return null;"],                                         // [4]
   clean: ["js/limits.js", "  return ks.every(k => okRate(raw[k])) ? raw : null;", "  return raw;"],                                                       // [1]
   gapkey: ["js/limits.js", "if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return \"old\";", "if (!(((Store.stats[t.node] || {}).net_deps || {}).reach)) return \"old\";"],   // [5]
-  rawgap: ["js/limits.js", ": (nr.reach_unvouched_raw || []).includes(t.iface) ? \"raw\" : null;", ": null;"],                                           // [5]
+  rawgap: ["js/limits.js", ": rawUnvouchedIn(nr, t.iface) ? \"raw\" : null;", ": null;"],                                           // [5]
   rcarry: ["reconcile.js", "limits: t.limits || null,   // THIS deployment's own", "limits: null,   // THIS deployment's own"],                                                  // [2]
   kcarry: ["reconcile.js", "                 limits: t.limits || null,   // its own speed limit (R7)", "                 limits: null,   // its own speed limit (R7)"],   // [2]
   sep: ["js/limits.js", "SEP_RE.test(s) ? \"sep\" :", "false ? \"sep\" :"],                                                                             // [1]
@@ -80,7 +80,9 @@ const PLANTS = {   // name: [file, anchor, replacement]
   peerdirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: _dirty }}", "    dirtyRef=${{ current: lim.changed || vol.changed }}"],   // [10]
   usertracked: ["js/peer-ui.js", "<input data-tracked value=${tag} onInput", "<input value=${tag} onInput"],   // [10]
   ipfollow: ["js/sheets-crud.js", "    else if (next[k] !== ip) { next[k] = ip; ch = true; }", ""],   // [10] an untouched field no longer follows
-  iplanded: ["js/sheets-crud.js", "    else if (typed.has(k)) { if (next[k] === ip) typed.delete(k); }", "    else if (typed.has(k)) { }"],   // [10] a landed edit never follows again
+  typedclear: ["js/sheets-crud.js", "{ if (ipNorm(v) === ipNorm(liveIp)) typed.delete(k); else typed.add(k); }", "{ typed.add(k); }"],   // [10] F19
+  ipnorm: ["js/sheets-crud.js", "else if (typed.has(k)) { if (ipNorm(next[k]) === ip) typed.delete(k); }", "else if (typed.has(k)) { if (next[k] === ip) typed.delete(k); }"],   // [10] F18
+  iplanded: ["js/sheets-crud.js", "    else if (typed.has(k)) { if (ipNorm(next[k]) === ip) typed.delete(k); }", "    else if (typed.has(k)) { }"],   // [10] a landed edit never follows again
   grouptracked: ["js/peer-ui.js", "<div class=\"sharebar\" data-tracked>", "<div class=\"sharebar\">"],   // [10]
   limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
   limsguard: ["js/peer-ui.js", "foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),", "foot=${footRow({ onCancel: closeModal, cancelLabel: T(\"Close\"),"],   // [9]
@@ -397,7 +399,7 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
           JSON.stringify(hosts) === JSON.stringify({ "limits.js": 1, "peer-ui.js": 8, "sheets-crud.js": 2 }), hosts);
     check("review F1: Edit peer's fields follow the live addresses through followIps, typing marks a field",
           ep.includes("useEffect(() => { setIps(prev => followIps(prev, live.targets, ipTyped.current)); },")
-          && ep.includes("const setIpFor = (k, v) => { ipTyped.current.add(k); setIps(m => ({ ...m, [k]: v })); };"));
+          && ep.includes("markIpTyped(ipTyped.current, k, v, t ? t.ip : null); setIps(m => ({ ...m, [k]: v }));"));
     const ls = body(pu2, "export function LimitsSheet(");
     check("the Limits sheet: the date tracked, no effect handing the guard back any more", ls.includes('class="datein" data-tracked') && !ls.includes("cleanRef"));
     // followIps run, not read (verify F8/F11/F13): an address moved elsewhere vs what was typed in the sheet
@@ -416,6 +418,15 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
     check("⚠️ once the live address equals what was typed, the edit has landed — the field is untouched again (F8)", !typed.has("n1|awg0"), [...typed]);
     f = SC.followIps(f, T1("10.0.0.20"), typed);
     check("⚠️ …so a later move elsewhere is followed, not undone by Save", f["n1|awg0"] === "10.0.0.20", f);
+    typed = new Set(); f = { "n1|awg0": "10.0.0.5" };             // F19: a character typed and deleted again
+    SC.markIpTyped(typed, "n1|awg0", "10.0.0.5x", "10.0.0.5/32"); SC.markIpTyped(typed, "n1|awg0", "10.0.0.5", "10.0.0.5/32");
+    f = SC.followIps(f, T1("10.0.0.7"), typed);
+    check("⚠️ a character typed and deleted leaves the field untouched — a Fix address from the sheet is followed (F19)", f["n1|awg0"] === "10.0.0.7" && !typed.size, [f, [...typed]]);
+    typed = new Set(); SC.markIpTyped(typed, "n1|awg0", "10.0.0.5", "10.0.0.7/32");   // typed back to the opening one after a move
+    check("…while typing the opening address back after a move elsewhere is an edit (F11)", typed.has("n1|awg0"));
+    typed = new Set(["n1|awg0"]); f = { "n1|awg0": " 10.0.0.9/32 " };
+    f = SC.followIps(f, T1("10.0.0.9"), typed);
+    check("⚠️ an edit typed with /32 or spaces lands like Save reads it (F18)", !typed.has("n1|awg0"), [...typed]);
     f = SC.followIps({}, [{ node: "n2", iface: "wg0", ip: "10.1.0.2" }], new Set());
     check("a deployment added while the sheet is open gets its field", f["n2|wg0"] === "10.1.0.2", f);
   }

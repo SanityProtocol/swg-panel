@@ -848,18 +848,23 @@ export function openEditPeer(peer, focus, done, flash) {
   (child ? pushModal : openModal)(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal} flash=${flash} child=${child}/>`);
 }
 // Edit peer's address fields against the live deployments (see EditPeerSheet): a new one gets a field, an untouched one follows
-// the live address, one typed in (`typed`, a Set of keys) is kept until the live address equals it — then it has landed and
-// follows again. Returns `prev` itself when nothing changed. Exported for the gate (spa_limits_selftest [10]).
+// the live address, one typed in (`typed`, a Set of keys) is kept while it differs from the live address — a revert to the
+// opening address after a move elsewhere included (verify F11) — and follows again once they are equal. Equal the way Save reads
+// a field (ipNorm: trimmed, no /32 — verify F18). Exported for the gate (spa_limits_selftest [10]).
+export const ipNorm = v => String(v || "").trim().split("/")[0];
 export function followIps(prev, targets, typed) {
   const next = { ...prev }; let ch = false;
   for (const t of targets || []) {
-    const k = tkey(t.node, t.iface), ip = (t.ip || "").split("/")[0];
+    const k = tkey(t.node, t.iface), ip = ipNorm(t.ip);
     if (!(k in next)) { next[k] = ip; ch = true; }
-    else if (typed.has(k)) { if (next[k] === ip) typed.delete(k); }
+    else if (typed.has(k)) { if (ipNorm(next[k]) === ip) typed.delete(k); }
     else if (next[k] !== ip) { next[k] = ip; ch = true; }
   }
   return ch ? next : prev;
 }
+// A keystroke in a field: typed only while it differs from the live address — a character typed and deleted again leaves it
+// untouched, so a Fix address from the sheet is still followed (verify F19: Save sent the old address back, undoing it).
+export function markIpTyped(typed, k, v, liveIp) { if (ipNorm(v) === ipNorm(liveIp)) typed.delete(k); else typed.add(k); }
 export function EditPeerSheet({ peer, focus, done, flash, child }) {
   done = done || closeModal;
   useStore();                                        // re-render on poll so a target added via the Targets sheet shows up live
@@ -875,7 +880,10 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // once the live address equals what was typed, the edit has landed and the field follows again.
   useEffect(() => { setIps(prev => followIps(prev, live.targets, ipTyped.current)); },
     [live.targets.map(t => tkey(t.node, t.iface) + "=" + (t.ip || "")).join(",")]);
-  const setIpFor = (k, v) => { ipTyped.current.add(k); setIps(m => ({ ...m, [k]: v })); };
+  const setIpFor = (k, v) => {
+    const t = (live.targets || []).find(x => tkey(x.node, x.iface) === k);
+    markIpTyped(ipTyped.current, k, v, t ? t.ip : null); setIps(m => ({ ...m, [k]: v }));
+  };
   const [loaded, setLoaded] = useState(false);
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
   // "node|iface" -> {dns,mtu,keepalive,allowed} for THAT deployment. Was one set for the whole peer, which
@@ -922,7 +930,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const editable = Object.keys(confs).length;
   // Never a csqtt / WDTT deployment: its server mints the address and the live one is the read-back, keyed by the access
   // password — a Rotate blanks it until the next sync, which nobody edited, and the panel refuses an address there.
-  const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
+  const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v = ipNorm(ips[tkey(t.node, t.iface)]); return !!v && v !== ipNorm(t.ip); };   // read as Save sends it
   const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
   const anyIpBad = peer.targets.some(ipBadFor);
   const optsErr = Object.keys(topts).map(k => { const e = configErrors(topts[k]); const f = Object.keys(e)[0];

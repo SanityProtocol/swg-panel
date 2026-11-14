@@ -478,19 +478,21 @@ const unvouchedTarget = t => (((Store.nodes || []).find(x => x.id === t.node) ||
 // it never matched, limits-l3 F5). Which path a device dials is the client's choice, so this is a per-path note, never a level:
 // at "Same user and their groups" a device connected over RAW is reached by nobody (A7); at Everyone a Private one is guarded
 // by its WG address only.
-export const rawUnvouchedAt = t => !!t && (((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);
+export const rawUnvouchedIn = (nr, iface) => ((nr || {}).reach_unvouched_raw || []).includes(iface);   // with the node record in hand
+export const rawUnvouchedAt = t => !!t && rawUnvouchedIn((Store.nodes || []).find(x => x.id === t.node), t.iface);
 // Which deployment names a device's row, of those that let the viewer in (`lv` = each one's targetOpen, computed once). The first,
 // as always (spa_scale's equivalence with the pre-K3 walk) — unless RAW narrows it: on a qWDTT 1.4.3 instance at "user" a device
-// is reached over WG only (`raw`), while the same device at Everyone on awg0 is reached whichever path it dials, so a deployment
-// RAW does not narrow names it instead — but only one at least as online (verify F9/F10: a device connected only over the
-// narrowed one reads online there, with its note). ⚠️ RAW NARROWS ONE DEPLOYMENT, NOT THE DEVICE. Both bubbles ask here.
+// is reached over WG only (`raw`), while the same device at Everyone on awg0 is reached whichever path it dials. Then a deployment
+// RAW does not narrow names it, but only one at least as online as the device's RAW-narrowed ones — any of them, not only the
+// first (verify F9/F10/F17): a device connected only over a narrowed one reads online there, with its note. ⚠️ RAW NARROWS ONE
+// DEPLOYMENT, NOT THE DEVICE. Both bubbles ask here.
 function reachPick(ok) {
   if (!ok.length) return null;
-  const rawOf = ({ t, lv }) => lv === "user" && rawUnvouchedAt(t);
-  const first = ok[0];
-  if (!rawOf(first)) return { t: first.t, raw: false };
-  const alt = ok.find(o => !rawOf(o) && (o.t.online || !first.t.online));
-  return alt ? { t: alt.t, raw: false } : { t: first.t, raw: true };
+  const rawOf = o => o.lv === "user" && rawUnvouchedAt(o.t);
+  if (!rawOf(ok[0])) return { t: ok[0].t, raw: false };                     // the usual case: one lookup, no list
+  const rows = ok.map(o => ({ t: o.t, raw: rawOf(o) }));
+  const onRaw = rows.find(r => r.raw && r.t.online);
+  return rows.find(r => !r.raw && (r.t.online || !onRaw)) || onRaw || rows[0];
 }
 // PROMOTED: an interface set to Everyone with a private device on it, so the node has a table for it — it guards the private
 // devices by address and passes everything else. The PANEL decides which (it builds the table) and publishes it per node;

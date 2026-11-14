@@ -24,6 +24,7 @@
  *      --perturb-raw   reads RAW-not-vouched by the instance's raw_iface again (never a deployment's iface), and expects RED on [4f].
  *      --perturb-rawpick  a RAW-narrowed deployment beside an open one names a reach row, RED on [4f].
  *      --perturb-onlinepick  an offline deployment RAW does not narrow beats the online RAW-narrowed one, RED on [4f].
+ *      --perturb-onrawany  only the first narrowed deployment's online state counts (a later one online is missed), RED on [4f].
  */
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,20 +35,23 @@ const PERTURB_OFF = process.argv.includes("--perturb-off");
 const PERTURB_RAW = process.argv.includes("--perturb-raw");   // rawUnvouchedAt back to the clause that never matched → RED on [4f]
 const PERTURB_RAWPICK = process.argv.includes("--perturb-rawpick");   // a RAW-narrowed deployment beside an open one names the row → RED on [4f]
 const PERTURB_ONLINEPICK = process.argv.includes("--perturb-onlinepick");   // an offline deployment beats an online one → RED on [4f]
+const PERTURB_ONRAWANY = process.argv.includes("--perturb-onrawany");   // only the FIRST narrowed deployment's online counts → RED on [4f]
 const imp = f => import(pathToFileURL(path.join(ROOT, "js", f)).href);
 const { Store } = await imp("store.js");
 // --perturb: count a grantee's devices FLEET-WIDE instead of on the nodes this device is actually deployed to. That is the
 // difference between "this grant is worth 3 devices" and "worth nothing", and [3] must go red on it.
 let VSRC = path.join(ROOT, "js", "views.js");
-if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK || PERTURB_ONLINEPICK) {
+if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK || PERTURB_ONLINEPICK || PERTURB_ONRAWANY) {
   const fs = await import("node:fs");
   let src = fs.readFileSync(VSRC, "utf8");
   const [anchor, to] = PERTURB
     ? ["&& (q.targets || []).some(t => t && nodes.includes(t.node))).length;", "&& (q.targets || []).some(t => !!t)).length;"]
     : PERTURB_RAWPICK
-    ? ["const alt = ok.find(o => !rawOf(o) && (o.t.online || !first.t.online));", "const alt = null;"]
+    ? ["return rows.find(r => !r.raw && (r.t.online || !onRaw)) || onRaw || rows[0];", "return onRaw || rows[0];"]
     : PERTURB_ONLINEPICK
-    ? ["const alt = ok.find(o => !rawOf(o) && (o.t.online || !first.t.online));", "const alt = ok.find(o => !rawOf(o));"]
+    ? ["return rows.find(r => !r.raw && (r.t.online || !onRaw)) || onRaw || rows[0];", "return rows.find(r => !r.raw) || onRaw || rows[0];"]
+    : PERTURB_ONRAWANY
+    ? ["const onRaw = rows.find(r => r.raw && r.t.online);", "const onRaw = rows[0].t.online ? rows[0] : null;"]
     : PERTURB_RAW
     ? ["(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);",
        "(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).some(ifn => ((((Store.nodes || []).find(x => x.id === t.node) || {}).wdtt_cfg || {})[ifn] || {}).raw_iface === t.iface);"]
@@ -63,7 +67,7 @@ let V;
 try {
   V = await import(pathToFileURL(VSRC).href);
 } finally {
-  if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK || PERTURB_ONLINEPICK) { try { (await import("node:fs")).unlinkSync(VSRC); } catch (_) { /* already gone */ } }
+  if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK || PERTURB_ONLINEPICK || PERTURB_ONRAWANY) { try { (await import("node:fs")).unlinkSync(VSRC); } catch (_) { /* already gone */ } }
 }
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -247,10 +251,11 @@ console.log("\n[4f] RAW not vouched — a qWDTT 1.4.3 instance: the WG path is v
   const rp = [{ id: "rb", user_id: "bob", title: "bob phone", targets: [W("10.11.0.2")] },
               { id: "rc", user_id: "carl", title: "carl phone", targets: [W("10.11.0.3")] }];
   const setLevel = (reach, raw) => {
-    Store.nodes = [{ id: "n1", name: "node-one", wdtt_cfg: { wdtt1: { reach, raw_iface: "wdttraw1" } }, reach_unvouched_raw: raw ? ["wdtt1"] : [] }];
-    Store.recon = { peers: rp, users, nodeStatus: { n1: "live" } };   // a new identity each time: both answers are memoised per poll
+    Store.nodes = [{ id: "n1", name: "node-one", wdtt_cfg: { wdtt1: { reach, raw_iface: "wdttraw1" } }, reach_unvouched_raw: raw ? ["wdtt1"] : [] },
+                   { id: "n9", name: "node-nine" }];
+    Store.recon = { peers: rp, users, nodeStatus: { n1: "live", n9: "live" } };   // a new identity each time: both answers are memoised per poll
   };
-  Store.stats = { n1: { net_deps: { reach: 2 } } };
+  Store.stats = { n1: { net_deps: { reach: 2 } }, n9: { net_deps: { reach: 2 } } };
   Store.roster = { users: Object.fromEntries(users.map(u => [u.id, u])), groups: { fam: { name: "Family", users: ["bob", "carl"] } } };
   const carlFor = () => ((V.userReach("bob").find(r => r.user.id === "carl") || { devices: [] }).devices.find(d => d.peer.id === "rc"));
   setLevel("user", true);
@@ -260,19 +265,31 @@ console.log("\n[4f] RAW not vouched — a qWDTT 1.4.3 instance: the WG path is v
   check("a Private device there is protected on both paths — nothing to say", V.privateUnenforced({ ...rp[1], private: true }).length === 0,
         V.privateUnenforced({ ...rp[1], private: true }));
   // review F2: RAW narrows ONE deployment. The same device also at Everyone on awg0 is reached whichever path it dials there.
-  rp[1].targets.push({ node: "n1", iface: "awg0", ip: "10.8.0.41", online: true });
+  // awg0 sits on ANOTHER node (n9, bob there too) so the row's node says which deployment was picked (verify F22).
+  rp[0].targets.push({ node: "n9", iface: "awg0", ip: "10.9.0.40", online: true });
+  rp[1].targets.push({ node: "n9", iface: "awg0", ip: "10.9.0.41", online: true });
   const keepMeta2 = Store.ifaceMeta; Store.ifaceMeta = (node, iface) => ({ reach: iface === "awg0" ? "everyone" : "user" });
   setLevel("user", true);
+  const groupFor = () => V.reachableByGroup("carl").find(d => d.peer.id === "rc");
   check("⚠️ a device also on an interface RAW does not narrow is not marked — that deployment names the row",
-        carlFor() && !carlFor().raw && carlFor().ip === "10.8.0.41", carlFor());
-  check("…in the group bubble too", (d => d && !d.raw)(V.reachableByGroup("carl").find(d => d.peer.id === "rc")), V.reachableByGroup("carl"));
+        carlFor() && !carlFor().raw && carlFor().node === "n9", carlFor());
+  check("…in the group bubble too", (d => d && !d.raw && d.node === "n9")(groupFor()), groupFor());
   // verify F9/F10: connected ONLY over the RAW-narrowed deployment (awg0 offline) — the row reads online, with its note
   rp[1].targets[0].online = true; rp[1].targets[1].online = false; setLevel("user", true);
   check("⚠️ a device online only on the RAW-narrowed deployment reads online there, with its note",
-        carlFor() && carlFor().online && carlFor().raw && carlFor().ip === "10.11.0.3", carlFor());
-  check("…in the group bubble too", (d => d && d.raw && d.node === "n1")(V.reachableByGroup("carl").find(d => d.peer.id === "rc")), V.reachableByGroup("carl"));
-  rp[1].targets[1].online = true;
-  rp[1].targets.pop(); Store.ifaceMeta = keepMeta2;
+        carlFor() && carlFor().online && carlFor().raw && carlFor().node === "n1", carlFor());
+  check("…in the group bubble too", (d => d && d.raw && d.node === "n1")(groupFor()), groupFor());
+  // verify F17: the narrowed deployment that is online is not the first — wdtt1 offline, awg0 offline, wdtt2 online
+  Store.nodes = [{ id: "n1", name: "node-one", wdtt_cfg: { wdtt1: { reach: "user" }, wdtt2: { reach: "user" } }, reach_unvouched_raw: ["wdtt1", "wdtt2"] },
+                 { id: "n9", name: "node-nine" }];
+  rp[1].targets[0].online = false;
+  rp[1].targets.push({ node: "n1", iface: "wdtt2", ip: "10.12.0.3", online: true });
+  Store.recon = { peers: rp, users, nodeStatus: { n1: "live", n9: "live" } };
+  check("⚠️ online only over a narrowed deployment that is not the first: that one names the row, online, with its note",
+        carlFor() && carlFor().online && carlFor().raw && carlFor().ip === "10.12.0.3", carlFor());
+  check("…in the group bubble too", (d => d && d.raw && d.node === "n1")(groupFor()), groupFor());
+  rp[1].targets.pop(); rp[1].targets[0].online = true; rp[1].targets[1].online = true;
+  rp[0].targets.pop(); rp[1].targets.pop(); Store.ifaceMeta = keepMeta2;
   setLevel("user", false);
   check("an instance whose build vouches for RAW too carries no mark", carlFor() && !carlFor().raw, carlFor());
   setLevel("everyone", true);
