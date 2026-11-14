@@ -6819,7 +6819,7 @@ def node_remove(deps, nid):
     # goes with this node, as before. To remove a node and its peers on purpose: detach its failover node first.
     _fo_b = failover_pairs(nodes).get(nid)
     _fo_snaps = deps.get("node_snaps") or {}
-    _fo_moved, _fo_left = (failover_takeover(nodes, roster, nid, _fo_b, _fo_snaps, assume=not _fo_snaps.get(_fo_b))
+    _fo_moved, _fo_left = (failover_takeover(nodes, roster, nid, _fo_b, _fo_snaps, _fo_live(deps.get("node_seen"), _fo_b), assume=True)
                            if _fo_b else ([], []))
     if _fo_moved:
         failover_carry_settings(deps, nid, _fo_b)
@@ -13335,31 +13335,32 @@ def failover_idle(nodes, snaps, seen, now=None, pairs=None):
     return frozenset(idle)
 
 
-def _fo_holds(nodes, snaps, aid, bid, assume=False):
-    """(held, lacking) of A's interfaces on B. HELD: B's record carries A's blessed key and B's snapshot reports it up (not
-    down, not stopped) with that key. LACKING, known for certain: no record with A's key, or B's snapshot leaves it out,
-    reports it awaiting its key, or reports another key. Anything else — no snapshot of B (a panel just restarted), a
-    device down or stopped for the moment — is neither: a take-over moves nothing there and deletes nothing there (review
-    F75). `assume`: with no snapshot of B, a record carrying A's key counts as held — node_remove's choice, since its
-    alternative is purging the peers."""
+def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
+    """(held, lacking, unsure) of A's interfaces on B. Judged only from a B that is REPORTING now (`live`, its _fo_live):
+    a snapshot alone proves nothing — the panel seeds every node's last one from the stats mirrors at startup (F87).
+      HELD     B's record carries A's blessed key and B reports it up (not down, not stopped) with that key.
+      LACKING  known for certain: no record with A's key, or the live B leaves it out, waits for its key, or reports
+               another key.
+      UNSURE   B not reporting, or the device down or stopped for the moment: a take-over neither moves nor deletes it.
+    `assume` (node_remove, whose alternative is purging the peers): unsure counts as held — the copy carries A's key."""
     a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
-    bsnap = (snaps or {}).get(bid)
+    bsnap = (snaps or {}).get(bid) if live else None
     brep = bsnap.get("interfaces") if isinstance(bsnap, dict) else None
-    waiting = set((bsnap or {}).get("ifaces_awaiting_key") or ()) if isinstance(bsnap, dict) else set()
-    held, lacking = [], []
+    waiting = set(bsnap.get("ifaces_awaiting_key") or ()) if isinstance(bsnap, dict) else set()
+    held, lacking, unsure = [], [], []
     for n, aov in _fo_user_ifaces(a).items():
         bov = (b.get("ifaces") or {}).get(n)
         if not (isinstance(bov, dict) and aov.get("public_key") and bov.get("public_key") == aov["public_key"]):
             lacking.append(n)
-        elif not isinstance(brep, dict):
-            if assume:
-                held.append(n)
+        elif not isinstance(brep, dict) or (isinstance(brep.get(n), dict) and (brep[n].get("down") or brep[n].get("stopped"))):
+            (held if assume else unsure).append(n)
         elif not isinstance(brep.get(n), dict) or n in waiting:
             lacking.append(n)
-        elif not (brep[n].get("down") or brep[n].get("stopped")):
-            rk = (brep[n].get("meta") or {}).get("public_key") or ""
-            (held if rk == aov["public_key"] else lacking if rk else []).append(n)
-    return held, lacking
+        elif ((brep[n].get("meta") or {}).get("public_key") or "") == aov["public_key"]:
+            held.append(n)
+        else:
+            lacking.append(n)                          # another key, or none: not A's identity there
+    return held, lacking, unsure
 
 
 def _fo_effective_host(c, ov, snap, n):
@@ -13369,7 +13370,7 @@ def _fo_effective_host(c, ov, snap, n):
             or mesh_advertised_host(snap, n))
 
 
-def failover_takeover(nodes, roster, aid, bid, snaps, assume=False):
+def failover_takeover(nodes, roster, aid, bid, snaps, live, assume=False):
     """Move A's peers to B for every interface B holds with A's key (plan §4.8, §4.9, refresh R4). Mutates `nodes` and
     `roster` (an owned copy); the caller saves both. Per interface: its wg/awg targets move A→B, each moved device that
     yields its torrent port on A yields it on B (A dropped once no target stays there), B's interface takes A's effective
@@ -13378,7 +13379,7 @@ def failover_takeover(nodes, roster, aid, bid, snaps, assume=False):
     flag goes last. B's copies of the interfaces it does not hold go (a peerless duplicate of A's key and subnet on an
     ordinary node is a clash, not a spare). Returns (moved interfaces, interfaces left on A)."""
     a, b = nodes[aid], nodes[bid]
-    held, lacking = _fo_holds(nodes, snaps, aid, bid, assume)
+    held, lacking, _unsure = _fo_holds(nodes, snaps, aid, bid, live, assume)
     left = sorted(n for n in _fo_user_ifaces(a) if n not in held)
     now_ = int(time.time())
     asnap = (snaps or {}).get(aid) or {}
@@ -13531,6 +13532,7 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None):
 
 
 _FO_WANT = {}                                          # primary → (roster read, minute, want, addr)
+_FO_WANT_LOCK = threading.Lock()                       # its readers run under different locks, or none (F90)
 
 
 def _fo_want(roster, aid):
@@ -13538,7 +13540,8 @@ def _fo_want(roster, aid):
     per roster read and minute (an expiry shows within one): the status is built on every /api/state, the roster seldom
     changes, and the walk is A's whole peer list (review F32)."""
     nowv = int(time.time())
-    hit = _FO_WANT.get(aid)
+    with _FO_WANT_LOCK:
+        hit = _FO_WANT.get(aid)
     if hit and hit[0] is roster and hit[1] == nowv // 60:
         return hit[2], hit[3]
     want, addr, users = {}, {}, roster.get("users") or {}
@@ -13550,9 +13553,10 @@ def _fo_want(roster, aid):
                 want.setdefault(t["iface"], set()).add(p.get("pubkey"))
                 addr.setdefault(t["iface"], (t.get("ip") or "").split("/")[0])
     if isinstance(roster, _RosterView):                # a writer's own copy changes under it: never kept
-        for k in [k for k, v in _FO_WANT.items() if v[0] is not roster]:
-            del _FO_WANT[k]                            # an older roster read is never asked again: nothing pinned (F81)
-        _FO_WANT[aid] = (roster, nowv // 60, want, addr)
+        with _FO_WANT_LOCK:
+            for k in [k for k, v in _FO_WANT.items() if v[0] is not roster]:
+                del _FO_WANT[k]                        # an older roster read is never asked again: nothing pinned (F81)
+            _FO_WANT[aid] = (roster, nowv // 60, want, addr)
     return want, addr
 
 
@@ -31703,9 +31707,13 @@ def api(method, path, qs, body, deps):
         if "take_over" in body and not isinstance(body["take_over"], bool):
             return 400, {"ok": False, "error": "take_over must be true or false", "code": "bad_request"}
         take = body.get("take_over") is True
-        if take and not snaps.get(bid):
-            return 409, {"ok": False, **perr("{v1} has not reported since the panel started — move the peers once it has",
-                                             v1=bname), "code": "failover_unknown"}
+        if take and not _fo_live(seen, bid, now()):
+            return 409, {"ok": False, **perr("{v1} is not reporting — move the peers once it is", v1=bname),
+                         "code": "failover_unknown"}
+        _unsure = _fo_holds(nodes, snaps, aid, bid, True)[2] if take else []
+        if _unsure:                                    # a device down or stopped there right now: neither moves nor goes (F89)
+            return 409, {"ok": False, **perr("{v1} reports {v2} down or stopped — move the peers once it is up again",
+                                             v1=bname, v2=", ".join(_unsure)), "code": "failover_unsure"}
         if not take and not _fo_live(seen, aid, now()):
             return 409, {"ok": False, **perr("{v1} is not reporting: removing the copies on {v2} would delete the only one "
                                              "running — move the peers to {v2} instead", v1=aname, v2=bname),
@@ -31724,7 +31732,7 @@ def api(method, path, qs, body, deps):
                       detail_key="peers kept on {v1}", detail_vars={"v1": aname})
             return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": []}}
         roster = roster_load(roster_path)
-        moved, left = failover_takeover(nodes, roster, aid, bid, snaps)
+        moved, left = failover_takeover(nodes, roster, aid, bid, snaps, True)
         nodes_save(deps["nodes_path"], nodes)
         if moved:
             roster_save(roster_path, roster)

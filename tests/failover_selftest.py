@@ -62,6 +62,8 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      down-held    an interface B reports stopped counts as held (F78)
      remove-assume  removing A with no snapshot of B purges the peers instead of moving them onto B's copies
      restore-race a device B reports down is recreated while the autostart is still starting it (F77)
+     stale-live   a snapshot of a B that is not reporting is trusted as certain (F87, F88)
+     door-unsure  the detach door moves peers while B reports one of the interfaces down (F89)
      carry        a take-over leaves the node-keyed settings naming A only
      strip        the read-only guard reads ids unstripped
      orphan       reconcile.js does not mark the primary's copy managed
@@ -133,16 +135,12 @@ PLANTS = {   # (file, anchor, replacement)
     "walk-pos": ("panel", '''key=lambda kv: (kv[0] in idle, _pos[failover_rid(nodes, kv[0])])''', '''key=lambda kv: (kv[0] in idle, _pos[kv[0]])'''),
     "left-copy": ("panel", '''    for n in lacking:                                 # only what B certainly does not run: never on a missing snapshot''',
                   '''    for n in ():'''),
-    "holds-rec": ("panel", '''        elif not isinstance(brep, dict):
-            if assume:
-                held.append(n)''', '''        elif not isinstance(brep, dict):
-            held.append(n)'''),
-    "nosnap-drop": ("panel", '''        elif not isinstance(brep, dict):
-            if assume:
-                held.append(n)''', '''        elif not isinstance(brep, dict):
-            lacking.append(n)'''),
-    "down-held": ("panel", '''        elif not (brep[n].get("down") or brep[n].get("stopped")):''', '''        elif not brep[n].get("down"):'''),
-    "remove-assume": ("panel", '''assume=not _fo_snaps.get(_fo_b))''', '''assume=False)'''),
+    "holds-rec": ("panel", '''            (held if assume else unsure).append(n)''', '''            held.append(n)'''),
+    "nosnap-drop": ("panel", '''            (held if assume else unsure).append(n)''', '''            lacking.append(n)'''),
+    "down-held": ("panel", '''(brep[n].get("down") or brep[n].get("stopped"))):''', '''brep[n].get("down")):'''),
+    "remove-assume": ("panel", '''_fo_live(deps.get("node_seen"), _fo_b), assume=True)''', '''_fo_live(deps.get("node_seen"), _fo_b), assume=False)'''),
+    "stale-live": ("panel", '''    bsnap = (snaps or {}).get(bid) if live else None''', '''    bsnap = (snaps or {}).get(bid)'''),
+    "door-unsure": ("panel", '''        if _unsure:                                    # a device down''', '''        if False:                                    # a device down'''),
     "restore-race": ("panel", '''and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):''',
                      '''):'''),
     "carry": ("panel", '''        if isinstance(v, list) and aid in v and bid not in v:''', '''        if False:'''),
@@ -666,18 +664,23 @@ def sec8():
                         "targets": [{"node": "na", "iface": "wg1", "ip": "10.9.0.2"}]}
     snaps = {"na": {"interfaces": {"awg0": snap_iface(), "wg1": snap_iface(key=KX)}}, "nb": {"interfaces": {"awg0": snap_iface()}}}
     owner_before = {q: o for q, o in [(e[1], e[0]) for e in P.p2p_fwd_for_node(None, r, "na", ("direct", ["10.99.0.0/16"]))]}
-    check("[8] with no snapshot of B: nothing held, nothing known lacking", P._fo_holds(n, {"na": snaps["na"]}, "na", "nb") == ([], []),
-          P._fo_holds(n, {"na": snaps["na"]}, "na", "nb"))
+    check("[8] with no snapshot of B: nothing held, nothing known lacking", P._fo_holds(n, {"na": snaps["na"]}, "na", "nb", True) == ([], [], ["awg0", "wg1"]),
+          P._fo_holds(n, {"na": snaps["na"]}, "na", "nb", True))
+    check("[8] a B not reporting: its last snapshot proves nothing (F87, F88)", P._fo_holds(n, snaps, "na", "nb", False) == ([], [], ["awg0", "wg1"]),
+          P._fo_holds(n, snaps, "na", "nb", False))
+    nz = to_fleet()
+    mz = P.failover_takeover(nz, roster(), "na", "nb", snaps, False)
+    check("[8] a take-over from a B not reporting moves nothing and deletes nothing", mz == ([], ["awg0", "wg1"]) and not nz["nb"].get("delete"), (mz, nz["nb"].get("delete")))
     nx = to_fleet(); rx = roster()
-    mv = P.failover_takeover(nx, rx, "na", "nb", {"na": snaps["na"]})
+    mv = P.failover_takeover(nx, rx, "na", "nb", {"na": snaps["na"]}, True)
     check("[8] a take-over with no snapshot of B moves nothing and deletes none of B's copies (F75)",
           mv == ([], ["awg0", "wg1"]) and set(nx["nb"]["ifaces"]) == {"awg0", "wg1"} and not nx["nb"].get("delete"), (mv, nx["nb"]))
     for st in ({"down": "Cannot find device", "meta": {}, "peers": []}, dict(snap_iface(), stopped=True)):
         ny = to_fleet()
-        mv = P.failover_takeover(ny, roster(), "na", "nb", {"na": snaps["na"], "nb": {"interfaces": {"awg0": st}}})
+        mv = P.failover_takeover(ny, roster(), "na", "nb", {"na": snaps["na"], "nb": {"interfaces": {"awg0": st}}}, True)
         check("[8] B's awg0 %s: not held, and its copy kept" % ("down" if st.get("down") else "stopped"),
               "awg0" in mv[1] and "awg0" in ny["nb"]["ifaces"] and "awg0" not in (ny["nb"].get("delete") or {}), (mv, ny["nb"].get("delete")))
-    moved, left = P.failover_takeover(n, r, "na", "nb", snaps)
+    moved, left = P.failover_takeover(n, r, "na", "nb", snaps, True)
     check("[8] the interface B holds moves; the one it lacks stays", moved == ["awg0"] and left == ["wg1"], (moved, left))
     check("[8] targets moved A→B", all(t["node"] == "nb" for p in ("p1", "p2", "p3", "p0") for t in r["peers"][p]["targets"])
           and r["peers"]["p5"]["targets"][0]["node"] == "na")
@@ -695,7 +698,7 @@ def sec8():
         nx["na"]["ifaces"]["awg0"]["endpoint_host"] = host_a
         nx["na"]["endpoint_host"] = ""
         sx = json.loads(json.dumps(snaps)); sx["na"]["interfaces"]["awg0"]["meta"]["endpoint"] = rep_ep
-        P.failover_takeover(nx, roster(), "na", "nb", sx)
+        P.failover_takeover(nx, roster(), "na", "nb", sx, True)
         check("[8] B's host from A %r / reported %r: %r" % (host_a, rep_ep, want), nx["nb"]["ifaces"]["awg0"].get("endpoint_host") == want,
               nx["nb"]["ifaces"]["awg0"].get("endpoint_host"))
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, dict(to_fleet(), na=dict(to_fleet()["na"], transfer={"state": "pending"})),
@@ -706,7 +709,7 @@ def sec8():
     ps = {"block_catalog": {"categories": {"ads": {"enabled_nodes": ["na"]}}},
           "custom_lists": [{"id": "cl_1", "disabled_nodes": ["na"]}, {"id": "cl_2", "disabled_nodes": []}]}
     deps = {"nodes_path": os.path.join(d, "nodes.json"), "roster_path": os.path.join(d, "users.json"), "stats_dir": d,
-            "node_snaps": {"na": snaps["na"], "nb": snaps["nb"]}, "node_seen": {}, "panel_settings": ps,
+            "node_snaps": {"na": snaps["na"], "nb": snaps["nb"]}, "node_seen": {"nb": time.time()}, "panel_settings": ps,
             "panel_settings_path": os.path.join(d, "panel-settings.json")}
     json.dump(to_fleet(), open(deps["nodes_path"], "w"))
     rr = roster()
@@ -728,6 +731,15 @@ def sec8():
     after2 = json.load(open(deps2["roster_path"]))
     check("[8] node_remove(A) with no snapshot of B: the peers move onto B's copies, never purged",
           all(t["node"] == "nb" for p in ("p1", "p2", "p3") for t in after2["peers"][p]["targets"]), after2["peers"])
+    d3 = os.path.join(TMP, "rm3"); os.makedirs(d3)
+    deps3 = {"nodes_path": os.path.join(d3, "nodes.json"), "roster_path": os.path.join(d3, "users.json"), "stats_dir": d3,
+             "node_snaps": {"na": snaps["na"], "nb": {"interfaces": {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}}}},
+             "node_seen": {"nb": time.time()}, "panel_settings": {}}
+    json.dump(to_fleet(), open(deps3["nodes_path"], "w")); json.dump(roster(), open(deps3["roster_path"], "w"))
+    P.node_remove(deps3, "na")
+    after3 = json.load(open(deps3["roster_path"]))
+    check("[8] node_remove(A) while B's awg0 is down: its peers move onto B's copy, never purged (F89)",
+          all(t["node"] == "nb" for p in ("p1", "p2", "p3") for t in after3["peers"][p]["targets"]), after3["peers"])
     psd = json.load(open(deps["panel_settings_path"])) if os.path.exists(deps["panel_settings_path"]) else {}
     check("[8] node_remove(A): A's node-keyed settings name B too",
           (psd.get("block_catalog") or {}).get("categories", {}).get("ads", {}).get("enabled_nodes") == ["na", "nb"]
@@ -910,6 +922,10 @@ def sec10():
     c, o = req(port, "/api/iface/update", {"node": "nb", "iface": "awg0", "mtu": 1400})
     check("[10] an edit on B is refused at the door", c == 409 and o.get("code") == "failover_read_only", (c, o))
     sync(port, tk["na"], "na", {"awg0": snap_iface(peers=[(PK[0], False, 10, 10)])})   # the client is on B alone now
+    sync(port, tk["nb"], "nb", {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}})
+    c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": True})
+    check("[10] a take-over while B reports awg0 down is refused (F89)", c == 409 and o.get("code") == "failover_unsure", (c, o))
+    sync(port, tk["nb"], "nb", ifs)
     c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": "false"})
     check("[10] a string take_over is refused (F76)", c == 400, (c, o))
     c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": False})

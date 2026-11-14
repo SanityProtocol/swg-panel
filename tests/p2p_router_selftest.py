@@ -32,6 +32,9 @@ Run: python3 tests/p2p_router_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
 """
 import json, os, socket, subprocess, sys, tempfile, time, types
+import os as _os
+for _v in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+    _os.environ.pop(_v, None)                     # its real panels answer on 127.0.0.1: a desktop proxy would answer instead
 import urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
