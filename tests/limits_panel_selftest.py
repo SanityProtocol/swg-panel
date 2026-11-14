@@ -77,7 +77,8 @@ PLANTS = {
                   '''**({"limits": limits_for_node(roster, nid, desired, snap)}),'''),
     "twopath": ('''            if src == "t" and len(pairs) > 1:''', '''            if False:'''),
     "devpool": ('''        if sum(r[6] == "p" for r in rows) > 1:''', '''        if False:'''),
-    "xfergroup": ('''                                    "limits": limits_clean(g.get("limits"))[0]})''', '''                                    })'''),
+    "xfergroup": ('''                                    "limits": limits_clean(g.get("limits"))[0],    # as users and devices do (one held''',
+                  '''                                                                                    # as users and devices do (one held'''),
     "deploylim": ('''        _drop_target_limits(body)
     fleet = deps["fleet"]''', '''        pass
     fleet = deps["fleet"]'''),

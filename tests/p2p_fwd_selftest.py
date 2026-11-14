@@ -121,7 +121,7 @@ PLANTS = {   # name: (file, old text, planted text)
     "create-nokeep": ("panel", '                               keep=(_prev.get("desired_port"), _prev.get("listen_port"), (_prev.get("_lastcfg") or {}).get("listen_port")))',
                       '                               keep=())'),
     "fill-nostart":  ("panel", "        p2p_ports_at_start(_rp)", "        pass"),
-    "set-dropped":   ("panel", '"routes", "share", "private", "router", "p2p_port"):', '"routes", "share", "private", "router"):'),
+    "set-dropped":   ("panel", '"routes", "share", "private", "router", "p2p_port", "limits", "volume"):', '"routes", "share", "private", "router", "limits", "volume"):'),
     # K2 (1.8.12 Scale): the holder-wins rule for a kept duplicate, the import-loop port book, transfers
     "set-yielddropped": ("panel", "    yl, clash = _p2p_yields(p) & ns & was, set()", "    yl, clash = set(), set()"),
     "set-yieldall":  ("panel", "            clash = _p2p_clash(roster, pid, held, ns - was, book)", "            clash = _p2p_clash(roster, pid, held, ns, book)"),
