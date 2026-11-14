@@ -29,7 +29,7 @@
       down, stopped, keyless, waiting for its key); node_remove(A) moves the peers of every copy B has, carries A's
       node-keyed settings to B, archives A whole and logs the take-over; keeping the peers on A waits while an interface
       runs on B alone (not one A stopped); the preview refuses a node in transfer.
-  [11] The take-over table (absent / stale / held / unsure), written again here, against _fo_holds in all 3072 cases, and
+  [11] The take-over table (absent / stale / held / unsure), written again here, against _fo_holds in all 4608 cases, and
       four invariants on the take-over in each: on B only an old copy is ever deleted; peers move onto what B holds and only
       that; B never ends an ordinary node keeping a copy with the peers left on A; peers land on A's current identity.
   [9] reconcile.js: A stale, B online → online, no orphans; A live too → still no orphan on A; A stale, B without the
@@ -71,6 +71,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      keep-keyless a device reported up without a key counts as not running (F117 on B; on A it blocks keep, F105)
      stale-keep   a take-over keeps B's old copies and copies of interfaces A no longer has (F119, F120)
      leftover-late "A no longer has it" taken after A's held interfaces are dropped (deletes the copy the peers moved onto)
+     stale-deadend the take-over refuses an old copy the vault cannot rebuild (no way out, F136)
      unknown-stale A with no key makes B's copy stale (a removal deletes the copy serving the clients, F128)
      resync-unbuildable the status offers a Re-sync the vault cannot rebuild (it would delete B's copy for good, F128)
      keep-unknown A's key unknown: keeping the peers on A deletes B's running copy while A is down
@@ -164,6 +165,8 @@ PLANTS = {   # (file, anchor, replacement)
         _fo_drop_iface(b, n, now_)'''),
     "leftover-late": ("panel", '    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))   # taken BEFORE A\'s held interfaces are dropped below\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
                       '    old = sorted(set(stale))\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
+    "stale-deadend": ("panel", '''        _rebuild = [n for n in (cls[3] if take else ()) if _iface_key_source((nodes[aid].get("ifaces") or {}).get(n) or {}, None, _ivk) == "vault"]''',
+                      '''        _rebuild = list(cls[3] if take else ())'''),
     "unknown-stale": ("panel", '''    if not key:
         return "unknown"''', '''    if False:
         return "unknown"'''),
@@ -753,10 +756,14 @@ def sec8():
     check("[8] status: a mesh link of B's named like A's interface is a problem of its own, never a Re-sync (F124)",
           rows.get("wg1", {}).get("why") == "name_taken" and not rows["wg1"].get("resync"), rows.get("wg1"))
     nk = to_fleet(); nk["na"]["ifaces"]["awg0"].pop("public_key"); nk["nb"]["ifaces"]["awg0"].pop("public_key")
-    rk = {r["iface"]: r for r in P.failover_view(nk, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW, ivk=IVK)["rows"]}
+    sk = json.loads(json.dumps(snaps)); sk["na"]["interfaces"]["awg0"]["meta"]["public_key"] = ""
+    rk = {r["iface"]: r for r in P.failover_view(nk, None, "na", "nb", sk, {"na": NOW, "nb": NOW}, frozenset(), now=NOW, ivk=IVK)["rows"]}
     check("[8] status: A with no key — a problem of its own, no Re-sync (it could not rebuild), unsure to the door (F128)",
           rk.get("awg0", {}).get("why") == "primary_no_key" and not rk["awg0"].get("resync")
-          and "awg0" in P._fo_holds(nk, snaps, "na", "nb", True)[2], rk.get("awg0"))
+          and "awg0" in P._fo_holds(nk, sk, "na", "nb", True)[2], rk.get("awg0"))
+    nr = to_fleet(); nr["na"]["ifaces"]["awg0"].pop("public_key"); nr["nb"]["ifaces"]["awg0"]["public_key"] = "Q" * 43 + "="
+    check("[8] A's record not blessed but its box reports the key: B's other-key copy is stale, judged by that key (F135)",
+          "awg0" in P._fo_holds(nr, snaps, "na", "nb", True, assume=True)[3], P._fo_holds(nr, snaps, "na", "nb", True, assume=True))
     ns = to_fleet(); ns["nb"]["ifaces"]["awg0"]["public_key"] = "Q" * 43 + "="
     for ivk_, want in ((IVK, True), ("", False)):
         rs = {r["iface"]: r for r in P.failover_view(ns, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW, ivk=ivk_)["rows"]}
@@ -852,8 +859,8 @@ def table_want(rec, akey, live, snap, waits, rep, down, stopped, key):
     """The table of _fo_holds, written again here from its docstring: the first row that matches decides."""
     if rec in ("none", "sys"):
         return "absent"
-    if not akey:
-        return "unsure"                    # A's key unknown: B's copy cannot be judged (F128)
+    if akey == "none":
+        return "unsure"                    # A's key unknown — no blessed key, none reported: cannot be judged (F128)
     if rec != "A":
         return "stale"
     if live and snap and rep and not down and not stopped and key == "A":
@@ -866,13 +873,13 @@ def sec11():
     import itertools
     bad, inv = [], []
     for rec, akey, live, snap, waits, rep, down, stopped, key in itertools.product(
-            ("none", "sys", "X", "A"), (1, 0), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), ("A", "", "X")):
+            ("none", "sys", "X", "A"), ("rec", "rep", "none"), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), ("A", "", "X")):
         n = fleet()
-        if not akey:
+        if akey != "rec":                  # "rep": A's record not blessed, its box reports the key (F135); "none": neither
             n["na"]["ifaces"]["awg0"]["public_key"] = ""
         n["nb"]["ifaces"] = ({} if rec == "none" else {"awg0": {"system": True, "public_key": "M" * 43 + "="}} if rec == "sys"
                              else {"awg0": {"public_key": KA if rec == "A" else KX, "listen_port": 443}})
-        sn = {"na": {"interfaces": {"awg0": snap_iface()}}}
+        sn = {"na": {"interfaces": {"awg0": snap_iface(key="" if akey == "none" else KA)}}}
         if snap:
             ent = {"meta": {"public_key": {"A": KA, "": "", "X": KX}[key], "subnet": "10.8.0.0/24", "listen_port": 443}, "peers": []}
             if down:
@@ -910,9 +917,9 @@ def sec11():
                 inv.append((case, assume, "I2 peers moved: %s, class %s" % (on_b, exp)))
             if bkey and not on_b:                                             # I3: an ordinary B never keeps a copy unmoved
                 inv.append((case, assume, "I3 B kept a copy, peers left on A"))
-            if on_b and akey and bkey != KA:                                  # I4: peers land on A's current identity
+            if on_b and akey != "none" and bkey != KA:                        # I4: peers land on A's current identity
                 inv.append((case, assume, "I4 peers moved onto a copy without A's key"))
-    check("[11] _fo_holds follows its table in all 3072 cases (1536 × assume)", not bad, bad[:3])
+    check("[11] _fo_holds follows its table in all 4608 cases (2304 × assume)", not bad, bad[:3])
     check("[11] the take-over keeps the four invariants in every case, and refuses only in doubt", not inv, inv[:3])
 
 
@@ -1083,6 +1090,8 @@ def sec10():
           (rB.get("limits"), rB.get("dev_reach")))
     rC = sync(port, tk["nc"], "nc")
     check("[10] a third node gets none of them", not (rC.get("desired") or {}).get("awg0"), rC.get("desired"))
+    c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
+    check("[10] a Re-sync with nothing to repair says so instead of an empty success (F136)", c == 409 and o.get("code") == "nothing_to_resync", (c, o))
     c, o = req(port, "/api/iface/update", {"node": "nb", "iface": "awg0", "mtu": 1400})
     check("[10] an edit on B is refused at the door", c == 409 and o.get("code") == "failover_read_only", (c, o))
     sync(port, tk["na"], "na", {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}})
@@ -1106,9 +1115,28 @@ def sec10():
     check("[10] …and its reply no longer carries A's peers", not (rB2.get("desired") or {}).get("awg0"), rB2.get("desired"))
 
 
+def sec12():
+    print("[12] the detach door and an old copy on B (F136)")
+    for vault, want in (({"ivk_enabled": True, "ivk_pub": IVK}, "refused"), (None, "goes on")):
+        f = fleet()
+        f["nb"]["ifaces"] = {"awg0": {"public_key": "Q" * 43 + "=", "listen_port": 443}}     # from before A's key changed
+        port, d = start_panel(NEW, "stale-" + want.replace(" ", ""), f, roster(), vault=vault)
+        tk = {n: req(port, "/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in ("na", "nb", "nc")}
+        sync(port, tk["na"], "na", {"awg0": snap_iface()})
+        sync(port, tk["nb"], "nb", {"awg0": snap_iface(key="Q" * 43 + "=")})
+        c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": True, "confirm": "hel-2"})
+        if want == "refused":
+            check("[12] the vault can rebuild A's key: the take-over waits for a Re-sync", c == 409 and o.get("code") == "failover_stale", (c, o))
+            c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
+            check("[12] …and the Re-sync is offered and runs", c == 200 and o["data"]["ifaces"] == ["awg0"], (c, o))
+        else:
+            check("[12] no vault to rebuild it: the take-over goes on, the old copy removed, its peers left on A",
+                  c == 200 and o["data"]["moved"] == [] and o["data"]["left"] == ["awg0"] and o["data"]["removed"] == ["awg0"], (c, o))
+
+
 def main():
     for name, fn in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7),
-                     ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11)):
+                     ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11), ("[12]", sec12)):
         guarded(name, fn)
     for p in PROCS:
         p.terminate()
