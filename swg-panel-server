@@ -6807,6 +6807,11 @@ def node_remove(deps, nid):
     sf = nodes[nid].get("stats_file", f"stats-{nid}.json")
     node_entry = dict(nodes[nid])
     roster = roster_load(deps["roster_path"])
+    # ⚠️ A PRIMARY'S PEERS GO TO ITS FAILOVER NODE FIRST (docs/FAILOVER-PLAN.md §4.9): this purge would otherwise empty the
+    # mirror too. Every interface the failover node holds takes its peers, on the take-over's terms; one it does not hold
+    # goes with this node, as before. To remove a node and its peers on purpose: detach its failover node first.
+    _fo_b = failover_pairs(nodes).get(nid)
+    _fo_moved = failover_takeover(deps, nodes, roster, nid, _fo_b, deps.get("node_snaps") or {})[0] if _fo_b else []
     affected = {pid: p for pid, p in roster["peers"].items()
                 if any(t.get("node") == nid for t in p.get("targets", []))}
     _archive_node(deps, nid, nm, node_entry, affected, sf)   # back up BEFORE purging (moves stats/health out)
@@ -6818,7 +6823,7 @@ def node_remove(deps, nid):
     _orphans = prune_node_refs(nodes)
     _p2p_pruned = prune_p2p_refs(nodes)                       # …and a torrent route to it becomes Block
     nodes_save(deps["nodes_path"], nodes)
-    changed = False
+    changed = bool(_fo_moved)
     for pid in list(roster["peers"].keys()):
         p = roster["peers"][pid]
         kept = [t for t in p.get("targets", []) if t.get("node") != nid]
@@ -9846,26 +9851,30 @@ def p2p_routers_for_node(roster, node_id, arrivals=()):
     return ["%s/32" % a for a in sorted(out)]
 
 
-def p2p_arrivals(node, plan):
+def p2p_arrivals(node, plan, nodes=None):
     """[(subnet, origin node)] cascading out through this node with its source kept — its plan's exit records, each named by
     the mesh link it arrives on. A subnet arriving over two links cannot be told apart by source and is left out (the
-    planner's own T15 rule)."""
+    planner's own T15 rule). `nodes` (only while a fleet has a failover node): an origin that is a failover node is named
+    as its primary, the node its peers' targets name (docs/FAILOVER-PLAN.md §4.3)."""
     by_dev = {(lk or {}).get("iface"): peer for peer, lk in ((node or {}).get("links") or {}).items() if isinstance(lk, dict)}
     vias = {}
     for e in (plan or {}).get("exit") or []:
         if isinstance(e, dict) and e.get("subnet"):
             vias.setdefault(e["subnet"], set()).add(e.get("via_iface"))
-    return sorted((S, by_dev[next(iter(vs))]) for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)
+    out = sorted((S, by_dev[next(iter(vs))]) for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)
+    return [(S, failover_rid(nodes, o)) for S, o in out] if nodes else out
 
 
 _P2P_ROUTERS = {}   # node id → ((roster_mark, its arrivals), its list): recomputed only when either moves
 _P2P_ANY_ROUTER = [None]   # (roster_mark, is any peer marked) — so a fleet that marks nobody builds no arrivals
 
 
-def p2p_routers_cached(mark, roster, node_id, arrivals=()):
+def p2p_routers_cached(mark, roster, node_id, arrivals=(), slot=None):
     """p2p_routers_for_node, recomputed only when the roster moved (`mark`, taken before the roster was read) or the node's
     arrivals changed. `arrivals` may be a function: called only when some peer is marked (s11b F19 — a fleet that marks
-    nobody pays one roster pass per save, nothing per sync)."""
+    nobody pays one roster pass per save, nothing per sync). `slot`: the memo's key when it is not `node_id` — a failover
+    node asks with its primary's id and keeps its own slot, or the two would evict each other every sync."""
+    slot = node_id if slot is None else slot
     if callable(arrivals):
         anyr = _P2P_ANY_ROUTER[0] if mark is not None else None
         if not (anyr and anyr[0] == mark):
@@ -9876,12 +9885,12 @@ def p2p_routers_cached(mark, roster, node_id, arrivals=()):
             return []
         arrivals = arrivals()
     key = (mark, tuple(arrivals))
-    hit = _P2P_ROUTERS.get(node_id)
+    hit = _P2P_ROUTERS.get(slot)
     if mark is not None and hit and hit[0] == key:
         return hit[1]
     v = p2p_routers_for_node(roster, node_id, arrivals)
     if mark is not None:
-        _P2P_ROUTERS[node_id] = (key, v)
+        _P2P_ROUTERS[slot] = (key, v)
     return v
 
 
@@ -10109,16 +10118,17 @@ def p2p_ports_at_start(path):
 _P2P_FWD = {}   # node id → ((roster mark, scope), its list): recomputed only when either moves
 
 
-def p2p_fwd_for_node(mark, roster, node_id, scope):
+def p2p_fwd_for_node(mark, roster, node_id, scope, slot=None):
     """smart.p2p_fwd: [[device ip, its port], …] — this node's wg/awg devices where P2P leaves by its own address. `scope`:
     ("direct", strict subnets) → every device outside them, ("iface", the Direct records' subnets) → those inside, None →
     none. One per device: its primary target here, else the first by interface name (two would be one duplicate
     `addr . port` key, which refuses the node's whole table). One per port, the holder's (K2): of the devices on this node
     with that port — any target kind, forwarded here or not — the one that does not yield it (`p2p_yield`), else the
-    lowest id. Sorted; cached on the roster's mark and the scope."""
+    lowest id. Sorted; cached on the roster's mark and the scope, in `slot` (default `node_id`: see p2p_routers_cached)."""
     if not scope:
         return []
-    hit = _P2P_FWD.get(node_id)
+    slot = node_id if slot is None else slot
+    hit = _P2P_FWD.get(slot)
     if mark is not None and hit and hit[0] == (mark, scope):
         return hit[1]
     nets, rows, owner = [ipaddress.ip_network(x, strict=False) for x in scope[1]], [], {}
@@ -10141,7 +10151,7 @@ def p2p_fwd_for_node(mark, roster, node_id, scope):
             rows.append((min(ts)[2], port, k))
     out = [[str(a), q] for a, q, k in sorted(rows) if owner[q] == k]
     if mark is not None:
-        _P2P_FWD[node_id] = ((mark, scope), out)
+        _P2P_FWD[slot] = ((mark, scope), out)
     return out
 
 
@@ -13082,6 +13092,373 @@ def rebuild_public(plan):
             "was_reporting": plan["was_reporting"], "declarative": plan["declarative"]}
 
 
+# ── Failover nodes (docs/FAILOVER-PLAN.md, 1.8.12 item 4) ───────────────────────────────────────────────────────────────
+# A failover node B is a live, read-only mirror of one node A: the same interfaces with the same private keys, ports,
+# subnets, AWG parameters and every peer, so a client config cannot tell the two apart and a DNS change is the whole
+# failover. ONE stored field, `nodes[B]["failover_of"] = A`. B's peers are A's through `rid` (failover_rid) at every
+# roster-keyed call of B's sync — the roster never names B — and B's interface records follow A's settings by
+# failover_mirror. No node or agent change, no wire key, no state file. A fleet with no failover node runs none of this.
+#
+# THE CENSUS (plan §4.2, §10, refresh R5). Every interface and node record field is one of: followed (copied A → B on
+# every pass), cloned once (the identity, only when B has no record), or local (B's own, never touched). A field not
+# named here is local — the safe direction: B keeps its own, nothing of A's leaks into it.
+FO_IF_FOLLOW = ("listen_port", "mtu", "dns", "keepalive", "awg_params", "awg_exact", "block", "p2p", "reach",
+                "egress_mode", "egress_node", "exit_id", "routing", "routing_exit_ips")
+FO_IF_FWD = ("egress_ip", "wan_iface")       # followed only in forward mode: there they name the FAR node (§4.2)
+FO_IF_CLONE = ("public_key", "key_blob", "_lastcfg")   # once; never followed — an Adopt on A must not reach B (§4.2)
+FO_NODE_FOLLOW = ("routing_mode", "dns_upstream", "default_routing", "default_routing_exit_ips", "default_exit",
+                  "lan_share", "ip_learning", "p2p", "p2p_portok", "p2p_portok_none", "catalog_cats")
+_FO_RESYNC_KEYS = ("listen_port", "mtu", "awg_params")   # a change clears that key's _synced/_drift, as /api/iface/update
+
+
+def _fo_copy(v):
+    return json.loads(json.dumps(v))
+
+
+def failover_rid(nodes, nid):
+    """The node whose peers `nid` serves: its primary when `nid` is a failover node whose primary is still in the store,
+    else `nid` itself. The roster never names a failover node, so this is the id every roster-keyed read of its sync
+    takes (plan §4.3)."""
+    a = (nodes.get(nid) or {}).get("failover_of") if isinstance(nodes, dict) else None
+    return a if isinstance(a, str) and a != nid and a in nodes else nid
+
+
+def failover_pairs(nodes):
+    """{primary: its failover node} — {} in a fleet with none (one walk of the records)."""
+    out = {}
+    for b, c in (nodes or {}).items():
+        a = c.get("failover_of") if isinstance(c, dict) else None
+        if isinstance(a, str) and a != b and a in nodes:
+            out[a] = b
+    return out
+
+
+def _fo_live(seen, nid, now=None):
+    """Reporting now: synced within NODE_OFFLINE, the test rebuild_plan uses."""
+    ls = (seen or {}).get(nid)
+    return ls is not None and ((time.time() if now is None else now) - ls) <= NODE_OFFLINE
+
+
+def _fo_user_ifaces(c):
+    return {n: ov for n, ov in ((c or {}).get("ifaces") or {}).items() if isinstance(ov, dict) and not ov.get("system")}
+
+
+def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
+    """One pass of B's mirror (plan §4.2), in B's sync under the lock. Mutates nodes[bid] in place; True when it changed
+    (the caller saves). Steady state changes nothing: the pass is built on a scratch copy, the prunes run there, and
+    only a real difference is written.
+
+    Settings follow A → B every pass (FO_NODE_FOLLOW, FO_IF_FOLLOW, FO_IF_FWD in forward mode). Identity is cloned once,
+    when B has no record and A has a blessed key, an escrow blob and a captured config. Structure:
+      - B holds a record it does not report, nothing pending, and the vault can open its key: stage the restore (it holds
+        for the key, which the browser releases — ifaceKeyAutoRestore). Needs nothing from A, so B repairs itself while
+        A is down.
+      - B holds a record A does not, A is reporting, and A's snapshot does not report it either: drop it as
+        /api/iface/delete does. Record and box agreeing is what makes it deliberate; a dead A removes nothing.
+      - A key or subnet that differs on B: nothing here (status says `problem`; Re-sync is the operator's)."""
+    b = nodes.get(bid)
+    aid = failover_rid(nodes, bid)
+    if aid == bid or not isinstance(b, dict):
+        return False
+    a = nodes[aid]
+    w = _fo_copy(b)
+    for k in FO_NODE_FOLLOW:
+        if k in a:
+            w[k] = _fo_copy(a[k])
+        else:
+            w.pop(k, None)
+    aifs = _fo_user_ifaces(a)
+    wifs = w.setdefault("ifaces", {})
+    for n, aov in aifs.items():
+        bov = wifs.get(n)
+        if bov is None:
+            if not (aov.get("public_key") and (aov.get("key_blob") or {}).get("ct")
+                    and ((aov.get("_lastcfg") or {}).get("subnet"))):
+                continue                                   # nothing to clone a working copy from: status names it
+            if n in (w.get("delete") or {}):
+                continue                                   # a Re-sync's delete still in flight: clone after it closes
+            bov = wifs[n] = {k: _fo_copy(aov[k]) for k in FO_IF_CLONE if aov.get(k)}
+        if not isinstance(bov, dict) or bov.get("system"):
+            continue                                       # a link of B's own that shares the name: never touched
+        for k in FO_IF_FOLLOW:
+            old = bov.get(k)
+            if k in aov:
+                bov[k] = _fo_copy(aov[k])
+            else:
+                bov.pop(k, None)
+            if k in _FO_RESYNC_KEYS and bov.get(k) != old:
+                (bov.get("_synced") or {}).pop(k, None); (bov.get("_drift") or {}).pop(k, None)
+        fwd = aov.get("egress_mode") == "forward"
+        for k in FO_IF_FWD:
+            if fwd and k in aov:
+                bov[k] = aov[k]
+            else:
+                bov.pop(k, None)                           # direct mode: A's own address or NIC — B is Auto (§4.1)
+    if _fo_live(seen, aid, now):
+        arep = ((snaps or {}).get(aid) or {}).get("interfaces") or {}
+        for n in [n for n, ov in wifs.items() if isinstance(ov, dict) and not ov.get("system") and n not in aifs
+                  and n not in arep]:
+            w.setdefault("delete", {})[n] = int(time.time() if now is None else now)
+            for key in ("create", "onboard", "ifaces"):
+                d = w.get(key)
+                if isinstance(d, dict):
+                    d.pop(n, None)
+                    if not d and key != "ifaces":
+                        w.pop(key, None)
+    bsnap = (snaps or {}).get(bid) or {}
+    brep = bsnap.get("interfaces") or {}
+    ivk = _current_ivk_pub(deps)
+    for n, bov in (w.get("ifaces") or {}).items():
+        if (not isinstance(bov, dict) or bov.get("system") or n in brep or n in (w.get("create") or {})
+                or n in (w.get("delete") or {}) or _iface_key_source(bov, None, ivk) != "vault"):
+            continue
+        req = iface_restore_req(bov, ivk)
+        if req is None or (any(k in (req.get("awg_params") or {}) for k in AWG3_FIELDS) and not awg_gen_reported(bsnap)):
+            continue                                       # an older box would bring it back as AmneziaWG 2.0
+        w.setdefault("create", {})[n] = req
+    prune_exit_refs(w)                                     # B has no exits: a reference to one of A's is the default here,
+    prune_default_exit(w)                                  # and the record says so, so no prune elsewhere rewrites it
+    derive_default_exit(w)
+    prune_p2p_refs({k: (w if k == bid else {}) for k in nodes})   # only B's record; the others' ids for the node test
+    if json.dumps(w, sort_keys=True) == json.dumps(b, sort_keys=True):
+        return False
+    b.clear()
+    b.update(w)                                            # in place: the sync holds this dict as `node`
+    return True
+
+
+def _fo_online(snap, ifs):
+    """Online client peers on the mirrored interfaces of one snapshot."""
+    n = 0
+    for ifn, blk in ((snap or {}).get("interfaces") or {}).items():
+        if ifn in ifs and isinstance(blk, dict):
+            n += sum(1 for p in (blk.get("peers") or ()) if isinstance(p, dict) and p.get("online"))
+    return n
+
+
+def failover_idle(nodes, snaps, seen, now=None, pairs=None):
+    """The member of each pair NOT planned this sync (plan §4.4): A, unless B has more than twice A's online clients (an
+    offline node counts 0). Stateless, and an even split is stable. frozenset() with no pairs."""
+    pairs = failover_pairs(nodes) if pairs is None else pairs
+    if not pairs:
+        return frozenset()
+    idle = set()
+    for a, b in pairs.items():
+        ifs = set(_fo_user_ifaces(nodes.get(a)))
+        on = {x: (_fo_online((snaps or {}).get(x), ifs) if _fo_live(seen, x, now) else 0) for x in (a, b)}
+        idle.add(a if on[b] > 2 * on[a] else b)
+    return frozenset(idle)
+
+
+def _fo_holds(nodes, snaps, aid, bid):
+    """The interfaces B holds with A's key: its record carries A's blessed key and B reports it with that key — or, with
+    no snapshot of B in memory (a panel just restarted), B has confirmed it before (`_synced`, written only by B's sync)."""
+    a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
+    brep = ((snaps or {}).get(bid) or {}).get("interfaces")
+    out = []
+    for n, aov in _fo_user_ifaces(a).items():
+        bov = (b.get("ifaces") or {}).get(n)
+        if not isinstance(bov, dict) or not aov.get("public_key") or bov.get("public_key") != aov.get("public_key"):
+            continue
+        if isinstance(brep, dict):
+            if (((brep.get(n) or {}).get("meta") or {}).get("public_key") or "") == aov["public_key"]:
+                out.append(n)
+        elif bov.get("_synced"):
+            out.append(n)
+    return out
+
+
+def _fo_effective_host(c, ov, snap):
+    """The host A's clients dial for one interface: its own, else the node's, else the node's public address."""
+    return ((ov or {}).get("endpoint_host") or "").strip() or (c.get("endpoint_host") or "").strip() or node_public_ip(snap)
+
+
+def failover_takeover(deps, nodes, roster, aid, bid, snaps):
+    """Move A's peers to B for every interface B holds with A's key (plan §4.8, §4.9, refresh R4). Mutates `nodes` and
+    `roster` (an owned copy); the caller saves both. Per interface: its wg/awg targets move A→B, each moved device that
+    yields its torrent port on A yields it on B (A dropped once no target stays there), B's interface takes A's effective
+    host as its endpoint, and A's interface is dropped as /api/iface/delete drops it (delete staged, record gone) minus
+    the target strip — so A's stale snapshot never keeps A planned, and an A that comes back stops serving them. The
+    flag goes last. Returns (moved interfaces, interfaces left on A)."""
+    a, b = nodes[aid], nodes[bid]
+    held = _fo_holds(nodes, snaps, aid, bid)
+    left = sorted(n for n in _fo_user_ifaces(a) if n not in held)
+    now_ = int(time.time())
+    asnap = (snaps or {}).get(aid) or {}
+    for n in held:
+        host = _fo_effective_host(a, (a.get("ifaces") or {}).get(n), asnap)
+        if host:
+            b["ifaces"][n]["endpoint_host"] = host
+        a.setdefault("delete", {})[n] = now_
+        for key in ("create", "onboard", "ifaces"):
+            d = a.get(key)
+            if isinstance(d, dict):
+                d.pop(n, None)
+                if not d:
+                    a.pop(key, None)
+    hs = set(held)
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict):
+            continue
+        moved = False
+        for t in p.get("targets") or []:
+            if (isinstance(t, dict) and t.get("node") == aid and t.get("iface") in hs
+                    and not _is_self_contained_target(t)):
+                t["node"] = bid
+                moved = True
+        if not moved:
+            continue
+        p["modified_at"] = now_
+        ys = _p2p_yields(p)
+        if aid in ys:
+            ys = (ys | {bid}) - ({aid} if not any(isinstance(t, dict) and t.get("node") == aid
+                                                    for t in p.get("targets") or []) else set())
+            p["p2p_yield"] = sorted(ys)
+    b.pop("failover_of", None)
+    return sorted(held), left
+
+
+def _fo_resolves_to(host, ips):
+    """True when `host` resolves to one of `ips`, False when it resolves elsewhere or not at all, None when the resolver did
+    not answer in 2 s — the _dns_resolves bound: a preview never stalls on DNS, and stays silent rather than false-warn."""
+    res = [None]
+
+    def _r():
+        try:
+            res[0] = {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+        except socket.gaierror:
+            res[0] = set()
+        except Exception:
+            res[0] = None
+    t = threading.Thread(target=_r, daemon=True); t.start(); t.join(2.0)
+    return None if res[0] is None else bool(res[0] & set(ips or ()))
+
+
+def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
+    """What `POST /api/nodes/failover` would refuse and warn about for primary `aid` — ONE answer for the preview and the
+    act (plan §4.1, T-11's rule). {refused: [{iface?, why}], needs_vault, warn: {...}}. `resolve`: the preview only asks DNS
+    (2 s bound), never the act and never a poll."""
+    a = nodes.get(aid) or {}
+    snap = (snaps or {}).get(aid) or {}
+    refused, warn = [], {"ip_endpoint": [], "dns": [], "not_mirrored": [], "pinned": []}
+    if a.get("failover_of"):
+        refused.append({"why": "this node is a failover node itself"})
+    if aid in failover_pairs(nodes):
+        refused.append({"why": "this node already has a failover node"})
+    ifs = _fo_user_ifaces(a)
+    if not ifs:
+        refused.append({"why": "this node has no interfaces to mirror"})
+    plan = rebuild_plan(deps, nodes, aid, snaps, seen, supersede=False)
+    nv = set(plan["needs_vault"])
+    nocfg = {u["iface"] for u in plan["unrestorable"] if u.get("kind") == "no_config"}
+    for n in sorted(ifs):
+        if n in nocfg:
+            refused.append({"iface": n, "why": "the panel never captured its configuration — a mirror would miss it"})
+        elif n not in nv:
+            refused.append({"iface": n, "why": "its key is not in the Encryption Vault — set the vault up; the key is sealed "
+                                              "on the node's next sync"})
+    for n, ov in sorted(ifs.items()):
+        host = _fo_effective_host(a, ov, snap)
+        if not host or _ip_literal(host):
+            warn["ip_endpoint"].append({"iface": n, "host": host})
+        elif resolve and _fo_resolves_to(host, snap.get("node_ips") or ()) is False:
+            warn["dns"].append({"iface": n, "host": host})
+        if ov.get("egress_mode") != "forward" and (ov.get("egress_ip") or ov.get("wan_iface")):
+            warn["pinned"].append(n)
+    for k in ("wdtt", "csqtt"):
+        warn["not_mirrored"] += [{"kind": k, "name": n} for n in sorted(a.get(k) or {})]
+    if a.get("turn"):
+        warn["not_mirrored"].append({"kind": "turn", "name": ""})
+    _scratch = _fo_copy({"ifaces": ifs, "default_routing": a.get("default_routing")})
+    warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_scratch)]   # B has no exits (§7)
+    return {"refused": refused, "needs_vault": sorted(nv & set(ifs)), "warn": warn}
+
+
+def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None):
+    """The status both members' cards show (plan §4.6): {primary, failover, serving, state, rows, problems}. `state` rolls
+    up to offline | problem | needs_vault | syncing | ready; a row appears only when an interface is not ready, its `why` a
+    code the SPA words (no_copy, awaiting_key, creating, key, subnet, drift + keys, peers + n, port). Derived, never stored
+    (called under the state memo)."""
+    a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
+    bsnap = (snaps or {}).get(bid) or {}
+    brep = bsnap.get("interfaces") or {}
+    held = set(bsnap.get("ifaces_awaiting_key") or ())
+    want = desired_for_node(roster, aid) if roster is not None else {}
+    rank = {"ready": 0, "syncing": 1, "needs_vault": 2, "problem": 3}
+    rows, worst = [], "ready"
+    for n, aov in sorted(_fo_user_ifaces(a).items()):
+        bov = (b.get("ifaces") or {}).get(n)
+        rep = brep.get(n) if isinstance(brep.get(n), dict) else None
+        meta = (rep or {}).get("meta") or {}
+        st, why, more = "ready", "", {}
+        if not isinstance(bov, dict):
+            st, why = "needs_vault", "no_copy"
+        elif rep is None:
+            st, why = ("needs_vault", "awaiting_key") if n in held else ("syncing", "creating")
+        elif meta.get("public_key") and meta["public_key"] != aov.get("public_key"):
+            st, why = "problem", "key"
+        elif meta.get("subnet") and (aov.get("_lastcfg") or {}).get("subnet") and meta["subnet"] != aov["_lastcfg"]["subnet"]:
+            st, why = "problem", "subnet"
+        elif bov.get("_drift"):
+            st, why, more = "problem", "drift", {"keys": sorted(bov["_drift"])}
+        else:
+            have = {(p or {}).get("public_key") for p in (rep.get("peers") or ())}
+            miss = sum(1 for e in (want.get(n) or ()) if e.get("public_key") not in have)
+            if miss:
+                st, why, more = "syncing", "peers", {"n": miss}
+            elif str(aov.get("listen_port") or "") not in ("", str(meta.get("listen_port") or aov.get("listen_port"))):
+                st, why = "syncing", "port"
+        if st != "ready":
+            rows.append({"iface": n, "state": st, "why": why, **more})
+            worst = st if rank[st] > rank[worst] else worst
+    extra, um = [], _unmanaged_ifaces(b, bsnap)
+    if bsnap.get("cmd_errors"):
+        extra.append({"kind": "cmd_errors"})
+    if um:
+        extra.append({"kind": "unmanaged", "ifaces": sorted(um)})
+    if extra:
+        worst = "problem"
+    state = "offline" if not _fo_live(seen, bid, now) else worst
+    return {"primary": aid, "failover": bid, "serving": aid if bid in idle else bid, "state": state, "rows": rows,
+            "problems": extra, "resync": any(r["why"] in ("key", "subnet") for r in rows),
+            "primary_live": _fo_live(seen, aid, now)}
+
+
+# The doors a failover node takes (plan §4.7): what repairs it or concerns only its box. Everything else that names it is
+# refused, fail-closed, so a stale tab cannot edit a mirror. /api/nodes/update is allowed with its name and colour only.
+_FO_RO_DOORS = frozenset(("/api/nodes/rotate", "/api/node/update", "/api/nodes/flag-remove", "/api/nodes/unflag-remove",
+                          "/api/nodes/delete", "/api/iface/recreate", "/api/nodes/failover/detach",
+                          "/api/nodes/failover/resync", "/api/connection/update", "/api/nodes/remesh",
+                          "/api/node/awg-load", "/api/node/routing-reset", "/api/node/proc-clear",
+                          "/api/iface/escrow/verified"))
+
+
+def failover_ro_refusal(path, body, nodes):
+    """(status, body) refusing a POST that names a failover node where it may not, else None. Names read: `node`, `id`
+    (on node doors), `target.node`, `targets[].node`, and /api/peers/targets' `base[] add[] address[] remove[]` (refresh
+    R3). Free when the fleet has no failover node."""
+    fo = {n for n, c in nodes.items() if isinstance(c, dict) and c.get("failover_of")}
+    if not fo or not isinstance(body, dict):
+        return None
+    named = {body.get("node")}
+    if path.startswith(("/api/nodes/", "/api/node/")):
+        named.add(body.get("id"))
+    if isinstance(body.get("target"), dict):
+        named.add(body["target"].get("node"))
+    for k in ("targets", "base", "add", "address", "remove"):
+        if isinstance(body.get(k), list):
+            named |= {x.get("node") for x in body[k] if isinstance(x, dict)}
+    hit = {n for n in named if isinstance(n, str) and n in fo}
+    if not hit:
+        return None
+    if path in _FO_RO_DOORS or (path == "/api/nodes/update" and set(body) <= {"id", "name", "color"}):
+        return None
+    return 409, {"ok": False, **perr("{v1} is a failover node: it mirrors {v2} and is read-only — edit {v2}, or detach it first",
+                                     v1=nodes[min(hit)].get("name") or min(hit),
+                                     v2=(nodes.get(nodes[min(hit)]["failover_of"]) or {}).get("name") or nodes[min(hit)]["failover_of"]),
+                 "code": "failover_read_only"}
+
+
 # ── T-10 · Transfer: panel A to panel B ──────────────────────────────────────────────────────────
 # A rebuild moves a node to a new BOX and the panel under it never changes. A Transfer moves the panel
 # and the box never changes — so nothing is installed, no address moves, and the only thing that has to
@@ -14340,6 +14717,8 @@ def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
     snaps = deps.get("node_snaps") or {}
     out = []
     for nid, node in (nodes or {}).items():
+        if isinstance(node, dict) and node.get("failover_of"):
+            continue          # a mirror's copy is its primary's subnet, not a second use of it (docs/FAILOVER-PLAN.md §4.4)
         snap = snaps.get(nid)
         if snap:
             with contextlib.suppress(Exception):
@@ -15787,7 +16166,9 @@ def mesh_mode_effective(deps, nodes):
     m = str((deps.get("panel_settings") or {}).get("mesh_mode") or "auto")
     if m in ("full", "demand"):
         return m
-    return "full" if len(nodes) <= MESH_AUTO_FULL_MAX else "demand"
+    # A failover node does not count (docs/FAILOVER-PLAN.md §4.5): 16 nodes + 16 mirrors is a 16-node fleet, not 32.
+    n = sum(1 for c in nodes.values() if not (isinstance(c, dict) and c.get("failover_of")))
+    return "full" if n <= MESH_AUTO_FULL_MAX else "demand"
 
 
 def mesh_need(nodes, deps):
@@ -15894,6 +16275,12 @@ def reconcile_mesh(nodes, snaps, deps):
     if mode == "full":                                           # 1) every pair linked — today's loop, today's order
         _MESH_IDLE.clear()
         pairs = ((a, b) for i, a in enumerate(ids) for b in ids[i + 1:])
+        # …but a pair with a failover end only where its configuration asks for it (docs/FAILOVER-PLAN.md §4.5): its
+        # mirrored forwards and rules name exactly the links it needs. Not computed in a fleet without one.
+        _fo = {x for x, c in nodes.items() if isinstance(c, dict) and c.get("failover_of")}
+        if _fo:
+            _fneed = mesh_need(nodes, deps)
+            pairs = [(a, b) for a, b in pairs if not (a in _fo or b in _fo) or frozenset((a, b)) in _fneed]
     else:                                                        # …or every NEEDED pair, in the same order
         need = mesh_need(nodes, deps)
         pos = {x: i for i, x in enumerate(ids)}
@@ -22645,7 +23032,7 @@ def resolve_exit(nodes, snaps, nid, xid):
             str(_x.get("gw") or "").strip())
 
 
-def cascade_plan(nodes, snaps, custom_lists=None):
+def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
     """Fleet-wide egress plan covering BOTH Phase-2 whole-interface forward (egress_mode=forward) AND
     Phase-3 per-destination smart routing (egress_mode=smart). Both route a user interface's traffic into
     the existing N↔P mesh link and exit P's WAN; smart just scopes the entry match to a destination category
@@ -22656,7 +23043,10 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                       "exit":   [{subnet,via_iface,table,egress_ip,wan_iface}],   # exit node P (shared)
                       "allowed":{<link iface>: "<AllowedIPs>"}}                   # forward-aware mesh ACL
     Safe by construction: a pair/rule whose subnet/link isn't reported yet is skipped (pauses, never errors);
-    only an explicit forward/smart toggle produces any entry — inert otherwise."""
+    only an explicit forward/smart toggle produces any entry — inert otherwise.
+    `idle` (docs/FAILOVER-PLAN.md §4.4): the member of each failover pair not serving. Walked LAST, so the serving member
+    plans first and the T37 guard (one subnet into one far node) leaves the idle one's cascades out; its local rules
+    stay. Its clash is not noted: steady state, not a fault. Empty without failover — the walk is today's."""
     plans = {}
 
     def _nlist(nid):
@@ -22750,6 +23140,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         return {"their": dup[2], "their_subnet": str(dup[0]), "via": dup[1]} if dup else None
 
     def _note_clash(nid, name, S, P, kind, why):
+        if nid in idle:
+            return
         slot(nid).setdefault("_clash", {})[(name or S, P)] = {"iface": name or S, "subnet": S, "node": P, "kind": kind, **why}
 
     def _clashes(nid, name, S, P, kind):
@@ -22831,7 +23223,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             extra = (doms, cidrs, pats)
         elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
             cl = custom_lists[cat]
-            if cl.get("enabled", True) is False or nid in (cl.get("disabled_nodes") or []):
+            if cl.get("enabled", True) is False or failover_rid(nodes, nid) in (cl.get("disabled_nodes") or []):
                 return None                        # list toggled off globally, or disabled on THIS node → don't route it
             doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
             pats = list(cl.get("patterns") or [])
@@ -23041,7 +23433,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                         targets.append(_dkey)
                     smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None, None))
 
-    for nid, node in nodes.items():
+    for nid, node in (sorted(nodes.items(), key=lambda kv: kv[0] in idle) if idle else nodes.items()):
         targets = []
         _own = []                                             # (name, subnet) of every client subnet the walk below visits — P2P route
         _ownr = []                                            # …and the record each came from (its own torrent choice), index for index
@@ -25000,12 +25392,14 @@ class TrafficLedger:
         log(LOG_INFO, "ledger: on — %s, %d slot(s), %d record(s), %ds buckets", self.dir, n, len(self.recs), self.step)
 
     # ── ingest (the hot path: every sync of every node) ───────────────────────────────────────────────────────────
-    def ingest(self, nid, snap, now=None, mono=None, seq=None):
+    def ingest(self, nid, snap, now=None, mono=None, seq=None, pairs=()):
         if not self.on or not isinstance(snap, dict):
             return
         now = int(time.time() if now is None else now)
         mono = time.monotonic() if mono is None else mono
         mark = roster_mark(self.roster_path)                   # one stat() — the map is rebuilt only when this moves
+        if pairs:                                              # …or a failover pair is set or cleared (docs/FAILOVER-PLAN.md
+            mark = ("fo", mark, pairs)                         # refresh R2): the pairs live in nodes.json. None: today's mark
         d, off = _ld_day(now)                                  # one localtime() per sync, outside the lock
         today = d                                              # the clock's day (d is reset to the ledger's below)
         with self.lock:
@@ -25143,6 +25537,10 @@ class TrafficLedger:
         #                                                        publishes what roster_load makes of it (roster_view's docstring).
         #                                                        A view is normalised: users and peers are dicts.
         claims, deploys, owners, titles = {}, set(), {}, {}
+        # A FAILOVER NODE'S COUNTERS ARE ITS PRIMARY'S DEVICES (docs/FAILOVER-PLAN.md §4.6, refresh R2): each wg/awg target on a
+        # primary also claims the same interface and key on its failover node, so traffic there lands in the device's one slot
+        # (history and its volume limit). The deployment too, or every roster save would drop that baseline (`gone` below).
+        fo = dict(mark[2]) if isinstance(mark, tuple) and mark[:1] == ("fo",) else {}
         for pid, p in r["peers"].items():
             if not isinstance(p, dict):
                 continue
@@ -25158,6 +25556,9 @@ class TrafficLedger:
                     continue
                 claims.setdefault((t["node"], t["iface"], cred), set()).add(pid)
                 deploys.add((t["node"], t["iface"], pid))
+                if fo and t["node"] in fo and cred == p.get("pubkey") and not _is_self_contained_target(t):
+                    claims.setdefault((fo[t["node"]], t["iface"], cred), set()).add(pid)
+                    deploys.add((fo[t["node"]], t["iface"], pid))
         amb = [k for k, v in claims.items() if len(v) > 1]     # two peers claiming ONE counter: crediting either is a guess
         self.diag["ambiguous"] = len(amb)
         self.map = {k: next(iter(v)) for k, v in claims.items() if len(v) == 1}
@@ -26563,6 +26964,10 @@ def api(method, path, qs, body, deps):
     nodes = nodes_load(deps["nodes_path"])
     snaps = deps.get("node_snaps") or {}; seen = deps.get("node_seen") or {}
     now = deps.get("now", lambda: int(time.time()))
+    if method == "POST":                             # a failover node is read-only (docs/FAILOVER-PLAN.md §4.7): fail-closed
+        _fo_ref = failover_ro_refusal(path, body, nodes)
+        if _fo_ref:
+            return _fo_ref
     # How client configs are kept at rest: "encrypted" (an AES-GCM blob the server can't read; default) or
     # "off" (nothing kept). The legacy plaintext-on mode is retired — new peers store an encrypted blob the
     # browser produces, never plaintext. See resolve_store_mode.
@@ -26598,9 +27003,14 @@ def api(method, path, qs, body, deps):
         # feed of an interface's filters, by the one rule the datapath uses (_block_feeds — mode, availability, providers).
         _nb_bc = (block_catalog(panel_settings), block_providers_enabled(panel_settings)) if block_allow_split(panel_settings)[0] else None
         _nb_rdy = {}                                  # sid → ready, once per build: every node's lists name the same few feeds
+        # Failover pairs (docs/FAILOVER-PLAN.md §4.6): one status per pair, on both members' cards. None: nothing runs.
+        _fo_pv = failover_pairs(nodes)
+        _fo_iv = failover_idle(nodes, snaps, seen, now=now(), pairs=_fo_pv) if _fo_pv else frozenset()
+        _fo_vw = {a: failover_view(nodes, _ros, a, b, snaps, seen, _fo_iv, now=now()) for a, b in _fo_pv.items()}
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
+            _fa = failover_rid(nodes, nid)
             ls = seen.get(nid)
             online = ls is not None and (now() - ls) <= NODE_OFFLINE
             pc = rx = tx = 0
@@ -26710,7 +27120,7 @@ def api(method, path, qs, body, deps):
                                 never_block=_nb_bc is not None and not ((snap.get("smartroute") or {}).get("allow") if isinstance(snap.get("smartroute"), dict) else 0)
                                 and any(t == "host" and (_nb_rdy[sid] if sid in _nb_rdy else _nb_rdy.setdefault(sid, _blku_ready(sid, t) is not None))
                                         for lst in _node_block_lists(c)
-                                        for prs in _block_feeds(_nb_bc[0], _nb_bc[1], nid, c.get("routing_mode") or "kernel", lst)[0].values()
+                                        for prs in _block_feeds(_nb_bc[0], _nb_bc[1], failover_rid(nodes, nid), c.get("routing_mode") or "kernel", lst)[0].values()
                                         for sid, t in prs))
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https",    # a link's own type and params ride on its mesh_peers row
@@ -26758,6 +27168,8 @@ def api(method, path, qs, body, deps):
                         # default back — `new-record-field-must-be-published`), and what the node last reported
                         "log_mb": log_mb(c.get("log_mb")),
                         "fast_lane": c.get("fast_lane", FAST_LANE_DEFAULT),   # the fast lane's start (D3): published, as log_mb
+                        **({"failover_of": _fa} if _fa != nid else {}),    # a failover node: the node it mirrors (read-only)
+                        **({"failover": _fo_vw[_fa]} if _fa in _fo_vw else {}),   # either member of a pair: its status
                         "log": snap.get("log") if isinstance(snap.get("log"), dict) else None,
                         "catalog_cats": c.get("catalog_cats") or [],          # provider-catalog categories opted into on this node (node-lens)
                         # Every routing rule's category, per interface, from the NODE RECORD — including the
@@ -26893,7 +27305,7 @@ def api(method, path, qs, body, deps):
                         # reload there could not be reported at all (the failure states were gated on "not everyone"),
                         # and nothing named the device that caused it. The panel decides promotion, so the panel says so
                         # here — the browser asking a second time is how the two answers drift apart.
-                        "reach_promoted": sorted(dev_reach_promotes(_ros, c, nid, snap)),
+                        "reach_promoted": sorted(dev_reach_promotes(_ros, c, failover_rid(nodes, nid), snap)),
                         # DEVICE ACCESS §10.6 + §11.2 F4 — keyless instances whose reported build can't prove a device's owner.
                         **dict(zip(("reach_unvouched", "reach_unvouched_raw"), reach_unvouched_report(snap))),
                         # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
@@ -29830,7 +30242,7 @@ def api(method, path, qs, body, deps):
             if not isinstance(n, dict):
                 continue
             for b in _node_block_lists(n):
-                feeds, mids = _block_feeds(cat, _bpe, _nid, n.get("routing_mode") or "kernel", _validate_block(b, _ps))
+                feeds, mids = _block_feeds(cat, _bpe, failover_rid(nodes, _nid), n.get("routing_mode") or "kernel", _validate_block(b, _ps))
                 if not feeds and not mids:
                     continue
                 for mid in mids:
@@ -31063,6 +31475,104 @@ def api(method, path, qs, body, deps):
             _sub_suspend_user(deps, uid, True)      # restore the same subscription URL — instant flip, no re-mint
             ev_append(roster_path, "user", uid, "Restored access", u.get("name", ""))
         return 200, {"ok": True, "data": {"id": uid, "disabled": False}}
+
+    # ── Failover nodes (docs/FAILOVER-PLAN.md §4.1, §4.6, §4.8): set up, re-sync, detach. ──
+    if method == "GET" and path == "/api/nodes/failover/preflight":
+        aid = (qs.get("node") or [""])[0].strip()
+        if aid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        return 200, {"ok": True, "data": failover_preflight(deps, nodes, aid, snaps, seen, resolve=True)}
+
+    if method == "POST" and path == "/api/nodes/failover":
+        aid = body.get("node") or ""
+        name = (body.get("name") or "").strip()
+        if aid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not name or len(name) > 40 or not all(c.isalnum() or c in "-_" for c in name):
+            return 400, {"ok": False, "error": "name must be 1–40 chars: letters, digits, - or _", "code": "bad_request"}
+        pf = failover_preflight(deps, nodes, aid, snaps, seen)
+        if pf["refused"]:
+            return 409, {"ok": False, **perr("{v1} cannot have a failover node yet — the preview says why",
+                                             v1=nodes[aid].get("name") or aid), "code": "refused", "data": pf}
+        nid = gen_id()
+        while nid in nodes:
+            nid = gen_id()
+        token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+        nodes[nid] = {"id": nid, "name": name, "color": sanitize_color(body.get("color"), {"dark": "#34d399", "light": "#12A46B"}),
+                      "endpoint_host": "", "stats_file": f"stats-{nid}.json",
+                      "token_hash": make_token_hash(token), "token_sha": hashlib.sha256(token.encode()).hexdigest(),
+                      "created": now(), "failover_of": aid}   # the flag first: the mesh below links B only where it is needed
+        failover_mirror(deps, nodes, nid, snaps, seen)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Enrolled failover node", name, nodes[aid].get("name") or aid)
+        reconcile_mesh(nodes, snaps, deps)
+        nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True, "data": {"id": nid, "name": name, "token": token, "preflight": pf}}
+
+    if method == "POST" and path == "/api/nodes/failover/resync":
+        # A key or subnet on B that is not A's (plan §4.6): nothing does this by itself — a destructive act on a comparison
+        # could erase the good copy. Deletes the mismatched interfaces on B and drops their records; the pass clones the
+        # current identity once the delete has closed. Refused while A is not reporting: A's record is what it copies.
+        bid = body.get("id") or ""
+        aid = failover_rid(nodes, bid)
+        if bid not in nodes or aid == bid:
+            return 404, {"ok": False, "error": "not a failover node", "code": "not_found"}
+        if not _fo_live(seen, aid):
+            return 409, {"ok": False, **perr("{v1} is not reporting — re-sync once it is", v1=nodes[aid].get("name") or aid),
+                         "code": "primary_offline"}
+        fv = failover_view(nodes, None, aid, bid, snaps, seen, frozenset())
+        bad = [r["iface"] for r in fv["rows"] if r["why"] in ("key", "subnet")]
+        for n in bad:
+            nodes[bid].setdefault("delete", {})[n] = int(time.time())
+            for key in ("create", "onboard", "ifaces"):
+                d = nodes[bid].get(key)
+                if isinstance(d, dict):
+                    d.pop(n, None)
+        if bad:
+            nodes_save(deps["nodes_path"], nodes)
+            ev_append(roster_path, "node", bid, "Re-syncing failover interfaces", nodes[bid].get("name") or bid, ", ".join(bad))
+        return 200, {"ok": True, "data": {"id": bid, "ifaces": bad}}
+
+    if method == "POST" and path == "/api/nodes/failover/detach":
+        # B becomes an ordinary node (plan §4.8). take_over false: B's copies are removed, the peers stay on A — refused
+        # while A is not reporting (it would delete the only running copy). take_over true: the peers move to B for every
+        # interface B holds; with A reporting and clients on it, `confirm` must carry B's name (typed in the sheet).
+        bid = body.get("id") or ""
+        aid = failover_rid(nodes, bid)
+        if bid not in nodes or aid == bid:
+            return 404, {"ok": False, "error": "not a failover node", "code": "not_found"}
+        bname = nodes[bid].get("name") or bid
+        if not body.get("take_over"):
+            if not _fo_live(seen, aid):
+                return 409, {"ok": False, **perr("{v1} is not reporting: removing the copies on {v2} would delete the only one "
+                                                 "running — move the peers to {v2} instead", v1=nodes[aid].get("name") or aid, v2=bname),
+                             "code": "primary_offline"}
+            for n in sorted(_fo_user_ifaces(nodes[bid])):
+                nodes[bid].setdefault("delete", {})[n] = int(time.time())
+                for key in ("create", "onboard", "ifaces"):
+                    d = nodes[bid].get(key)
+                    if isinstance(d, dict):
+                        d.pop(n, None)
+            nodes[bid].pop("failover_of", None)
+            nodes_save(deps["nodes_path"], nodes)
+            ev_append(roster_path, "node", bid, "Detached failover node", bname, "peers kept on %s" % (nodes[aid].get("name") or aid),
+                      detail_key="peers kept on {v1}", detail_vars={"v1": nodes[aid].get("name") or aid})
+            return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": []}}
+        if (_fo_live(seen, aid) and _fo_online((snaps.get(aid) or {}), set(_fo_user_ifaces(nodes[aid])))
+                and (body.get("confirm") or "") != bname):
+            return 409, {"ok": False, **perr("{v1} is serving clients: type {v2} to move its peers", v1=nodes[aid].get("name") or aid,
+                                             v2=bname), "code": "confirm_required"}
+        roster = roster_load(roster_path)
+        moved, left = failover_takeover(deps, nodes, roster, aid, bid, snaps)
+        nodes_save(deps["nodes_path"], nodes)
+        if moved:
+            roster_save(roster_path, roster)
+        with contextlib.suppress(Exception):
+            write_sub_serve(deps)
+        _dv = {"v1": ", ".join(moved) or "—", "v2": nodes[aid].get("name") or aid, "v3": ", ".join(left)}
+        _dk = "took over {v1}; left on {v2}: {v3}" if left else "took over {v1}"
+        ev_append(roster_path, "node", bid, "Detached failover node", bname, _dk.format(**_dv), detail_key=_dk, detail_vars=_dv)
+        return 200, {"ok": True, "data": {"id": bid, "moved": moved, "left": left}}
 
     if method == "POST" and path == "/api/nodes/create":
         name = (body.get("name") or "").strip()
@@ -34257,6 +34767,9 @@ def api(method, path, qs, body, deps):
         nid = body.get("node") or body.get("id") or ""
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if nid in failover_pairs(nodes):                 # its failover node would be left mirroring nothing (FAILOVER-PLAN §4.9)
+            return 409, {"ok": False, **perr("{v1} has a failover node — detach it before a transfer",
+                                             v1=nodes[nid].get("name") or nid), "code": "failover"}
         try:
             tgt = transfer_parse(body.get("paste") or body.get("command") or "")
         except TransferError as e:
@@ -35823,7 +36336,7 @@ class Handler(BaseHTTPRequestHandler):
         # ledger bug never costs this sync its history; and outside the stats-disk check — the ledger lives in the state
         # dir, only touches memory here, and gates its own writes. Skipping a snapshot is lossless: counters are cumulative.
         try:
-            LEDGER.ingest(nid, snap, seq=seq)
+            LEDGER.ingest(nid, snap, seq=seq, pairs=tuple(sorted(failover_pairs(nodes).items())))
         except Exception as e:
             LEDGER.ingest_failed(e)
 
@@ -35944,12 +36457,22 @@ class Handler(BaseHTTPRequestHandler):
         if reconcile_mesh(nodes, Handler.deps.get("node_snaps") or {}, Handler.deps):
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
+        # A FAILOVER NODE (docs/FAILOVER-PLAN.md): its records follow its primary's (failover_mirror), and every roster-keyed
+        # read below takes `_rid`, the primary's id — the roster never names a failover node. `_rid == nid` everywhere else.
+        if node.get("failover_of") and failover_mirror(Handler.deps, nodes, nid, Handler.deps.get("node_snaps") or {},
+                                                       Handler.deps.get("node_seen") or {}):
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
+        _rid = failover_rid(nodes, nid)
         # The shared parsed roster (P2): READ-ONLY. Each writer below takes roster_own() first, and the rest of the request
         # reads that copy. `_rmark` was taken before the read: a save racing it is never cached as current.
         roster, _rmark = roster_view(Handler.deps["roster_path"])
-        desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
+        desired = desired_for_node(roster, _rid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
-        cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
+        _fo_pairs = failover_pairs(nodes)                # {} without failover: the plan below is today's, byte for byte
+        _fo_idle = failover_idle(nodes, Handler.deps.get("node_snaps") or {}, Handler.deps.get("node_seen") or {},
+                                 pairs=_fo_pairs) if _fo_pairs else ()
+        cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists, idle=_fo_idle)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
         # Targets that fell off the 7000-band, kept for the node cards. The plan is fleet-wide, so ONE node
         # syncing refreshes this for every node — /api/state must not build a plan of its own just to ask
         # (it is already this panel's dominant CPU cost on a 1-core VM). No sync yet ⇒ empty ⇒ silence,
@@ -35971,7 +36494,7 @@ class Handler(BaseHTTPRequestHandler):
         Handler.deps["cas_p2pi"] = {_n: sorted(set(_p.get("_p2p_dead") or ())) for _n, _p in cas_plans.items() if _p.get("_p2pi")}
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {}}
         if my_plan.get("_who"):                          # a rule names people: resolve them for THIS node only (§4.3, D4)
-            my_plan = who_plan_for_node(my_plan, roster, nid, snap)
+            my_plan = who_plan_for_node(my_plan, roster, _rid, snap)
         my_plan = ports_plan_for_node(my_plan, snap)     # a node that does not read `ports` gets no port rule (B.4)
         _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node (used in the reply below)
         for _ifn, _mpeers in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
@@ -36006,8 +36529,8 @@ class Handler(BaseHTTPRequestHandler):
         #
         # It creates the ENTRY and nothing else: the blessing loop below fills it in on this same pass from
         # what the node reports, so nothing is pushed at the node as a result of recording it.
-        for _ifn in sorted(snap_ifs):
-            if _ifn in (node.get("ifaces") or {}) or _ifn in (node.get("delete") or {}):
+        for _ifn in (sorted(snap_ifs) if _rid == nid else ()):   # off on a failover node: it holds only what its pass
+            if _ifn in (node.get("ifaces") or {}) or _ifn in (node.get("delete") or {}):   # cloned (FAILOVER-PLAN §4.2)
                 continue          # …or staged for removal: a mesh link mid-reprovision has had its record
                                   # dropped on BOTH ends while the snapshot still shows it, and recreating
                                   # it here would resurrect the one kind of interface that is meant to go
@@ -36397,7 +36920,7 @@ class Handler(BaseHTTPRequestHandler):
         _mirrored_turn = False
         for _fam, _rkey, _dkey, _addr in (("wdtt", "wdtt", "wdtt_delete", "wg_addr"),
                                           ("csqtt", "csqtt", "csqtt_delete", "tun_addr")):
-            for _rep in (snap.get(_fam) or []):
+            for _rep in ((snap.get(_fam) or []) if _rid == nid else ()):   # off on a failover node, as T-17
                 if not isinstance(_rep, dict):
                     continue
                 _tifn = (_rep.get("iface") or "").strip()
@@ -37041,7 +37564,7 @@ class Handler(BaseHTTPRequestHandler):
         # Content/IP block enforcement: fold each interface's block[] into the smart plan as DROP entries, PREPENDED
         # so a block wins over a routing exit for the same destination. Rides the existing smart @cat-drop +
         # list_manifest path (blk:<prov>:<list> sources use the SAME resolver) → zero node datapath change.
-        _blk_entries, _blk_srcs, _blk_mech = _resolve_iface_blocks(node, snap, _ps, _node_mode, nid)
+        _blk_entries, _blk_srcs, _blk_mech = _resolve_iface_blocks(node, snap, _ps, _node_mode, _rid)
         if _blk_entries:
             my_plan["smart"] = _blk_entries + (my_plan.get("smart") or [])
         # EVERY CATEGORY THIS NODE ROUTES, its own entries and its arrivals' (P3) — one set for the manifest, the caps, the
@@ -37188,17 +37711,17 @@ class Handler(BaseHTTPRequestHandler):
         # ⚠️ AFTER BOTH MIRRORS (T-17 interfaces, T-18 WDTT/csqtt, above). The guard reads the node RECORD, so the pass run
         # before them left an interface or instance the node reported for the first time out of `dev_reach`: open for its
         # first sync (DEVICE-ACCESS §11.2 F5). The users the T-18 mirror imports are in `roster` by now too.
-        _peers_here = [q for _k, q in _peers_on(roster, nid)]   # P3 (a network carried on another node is not this one's)
+        _peers_here = [q for _k, q in _peers_on(roster, _rid)]   # P3 (a network carried on another node is not this one's)
         _routes_any = snap is not None and any(q.get("routes") for q in _peers_here)
         _share_any = _routes_any and any(q.get("routes") and net_restricted(q) for q in _peers_here)
         # ⚠️ PROMOTION IS PART OF THE GATE, not just of the table. dev_reach_guarded() is empty when every interface is an
         # explicit Everyone, and that used to end it — so the node that most needs promotion, a single-interface Everyone
         # node, was sent no dev_reach at all and a private device there was reachable by everyone.
-        _promo = dev_reach_promotes(roster, node, nid, snap) if snap is not None else set()
+        _promo = dev_reach_promotes(roster, node, _rid, snap) if snap is not None else set()
         _dr_on = snap is not None and bool(dev_reach_guarded(node, snap) or _promo)
-        _carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}
-        _nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []
-        _dreach = dev_reach_for_node(roster, node, nid, snap, _carry, _promo) if _dr_on else {}
+        _carry = node_networks(roster, _rid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}
+        _nshare = net_share_for_node(roster, _rid, _carry, snap) if _share_any else []
+        _dreach = dev_reach_for_node(roster, node, _rid, snap, _carry, _promo) if _dr_on else {}
         # Bind the two self-contained desired sets once: the removal lists below subtract them, so an iface name the
         # operator has reused can never be sent as "remove this" and "run this" in the same reply.
         # The panel-wide fallback VK link, resolved HERE so both families authorise exactly what the operator's
@@ -37227,7 +37750,7 @@ class Handler(BaseHTTPRequestHandler):
         # What the node drops even on an add-only interface: the keys the operator retired (rotated, deleted, moved off)
         # and every cut-off peer still on the wire here (cut_off_for_node). Just the retirements when nobody is cut off.
         _remove = {_ifn: list(_pks) for _ifn, _pks in (node.get("retire") or {}).items()}
-        for _ifn, _pks in cut_off_for_node(roster, nid, snap).items():
+        for _ifn, _pks in cut_off_for_node(roster, _rid, snap).items():
             _rl = _remove.setdefault(_ifn, [])
             _rl.extend(_pk for _pk in _pks if _pk not in _rl)
         return (200, {"desired": desired, "desired_ifaces": desired_ifaces,
@@ -37247,7 +37770,7 @@ class Handler(BaseHTTPRequestHandler):
                                 # DEVICE ACCESS: only while some interface here is not at Everyone and the node can enforce it (D1).
                                 **({"dev_reach": _dreach} if _dreach else {}),
                                 # SPEED LIMITS (docs/LIMITS-PLAN.md §3.4): only while a limit lands on this node — none, no key.
-                                **({"limits": _lims} if (_lims := limits_for_node(roster, nid, desired, snap)) else {}),
+                                **({"limits": _lims} if (_lims := limits_for_node(roster, _rid, desired, snap)) else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for
@@ -37402,9 +37925,9 @@ class Handler(BaseHTTPRequestHandler):
                                           **({"p2p_portok": _pokw} if (_pokw := p2p_portok_wire(_ps, node)) else {}),
                                           # router peers here (S11b): never flagged by the torrent guard — only when there are some,
                                           # so a fleet that marks nobody gets the reply it always got
-                                          **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, nid, lambda: p2p_arrivals(node, my_plan))) else {}),
+                                          **({"p2p_routers": _rtr} if (_rtr := p2p_routers_cached(_rmark, roster, _rid, lambda: p2p_arrivals(node, my_plan, nodes if _fo_pairs else None), slot=nid)) else {}),
                                           # devices' incoming torrent ports (Part C): only where P2P leaves by this node's own address
-                                          **({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, nid, p2p_fwd_scope(node, _blk_mech, my_plan))) else {}),
+                                          **({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, _rid, p2p_fwd_scope(node, _blk_mech, my_plan), slot=nid)) else {}),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets

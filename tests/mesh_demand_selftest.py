@@ -33,7 +33,7 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 
 # One plant per guard: (name, exact source text, replacement, the check that must go red).
 PLANTS = [
-    ("auto-line", '    return "full" if len(nodes) <= MESH_AUTO_FULL_MAX else "demand"', '    return "demand"',
+    ("auto-line", '    return "full" if n <= MESH_AUTO_FULL_MAX else "demand"', '    return "demand"',
      "auto: 30 nodes are a full mesh"),
     ("need-smart", '                    if rule_on(r) and r.get("action") == "exit":',
      '                    if False:', "every pair the plan routes over is in the need set"),

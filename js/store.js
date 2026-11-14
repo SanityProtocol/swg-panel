@@ -455,8 +455,10 @@ export const Store = {
     // `nodeSeen`: when the PANEL received each node's last sync (its own clock, `node_seen` → nodes_view). Paired with
     // panelNow() this is one machine's clock at both ends of every window reconcile measures — see reconcile.js.
     const nodeSeen = {}; for (const n of (this.nodes || [])) if (n && n.last_seen != null) nodeSeen[n.id] = n.last_seen;
+    // Failover pairs {primary: failover node} (docs/FAILOVER-PLAN.md §4.6) — absent with none, so reconcile runs as before.
+    let mirrors = null; for (const n of (this.nodes || [])) if (n && n.failover_of) (mirrors = mirrors || {})[n.failover_of] = n.id;
     this.recon = reconcile(this.roster, this.stats, panelNow(), { retiring, systemIfaces, nodeSeen, rotating: new Set(Object.keys(this.rotating)),
-      vol: this.vol,
+      vol: this.vol, ...(mirrors ? { mirrors } : {}),
       probSince: this._probSince,
       ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
       // Both detectors raise the SAME badge ("restricted") from different evidence, and each stays

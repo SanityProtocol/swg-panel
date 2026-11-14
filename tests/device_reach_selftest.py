@@ -540,7 +540,7 @@ check("names dev_reach exactly once, behind the pass's result",
       _psrc.count('"dev_reach":') == 1 and '**({"dev_reach": _dreach} if _dreach else {})' in _psrc)
 check("the pass runs only while the node can enforce and something is guarded OR promoted",
       "_dr_on = snap is not None and bool(dev_reach_guarded(node, snap) or _promo)" in _psrc
-      and "_dreach = dev_reach_for_node(roster, node, nid, snap, _carry, _promo) if _dr_on else {}" in _psrc)
+      and "_dreach = dev_reach_for_node(roster, node, _rid, snap, _carry, _promo) if _dr_on else {}" in _psrc)
 # ⚠️ THE INVARIANT THE GREP ABOVE CANNOT STATE, and the one that was broken: on a node where EVERY interface is an
 # explicit Everyone, dev_reach_guarded() is empty — so a gate that consults only it skips the pass, and the promotion
 # living inside dev_reach_for_node never runs. That is the ordinary single-interface node, and the only shape promotion
@@ -572,13 +572,13 @@ for _who, _uid in (("an unassigned", None), ("an orphaned", "deleted-owner")):
     _r["peers"]["apriv"]["user_id"] = _uid
     check("⚠️ %s private device promotes NOTHING — it cannot be protected, and others would pay for it" % _who,
           P.dev_reach_promotes(_r, _ev_node, "n1", _ev_snap) == set(), P.dev_reach_promotes(_r, _ev_node, "n1", _ev_snap))
-_h0 = _psrc.find("_peers_here = [q for _k, q in _peers_on(roster, nid)]")
+_h0 = _psrc.find("_peers_here = [q for _k, q in _peers_on(roster, _rid)]")
 _h1 = _psrc.find("_dreach = dev_reach_for_node(", _h0)
 _handler = _psrc[_h0:_h1] if 0 < _h0 < _h1 else ""
 check("the networks are computed once for both passes, only when one needs them",
       _handler.count("node_networks(") == 1
-      and '_carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}' in _handler
-      and "net_share_for_node(roster, nid, _carry, snap)" in _handler, (_h0, _h1))
+      and '_carry = node_networks(roster, _rid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}' in _handler
+      and "net_share_for_node(roster, _rid, _carry, snap)" in _handler, (_h0, _h1))
 
 print("\n[12] P2 fixes (§11.2)")
 fresh(); K = kernel()

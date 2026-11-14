@@ -59,7 +59,7 @@ PLANTS = {   # name: (old text, planted text) — all in the panel
     "walk-whole":     ("    return [(pid, p) for pid, p in (roster.get(\"peers\") or {}).items() if isinstance(p, dict) and any(\n"
                        "        isinstance(t, dict) and isinstance(t.get(\"node\"), str) and t[\"node\"] == nid for t in (p.get(\"targets\") or ()))]",
                        "    return [(pid, p) for pid, p in (roster.get(\"peers\") or {}).items() if isinstance(p, dict)]"),
-    "routes-fleet":   ("        _peers_here = [q for _k, q in _peers_on(roster, nid)]", "        _peers_here = []"),
+    "routes-fleet":   ("        _peers_here = [q for _k, q in _peers_on(roster, _rid)]", "        _peers_here = []"),
     "guard-nodigest": ("                if _ROSTER_GUARD:\n                    v.digest = _roster_digest(v)", "                pass"),
     "guard-noreply":  ("        if _ROSTER_GUARD:                                # the gates: did this request write the shared roster? (P2)\n"
                        "            _roster_guard_check()\n", ""),

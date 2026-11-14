@@ -310,7 +310,7 @@ check("the report is its own on-demand endpoint, not the poll path",
 check("the reply carries `smart.srcs` only when something resolved",
       '**({"srcs": my_plan["srcs"]} if my_plan.get("srcs") else {})' in hsrc)
 check("the handler resolves only when the slice names people (zero cost otherwise)",
-      'if my_plan.get("_who"):' in hsrc and "my_plan = who_plan_for_node(my_plan, roster, nid, snap)" in hsrc)
+      'if my_plan.get("_who"):' in hsrc and "my_plan = who_plan_for_node(my_plan, roster, _rid, snap)" in hsrc)
 
 # ── 5. the old tab ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[the old tab — routing_v]")

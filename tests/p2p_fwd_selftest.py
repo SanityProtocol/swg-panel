@@ -175,7 +175,7 @@ PLANTS = {   # name: (file, old text, planted text)
                       '                    ts.append((False, str(t.get("iface") or ""), a))'),
     "wire-keyless":  ("panel", '            if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):\n                continue                                      # (the node first',
                       '            if not isinstance(t, dict) or t.get("node") != node_id:\n                continue                                      # (the node first'),
-    "wire-unwired":  ("panel", '**({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, nid, p2p_fwd_scope(node, _blk_mech, my_plan))) else {}),', ''),
+    "wire-unwired":  ("panel", '**({"p2p_fwd": _fwd} if (_fwd := p2p_fwd_for_node(_rmark, roster, _rid, p2p_fwd_scope(node, _blk_mech, my_plan), slot=nid)) else {}),', ''),
     "pool-wdtt":     ("panel", '            if _p and (_pr := p2p_pool_refusal(_p, keep=_own + _ran)):\n                return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
     "pool-csqtt":    ("panel", '        if _dtls and (_pr := p2p_pool_refusal(_dtls, keep=_own + _running_ports(deps, nid, "csqtt", iface))):   # (as WDTT: the conflict check by identity)\n            return 400, {"ok": False, "error": _pr, "code": "bad_request"}\n', ''),
     "pool-manage":   ("panel", '                        _pr = p2p_pool_refusal(_np, keep=_ownt)', '                        _pr = None'),

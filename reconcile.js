@@ -161,11 +161,22 @@ function reconcile(roster, stats, now, cfg) {
                                  rx_bytes: dev.up_bytes || 0, tx_bytes: dev.down_bytes || 0 } : null,
                  restorable: false, correctable: false, problemMs: 0, down: null };
       }
-      const key = t.node + "|" + t.iface + "|" + pubkey;
+      // A FAILOVER PAIR (docs/FAILOVER-PLAN.md §4.6): `cfg.mirrors` {primary: failover node}. The target keeps `node` (every
+      // door names the primary) and gains `served`, the member every per-node read below takes: the one this device is
+      // online on, else a live one that reports the interface, else the primary. Both count as managed: never orphans.
+      const mb = cfg.mirrors ? cfg.mirrors[t.node] : null;
+      let sn = t.node;
+      if (mb) {
+        managed[mb + "|" + t.iface + "|" + pubkey] = true;
+        const onl = n => nodeStatus[n] === "live" && !!(observed[n + "|" + t.iface + "|" + pubkey] || {}).online;
+        const has = n => nodeStatus[n] === "live" && !!(((stats[n] || {}).interfaces || {})[t.iface]);
+        sn = onl(t.node) ? t.node : onl(mb) ? mb : has(t.node) ? t.node : has(mb) ? mb : t.node;
+      }
+      const key = sn + "|" + t.iface + "|" + pubkey;
       managed[key] = true;
       const obs = observed[key] || null;
       let st, faultKind = null;   // which RESTRICTED signature fired: "churn" (session won't hold) | "nohs" (never got in)
-      if (nodeStatus[t.node] !== "live") st = "unknown";
+      if (nodeStatus[sn] !== "live") st = "unknown";
       else if (obs) {
         if (obs.online) {
           st = "online";
@@ -210,7 +221,7 @@ function reconcile(roster, stats, now, cfg) {
         // Not observed on a LIVE node. If the interface is still present but the peer's IP is outside its
         // subnet, the node CAN'T add it — that's a record mismatch ("broken", → Correct), NOT the interface
         // being gone ("dangling", → Restore recreates it).
-        const ifm = ((stats[t.node] || {}).interfaces || {})[t.iface];
+        const ifm = ((stats[sn] || {}).interfaces || {})[t.iface];
         const sub = ifm && ifm.meta && ifm.meta.subnet;
         if (sub && t.ip && !ipInCidr(t.ip, sub)) st = "broken";
         else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
@@ -227,16 +238,16 @@ function reconcile(roster, stats, now, cfg) {
       const _tms = (cfg.probSince && cfg.probSince[_tk]) ? (now - cfg.probSince[_tk]) : 0;
       const _trip = _tms >= (cfg.restoreGraceMs || 120000);
       const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
-      const via = epIp ? ((turnConnIps[t.node] || {})[epIp] ? "turn" : "direct") : null;
+      const via = epIp ? ((turnConnIps[sn] || {})[epIp] ? "turn" : "direct") : null;
       let viaTurn = null;
       if (via === "turn") {
         // Prefer the EXACT proxy: the wg endpoint's source port maps 1:1 to the proxy that opened it (node-reported).
         const eport = portOf(obs && obs.endpoint);
-        const bySport = (turnSportSvc[t.node] || {})[String(eport)];
+        const bySport = (turnSportSvc[sn] || {})[String(eport)];
         // Fall back (old nodes without wg_sports): attribute to a proxy forwarding to THIS iface (connect port ==
         // iface listen port); if several share it we can only guess the first.
-        const lp = ((((((stats[t.node] || {}).interfaces || {})[t.iface] || {}).meta) || {}).listen_port);
-        const svcs = (turnByPort[t.node] || {})[String(lp)] || [];
+        const lp = ((((((stats[sn] || {}).interfaces || {})[t.iface] || {}).meta) || {}).listen_port);
+        const svcs = (turnByPort[sn] || {})[String(lp)] || [];
         viaTurn = bySport || (svcs.length ? svcs[0] : null);
       }
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type, primary: t.primary || false,   // "primary" | "backup" | true (pre-backup rosters) | false
@@ -250,10 +261,11 @@ function reconcile(roster, stats, now, cfg) {
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
                correctable: (st === "broken") && _trip,     // this deployment's IP is out-of-subnet long enough → offer Correct
                problemMs: _tprob ? _tms : 0,                // how long THIS deployment has been a problem (confirm-modal copy)
-               down: ifDown[t.node + "|" + t.iface] || null };
+               down: ifDown[sn + "|" + t.iface] || null,
+               ...(mb ? { served: sn } : {}) };
     });
 
-    const live = targets.filter(d => nodeStatus[d.node] === "live");
+    const live = targets.filter(d => nodeStatus[d.served || d.node] === "live");
     // "present" = the peer is realised on that server. A WG target proves it by being observed on the wire; a WDTT
     // target has no WG peer to observe, so its own read-back status (provisioned → online/ready) stands in for it.
     const present = live.filter(d => (d.type === "wdtt" || d.type === "csqtt") ? (d.status === "online" || d.status === "ready") : d.observed);

@@ -128,8 +128,8 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
             "            if False:                                          # a lost base.bin")], "newest closed day"),
     "s": ([("            self.on, self.why_off = False, \"index.json is unreadable and no backup is good (%s)\" % e\n            log(LOG_WARNING, \"ledger: OFF — %s\" % self.why_off)\n            return\n",   # log(): 6a0d507
             "            idx = None\n")], "lone corrupt index.json"),
-    "t": ([("        try:\n            LEDGER.ingest(nid, snap, seq=seq)\n        except Exception as e:\n            LEDGER.ingest_failed(e)\n",
-            "        LEDGER.ingest(nid, snap, seq=seq)\n")], "never fails the sync"),
+    "t": ([("        try:\n            LEDGER.ingest(nid, snap, seq=seq, pairs=tuple(sorted(failover_pairs(nodes).items())))\n        except Exception as e:\n            LEDGER.ingest_failed(e)\n",
+            "        LEDGER.ingest(nid, snap, seq=seq, pairs=tuple(sorted(failover_pairs(nodes).items())))\n")], "never fails the sync"),
     "u": ([("        for n, dr in enumerate(qd):\n            try:\n                self._append_day(dr)\n            except Exception as e:\n                self._err(\"day\", e)\n                return requeue(False, bool(snap), qf, qd[n:])\n        if snap:\n            try:\n                self._write_base(snap)\n            except Exception as e:\n                self._err(\"base.bin\", e)\n                return requeue(False, True, qf, [])\n",
             "        if snap:\n            try:\n                self._write_base(snap)\n            except Exception as e:\n                self._err(\"base.bin\", e)\n                return requeue(False, True, qf, [])\n        for n, dr in enumerate(qd):\n            try:\n                self._append_day(dr)\n            except Exception as e:\n                self._err(\"day\", e)\n                return requeue(False, False, qf, qd[n:])\n")],
           "before base.bin"),
@@ -162,7 +162,7 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
     "J": ([("            if key in self.imports:                            # — unless",
             "            if False:                                          # — unless")], "BOTH counters"),
     "K": ([("                if seq < self.seqs.get(nid, 0):", "                if False:")], "never read as a restart"),
-    "L": ([("            LEDGER.ingest(nid, snap, seq=seq)\n", "            LEDGER.ingest(nid, snap)\n")], "arrival number"),
+    "L": ([("            LEDGER.ingest(nid, snap, seq=seq, pairs=tuple(sorted(failover_pairs(nodes).items())))\n", "            LEDGER.ingest(nid, snap, pairs=tuple(sorted(failover_pairs(nodes).items())))\n")], "arrival number"),
     "M": ([("            if idx is None and any(f.startswith((\"base.bin\", \"day-\", \"fine-\")) for f in os.listdir(self.dir)):",
             "            if False:")], "never a new table"),
     "N": ([("            for b in _state_backups(self._p(\"index.json\")):    # takes a missing primary",
@@ -952,7 +952,7 @@ def section_11():
     class Rec:
         on = True
 
-        def ingest(self, nid, snap, now=None, mono=None, seq=None):
+        def ingest(self, nid, snap, now=None, mono=None, seq=None, pairs=()):   # pairs: failover (docs/FAILOVER-PLAN.md R2)
             got.append(seq)
 
         def ingest_failed(self, e):
