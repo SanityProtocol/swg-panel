@@ -2655,9 +2655,12 @@ $APPARMOR_LOCAL_END"
 # only `ip` and `wg`, both already in its profile). Same fence, so uninstall.sh's marker reap takes it too.
 # (awg-quick has no distribution profile; an AmneziaWG exit was never refused.)
 apparmor_wgq_block(){   # the local/wg-quick block for this box's node state dir
-  local d="${SWG_NODED_STATE:-/var/lib/swg-noded}/exits"
-  printf '%s
-' "$APPARMOR_LOCAL_BEGIN" \
+  # ⚠️ THE RESOLVED PATH (review F1). AppArmor mediates the real path, and wg-quick `readlink -f`s the .conf before reading it,
+  # so a state dir behind a symlink (moved to another disk) granted by its link name was still refused. -m: the directory
+  # may not exist yet on a fresh install. Every swg-noded unit we write pins SWG_NODED_STATE=/var/lib/swg-noded.
+  local s="${SWG_NODED_STATE:-/var/lib/swg-noded}" d
+  d="$(readlink -m "$s" 2>/dev/null)"; d="${d:-$s}/exits"
+  printf '%s\n' "$APPARMOR_LOCAL_BEGIN" \
     "  # swg-noded keeps each exit's (WARP / WireGuard) .conf here, not in /etc/wireguard, and brings it up with wg-quick." \
     "  # Without these the profile refuses the first read. To revert, delete the lines between these two markers and:" \
     "  # apparmor_parser -r <the profile that includes this file>" \
@@ -2679,8 +2682,9 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
   #     we say what to add and stop. Editing a packaged profile would be both wrong and lost on upgrade;
   #   · APPEND-ONLY and marked, so a second run is a no-op and nothing already in that file is disturbed;
   #   · SWG_NO_APPARMOR_FIX=1 declines it entirely.
-  # The grant is the narrowest one that restores the function: read the socket directory, talk to the
-  # sockets in it. Nothing else in the profile is widened.
+  # The grant is the narrowest one that restores the function: for wg / awg, read the socket directory and
+  # talk to the sockets in it; for wg-quick, read the node's exits directory and the .conf files in it.
+  # Nothing else in any profile is widened.
   [ "${SWG_NO_APPARMOR_FIX:-0}" = 1 ] && return 0
   have apparmor_parser || return 0
   local t prof base loc block what changed=no
@@ -2691,7 +2695,7 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
     warn "AppArmor policy for the WireGuard tools is present but $AA_PROFILES is unreadable — can't tell enforce from complain, so leaving it alone."
     return 0
   fi
-  # ⚠️ wg AND awg ONLY, and that is measured rather than assumed. On the node that reported this,
+  # ⚠️ FOR THE SOCKETS, wg AND awg ONLY, and that is measured rather than assumed. On the node that reported this,
   # `wg-quick` exec'd ip into a CHILD profile (target="wg-quick//ip") but exec'd wg into the STANDALONE
   # one (target="wg"), and it was `profile="wg"` that then denied /run/wireguard — so local/wg is
   # exactly the file that reaches it. Adding wg-quick here would write rules that no socket access ever
@@ -2720,6 +2724,13 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
       sub "add to $prof, then: apparmor_parser -r $prof"
       printf '%s\n' "$block"
       continue
+    fi
+    # ⚠️ PRESENT WITH OTHER CONTENT IS REWRITTEN (review F3): a block from an older release, or for a state dir that has
+    # since moved, would otherwise stand forever — this check alone said "done" and only reloaded it. Only our span goes.
+    if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null \
+       && [ "$(sed -n "\|$APPARMOR_LOCAL_BEGIN|,\|$APPARMOR_LOCAL_END|p" "$loc")" != "$block" ] && ! ${DRYRUN:-false}; then
+      sed -i "\|$APPARMOR_LOCAL_BEGIN|,\|$APPARMOR_LOCAL_END|d" "$loc" 2>/dev/null \
+        || { warn "couldn't refresh the swgPanel rules in $loc — replace them by hand"; continue; }
     fi
     if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null; then
       # ⚠️ PRESENT IS NOT LOADED. The block is written first and the profile reloaded second, so a

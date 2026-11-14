@@ -11213,12 +11213,25 @@ _EXITS = {"list": []}                          # what we report back about them,
 # that has not run yet, or could not (no <local/wg-quick> include, SWG_NO_APPARMOR_FIX=1). Interpolation-free: the panel
 # translates it as a key (T(l.error)).
 EXIT_AA_REFUSED = ("AppArmor's wg-quick profile on this node won't read the exit's config (Ubuntu 25.04+). "
-                   "Run Update on the node to add the rule.")   # ⚠️ under the 160 the error is cut at, or T() misses it
+                   "Update the node, or allow it in /etc/apparmor.d/local/wg-quick.")   # ⚠️ under the 160 the error is cut at
+AA_PROFILES_FILE = "/sys/kernel/security/apparmor/profiles"
 
 
 def exit_aa_refused(stderr):
-    """Is this `wg-quick up` failure the AppArmor refusal of an exit's own .conf (bash's read of it, EACCES)?"""
-    return bool(re.search(re.escape(EXIT_DIR) + r"/[^\n:]*\.conf: Permission denied", str(stderr or "")))
+    """Is this `wg-quick up` failure the AppArmor refusal of an exit's own .conf (bash's read of it, EACCES)?
+
+    The path as bash names it is wg-quick's `readlink -f` of ours, so the RESOLVED exits dir counts too (review F2). And it
+    is AppArmor only where a wg-quick profile is loaded enforcing (review F6): an EACCES with none (SELinux, a mode) keeps
+    its own words — naming the wrong subsystem sends the operator the wrong way."""
+    err = str(stderr or "")
+    dirs = {EXIT_DIR, os.path.realpath(EXIT_DIR)}
+    if not any(re.search(re.escape(d) + r"/[^\n:]*\.conf: Permission denied", err) for d in dirs):
+        return False
+    try:
+        with open(AA_PROFILES_FILE) as f:
+            return any(re.match(r"(wg-quick|/usr/bin/wg-quick) \(enforce\)$", ln.strip()) for ln in f)
+    except OSError:
+        return False
 
 
 def _warp_api(path, data, method, token=""):

@@ -2051,7 +2051,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   if log_ns_build "$NODED_DIR/swg-noded"; then ensure_log_ns swg-node swg-noded.service; fi   # HEAL, as for the panel
   ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
   ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
-  ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)
+  ensure_wg_apparmor     # HEAL: the confined wg CLI reaches the UAPI sockets (wdtt / csqtt / awg-userspace); wg-quick reads the exits' .conf (25.04+)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
   ensure_awg_pkg_follow  # FOLLOW: the amnezia packages to the PPA's build (module + tools); load it only where nothing uses it
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
