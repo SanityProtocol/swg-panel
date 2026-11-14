@@ -6818,7 +6818,9 @@ def node_remove(deps, nid):
     # mirror too. Every interface the failover node holds takes its peers, on the take-over's terms; one it does not hold
     # goes with this node, as before. To remove a node and its peers on purpose: detach its failover node first.
     _fo_b = failover_pairs(nodes).get(nid)
-    _fo_moved, _fo_left = failover_takeover(nodes, roster, nid, _fo_b, deps.get("node_snaps") or {}) if _fo_b else ([], [])
+    _fo_snaps = deps.get("node_snaps") or {}
+    _fo_moved, _fo_left = (failover_takeover(nodes, roster, nid, _fo_b, _fo_snaps, assume=not _fo_snaps.get(_fo_b))
+                           if _fo_b else ([], []))
     if _fo_moved:
         failover_carry_settings(deps, nid, _fo_b)
     affected = {pid: p for pid, p in roster["peers"].items()
@@ -13199,7 +13201,7 @@ def failover_carry_settings(deps, aid, bid):
     """After a take-over B stands where A stood in the panel settings keyed by node id: a block category enabled on A is
     enabled on B, a custom list switched off on A is off on B. While B mirrored A these were read through `rid`; on its
     own they name B, or B's moved users lose their filters at the moment of failover (review F1). Saved when changed."""
-    ps = deps.get("panel_settings") or {}
+    ps = copy.deepcopy(deps.get("panel_settings") or {})   # copy-on-write: sync threads read the live one (F84)
     recs = [(ov, "enabled_nodes") for ov in (((ps.get("block_catalog") or {}).get("categories") or {}).values())
             if isinstance(ov, dict)]
     recs += [(cl, "disabled_nodes") for cl in (ps.get("custom_lists") or []) if isinstance(cl, dict)]
@@ -13209,8 +13211,10 @@ def failover_carry_settings(deps, aid, bid):
         if isinstance(v, list) and aid in v and bid not in v:
             v.append(bid)
             ch = True
-    if ch and deps.get("panel_settings_path"):
-        save_critical(deps["panel_settings_path"], json.dumps(ps, indent=2) + "\n")
+    if ch:
+        if deps.get("panel_settings_path"):
+            save_critical(deps["panel_settings_path"], json.dumps(ps, indent=2) + "\n")
+        deps["panel_settings"] = ps
     return ch
 
 
@@ -13280,10 +13284,18 @@ def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
             _fo_drop_iface(w, n, time.time() if now is None else now)
     bsnap = (snaps or {}).get(bid) or {}
     brep = bsnap.get("interfaces") or {}
+    _busy = (set(w.get("iface_start") or {}) | set(w.get("iface_stop") or {})
+             if not ((w.get("rebuild") or {}).get("at") or w.get("transfer")) else None)
     for n, bov in (w.get("ifaces") or {}).items():
-        if (not isinstance(bov, dict) or bov.get("system") or (isinstance(brep.get(n), dict) and not brep[n].get("down"))
-                or n in (w.get("create") or {}) or n in (w.get("delete") or {}) or _iface_key_source(bov, None, ivk) != "vault"):
-            continue                                       # a device B reports DOWN is not there: restored like an absent one
+        rep_n = brep.get(n) if isinstance(brep.get(n), dict) else None
+        if (not isinstance(bov, dict) or bov.get("system") or n in (w.get("create") or {}) or n in (w.get("delete") or {})
+                or _iface_key_source(bov, None, ivk) != "vault"):
+            continue
+        # A device B reports DOWN is restored like an absent one — but only once the sync's own autostart has given up on
+        # it (a conf kept is started, not recreated), with no start or stop pending and no rebuild or transfer in flight.
+        if rep_n is not None and not (rep_n.get("down") and not rep_n.get("stopped") and _busy is not None and n not in _busy
+                                      and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):
+            continue
         req = iface_restore_req(bov, ivk)
         if req is None or (any(k in (req.get("awg_params") or {}) for k in AWG3_FIELDS)
                            and awg_gen_refusal(bsnap, b.get("name") or bid, n) is not None):
@@ -13323,30 +13335,41 @@ def failover_idle(nodes, snaps, seen, now=None, pairs=None):
     return frozenset(idle)
 
 
-def _fo_holds(nodes, snaps, aid, bid):
-    """The interfaces B holds with A's key: its record carries A's blessed key and B's snapshot reports the interface up
-    with that key. No snapshot of B, nothing held — a record says what B was asked to run, never that it runs it."""
+def _fo_holds(nodes, snaps, aid, bid, assume=False):
+    """(held, lacking) of A's interfaces on B. HELD: B's record carries A's blessed key and B's snapshot reports it up (not
+    down, not stopped) with that key. LACKING, known for certain: no record with A's key, or B's snapshot leaves it out,
+    reports it awaiting its key, or reports another key. Anything else — no snapshot of B (a panel just restarted), a
+    device down or stopped for the moment — is neither: a take-over moves nothing there and deletes nothing there (review
+    F75). `assume`: with no snapshot of B, a record carrying A's key counts as held — node_remove's choice, since its
+    alternative is purging the peers."""
     a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
-    brep = ((snaps or {}).get(bid) or {}).get("interfaces") or {}
-    out = []
+    bsnap = (snaps or {}).get(bid)
+    brep = bsnap.get("interfaces") if isinstance(bsnap, dict) else None
+    waiting = set((bsnap or {}).get("ifaces_awaiting_key") or ()) if isinstance(bsnap, dict) else set()
+    held, lacking = [], []
     for n, aov in _fo_user_ifaces(a).items():
         bov = (b.get("ifaces") or {}).get(n)
-        rep = brep.get(n) if isinstance(brep.get(n), dict) else {}
-        if (isinstance(bov, dict) and aov.get("public_key") and bov.get("public_key") == aov["public_key"]
-                and not rep.get("down") and ((rep.get("meta") or {}).get("public_key") or "") == aov["public_key"]):
-            out.append(n)
-    return out
+        if not (isinstance(bov, dict) and aov.get("public_key") and bov.get("public_key") == aov["public_key"]):
+            lacking.append(n)
+        elif not isinstance(brep, dict):
+            if assume:
+                held.append(n)
+        elif not isinstance(brep.get(n), dict) or n in waiting:
+            lacking.append(n)
+        elif not (brep[n].get("down") or brep[n].get("stopped")):
+            rk = (brep[n].get("meta") or {}).get("public_key") or ""
+            (held if rk == aov["public_key"] else lacking if rk else []).append(n)
+    return held, lacking
 
 
 def _fo_effective_host(c, ov, snap, n):
     """The host A's clients dial for interface `n` — apply_iface_meta's order: its own, else the node's, else the host
-    the node reports for that interface (what the configs it rendered carry)."""
-    ep = str(((((snap or {}).get("interfaces") or {}).get(n) or {}).get("meta") or {}).get("endpoint") or "")
+    the node advertises for that interface (mesh_advertised_host: never a wildcard, a loopback or an IPv6 literal)."""
     return (((ov or {}).get("endpoint_host") or "").strip() or ((c or {}).get("endpoint_host") or "").strip()
-            or (ep.rsplit(":", 1)[0] if ":" in ep else ep).strip())
+            or mesh_advertised_host(snap, n))
 
 
-def failover_takeover(nodes, roster, aid, bid, snaps):
+def failover_takeover(nodes, roster, aid, bid, snaps, assume=False):
     """Move A's peers to B for every interface B holds with A's key (plan §4.8, §4.9, refresh R4). Mutates `nodes` and
     `roster` (an owned copy); the caller saves both. Per interface: its wg/awg targets move A→B, each moved device that
     yields its torrent port on A yields it on B (A dropped once no target stays there), B's interface takes A's effective
@@ -13355,7 +13378,7 @@ def failover_takeover(nodes, roster, aid, bid, snaps):
     flag goes last. B's copies of the interfaces it does not hold go (a peerless duplicate of A's key and subnet on an
     ordinary node is a clash, not a spare). Returns (moved interfaces, interfaces left on A)."""
     a, b = nodes[aid], nodes[bid]
-    held = _fo_holds(nodes, snaps, aid, bid)
+    held, lacking = _fo_holds(nodes, snaps, aid, bid, assume)
     left = sorted(n for n in _fo_user_ifaces(a) if n not in held)
     now_ = int(time.time())
     asnap = (snaps or {}).get(aid) or {}
@@ -13364,7 +13387,7 @@ def failover_takeover(nodes, roster, aid, bid, snaps):
         if host and not _ip_literal(host):            # A's own address would send B's new configs to A (§4.1 warned)
             b["ifaces"][n]["endpoint_host"] = host
         _fo_drop_iface(a, n, now_)
-    for n in left:
+    for n in lacking:                                 # only what B certainly does not run: never on a missing snapshot
         if n in _fo_user_ifaces(b) or n in (b.get("create") or {}):
             _fo_drop_iface(b, n, now_)
     hs = set(held)
@@ -13527,6 +13550,8 @@ def _fo_want(roster, aid):
                 want.setdefault(t["iface"], set()).add(p.get("pubkey"))
                 addr.setdefault(t["iface"], (t.get("ip") or "").split("/")[0])
     if isinstance(roster, _RosterView):                # a writer's own copy changes under it: never kept
+        for k in [k for k, v in _FO_WANT.items() if v[0] is not roster]:
+            del _FO_WANT[k]                            # an older roster read is never asked again: nothing pinned (F81)
         _FO_WANT[aid] = (roster, nowv // 60, want, addr)
     return want, addr
 
@@ -13577,7 +13602,8 @@ def failover_ro_refusal(path, body, nodes):
     if ((path in _FO_RO_DOORS and not (path == "/api/iface/recreate" and body.get("fresh")))   # fresh: B's own key
             or (path == "/api/nodes/update" and set(body) <= _FO_NODE_LOCAL)
             or (path == "/api/iface/update" and set(body) <= _FO_IF_LOCAL)
-            or (path in ("/api/iface/delete", "/api/iface/ignore", "/api/iface/unignore") and own)):
+            or (path in ("/api/iface/delete", "/api/iface/ignore", "/api/iface/unignore", "/api/iface/update",
+                         "/api/iface/recreate", "/api/iface/restart") and own)):
         return None
     return 409, {"ok": False, **perr("{v1} is a failover node: it mirrors {v2} and is read-only — edit {v2}, or detach it first",
                                      v1=nodes[b].get("name") or b, v2=nodes[fo[b]].get("name") or fo[b]),
@@ -16356,7 +16382,7 @@ def mesh_need(nodes, deps):
     return need
 
 
-def _mesh_retire(nodes, need, deps):
+def _mesh_retire(nodes, need, deps, full=False):
     """Demand mode: a linked pair nothing needs starts a timer; after MESH_RETIRE_GRACE_S it is unlinked on every end
     that holds a record (a half-link whose other end or peer node is gone included) — pending create cancelled, delete
     staged, interface override and link record dropped: what `mesh_reprovision_node` does per pair, and the delete verb
@@ -16378,11 +16404,15 @@ def _mesh_retire(nodes, need, deps):
     if gone:
         names = sorted(" ↔ ".join(sorted(str((nodes.get(x) or {}).get("name") or x) for x in p)) for p in gone)
         # …and WHY: an auto fleet that has just grown past the line sees links go, and the row says it is on demand now.
-        ev_append(deps["roster_path"], "node", "", "Removed unused mesh links",
-                  ", ".join(names[:5]) + ((", … (+%d)" % (len(names) - 5)) if len(names) > 5 else ""),
-                  "%d link(s) · on demand, %d node(s)" % (len(gone), len(nodes)),
-                  detail_key="{count} · on demand, {nodes}",
-                  detail_vars={"count": {"n": len(gone), "noun": "link"}, "nodes": {"n": len(nodes), "noun": "node"}})
+        _nm = ", ".join(names[:5]) + ((", … (+%d)" % (len(names) - 5)) if len(names) > 5 else "")
+        if full:                                       # a full mesh retiring a failover node's link: the mode did not change
+            ev_append(deps["roster_path"], "node", "", "Removed unused mesh links", _nm, "%d link(s)" % len(gone),
+                      detail_key="{count}", detail_vars={"count": {"n": len(gone), "noun": "link"}})
+        else:
+            ev_append(deps["roster_path"], "node", "", "Removed unused mesh links", _nm,
+                      "%d link(s) · on demand, %d node(s)" % (len(gone), len(nodes)),
+                      detail_key="{count} · on demand, {nodes}",
+                      detail_vars={"count": {"n": len(gone), "noun": "link"}, "nodes": {"n": len(nodes), "noun": "node"}})
     return bool(gone)
 
 
@@ -16439,7 +16469,7 @@ def reconcile_mesh(nodes, snaps, deps):
                   detail_key="{count}", detail_vars={"count": {"n": _more, "noun": "link"}})
     deps["mesh_unplaced"] = unplaced
     if need is not None:                                         # demand mode, or a full mesh with a failover node
-        changed = _mesh_retire(nodes, need, deps) or changed
+        changed = _mesh_retire(nodes, need, deps, full=mode == "full") or changed
     for nid, n in nodes.items():                                 # 2) re-stage any missing link iface
         snap_ifs = set((((snaps or {}).get(nid) or {}).get("interfaces") or {}))
         # ⚠️ …AND DROP A CREATE FOR A LINK THIS NODE DOES NOT OWN. A pending `create` for a `swg_*` interface with no
@@ -31670,7 +31700,12 @@ def api(method, path, qs, body, deps):
         if bid not in nodes or aid == bid:
             return 404, {"ok": False, "error": "not a failover node", "code": "not_found"}
         bname, aname = nodes[bid].get("name") or bid, nodes[aid].get("name") or aid
+        if "take_over" in body and not isinstance(body["take_over"], bool):
+            return 400, {"ok": False, "error": "take_over must be true or false", "code": "bad_request"}
         take = body.get("take_over") is True
+        if take and not snaps.get(bid):
+            return 409, {"ok": False, **perr("{v1} has not reported since the panel started — move the peers once it has",
+                                             v1=bname), "code": "failover_unknown"}
         if not take and not _fo_live(seen, aid, now()):
             return 409, {"ok": False, **perr("{v1} is not reporting: removing the copies on {v2} would delete the only one "
                                              "running — move the peers to {v2} instead", v1=aname, v2=bname),

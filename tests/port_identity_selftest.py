@@ -89,7 +89,7 @@ def checks(src, ok):
     tree = ast.parse(src)
     def block(test_has):
         return next((ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.If) and test_has in ast.unparse(n.test)), "")
-    wd, cq, tm, iu = block("'/api/wdtt/set'"), block("'/api/csqtt/set'"), block("path.endswith('/manage')"), block("'/api/iface/update'")
+    wd, cq, tm, iu = block("'/api/wdtt/set'"), block("'/api/csqtt/set'"), block("path.endswith('/manage')"), block("method == 'POST' and path == '/api/iface/update'")
     ok("me=('wdtt', iface)" in wd and "me=('csqtt', iface)" in cq and "me=('turn', svc)" in tm and "me=('iface', iface)" in iu,
        "[3] the WDTT and csqtt saves, a turn-proxy edit and an interface update pass their own identity")
     # …and `own` = what each holds NOW — never the turn-proxy's service-name port (review F1); the interface's record + report

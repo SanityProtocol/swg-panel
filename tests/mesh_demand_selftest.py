@@ -57,7 +57,8 @@ PLANTS = [
     ("name-pending", '    existing |= set(node.get("delete") or {})', '    existing |= set()',
      "re-needed during its delete: a different interface name"),
     ("events-cap", 'log=made < MESH_LINK_EVENTS_MAX)', 'log=True)', "a mass link: 30 per-pair events + one summary"),
-    ("full-untouched", '        _MESH_IDLE.clear()\n        pairs = ((a, b)', '        mesh_need(nodes, deps); _MESH_IDLE.clear()\n        pairs = ((a, b)',
+    ("full-untouched", '    if mode == "full":                                           # 1) every pair linked — today\'s loop, today\'s order\n        pairs = ((a, b)',
+     '    if mode == "full":                                           # 1) every pair linked — today\'s loop, today\'s order\n        mesh_need(nodes, deps); pairs = ((a, b)',
      "full mode never computes the need set"),
 ]
 

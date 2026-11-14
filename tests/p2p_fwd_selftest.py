@@ -41,6 +41,8 @@ import urllib.error, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import p2p_policy_selftest as base   # load, Box: the node's P2P gate harness
+for _v in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+    os.environ.pop(_v, None)                     # its real panels answer on 127.0.0.1: a desktop proxy would answer instead
 
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
