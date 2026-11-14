@@ -13222,7 +13222,15 @@ def _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped=()):
     """One event: what moved, what stayed on A, and which of B's own copies went (old ones, or of interfaces A no longer
     has — F125: a take-over that deletes on B says so)."""
     _dv = {"v1": ", ".join(moved) or "—", "v2": aname, "v3": ", ".join(left), "v4": ", ".join(dropped)}
-    _dk = ("took over {v1}; left on {v2}: {v3}" if left else "took over {v1}") + ("; old copies removed: {v4}" if dropped else "")
+    # each sentence whole, as a literal: the i18n gate reads them where they stand (F131)
+    if left and dropped:
+        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"
+    elif left:
+        _dk = "took over {v1}; left on {v2}: {v3}"
+    elif dropped:
+        _dk = "took over {v1}; old copies removed: {v4}"
+    else:
+        _dk = "took over {v1}"
     ev_append(roster_path, "node", bid, "Detached failover node", bname, _dk.format(**_dv), detail_key=_dk, detail_vars=_dv)
 
 
@@ -13339,14 +13347,20 @@ def failover_idle(nodes, snaps, seen, now=None, pairs=None):
 
 def _fo_copy_class(aov, bov):
     """What B's record `bov` is for A's interface record `aov` — the one test _fo_holds, _fo_only_on_b and failover_view
-    share (F126): "absent" (no record, or a mesh link of B's own by that name, F116), "link" for the latter where a caller
-    must tell them apart, "stale" (B's record does not carry A's current key, or A has none, F119), "current"."""
+    share (F126). One of:
+      "absent"   B has no record of it.
+      "link"     B's record by that name is a mesh link of its own (F116) — callers treat it as absent, never as a copy.
+      "unknown"  A's record has no blessed key: B's copy cannot be judged either way (F128) — never stale, never deleted.
+      "stale"    A has a key and B's record carries another: a copy from before A's key changed.
+      "current"  B's record carries A's key."""
     if not isinstance(bov, dict):
         return "absent"
     if bov.get("system"):
         return "link"
     key = (aov or {}).get("public_key") or ""
-    return "current" if key and bov.get("public_key") == key else "stale"
+    if not key:
+        return "unknown"
+    return "current" if bov.get("public_key") == key else "stale"
 
 
 def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
@@ -13354,8 +13368,9 @@ def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
     alone (a sync landing between two reads made them disagree, F93). The first row that matches decides:
 
       ABSENT  B has no record of it, or only a mesh link of its own by that name (F116): nothing of A's there.
-      STALE   B's record does not carry A's blessed key — a copy from before A's key changed, or A has none (F119). It
-              can never serve the configs A's clients hold; Re-sync replaces it. The door refuses; a removal drops it.
+      STALE   A has a blessed key and B's record carries another — a copy from before A's key changed. It can never serve
+              the configs A's clients hold; Re-sync replaces it. The door refuses; a removal drops it. (A with no key at
+              all is UNSURE: B's copy cannot be judged, F128.)
       HELD    B is reporting now (`live`: _fo_live — a snapshot alone proves nothing, the panel seeds the last one from
               the stats mirror at startup, F87) and reports it up, not stopped, with A's blessed key.
       UNSURE  B's record carries A's key but its box does not show it running that key right now — not reporting, no
@@ -13375,7 +13390,7 @@ def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
             absent.append(n)
         elif cc == "stale":
             stale.append(n)
-        elif (rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")
+        elif cc == "current" and (rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")
               and ((rep_n.get("meta") or {}).get("public_key") or "") == key):
             held.append(n)
         else:
@@ -13397,7 +13412,9 @@ def _fo_runs(rep, key, own):
         return False
     if rep.get("stopped"):
         return own
-    return not rep.get("down") and ((rep.get("meta") or {}).get("public_key") or "") in ("", key)
+    if rep.get("down"):
+        return False
+    return key is None or ((rep.get("meta") or {}).get("public_key") or "") in ("", key)   # None: A's key unknown, any
 
 
 def _fo_only_on_b(nodes, snaps, aid, bid, live_b):
@@ -13413,8 +13430,9 @@ def _fo_only_on_b(nodes, snaps, aid, bid, live_b):
     for n, aov in sorted(_fo_user_ifaces(nodes.get(aid)).items()):
         key = aov.get("public_key") or ""
         bov = ((nodes.get(bid) or {}).get("ifaces") or {}).get(n)
-        if (_fo_copy_class(aov, bov) == "current"
-                and _fo_runs(brep.get(n), key, False) and not _fo_runs(arep.get(n), key, True)):
+        cc = _fo_copy_class(aov, bov)                                  # A's key unknown: whatever B runs there counts (F128)
+        if (cc in ("current", "unknown") and _fo_runs(brep.get(n), key if cc == "current" else None, False)
+                and not _fo_runs(arep.get(n), key if cc == "current" else None, True)):
             out.append(n)
     return out
 
@@ -13533,7 +13551,7 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     return {"refused": refused, "needs_vault": sorted(nv & set(ifs)), "warn": warn}
 
 
-def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None):
+def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     """The status both members' cards show (plan §4.6): {primary, failover, serving, state, rows, problems}. `state` rolls
     up to offline | problem | needs_vault | syncing | ready; a row appears only when an interface is not ready, its `why` a
     code the SPA words (no_copy, awaiting_key, creating, awg, down, key, subnet, drift + keys, firewall, peers + n, port);
@@ -13560,8 +13578,11 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None):
         elif cc == "link":
             st, why = "problem", "name_taken"                    # B's own mesh link has the name: never copied there, and
             #                                                      never offered a Re-sync (it would tear the link down, F124)
-        elif cc == "stale":
-            st, why, more = "problem", "key", {"resync": True}    # a copy from before A's key changed (F123: _fo_holds' STALE)
+        elif cc == "unknown":
+            st, why = "problem", "primary_no_key"                # nothing to judge B's copy by, and nothing to rebuild it from
+        elif cc == "stale":                                      # a copy from before A's key changed (F123: _fo_holds' STALE);
+            st, why = "problem", "key"                           # Re-sync only where the vault can rebuild A's (F128)
+            more = {"resync": True} if _iface_key_source(aov, None, ivk) == "vault" else {}
         elif rep is None and any(k in (aov.get("awg_params") or {}) for k in AWG3_FIELDS) and awg_gen_refusal(bsnap, "", n):
             st, why = "problem", "awg"                 # the mirror stages no restore a 2.0 box would bring back wrong
         elif rep is None:
@@ -13569,7 +13590,8 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None):
         elif rep.get("down"):
             st, why = "problem", "down"                # the mirror restores it; until then nothing serves there
         elif meta.get("public_key") and meta["public_key"] != aov.get("public_key"):
-            st, why, more = "problem", "key", {"resync": True}
+            st, why = "problem", "key"
+            more = {"resync": True} if _iface_key_source(aov, None, ivk) == "vault" else {}
         elif meta.get("subnet") and asub and meta["subnet"] != asub and not _fo_fits(meta["subnet"], addr.get(n)):
             st, why, more = "problem", "subnet", {"resync": True}   # B's is the roster's: A's box drifted, A's card says so
         elif bov.get("_drift"):
@@ -27243,7 +27265,8 @@ def api(method, path, qs, body, deps):
         # Failover pairs (docs/FAILOVER-PLAN.md §4.6): one status per pair, on both members' cards. None: nothing runs.
         _fo_pv = failover_pairs(nodes)
         _fo_iv = failover_idle(nodes, snaps, seen, now=now(), pairs=_fo_pv) if _fo_pv else frozenset()
-        _fo_vw = {a: failover_view(nodes, _ros, a, b, snaps, seen, _fo_iv, now=now()) for a, b in _fo_pv.items()}
+        _fo_vw = {a: failover_view(nodes, _ros, a, b, snaps, seen, _fo_iv, now=now(), ivk=_current_ivk_pub(deps))
+                  for a, b in _fo_pv.items()}
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
@@ -31751,7 +31774,8 @@ def api(method, path, qs, body, deps):
         aid = failover_rid(nodes, bid)
         if bid not in nodes or aid == bid:
             return 404, {"ok": False, "error": "not a failover node", "code": "not_found"}
-        fv = failover_view(nodes, roster_view(roster_path)[0], aid, bid, snaps, seen, frozenset(), now=now())
+        fv = failover_view(nodes, roster_view(roster_path)[0], aid, bid, snaps, seen, frozenset(), now=now(),
+                           ivk=_current_ivk_pub(deps))
         bad = [r["iface"] for r in fv["rows"] if r.get("resync")]
         for n in bad:
             _fo_drop_iface(nodes[bid], n, now())
@@ -31800,13 +31824,15 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, **perr("{v1} is serving clients: type {v2} to go on", v1=nodes[cut].get("name") or cut,
                                              v2=bname), "code": "confirm_required"}
         if not take:                                   # every record on B is the mirror's: all go (F106 — a copy of one
-            for n in sorted(_fo_user_ifaces(nodes[bid])):  # A is still deleting would else stay with A's key)
+            _gone = sorted(_fo_user_ifaces(nodes[bid]))   # A is still deleting would else stay with A's key)
+            for n in _gone:
                 _fo_drop_iface(nodes[bid], n, now())
             nodes[bid].pop("failover_of", None)
             nodes_save(deps["nodes_path"], nodes)
-            ev_append(roster_path, "node", bid, "Detached failover node", bname, "peers kept on %s" % aname,
-                      detail_key="peers kept on {v1}", detail_vars={"v1": aname})
-            return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": []}}
+            ev_append(roster_path, "node", bid, "Detached failover node", bname,
+                      "peers kept on %s; copies removed: %s" % (aname, ", ".join(_gone) or "—"),
+                      detail_key="peers kept on {v1}; copies removed: {v2}", detail_vars={"v1": aname, "v2": ", ".join(_gone) or "—"})
+            return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": [], "removed": _gone}}
         roster = roster_load(roster_path)
         moved, left, dropped = failover_takeover(nodes, roster, aid, bid, cls, snaps)
         nodes_save(deps["nodes_path"], nodes)

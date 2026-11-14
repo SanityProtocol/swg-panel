@@ -6353,7 +6353,7 @@ export const STR = {
   "Enrolled failover node": "Подключена нода-зеркало",
   "Detached failover node": "Нода-зеркало отсоединена",
   "Re-syncing failover interfaces": "Пересинхронизируем интерфейсы зеркала",
-  "peers kept on {v1}": "пиры остались на {v1}",
+  "peers kept on {v1}; copies removed: {v2}": "пиры остались на {v1}; копии удалены: {v2}",
   "took over {v1}": "приняла {v1}",
   "took over {v1}; left on {v2}: {v3}": "приняла {v1}; на {v2} остались: {v3}",
   "took over {v1}; old copies removed: {v4}": "приняла {v1}; старые копии удалены: {v4}",

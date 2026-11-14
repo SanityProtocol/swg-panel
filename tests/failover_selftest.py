@@ -71,6 +71,9 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      keep-keyless a device reported up without a key counts as not running (F117 on B; on A it blocks keep, F105)
      stale-keep   a take-over keeps B's old copies and copies of interfaces A no longer has (F119, F120)
      leftover-late "A no longer has it" taken after A's held interfaces are dropped (deletes the copy the peers moved onto)
+     unknown-stale A with no key makes B's copy stale (a removal deletes the copy serving the clients, F128)
+     resync-unbuildable the status offers a Re-sync the vault cannot rebuild (it would delete B's copy for good, F128)
+     keep-unknown A's key unknown: keeping the peers on A deletes B's running copy while A is down
      view-link    the status offers a Re-sync for a mesh link of B's named like A's interface (F124)
      log-dropped  a take-over that removes copies on B does not say so in the event (F125)
      system-copy  a mesh link of B's own named like one of A's interfaces is taken as A's copy (F116)
@@ -161,8 +164,16 @@ PLANTS = {   # (file, anchor, replacement)
         _fo_drop_iface(b, n, now_)'''),
     "leftover-late": ("panel", '    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))   # taken BEFORE A\'s held interfaces are dropped below\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
                       '    old = sorted(set(stale))\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
+    "unknown-stale": ("panel", '''    if not key:
+        return "unknown"''', '''    if False:
+        return "unknown"'''),
+    "resync-unbuildable": ("panel", '''Re-sync only where the vault can rebuild A's (F128)
+            more = {"resync": True} if _iface_key_source(aov, None, ivk) == "vault" else {}''', '''Re-sync only where the vault can rebuild A's (F128)
+            more = {"resync": True}'''),
+    "keep-unknown": ("panel", '''        if (cc in ("current", "unknown") and''', '''        if (cc == "current" and'''),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
-    "log-dropped": ("panel", '''+ ("; old copies removed: {v4}" if dropped else "")''', '''+ ""'''),
+    "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
+                    '    if left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    else:\n        _dk = "took over {v1}"'),
     "system-copy": ("panel", '''    if bov.get("system"):
         return "link"''', '''    if False:
         return "link"'''),
@@ -742,9 +753,19 @@ def sec8():
     check("[8] status: a mesh link of B's named like A's interface is a problem of its own, never a Re-sync (F124)",
           rows.get("wg1", {}).get("why") == "name_taken" and not rows["wg1"].get("resync"), rows.get("wg1"))
     nk = to_fleet(); nk["na"]["ifaces"]["awg0"].pop("public_key"); nk["nb"]["ifaces"]["awg0"].pop("public_key")
-    rk = {r["iface"]: r for r in P.failover_view(nk, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW)["rows"]}
-    check("[8] status: no key on either side offers the Re-sync the door asks for (F123)", rk.get("awg0", {}).get("resync") is True
-          and "awg0" in P._fo_holds(nk, snaps, "na", "nb", True)[3], rk.get("awg0"))
+    rk = {r["iface"]: r for r in P.failover_view(nk, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW, ivk=IVK)["rows"]}
+    check("[8] status: A with no key — a problem of its own, no Re-sync (it could not rebuild), unsure to the door (F128)",
+          rk.get("awg0", {}).get("why") == "primary_no_key" and not rk["awg0"].get("resync")
+          and "awg0" in P._fo_holds(nk, snaps, "na", "nb", True)[2], rk.get("awg0"))
+    ns = to_fleet(); ns["nb"]["ifaces"]["awg0"]["public_key"] = "Q" * 43 + "="
+    for ivk_, want in ((IVK, True), ("", False)):
+        rs = {r["iface"]: r for r in P.failover_view(ns, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW, ivk=ivk_)["rows"]}
+        check("[8] status: an old copy offers Re-sync %s" % ("— the vault can rebuild A's key" if want else "only where the vault can rebuild (F128)"),
+              rs.get("awg0", {}).get("why") == "key" and bool(rs["awg0"].get("resync")) == want, rs.get("awg0"))
+    ku = to_fleet(); ku["na"]["ifaces"]["awg0"].pop("public_key")
+    kq = {"na": {"interfaces": {"awg0": {"down": "x", "meta": {}, "peers": []}}}, "nb": {"interfaces": {"awg0": snap_iface(key=KX)}}}
+    check("[8] keep: A's key unknown, A down, B runs awg0 under any key → only on B", P._fo_only_on_b(ku, kq, "na", "nb", True) == ["awg0"],
+          P._fo_only_on_b(ku, kq, "na", "nb", True))
     owner_after = {q: o for q, o in [(e[1], e[0]) for e in P.p2p_fwd_for_node(None, r, "nb", ("direct", ["10.99.0.0/16"]))]}
     check("[8] each port keeps its holder", owner_before == owner_after and owner_before, (owner_before, owner_after))
     check("[8] A's interface dropped as a delete; B takes A's host", "awg0" not in n["na"]["ifaces"] and "awg0" in n["na"]["delete"]
@@ -831,7 +852,9 @@ def table_want(rec, akey, live, snap, waits, rep, down, stopped, key):
     """The table of _fo_holds, written again here from its docstring: the first row that matches decides."""
     if rec in ("none", "sys"):
         return "absent"
-    if not akey or rec != "A":
+    if not akey:
+        return "unsure"                    # A's key unknown: B's copy cannot be judged (F128)
+    if rec != "A":
         return "stale"
     if live and snap and rep and not down and not stopped and key == "A":
         return "held"
@@ -887,7 +910,7 @@ def sec11():
                 inv.append((case, assume, "I2 peers moved: %s, class %s" % (on_b, exp)))
             if bkey and not on_b:                                             # I3: an ordinary B never keeps a copy unmoved
                 inv.append((case, assume, "I3 B kept a copy, peers left on A"))
-            if on_b and bkey != KA:                                           # I4: peers land on A's current identity
+            if on_b and akey and bkey != KA:                                  # I4: peers land on A's current identity
                 inv.append((case, assume, "I4 peers moved onto a copy without A's key"))
     check("[11] _fo_holds follows its table in all 3072 cases (1536 × assume)", not bad, bad[:3])
     check("[11] the take-over keeps the four invariants in every case, and refuses only in doubt", not inv, inv[:3])
@@ -1075,7 +1098,8 @@ def sec10():
     c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": False})
     check("[10] keep with clients on B needs the typed name", c == 409 and o.get("code") == "confirm_required", (c, o))
     c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "confirm": "hel-2"})
-    check("[10] detach-keep with A reporting and the name typed is allowed", c == 200 and o["data"]["moved"] == [], (c, o))
+    check("[10] detach-keep with A reporting and the name typed is allowed, and names what it removed (F132)",
+          c == 200 and o["data"]["moved"] == [] and o["data"].get("removed") == ["awg0"], (c, o))
     nn = json.load(open(os.path.join(d, "state", "nodes.json")))
     check("[10] …B is an ordinary node", "failover_of" not in nn["nb"], nn["nb"])
     rB2 = sync(port, tk["nb"], "nb", ifs)
