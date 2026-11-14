@@ -53,8 +53,8 @@ if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK || PERTURB_ONLINEPI
     : PERTURB_ONRAWANY
     ? ["const onRaw = rows.find(r => r.raw && r.t.online);", "const onRaw = rows[0].t.online ? rows[0] : null;"]
     : PERTURB_RAW
-    ? ["(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);",
-       "(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).some(ifn => ((((Store.nodes || []).find(x => x.id === t.node) || {}).wdtt_cfg || {})[ifn] || {}).raw_iface === t.iface);"]
+    ? ["export const rawUnvouchedIn = (nr, iface) => ((nr || {}).reach_unvouched_raw || []).includes(iface);",
+       "export const rawUnvouchedIn = (nr, iface) => ((nr || {}).reach_unvouched_raw || []).some(ifn => (((nr || {}).wdtt_cfg || {})[ifn] || {}).raw_iface === iface);"]
     : ["const p = { ...(peer || {}), private: false };", "const p = { ...(peer || {}) };"];
   if (!src.includes(anchor)) { console.log("ANCHOR MISSING — the perturbation cannot be applied"); process.exit(1); }
   src = src.replace(anchor, to);

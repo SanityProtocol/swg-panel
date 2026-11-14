@@ -32,7 +32,7 @@
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
  *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname|
- *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow|iplanded|typedclear|ipnorm
+ *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow|iplanded|typedclear|ipnorm|halftyped
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -79,8 +79,9 @@ const PLANTS = {   // name: [file, anchor, replacement]
   limtracked: ["js/limits.js", "<div class=\"field limfield\" data-tracked>", "<div class=\"field limfield\">"],   // [10]
   peerdirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: _dirty }}", "    dirtyRef=${{ current: lim.changed || vol.changed }}"],   // [10]
   usertracked: ["js/peer-ui.js", "<input data-tracked value=${tag} onInput", "<input value=${tag} onInput"],   // [10]
-  ipfollow: ["js/sheets-crud.js", "    else if (next[k] !== ip) { next[k] = ip; ch = true; }", ""],   // [10] an untouched field no longer follows
+  ipfollow: ["js/sheets-crud.js", "    else if (ipNorm(next[k]) !== ip) { next[k] = ip; ch = true; }", ""],   // [10] an untouched field no longer follows
   typedclear: ["js/sheets-crud.js", "{ if (ipNorm(v) === ipNorm(liveIp)) typed.delete(k); else typed.add(k); }", "{ typed.add(k); }"],   // [10] F19
+  halftyped: ["js/sheets-crud.js", "    else if (ipNorm(next[k]) !== ip) { next[k] = ip; ch = true; }", "    else if (next[k] !== ip) { next[k] = ip; ch = true; }"],   // [10] F24
   ipnorm: ["js/sheets-crud.js", "else if (typed.has(k)) { if (ipNorm(next[k]) === ip) typed.delete(k); }", "else if (typed.has(k)) { if (next[k] === ip) typed.delete(k); }"],   // [10] F18
   iplanded: ["js/sheets-crud.js", "    else if (typed.has(k)) { if (ipNorm(next[k]) === ip) typed.delete(k); }", "    else if (typed.has(k)) { }"],   // [10] a landed edit never follows again
   grouptracked: ["js/peer-ui.js", "<div class=\"sharebar\" data-tracked>", "<div class=\"sharebar\">"],   // [10]
@@ -427,6 +428,10 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
     typed = new Set(["n1|awg0"]); f = { "n1|awg0": " 10.0.0.9/32 " };
     f = SC.followIps(f, T1("10.0.0.9"), typed);
     check("⚠️ an edit typed with /32 or spaces lands like Save reads it (F18)", !typed.has("n1|awg0"), [...typed]);
+    typed = new Set(); f = { "n1|awg0": "10.0.0.5/" };              // F24: the same address half-typed, an unrelated poll change
+    SC.markIpTyped(typed, "n1|awg0", "10.0.0.5/", "10.0.0.5");
+    f = SC.followIps(f, T1("10.0.0.5"), typed);
+    check("⚠️ the same address half-typed (\"10.0.0.5/\") is not reset under the cursor by a poll (F24)", f["n1|awg0"] === "10.0.0.5/", f);
     f = SC.followIps({}, [{ node: "n2", iface: "wg0", ip: "10.1.0.2" }], new Set());
     check("a deployment added while the sheet is open gets its field", f["n2|wg0"] === "10.1.0.2", f);
   }

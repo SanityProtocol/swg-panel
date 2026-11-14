@@ -858,7 +858,7 @@ export function followIps(prev, targets, typed) {
     const k = tkey(t.node, t.iface), ip = ipNorm(t.ip);
     if (!(k in next)) { next[k] = ip; ch = true; }
     else if (typed.has(k)) { if (ipNorm(next[k]) === ip) typed.delete(k); }
-    else if (next[k] !== ip) { next[k] = ip; ch = true; }
+    else if (ipNorm(next[k]) !== ip) { next[k] = ip; ch = true; }   // the same address half-typed ("10.0.0.5/") is left alone (F24)
   }
   return ch ? next : prev;
 }
@@ -871,7 +871,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const live = Store.peer(peer.id) || peer;          // LIVE peer (the `peer` prop is a snapshot from open) — used for the target list
   const targetsOrdered = useStableOrder(live.targets);   // frozen at open — the primary ★ won't re-shuffle rows mid-edit
   const [title, setTitle] = useState(peer.title || "");
-  const [ips, setIps] = useState(() => Object.fromEntries(live.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
+  const [ips, setIps] = useState(() => Object.fromEntries(live.targets.map(t => [tkey(t.node, t.iface), ipNorm(t.ip)])));
   const ipTyped = useRef(new Set());                 // the fields typed in here whose value has not landed live yet
   // A newly-added target appears live → give it an IP field. ⚠️ AN ADDRESS MOVED ELSEWHERE (Fix address from this sheet, a
   // Restore, another tab) is followed while its field is untouched: the field kept the old one, so Save sent it back — undoing
@@ -931,7 +931,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // Never a csqtt / WDTT deployment: its server mints the address and the live one is the read-back, keyed by the access
   // password — a Rotate blanks it until the next sync, which nobody edited, and the panel refuses an address there.
   const ipChangedFor = t => { if (isSelfContainedKind(targetType(t))) return false; const v = ipNorm(ips[tkey(t.node, t.iface)]); return !!v && v !== ipNorm(t.ip); };   // read as Save sends it
-  const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
+  const ipBadFor = t => { const v = ipNorm(ips[tkey(t.node, t.iface)]); return !!v && !V.ipv4(v); };
   const anyIpBad = peer.targets.some(ipBadFor);
   const optsErr = Object.keys(topts).map(k => { const e = configErrors(topts[k]); const f = Object.keys(e)[0];
     return f ? { k, msg: T("{v1}: {v2}", { v1: k.split("|")[1], v2: e[f] }) } : null; }).find(Boolean);
@@ -999,7 +999,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       for (const t of (live.targets || peer.targets)) {
         const k = tkey(t.node, t.iface); const cur = confs[k];
         const changed = ipChangedFor(t);
-        const newIP = (ips[k] || "").trim().split("/")[0];
+        const newIP = ipNorm(ips[k]);   // the one reading of a field: the Save gate, the follow and Save agree (F26)
         if (!cur) {                                  // no config to rebuild — a keyed deployment's IP can still move (a keyless one's is never `changed`)
           if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP }); if (!r.ok) fails++; }
           continue;
