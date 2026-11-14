@@ -6356,7 +6356,6 @@ export const STR = {
   "peers kept on {v1}": "пиры остались на {v1}",
   "peers kept on {v1}; copies removed: {v2}": "пиры остались на {v1}; копии удалены: {v2}",
   "{v1}'s key for {v2} is not in the vault the panel holds now, so nothing can rebuild it on {v3} — unlock or set up the vault": "Ключа {v1} для {v2} нет в текущем хранилище панели, поэтому восстановить его на {v3} нечем — откройте или настройте хранилище",
-  "Re-sync does not repair {v1} — the failover status says what does": "Пересинхронизация не исправит {v1} — что исправит, видно в статусе зеркала",
   "took over {v1}": "приняла {v1}",
   "took over {v1}; left on {v2}: {v3}": "приняла {v1}; на {v2} остались: {v3}",
   "took over {v1}; old copies removed: {v4}": "приняла {v1}; старые копии удалены: {v4}",

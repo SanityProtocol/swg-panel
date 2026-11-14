@@ -13385,7 +13385,8 @@ def _fo_key_of(keys):
 
 def _fo_rebuildable(aov, ivk):
     """Can a Re-sync rebuild A's interface on B — the vault holds a blob for A's blessed key, sealed to the vault the operator
-    holds now (_iface_key_source == vault)? ONE predicate, read by the status's `resync` flag and the detach door (F152)."""
+    holds now (_iface_key_source == vault)? ONE predicate, read by the status's `resync` flag, the detach door (F152) and
+    failover_mirror's clone guard — changing it changes whether the mirror ever copies an interface (F164)."""
     return _iface_key_source(aov or {}, None, ivk) == "vault"
 
 
@@ -31820,10 +31821,8 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, **perr("{v1}'s key for {v2} is not in the vault the panel holds now, so nothing can rebuild "
                                              "it on {v3} — unlock or set up the vault", v1=nodes[aid].get("name") or aid,
                                              v2=", ".join(_nv), v3=nodes[bid].get("name") or bid), "code": "vault_needed"}
-        if not bad and fv["rows"]:                     # problems Re-sync does not repair: never read as "all good" (F150)
-            return 409, {"ok": False, **perr("Re-sync does not repair {v1} — the failover status says what does",
-                                             v1=", ".join(r["iface"] for r in fv["rows"])), "code": "not_resyncable"}
-        for n in bad:                                  # nothing at all: an empty success, so a repeated call is no error (F151)
+        for n in bad:                                  # nothing to repair: an empty success — a repeated call is no error (F157);
+            #                                            the status already shows every other row, Re-sync answers for its own
             _fo_drop_iface(nodes[bid], n, now())
         if bad:
             nodes_save(deps["nodes_path"], nodes)

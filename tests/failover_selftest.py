@@ -1108,7 +1108,8 @@ def sec10():
     rC = sync(port, tk["nc"], "nc")
     check("[10] a third node gets none of them", not (rC.get("desired") or {}).get("awg0"), rC.get("desired"))
     c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
-    check("[10] a Re-sync with problems it does not repair says so, never an empty success (F150)", c == 409 and o.get("code") == "not_resyncable", (c, o))
+    check("[10] a Re-sync with nothing to repair is an empty success — a repeated call is no error (F157)",
+          c == 200 and o["data"]["ifaces"] == [] and o["data"]["vault_needed"] == [], (c, o))
     c, o = req(port, "/api/iface/update", {"node": "nb", "iface": "awg0", "mtu": 1400})
     check("[10] an edit on B is refused at the door", c == 409 and o.get("code") == "failover_read_only", (c, o))
     sync(port, tk["na"], "na", {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}})
