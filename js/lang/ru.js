@@ -6362,6 +6362,7 @@ export const STR = {
   "{v1} is not reporting: removing the copies on {v2} would delete the only one running — move the peers to {v2} instead": "{v1} не выходит на связь: удалить копии на {v2} — значит удалить единственную работающую. Перенесите пиры на {v2}",
   "{v1} is serving clients: type {v2} to go on": "{v1} обслуживает клиентов: введите {v2}, чтобы продолжить",
   "not a failover node": "это не нода-зеркало",
+  "{v1}'s copy of {v2} is not {v3}'s current key — re-sync it first": "Копия {v2} на {v1} — не с текущим ключом {v3}: сначала пересинхронизируйте",
   "{v1} is not reporting — move the peers once it is": "{v1} не выходит на связь — переносите пиры, когда выйдет",
   "Not running on {v1} with {v2}'s key right now: {v3} — move the peers once they are": "Сейчас не работают на {v1} с ключом {v2}: {v3} — переносите пиры, когда заработают",
   "Running only on {v1} right now: {v2} — removing the copies there would cut its clients off. Move the peers to {v1}, or keep them once {v3} runs these again": "Сейчас работают только на {v1}: {v2} — удаление копий там отключит её клиентов. Перенесите пиры на {v1} или оставьте их, когда {v3} снова их запустит",
