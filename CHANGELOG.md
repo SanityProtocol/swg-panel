@@ -113,6 +113,11 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **WARP and WireGuard exits come up on Ubuntu 25.04 and later.** From 25.04, Ubuntu limits `wg-quick` to configs in
+  /etc/wireguard, and a node keeps its exits' configs elsewhere (they survive a Docker container being recreated), so
+  every such exit failed with "wg-quick: … exits/….conf: Permission denied". Install and Update now add a read-only rule
+  for exactly that directory to /etc/apparmor.d/local/wg-quick, and uninstall removes it. Where it could not be added,
+  the exit says so in plain words instead of the raw error.
 - **Undoing an edit no longer leaves an editor asking to discard it.** Edit user, Edit peer and the group editor now ask
   on close only when something still differs from what they opened with. A date removed with its Clear button now asks
   too; before, the editor closed without a word and the change was lost.

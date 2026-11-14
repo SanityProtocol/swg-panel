@@ -2646,6 +2646,24 @@ APPARMOR_LOCAL_BLOCK="$APPARMOR_LOCAL_BEGIN
   /var/run/wireguard/*.sock rw,
 $APPARMOR_LOCAL_END"
 
+# ⚠️ AND THE EXITS' CONFIG FILES (1.8.12 item 14, a user's report 2026-11-14). From apparmor 4.1 (Ubuntu 25.04 on) the
+# distribution also confines `wg-quick`, and its only config rule is `@{etc_rw}/wireguard/** rw`. swg-noded keeps every
+# exit's .conf in <state>/exits on purpose (the state volume survives a Docker recreate; /etc/wireguard does not), so
+# every WARP and plain-WireGuard exit died at the first read:
+#     /usr/bin/wg-quick: line 40: /var/lib/swg-noded/exits/wgx-c6d79c86.conf: Permission denied
+# The grant is read-only and exactly that directory: an exit .conf carries no hooks (`Table = off`, so `wg-quick` runs
+# only `ip` and `wg`, both already in its profile). Same fence, so uninstall.sh's marker reap takes it too.
+# (awg-quick has no distribution profile; an AmneziaWG exit was never refused.)
+apparmor_wgq_block(){   # the local/wg-quick block for this box's node state dir
+  local d="${SWG_NODED_STATE:-/var/lib/swg-noded}/exits"
+  printf '%s
+' "$APPARMOR_LOCAL_BEGIN" \
+    "  # swg-noded keeps each exit's (WARP / WireGuard) .conf here, not in /etc/wireguard, and brings it up with wg-quick." \
+    "  # Without these the profile refuses the first read. To revert, delete the lines between these two markers and:" \
+    "  # apparmor_parser -r <the profile that includes this file>" \
+    "  $d/ r," "  $d/*.conf r," "$APPARMOR_LOCAL_END"
+}
+
 _aa_profile_file(){   # echo the profile FILE name under $AA_DIR that holds tool $1's policy, or fail.
   # Newer policy names it for the tool (`wg`), older for the path (`usr.bin.wg`). ONE list, because the
   # guard below and the loop must never disagree about what counts as "this box has a profile for it".
@@ -2665,11 +2683,11 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
   # sockets in it. Nothing else in the profile is widened.
   [ "${SWG_NO_APPARMOR_FIX:-0}" = 1 ] && return 0
   have apparmor_parser || return 0
-  local t prof base loc changed=no
+  local t prof base loc block what changed=no
   # ⚠️ WE LOOKED, AND COULD NOT SEE. Without the loaded-profile list there is no way to tell enforce
   # from complain, and complain needs no fix at all — so say so rather than act on a guess or pass in
   # silence. (securityfs unmounted, or a confined/containerised context.)
-  if [ ! -r "$AA_PROFILES" ] && { _aa_profile_file wg >/dev/null || _aa_profile_file awg >/dev/null; }; then
+  if [ ! -r "$AA_PROFILES" ] && { _aa_profile_file wg >/dev/null || _aa_profile_file awg >/dev/null || _aa_profile_file wg-quick >/dev/null; }; then
     warn "AppArmor policy for the WireGuard tools is present but $AA_PROFILES is unreadable — can't tell enforce from complain, so leaving it alone."
     return 0
   fi
@@ -2680,8 +2698,11 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
   # consults; and a policy that did route wg through a `wg-quick//wg` child would be out of reach of
   # local/ altogether, which is included at the profile's top level and not inside its children. That
   # case degrades to the agent naming the refusal, which is the honest outcome for something we cannot
-  # repair from here.
-  for t in wg awg; do
+  # repair from here. `wg-quick` is here for a different reason — the file it reads itself, the exit .conf
+  # (apparmor_wgq_block) — and gets that block, never the socket one.
+  for t in wg awg wg-quick; do
+    if [ "$t" = wg-quick ]; then block="$(apparmor_wgq_block)"; what="WARP / WireGuard exits will not come up"
+    else block="$APPARMOR_LOCAL_BLOCK"; what="userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers"; fi
     # ⚠️ A PROFILE IS NAMED EITHER WAY, and so is the file that holds it: newer policy uses the tool
     # name (`wg`, /etc/apparmor.d/wg), older uses the path (`/usr/bin/wg`, /etc/apparmor.d/usr.bin.wg).
     # Matching only one spelling reads a confined box as unconfined and silently does nothing.
@@ -2689,15 +2710,15 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
     base="$(_aa_profile_file "$t")" || base=""
     prof="${base:+$AA_DIR/$base}"
     if [ -z "$prof" ]; then
-      warn "AppArmor enforces a profile for $t but no profile file was found under $AA_DIR — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
+      warn "AppArmor enforces a profile for $t but no profile file was found under $AA_DIR — $what."
       continue
     fi
     loc="$AA_DIR/local/$base"
     # the profile must itself pull in local/<name>; that include is the distribution's own invitation
     if ! grep -Eqs "include[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?<local/$base>" "$prof"; then
-      warn "AppArmor confines $t but $prof has no <local/$base> include — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
+      warn "AppArmor confines $t but $prof has no <local/$base> include — $what."
       sub "add to $prof, then: apparmor_parser -r $prof"
-      printf '%s\n' "$APPARMOR_LOCAL_BLOCK"
+      printf '%s\n' "$block"
       continue
     fi
     if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null; then
@@ -2713,18 +2734,18 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
     fi
     # NB: no `changed=yes` here. A dry-run that also prints the ✓ line below is claiming a policy
     # change it did not make — the [skip] line is the whole report.
-    if ${DRYRUN:-false}; then echo "    [skip] append swgPanel socket rules to $loc + apparmor_parser -r $prof"; continue; fi
+    if ${DRYRUN:-false}; then echo "    [skip] append the swgPanel rules to $loc + apparmor_parser -r $prof"; continue; fi
     mkdir -p "$AA_DIR/local" 2>/dev/null || true
     # A separator only when the file needs one: `$(tail -c1)` strips a trailing newline, so it is
     # empty exactly when the file already ends in one. Always prepending it instead would leave one
     # more blank line behind on every install/uninstall cycle, since the reap cuts marker-to-marker.
     [ -s "$loc" ] && [ -n "$(tail -c 1 "$loc" 2>/dev/null)" ] && printf '\n' >> "$loc" 2>/dev/null
-    printf '%s\n' "$APPARMOR_LOCAL_BLOCK" >> "$loc" 2>/dev/null \
+    printf '%s\n' "$block" >> "$loc" 2>/dev/null \
       || { warn "couldn't write $loc — add the swgPanel block there by hand"; continue; }
     if apparmor_parser -r "$prof" 2>/dev/null; then changed=yes
     else warn "wrote $loc but couldn't reload $prof — run: apparmor_parser -r $prof"; fi
   done
-  [ "$changed" = yes ] && ok "AppArmor: the wg CLI may read userspace interface sockets again (wdtt / csqtt / awg-userspace)"
+  [ "$changed" = yes ] && ok "AppArmor: the WireGuard tools may reach what the node needs (userspace interface sockets; wg-quick: the exits' configs)"
   return 0
 }
 

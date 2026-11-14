@@ -11207,6 +11207,18 @@ EXIT_DIR = os.path.join(STATE_DIR, "exits")   # ⚠️ NOT /etc/wireguard: that 
 #                                               update wipes it (swg-agent says the same about plain-WG
 #                                               confs). STATE_DIR is the volume that survives a recreate.
 _EXITS = {"list": []}                          # what we report back about them, rebuilt each pass
+# ⚠️ AN APPARMOR REFUSAL IS NAMED, NOT PASSED ON AS BASH (1.8.12 item 14). From Ubuntu 25.04 the distribution confines
+# wg-quick to /etc/wireguard, and the exit then reported "/usr/bin/wg-quick: line 40: …/exits/wgx-….conf: Permission
+# denied" — true, and no help. install/update (lib/common.sh ensure_wg_apparmor) add the read rule; this says so where
+# that has not run yet, or could not (no <local/wg-quick> include, SWG_NO_APPARMOR_FIX=1). Interpolation-free: the panel
+# translates it as a key (T(l.error)).
+EXIT_AA_REFUSED = ("AppArmor's wg-quick profile on this node won't read the exit's config (Ubuntu 25.04+). "
+                   "Run Update on the node to add the rule.")   # ⚠️ under the 160 the error is cut at, or T() misses it
+
+
+def exit_aa_refused(stderr):
+    """Is this `wg-quick up` failure the AppArmor refusal of an exit's own .conf (bash's read of it, EACCES)?"""
+    return bool(re.search(re.escape(EXIT_DIR) + r"/[^\n:]*\.conf: Permission denied", str(stderr or "")))
 
 
 def _warp_api(path, data, method, token=""):
@@ -13022,7 +13034,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 _no3 = awg_gen_refusal(dev, _exit_awg(rec))
                 r = None if _no3 else _scoped_up(_exit_tool(rec), conf)
                 if _no3 or r.returncode != 0:
-                    err = err or (_no3 or r.stderr or "wg-quick up failed").strip()[:160]
+                    err = err or (_no3 or (EXIT_AA_REFUSED if exit_aa_refused(r.stderr) else r.stderr) or "wg-quick up failed").strip()[:160]
                     res["errors"].append("exit %s: %s" % (xid, err))
                 else:
                     res["changed"] += 1

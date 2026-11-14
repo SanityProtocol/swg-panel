@@ -766,7 +766,9 @@ rm_node(){
     # userspace awg interface is left with a running datapath whose socket the wg CLI can no longer
     # read. Nothing of ours reads it once the node is gone, so the removal stands; it is said out loud
     # rather than left to be discovered.
-    info "  reverting the swgPanel AppArmor grant in $_aal (should you keep a WDTT / csqtt server or a userspace awg interface below, the wg CLI can no longer read its socket)"
+    # local/wg-quick holds the exits' grant (1.8.12 item 14): the node and its exits go with it, so nothing is left to warn about
+    if [ "${_aal##*/}" = wg-quick ]; then info "  reverting the swgPanel AppArmor grant in $_aal (the node's exit configs)"
+    else info "  reverting the swgPanel AppArmor grant in $_aal (should you keep a WDTT / csqtt server or a userspace awg interface below, the wg CLI can no longer read its socket)"; fi
     run sed -i '/# --- swgPanel: userspace WireGuard datapaths (begin) ---/,/# --- swgPanel: userspace WireGuard datapaths (end) ---/d' "$_aal"
     _aap="/etc/apparmor.d/$(basename "$_aal")"
     # …and a file that held nothing else goes — the grant created it (26.04's wg profile ships none) — when the profile takes it `if exists` (1.8.8 #3d)
