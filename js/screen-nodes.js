@@ -38,7 +38,8 @@ import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
          AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, openNodeRollback, openNodeTransferWatch,
-         openNodeMigrate, openNodeTransfer, unflagNode, bootCmd } from "./sheets-crud.js";
+         openNodeMigrate, openNodeTransfer, unflagNode, bootCmd, openFailoverSetup, openFailoverResync, openFailoverDetach } from "./sheets-crud.js";
+import { ensureVaultUnlocked, ifaceKeyAutoRestore, ifaceKeyRetry } from "./crypto.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey } from "./peer-actions.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
@@ -278,6 +279,12 @@ export function NodeDetail({ node: rawName }) {
   const migrating = !!nrec.migrating;
   const blocked = migrating || !live || inProc(nrec.proc_status);   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled (a timed-out/failed tag doesn't block)
   const down = !live && !inProc(nrec.proc_status);      // genuinely not reporting (not just mid-convert) → offer one-click Recover in place of rotate-token
+  // A failover node is a read-only copy of its primary (docs/FAILOVER-PLAN.md §4.7): what EDITS reads `ro` too — the
+  // interface cards and their adopt / restore buttons, Migrate, Transfer. Not the header's Update / Check / Settings or the
+  // connection cards: those concern its own box, and "Unavailable while the node is down" would be false here.
+  const ro = !!nrec.failover_of;
+  const edBlocked = blocked || ro;
+  const roWhy = ro ? T("Read-only: this node is a copy of {v1} — change {v1} instead", { v1: Store.nodeName(nrec.failover_of) }) : "";
   // the header's "update node to" button (updateNode: the node's own updater) — the one condition both that button and the
   // "from <ref>" / "own update command" label beside the version read, so the label always names what the button runs
   const nodeUpd = nrec.outdated && !(nrec.local && Store.panelOutdated);
@@ -307,7 +314,7 @@ export function NodeDetail({ node: rawName }) {
     <${NodeRail} active=${name}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}${nrec.failover ? html`<${FailoverTag} fo=${nrec.failover}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
@@ -355,8 +362,9 @@ export function NodeDetail({ node: rawName }) {
               and having to open Settings first to find them made them read as a sub-setting of something.
               Transfer follows the sheet's own rule: while one is in flight the button WATCHES it rather
               than starting a second. */ null}
-        <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(nrec)}><${Ic} i="server"/></button>
-        <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec))}><${Ic} i="link"/></button>
+        ${nrec.failover || ro ? null : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Add a failover node — a second server that keeps a live copy of this one, ready to take its clients")} onClick=${() => openFailoverSetup(nrec)}><${Ic} i="shield"/></button>`}
+        <button class="iconbtn" disabled=${edBlocked} title=${ro ? roWhy : blocked ? T("Unavailable while the node is down / converting") : T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(nrec)}><${Ic} i="server"/></button>
+        <button class="iconbtn" disabled=${edBlocked} title=${ro ? roWhy : blocked ? T("Unavailable while the node is down / converting") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec))}><${Ic} i="link"/></button>
         <button class="iconbtn danger" title=${nrec.removing ? T("Force remove node") : T("Remove node")} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
         <//>`}
         ${/* §3.1: the door for a node that is NOT reporting — and it says "or migrate" because not
@@ -376,6 +384,7 @@ export function NodeDetail({ node: rawName }) {
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">${T("up {v1}", { v1: dur(nrec.health.uptime) })}</span>` : null}</div>
     </div>
 
+    ${nrec.failover ? html`<${FailoverPanel} nrec=${nrec}/>` : null}
     ${nrec.health ? html`<${NodeHealthPanel} name=${name} nrec=${nrec}/>` : null}
 
     ${nrec.health_history ? html`<${NodeThroughput} name=${name} nrec=${nrec}/>` : null}
@@ -449,7 +458,7 @@ export function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title=${T("User interfaces")} tone="ready" count=${userKeys.length + wdttIfaces.length + Object.keys(nrec.wdtt_cfg || {}).filter(ifn => !wdttIfaces.some(w => w.iface === ifn)).length + csqttIfaces.length + Object.keys(nrec.csqtt_cfg || {}).filter(ifn => !csqttIfaces.some(c => c.iface === ifn)).length}
-        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title=${T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> ${mr > 1 ? T("Restore {v1}", { v1: plural(mr, "interface") }) : T("Restore interface")}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? T("Unavailable while the node is down / converting") : nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy")} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${isMobile() ? T("New proxy") : T("Setup turn-proxy")}</button>` : null}${isMobile() ? html`<button class="btn btn-mini ico" title=${T("These interfaces' live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: ["iface:*"] })}><${Ic} i="doc"/></button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Create new interface")}</button><//>`}>
+        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title=${T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> ${mr > 1 ? T("Restore {v1}", { v1: plural(mr, "interface") }) : T("Restore interface")}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${edBlocked || nrec.turn_arch_ok === false} title=${blocked ? T("Unavailable while the node is down / converting") : nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy")} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${isMobile() ? T("New proxy") : T("Setup turn-proxy")}</button>` : null}${isMobile() ? html`<button class="btn btn-mini ico" title=${T("These interfaces' live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: ["iface:*"] })}><${Ic} i="doc"/></button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${edBlocked} title=${ro ? roWhy : blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Create new interface")}</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -474,7 +483,7 @@ export function NodeDetail({ node: rawName }) {
               ? T("the node refused — open the error above")   /* badge says failed; this line must not still say creating */
               : (nrec.awaiting_key || []).includes(ifn) ? T("waiting for the Encryption Vault — its original key is escrowed")
               : migrating ? T("it comes back with the node — nothing to do")
-              : label === "creating" ? T("the node is creating it…") : T("the node is adding it…")}</span>${migrating ? null : html`<button class="btn btn-mini warn" title=${T("Drop this pending request")} onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>${T("Cancel")}</button>`}</div>${migrating ? null : html`<${RowError} k=${"ifcancel:" + name + "|" + ifn}/>`}</div></div>`;
+              : label === "creating" ? T("the node is creating it…") : T("the node is adding it…")}</span>${migrating || ro ? null : html`<button class="btn btn-mini warn" title=${T("Drop this pending request")} onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>${T("Cancel")}</button>`}</div>${migrating ? null : html`<${RowError} k=${"ifcancel:" + name + "|" + ifn}/>`}</div></div>`;
         // client-optimistic create: the FULL card with the values just entered, dimmed + "creating" + × in the
         // header — identical layout to the turn-proxy optimistic card. Shown until the node reports the iface.
         const optIfCard = (ifn, e) => html`<div class="ifcard down" key=${"new:" + ifn}>
@@ -488,7 +497,7 @@ export function NodeDetail({ node: rawName }) {
                 cls=${_ce ? "tg tg-warn" : "tg-busy"} icon=${_ce ? "warn" : "clock"}
                 label=${_ce ? T("tag|failed") : (e.type ? T("tag|creating") : T("tag|onboarding"))}
                 title=${_ce ? T("The node could not set it up — open the error for what to do") : T("Setting it up on the node")}/>`;
-            })()}<button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button></div>
+            })()}${ro ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button>`}</div>
           <div class="ifcard-rows">
             ${(e.endpoint || e.port) ? html`<div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${(e.endpoint || "") + (e.port ? ":" + e.port : "") || "—"}</span></div>` : null}
             ${e.subnet ? html`<div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${e.subnet}</span></div>` : null}
@@ -570,7 +579,7 @@ export function NodeDetail({ node: rawName }) {
                 { iface: ifn, subnet: mi.subnet || "?" }), false, T("Its original server key can't be recovered"));
           return html`<a class="ifcard missing" key=${"missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the interface (read-only) — peers, saved config, and Restore")}>
             <div class="ifcard-top"><span class=${"iftype " + mtype + (awgDict3(mi.awg_params) ? " awg3" : "")} ...${tip3(awgDict3(mi.awg_params))}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> ${T("Restore")}</button>
+              <button class="mi-restore" disabled=${edBlocked || !mi.ripe} title=${mi.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> ${T("Restore")}</button>
               <${StatusTag} cls="tg-del" icon="warn" label="missing" title=${T("This interface is gone from the node")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
         // GHOST card — a lost interface with NO recoverable key (cold: no saved config; or a keyless missing
@@ -579,7 +588,7 @@ export function NodeDetail({ node: rawName }) {
         const gcard = (ifn, g) => { const gp = ghostPeers(name, ifn);
           return html`<a class="ifcard ghost" key=${"ghost:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the interface (read-only) — recreate & rekey")}>
             <div class="ifcard-top"><span class="iftype gh">${T("tag|gone")}</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <button class="mi-restore ghost" disabled=${blocked || !g.ripe} title=${g.ripe ? T("Recreate this interface with a NEW key and rekey every peer on it (clients re-import)") : T("Confirming it's really gone (a couple of minutes) before Recreate is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> ${T("Recreate")}</button>
+              <button class="mi-restore ghost" disabled=${edBlocked || !g.ripe} title=${g.ripe ? T("Recreate this interface with a NEW key and rekey every peer on it (clients re-import)") : T("Confirming it's really gone (a couple of minutes) before Recreate is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> ${T("Recreate")}</button>
               <${StatusTag} cls="tg-del" icon="warn" label="ghost" title=${T("Gone with no recoverable key — recreate fresh + rekey")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${goneSentence(T("The node no longer reports {iface}, and {verdict} — there's nothing to restore. Recreate it with a new key; {count} get fresh configs to re-import.", { iface: ifn, count: plural(gp.length, "peer") }), false, T("its server key can't be recovered"))}</div></div></a>`; };
         // MISSING WDTT server: the panel still wants it (wdtt_cfg) but the node reports nothing for it in
@@ -666,14 +675,14 @@ export function NodeDetail({ node: rawName }) {
           // when it happens to be a container — it is not what decides the word.
           const wctr = (cd.wdtt || {}).container || "";
           const alien = !!cd.wdtt;                    // a server process owns this interface
-          // `blocked` = the node is converting / re-installing / down. Every managed card dims and disables for
+          // `edBlocked` = the node is converting / re-installing / down, or a failover node's read-only copy. Every managed card dims and disables for
           // it; the candidate cards were the exception, still offering an Adopt that the node cannot act on.
-          return html`<a class=${"ifcard candidate" + (ig ? " ignored" : "") + ((adopting || blocked || _cop) ? " down" : "") + (blocked ? " locked" : "")} key=${(ig ? "ign:" : "cand:") + cd.name}
-            onClick=${blocked ? (e => e.preventDefault()) : null} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(cd.name)} title=${ig ? T("Ignored — the panel isn't managing it. Open to Un-ignore or Adopt.") : T("Found on the node — not managed by the panel. Open to Adopt or Ignore.")}>
+          return html`<a class=${"ifcard candidate" + (ig ? " ignored" : "") + ((adopting || edBlocked || _cop) ? " down" : "") + (edBlocked ? " locked" : "")} key=${(ig ? "ign:" : "cand:") + cd.name}
+            onClick=${edBlocked ? (e => e.preventDefault()) : null} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(cd.name)} title=${ig ? T("Ignored — the panel isn't managing it. Open to Un-ignore or Adopt.") : T("Found on the node — not managed by the panel. Open to Adopt or Ignore.")}>
             <div class="ifcard-top"><span class=${"iftype " + (wd ? "wdtt" : (cd.type_hint === "awg" ? "awg" : "orph"))}
                 title=${wd ? T("A WDTT server is running on it") : cd.type_why ? T("Looks like {v1} — {v2}", { v1: String(cd.type_hint || "wg").toUpperCase(), v2: cd.type_why }) : T("Type not established — you choose it when adopting")}>${wd ? "wdtt" : cd.type_hint === "awg" ? "awg?" : "wg?"}</span><span class="ifname">${cd.name}</span>
               <span class="grow"></span>
-              ${(ig || adopting || blocked || _cop) ? null : html`<button class="mi-restore" title=${T("Adopt this interface — choose its type, keys and peers are kept")}
+              ${(ig || adopting || edBlocked || _cop) ? null : html`<button class="mi-restore" title=${T("Adopt this interface — choose its type, keys and peers are kept")}
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptIfaceSheet} node=${name} iface=${cd.name} cand=${cd} nrec=${nrec}/>`); }}><${Ic} i="plus"/> ${alien ? T("Take over") : T("Adopt")}</button>`}
               ${_cop
                 ? _cop
@@ -711,11 +720,11 @@ export function NodeDetail({ node: rawName }) {
         // password store, so "go start it yourself" would be pointless advice from the one thing that can.
         const _claimed = new Set(nrec.wdtt_claimed_dirs || []);
         const dcard = d => { const taking = _claimed.has(d.config_dir);   // an instance already points at this dir
-          return html`<div class=${"ifcard candidate" + ((taking || blocked) ? " down" : " clickable") + (blocked ? " locked" : "")} key=${"dormant:" + d.config_dir}
+          return html`<div class=${"ifcard candidate" + ((taking || edBlocked) ? " down" : " clickable") + (edBlocked ? " locked" : "")} key=${"dormant:" + d.config_dir}
             title=${taking ? T("Being taken over — the node applies this on its next sync") : T("Adopt this WDTT server — its key and passwords are kept")}
-            onClick=${() => { if (!taking && !blocked) go("#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(d.config_dir || "")); }}>
+            onClick=${() => { if (!taking && !edBlocked) go("#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(d.config_dir || "")); }}>
           <div class="ifcard-top"><span class="iftype wdtt">wdtt</span><span class="ifname">${(d.config_dir || "").split("/").filter(Boolean).pop() || "wdtt"}</span><span class="grow"></span>
-            ${(taking || blocked) ? null : html`<button class="mi-restore" title=${T("Adopt this WDTT server — its key and passwords are kept")}
+            ${(taking || edBlocked) ? null : html`<button class="mi-restore" title=${T("Adopt this WDTT server — its key and passwords are kept")}
               onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptDormantWdttSheet} node=${name} d=${d} nrec=${nrec}/>`); }}><${Ic} i="plus"/> ${T("Adopt")}</button>`}
             ${taking
               ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("Taking it over — the node applies this on its next sync")}/>`
@@ -736,9 +745,9 @@ export function NodeDetail({ node: rawName }) {
         // of its own the operator sees nothing where a real server, with real users, is running.
         const _cAdopting = new Set(nrec.csqtt_adopting || []);
         const cqcard = c => { const taking = _cAdopting.has(c.iface);
-          return html`<div class=${"ifcard candidate" + ((taking || blocked) ? " down" : "") + (blocked ? " locked" : "")} key=${"csqcand:" + c.iface}>
+          return html`<div class=${"ifcard candidate" + ((taking || edBlocked) ? " down" : "") + (edBlocked ? " locked" : "")} key=${"csqcand:" + c.iface}>
           <div class="ifcard-top"><span class="iftype csqtt">CSQTT</span><span class="ifname">${c.iface}</span><span class="grow"></span>
-            ${(taking || blocked) ? null : html`<button class="mi-restore" title=${T("Adopt this csqtt server — its users are kept and imported")}
+            ${(taking || edBlocked) ? null : html`<button class="mi-restore" title=${T("Adopt this csqtt server — its users are kept and imported")}
               onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptCsqttSheet} node=${name} c=${c}/>`); }}><${Ic} i="plus"/> ${T("Take over")}</button>`}
             ${taking
               ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("Taking it over — the node applies this on its next sync")}/>`
@@ -790,12 +799,12 @@ export function NodeDetail({ node: rawName }) {
           return srv || !!Store.ctrAdopt[_ck(x)];
         };
         const xcards = (nrec.container_ifaces || []).filter(x => x && x.name && x.container).map(x =>
-          html`<a class=${"ifcard candidate" + (_pend(x) ? " down" : "") + (blocked ? " locked" : "")} key=${"ctr:" + x.container + ":" + x.name}
+          html`<a class=${"ifcard candidate" + (_pend(x) ? " down" : "") + (edBlocked ? " locked" : "")} key=${"ctr:" + x.container + ":" + x.name}
               href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent("ctr:" + x.container + ":" + x.name)}>
             <div class="ifcard-top"><span class=${"iftype " + (x.proto === "awg" ? "awg" : "wg")}
                 title=${T("Running inside container {v1} — swgPanel cannot manage it there", { v1: x.container })}>${x.proto === "awg" ? "awg" : "wg"}</span>
               <span class="ifname">${x.name}</span><span class="grow"></span>
-              ${(blocked || _pend(x) || (_adFail && _adFail.c === x.container)) ? null : _clash(x) ? html`<${StatusTag} cls="tg-warn tg-click" icon="warn" label=${T("name taken")}
+              ${(edBlocked || _pend(x) || (_adFail && _adFail.c === x.container)) ? null : _clash(x) ? html`<${StatusTag} cls="tg-warn tg-click" icon="warn" label=${T("name taken")}
         msg=${T("This node already runs an interface called {v1}, so the take-over cannot recreate this one under that name — it would collide. Free the name first: open {v1} and delete it if you don't need it, or move its peers to another interface. Nothing has been changed here.", { v1: x.name })}
         title=${T("Why this can't be taken over")}/>` : html`<button class="mi-restore" title=${T("Take this interface over: stop that container and run the same server here, keeping its key, port and peers")}
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); openConfirm({
@@ -973,7 +982,7 @@ export function NodeDetail({ node: rawName }) {
               // of here into `blocked` for exactly that reason.
               const idim = deleting || idown || istopped || irestarting || iopBusy || !!iprog || !!(nrec.cmd_errors || {})[ifn];
               const iflash = ifaceFlash[name + "|" + ifn] && Date.now() < ifaceFlash[name + "|" + ifn];
-              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (blocked ? " locked" : "") + (iflash ? " flash" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
+              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (edBlocked ? " locked" : "") + (iflash ? " flash" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
                 <div class="ifcard-top"><span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || iopBusy || deleting || irestarting) ? html`<span class=${"iftype " + type + awg3Cls(name, ifn)} ...${awg3Tip(name, ifn)}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${T("Edit interface · {v1}", { v1: type.toUpperCase() })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type + awg3Cls(name, ifn)} ...${awg3Tip(name, ifn)}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${_unmanaged.has(ifn) ? html`<span class="tg tg-pending" title=${T("The node runs this interface, but this panel holds no record of it: nothing here manages its peers or its settings, and a rebuild can't bring it back. Adopt it from Create new interface, giving it this exact name — the node then adds it to what it manages without touching the peers already on it.")}><${Ic} i="info"/>${T("tag|unclaimed")}</span>` : null}${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title=${T("Working on the node")}/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${ifopBusy(iop.verb)}</span>` : iconverting ? html`<span class="tg tg-convert" title=${T("The node is converting between bare-metal and docker")}><${Ic} i="clock"/>${T("tag|converting")}</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : istopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || (T("interface is down on the node — awg-quick couldn't bring it up: {v1}", { v1: idown }))} title=${T("Interface down on the node")}/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${T("tag|restarting")}</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : awgSwitchTag(name, ifn, true) ? awgSwitchTag(name, ifn, true) : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title=${T("A setting was edited directly on the server — open to Adopt or Restore")}><${Ic} i="warn"/>${T("tag|modified")}</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>${T("tag|ready")}</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
@@ -1316,17 +1325,84 @@ function NodeMoreSheet({ id }) {
   useEffect(() => { if (!nrec) closeModal(); }, [!nrec]);
   if (!nrec) return null;
   const blocked = !!nrec.migrating || Store.recon.nodeStatus[id] !== "live" || inProc(nrec.proc_status);   // NodeDetail's own rule
+  const ro = !!nrec.failover_of;                                          // a failover node: read-only (§4.7)
   const row = (icon, label, on, off, cls) => html`<button class=${"msheet-it" + (cls ? " " + cls : "")} disabled=${off} onClick=${() => { closeModal(); on(); }}>
     <${Ic} i=${icon}/><span class="msheet-l">${label}</span></button>`;
   return html`<${Sheet} title=${Store.nodeName(id)} noGuard=${true}>
     <div class="msheet"><div class="msheet-g">
       ${row("key", T("Rotate token"), () => openNodeRotate(nrec))}
-      ${row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked)}
-      ${row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked)}
+      ${row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked || ro)}
+      ${row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked || ro)}
+      ${nrec.failover || ro ? null : row("shield", T("Add failover node"), () => openFailoverSetup(nrec), blocked)}
+      ${ro ? row("x", T("Detach"), () => openFailoverDetach(nrec)) : null}
       ${/* flagged for removal: the way back, which the desktop has on the Health panel (F5) */""}
       ${nrec.removing ? row("refresh", T("Cancel removal — keep this node"), () => unflagNode(nrec)) : null}
       ${row("trash", nrec.removing ? T("Force remove node") : T("Remove node"), () => openNodeRemove(nrec), false, "danger")}
     </div>${blocked ? html`<p class="hint msheet-note">${T("Unavailable while the node is down / converting")}</p>` : null}</div>
+  <//>`;
+}
+/* ── Failover (docs/FAILOVER-PLAN.md §4.6): one status for the pair, on both members' pages. The panel sends codes;
+   they are worded here, each with what to do about it. */
+const FO_STATE = { ready: ["tg-ok", "check"], syncing: ["tg-busy", "clock"], needs_vault: ["tg-pending", "key"],
+                   problem: ["tg-warn", "warn"], offline: ["tg-off", "info"] };
+function foStateLabel(st) {
+  return { ready: T("fo|Ready"), syncing: T("fo|Syncing"), needs_vault: T("fo|Waiting for the vault"), problem: T("fo|Needs attention"),
+           offline: T("fo|Not reporting") }[st] || st;
+}
+function FailoverTag({ fo }) {
+  const [cls, icon] = FO_STATE[fo.state] || FO_STATE.problem;
+  return html`<${StatusTag} cls=${cls} icon=${icon} label=${T("Failover · {v1}", { v1: foStateLabel(fo.state) })}
+    title=${T("{v1} keeps a live copy of {v2}", { v1: Store.nodeName(fo.failover), v2: Store.nodeName(fo.primary) })}/>`;
+}
+function foWhy(r, bn) {
+  switch (r.why) {
+    case "no_copy": return T("not copied yet — its key has to be sealed to the vault first; it is on the node's next sync once the vault is set up");
+    case "awaiting_key": return T("waiting for its key — unlock the vault in this browser to hand it over");
+    case "creating": return T("being created on {v1}", { v1: bn });
+    case "awg": return T("needs AmneziaWG 3.1 on {v1} — update that node", { v1: bn });
+    case "down": return T("down on {v1} — it is being brought back", { v1: bn });
+    case "key": return T("{v1} runs it with a different key — re-sync it", { v1: bn });
+    case "subnet": return T("{v1} runs it on a different subnet — re-sync it", { v1: bn });
+    case "drift": return T("{v1} has not applied {v2} yet", { v1: bn, v2: (r.keys || []).join(", ") });
+    case "firewall": return T("UDP {v1} is outside {v2}'s declared firewall range — clients can't reach it there", { v1: r.port, v2: bn });
+    case "peers": return T("{v1} still to copy", { v1: plural(r.n || 0, "peer") });
+    case "port": return T("its port is still changing");
+    default: return r.why;
+  }
+}
+function FailoverPanel({ nrec }) {
+  const fo = nrec.failover;
+  const a = fo.primary, b = fo.failover, an = Store.nodeName(a), bn = Store.nodeName(b);
+  const isB = nrec.id === b;
+  const bRec = (Store.nodes || []).find(n => n.id === b) || {};
+  const [cls, icon] = FO_STATE[fo.state] || FO_STATE.problem;
+  const waiting = (fo.rows || []).some(r => r.why === "awaiting_key");
+  const unlock = async () => {
+    const ok = await ensureVaultUnlocked({ always: true, title: T("Unlock to hand over the keys"),
+      reason: T("{v1} is waiting for {v2}'s interface keys. They are sealed to your vault: unlock it, and this browser re-seals each key to {v1} — the panel never sees one.", { v1: bn, v2: an }),
+      consequence: T("{v1} keeps waiting, and serves nobody on those interfaces until the vault is unlocked here.", { v1: bn }) });
+    if (ok) { ifaceKeyRetry(b); ifaceKeyAutoRestore(); toast(T("Handing the keys to {v1}…", { v1: bn }), "ok"); }
+  };
+  const bAddr = (bRec.ips || []).find(ip => !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|fe80|fd|::1)/i.test(ip)) || (bRec.ips || [])[0] || "";
+  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l">${r.iface}</span><span class="r">${foWhy(r, bn)}</span></div>`);
+  const probs = (fo.problems || []).map(p => html`<div class="ifrow ifrow-stack"><span class="l">${p.kind === "cmd_errors"
+    ? T("{v1} reports commands that failed — its page says which", { v1: bn })
+    : T("{v1} runs interfaces the panel doesn't manage — remove them on that server", { v1: bn })}</span><span class="r">${(p.ifaces || []).join(", ")}</span></div>`);
+  const actions = html`<div class="panel-tools">
+    ${isMobile() ? null : html`<${StatusTag} cls=${cls} icon=${icon} label=${foStateLabel(fo.state)}/>`}
+    ${waiting ? html`<button class="btn btn-mini" style="margin-left:9px" onClick=${unlock}><${Ic} i="key"/> ${T("Unlock vault")}</button>` : null}
+    ${fo.resync ? html`<button class="btn btn-mini" style="margin-left:9px" disabled=${!fo.primary_live} title=${fo.primary_live ? "" : T("{v1} is not reporting — re-sync once it is", { v1: an })} onClick=${() => openFailoverResync(bRec)}><${Ic} i="refresh"/> ${T("Re-sync")}</button>` : null}
+    ${isB ? html`<button class="btn btn-mini" style="margin-left:9px" onClick=${() => openFailoverDetach(nrec)}>${T("Detach")}</button>` : null}
+  </div>`;
+  return html`<${Panel} icon="shield" title=${T("Failover")} actions=${actions}>
+    <p class="hint" style="margin:0 0 10px">${isB
+      ? T("This node is a read-only copy of {v1}: the same interfaces, keys, ports and peers. Change settings on {v1}; they follow here.", { v1: an })
+      : T("{v1} keeps a live copy of this node: the same interfaces, keys, ports and peers. If this node goes down, point its domain at {v1} and clients reconnect there.", { v1: bn })}
+      ${" "}${T("Serving now: {v1}.", { v1: fo.serving === b ? bn : an })}</p>
+    ${!fo.primary_live ? html`<div class="notice warn"><${Ic} i="warn"/><span>${bAddr
+      ? T("{v1} is not reporting. Point its domain at {v2} ({v3}) so its clients reconnect there.", { v1: an, v2: bn, v3: bAddr })
+      : T("{v1} is not reporting. Point its domain at {v2} so its clients reconnect there.", { v1: an, v2: bn })}</span></div>` : null}
+    ${rows.length || probs.length ? html`<div class="ifcard-rows">${rows}${probs}</div>` : null}
   <//>`;
 }
 export function NodeHealthPanel({ name, nrec }) {

@@ -169,6 +169,11 @@ export const api = {
   // T-11: the SAME analysis, read-only and before the token rotates. It writes nothing, so the confirm
   // sheets can show what a rebuild would do while the operator can still decide not to.
   nodeRebuildPreflight(nid) { return this.get("/api/nodes/rebuild/preflight?node=" + encodeURIComponent(nid)); },
+  // Failover nodes (docs/FAILOVER-PLAN.md §4.1, §4.6, §4.8): the preview, set-up, re-sync and detach
+  failoverPreflight(nid) { return this.get("/api/nodes/failover/preflight?node=" + encodeURIComponent(nid)); },
+  failoverCreate(b) { return this.post("/api/nodes/failover", b); },
+  failoverResync(b) { return this.post("/api/nodes/failover/resync", b); },
+  failoverDetach(b) { return this.post("/api/nodes/failover/detach", b); },
   nodeRebuildRollback(b) { return this.post("/api/nodes/rebuild/rollback", b); },   // {discard:true} = forget the old box instead
   nodeRemesh(b) { return this.post("/api/nodes/remesh", b); },   // rebuild THIS node's mesh links on demand
   // T-10 — Transfer to ANOTHER panel. One endpoint in two modes so the preview and the act cannot answer

@@ -1199,7 +1199,7 @@ export const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action ===
 // (`p2pTargetHints`), never a refusal.
 export function p2pTargetOpts(node, exits) {
   const linked = new Set((node.mesh_peers || []).filter(m => m && m.iface).map(m => m.peer));
-  const viaNode = (Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id,
+  const viaNode = (Store.nodes || []).filter(n => n.id !== node.id && !n.failover_of).map(n => ({ value: "exit:" + n.id,
     label: T("Route through node {v1}", { v1: n.name }),
     ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));
   return [...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })
@@ -2562,7 +2562,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   // its rules narrow themselves to an AUDIENCE rather than to people (D9), it has no "node default" to fall back to (it IS
   // the default), and its "Everything else" left silent means this node's own way out.
   const nodeScope = scope === "node";
-  const others = (Store.nodes || []).filter(n => n.id !== node);
+  const others = (Store.nodes || []).filter(n => n.id !== node && !n.failover_of);   // a failover node is nobody's way out
   const _nrec = (Store.nodes || []).find(n => n.id === node);
   // what "the node default" resolves to here, if the node has one — see `catchVal`
   const _dflt = nodeScope ? null : ((_nrec || {}).exits || []).find(x => String(x.id) === String((_nrec || {}).default_exit || "")) || null;
@@ -3195,7 +3195,7 @@ export function EgressPicker({ node, value, onChange, noRules }) {
   // a multi-access link whose exit IP the operator picks, and a tunnel is neither. `ether_ifaces` is the
   // node's ARPHRD_ETHER list, the same one `exit_device_refusal` has always used to refuse a NIC as an exit
   // DEVICE — the two halves of one classification, finally reading from one source.
-  const others = (Store.nodes || []).filter(n => n.id !== node);
+  const others = (Store.nodes || []).filter(n => n.id !== node && !n.failover_of);   // a failover node is nobody's way out
   const exits = nrec.exits || [];
   // The node's default exit, if it has a usable one — what "Auto" actually resolves to on this node.
   const _dflt = (nrec.exits || []).find(x => String(x.id) === String(nrec.default_exit || "")) || null;

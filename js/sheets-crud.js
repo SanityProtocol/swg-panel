@@ -151,8 +151,9 @@ export function AddPeersSheet({ userId, userName }) {
 // All deployable (node, iface) targets known from the consolidated state.
 export function allTargets() {
   const out = [];
-  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))
-    if (!Store.ifaceIsSystem(node, iface)) out.push({ node, iface });   // never offer a mesh link (swg_*) as a peer target
+  const fo = new Set((Store.nodes || []).filter(n => n.failover_of).map(n => n.id));   // a failover node serves its primary's
+  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))   // peers: never a target
+    if (!fo.has(node) && !Store.ifaceIsSystem(node, iface)) out.push({ node, iface });   // never offer a mesh link (swg_*) as a peer target
   // WDTT/csqtt servers own their interface, which isn't a panel-managed WG iface (so it's absent from
   // `describe`) — add each so it is selectable as a (keyless) peer target.
   //
@@ -2744,6 +2745,119 @@ export function NodeMigrateSheet({ node }) {
   <//>`;
 }
 
+/* ── Failover nodes (docs/FAILOVER-PLAN.md §4.1, §4.6, §4.8) ─────────────────────────────────────
+   A failover node is a second server running a read-only copy of one node — the same interfaces, keys, ports and peers —
+   so pointing that node's domain at it is the whole failover. Set up from the primary's page (a preview, a name, the
+   install command), detached from the mirror's. The panel sends codes; the words are here. */
+export function openFailoverSetup(node) { openModal(html`<${FailoverSetupSheet} node=${node}/>`); }
+export function FailoverSetupSheet({ node }) {
+  const [pf, setPf] = useState(undefined);          // undefined = still asking · null = unavailable
+  const [name, setName] = useState(""); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null);
+  useEffect(() => {
+    let live = true;
+    api.failoverPreflight(node.id).then(r => { if (live) setPf(r && r.ok ? r.data : null); }).catch(() => { if (live) setPf(null); });
+    return () => { live = false; };
+  }, [node.id]);
+  const nameBad = name.trim() && !V.nodeName(name);
+  const refused = (pf && pf.refused) || [];
+  const w = (pf && pf.warn) || {};
+  const create = async () => {
+    if (busy) return;
+    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: T("Name: 1–40 chars, letters/digits/-/_ only.") });
+    setBusy(true); setMsg({ k: "work", t: T("creating…") });
+    try {
+      const r = await api.failoverCreate({ node: node.id, name: name.trim() });
+      if (!r.ok) { if (r.data && r.data.refused) setPf(r.data); return setMsg({ k: "err", t: srvText(r) || T("couldn't create node") }); }
+      await Store.poll(); openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
+    } finally { setBusy(false); }
+  };
+  const turnish = (w.not_mirrored || []).filter(x => ["wdtt", "csqtt", "turn"].includes(x.kind));
+  const exitish = (w.not_mirrored || []).filter(x => !["wdtt", "csqtt", "turn"].includes(x.kind));
+  const row = (label, value) => html`<div class="ifrow ifrow-stack"><span class="l">${label}</span><span class="r">${value}</span></div>`;
+  const warns = [
+    ...(w.ip_endpoint || []).map(x => row(x.host ? T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give the interface a domain as its endpoint first.", { v1: x.iface, v2: x.host })
+                                                 : T("Clients of {v1} have no domain to dial — give the interface a domain as its endpoint first.", { v1: x.iface }), x.iface)),
+    ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), x.iface)),
+    ...((w.pinned || []).length ? [row(T("Pinned to one of {v1}'s own addresses — on the failover node they leave by its default way out", { v1: node.name }), w.pinned.join(", "))] : []),
+    ...(turnish.length ? [row(T("Not copied: WDTT, csqtt and turn proxies stay on {v1} alone", { v1: node.name }), turnish.map(x => x.name || x.kind).join(", "))] : []),
+    ...(exitish.length ? [row(T("The failover node has no exits: what leaves through these leaves by its own address there"), exitish.map(x => x.name).join(", "))] : []),
+  ];
+  return html`<${Sheet} title=${T("Add failover node · {v1}", { v1: node.name })}
+    foot=${footRow({ onCancel: closeModal, onAction: create, disabled: busy || !pf || refused.length > 0 || !name.trim() || nameBad,
+                     action: busy ? T("creating…") : T("Create failover node") })}>
+    <div class="notice"><${Ic} i="info"/><span>${T("A failover node is a second server that keeps a live copy of {v1}: the same interfaces, keys, ports and peers. If {v1} goes down, point its domain at the failover node and clients reconnect there — nobody re-imports a config.", { v1: node.name })}</span></div>
+    ${pf === undefined ? html`<div class="hint">${T("Checking what this would do…")}</div>`
+      : pf === null ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Couldn't check whether {v1} can have a failover node. Try again in a moment.", { v1: node.name })}</span></div>`
+      : refused.length ? html`<div class="notice danger"><${Ic} i="err"/><div style="flex:1;min-width:0"><b>${T("Not possible yet")}</b>
+          <div class="ifcard-rows" style="margin-top:7px">${refused.map(x => row(T(x.why), x.iface || ""))}</div></div></div>`
+      : null}
+    ${pf && warns.length ? html`<div class="notice warn"><${Ic} i="warn"/><div style="flex:1;min-width:0"><b>${T("Worth knowing before you do this")}</b>
+        <div class="ifcard-rows" style="margin-top:7px">${warns}</div></div></div>` : null}
+    <div class="field"><label>${T("Name of the failover node")}</label>
+      <input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder=${node.name + "-b"} autocomplete="off"/>
+      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? T("1–40 chars: letters, digits, - or _ only.") : T("Then run the command the panel gives you on the spare server. It follows {v1} from then on: change settings on {v1}, never on the copy.", { v1: node.name })}</div></div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+
+export function openFailoverResync(b) { openModal(html`<${FailoverResyncSheet} b=${b}/>`); }
+function FailoverResyncSheet({ b }) {
+  const [busy, setBusy] = useState(false);
+  const fo = b.failover || {}, aname = Store.nodeName(fo.primary);
+  const ifs = (fo.rows || []).filter(r => r.resync).map(r => r.iface);
+  const go = async () => {
+    if (busy) return; setBusy(true);
+    try {
+      const r = await api.failoverResync({ id: b.id });
+      if (!r.ok) return toast(srvText(r) || T("couldn't re-sync"), "err");
+      closeModal(); toast(T("Re-syncing {v1}", { v1: ifs.join(", ") }), "ok"); Store.poll().catch(() => {});
+    } finally { setBusy(false); }
+  };
+  return html`<${Sheet} title=${T("Re-sync · {v1}", { v1: b.name })}
+    foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || !ifs.length, action: T("Re-sync") })}>
+    <div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} runs {v2} with a key or subnet that isn't {v3}'s. Re-sync deletes those interfaces on {v1} and builds them again from {v3}; any client connected to them there drops until they are back.", { v1: b.name, v2: ifs.join(", "), v3: aname })}</span></div>
+  <//>`;
+}
+
+export function openFailoverDetach(b) { openModal(html`<${FailoverDetachSheet} id=${b.id}/>`); }
+function FailoverDetachSheet({ id }) {
+  useStore();
+  const b = (Store.nodes || []).find(n => n.id === id);
+  const fo = (b && b.failover) || {};
+  const aLive = !!fo.primary_live;
+  const [mode, setMode] = useState(aLive ? "keep" : "move");
+  const [need, setNeed] = useState(false); const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!b) closeModal(); }, [!b]);
+  if (!b) return null;
+  const aname = Store.nodeName(fo.primary);
+  // what the take-over leaves on A: the interfaces B does not run with A's key (the server's _fo_holds) — a row that is only
+  // still copying peers, a port or a setting is held, and moves
+  const notHeld = (fo.rows || []).filter(r => ["no_copy", "awaiting_key", "creating", "awg", "down", "key"].includes(r.why)).map(r => r.iface);
+  const keepOff = mode === "keep" && !aLive;
+  const go = async () => {
+    if (busy || keepOff || (need && txt !== b.name)) return; setBusy(true);
+    try {
+      const r = await api.failoverDetach({ id, take_over: mode === "move", ...(need ? { confirm: txt } : {}) });
+      if (!r.ok) { if (r.code === "confirm_required") setNeed(true); return toast(srvText(r) || T("couldn't detach"), "err"); }
+      closeModal(); toast(T("{v1} is an ordinary node now", { v1: b.name }), "ok"); Store.poll().catch(() => {});
+    } finally { setBusy(false); }
+  };
+  const seg = (v, label) => html`<button type="button" role="radio" aria-checked=${mode === v} class=${"seg" + (mode === v ? " on" : "")}
+    onClick=${() => { setMode(v); setNeed(false); setTxt(""); }}>${label}</button>`;
+  return html`<${Sheet} title=${T("Detach · {v1}", { v1: b.name })}
+    foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || keepOff || (need && txt !== b.name), action: T("Detach") })}>
+    <div class="segrow" role="radiogroup" aria-label=${T("Detach")}>${seg("keep", T("Keep the peers on {v1}", { v1: aname }))}${seg("move", T("Move the peers to {v1}", { v1: b.name }))}</div>
+    ${mode === "keep"
+      ? html`<div class=${"notice" + (keepOff ? " danger" : "")}><${Ic} i=${keepOff ? "err" : "info"}/><span>${keepOff
+          ? T("{v1} is not reporting: removing the copies on {v2} would delete the only one running. Move the peers to {v2} instead.", { v1: aname, v2: b.name })
+          : T("The copies on {v1} are removed and the peers stay on {v2}. {v1} becomes an empty, ordinary node.", { v1: b.name, v2: aname })}</span></div>`
+      : html`<div class="notice"><${Ic} i="info"/><span>${T("For every interface {v1} runs with {v2}'s key, the peers move to {v1} and {v2}'s copy is removed. Client configs don't change, so nobody re-imports. Use this when {v2} is gone for good.", { v1: b.name, v2: aname })}</span></div>
+        ${notHeld.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not running on {v1} yet, so they stay on {v2} with their peers: {v3}", { v1: b.name, v2: aname, v3: notHeld.join(", ") })}</span></div>` : null}`}
+    ${need ? html`<div class="field"><label>${typeToConfirm(b.name)}</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${b.name} autocomplete="off" spellcheck="false"/>
+      <div class="hint">${mode === "move" ? T("{v1} is serving clients right now: they lose their connection there.", { v1: aname }) : T("{v1} is serving clients right now: they lose their connection there.", { v1: b.name })}</div></div>` : null}
+  <//>`;
+}
+
 /* ── T-10 · Transfer: hand this node to ANOTHER panel ────────────────────────────────────────────
    The other half of §3's pair, and the opposite operation to Migrate in every way that matters:
    Migrate moves a node to a new BOX and the panel under it never changes; Transfer moves the PANEL
@@ -3053,6 +3167,7 @@ export function NodeRemoveSheet({ node }) {
       : html`<div class="notice"><${Ic} i="info"/><span>${declarative
           ? T("This node is managed declaratively. Remove it from the configuration that declares it and rebuild — it won't sign off on its own, so Force-remove it here afterwards. It keeps serving its {v1} until then.", { v1: plural(here.length, "peer") })
           : T("Clean removal: flag the node, then run the uninstall command on the server. The node keeps serving its {v1} until it confirms, then drops itself from the panel.", { v1: plural(here.length, "peer") })} ${note}</span></div>`}
+    ${node.failover && node.failover.primary === node.id ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface it runs with this node's key, and the rest go with this node. To remove this node and its peers on purpose, detach {v1} first, keeping the peers here.", { v1: Store.nodeName(node.failover.failover) })}</span></div>` : null}
     ${uninstall ? html`<div class="field" style="margin-top:14px"><label>${declarative ? T("Set in the node's configuration, then rebuild") : T("Run on the node to uninstall + sign off")}</label>
       <div class="cmdrow"><div class=${"tokenbox" + (declarative ? " block" : "")}>${uninstall}</div><button class="copyaction" onClick=${() => copy(uninstall, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
       <div class="hint">${declarative ? T("Removing the module stops swg-noded / swg-agent but does not tell the panel — Force remove clears it here.") : T("Removes swg-noded / swg-agent and tells the panel it's gone. Force remove is for when the server is unreachable.")}</div></div>` : null}

@@ -508,7 +508,7 @@ export const promotedBy = (node, iface) => (Store.recon.peers || []).filter(p =>
 // ⚠️ An unvouched build is Nobody only at "user" (A7) — at Everyone nothing guards it, and reading it as Nobody there told a
 // viewer that devices everybody on the node reaches could not be reached.
 const targetOpen = t => {
-  if (!nodeEnforces(t.node)) return "everyone";
+  if (!nodeEnforces(t.served || t.node)) return "everyone";   // a failover pair: the member serving it (FAILOVER-PLAN R6)
   const lv = ifaceLevelOf(t);
   return lv === "user" && unvouchedTarget(t) ? "none" : lv;
 };

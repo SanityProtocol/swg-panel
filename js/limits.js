@@ -116,8 +116,9 @@ function fallbackLine(e, own) {
 // node cannot vouch for has no address to limit (§3.3); "raw" — a WDTT build vouched for its WireGuard path only, so a device on
 // its RAW path runs unlimited. Only LIVE nodes: a node not reporting says nothing either way.
 export function gapOf(t) {
-  if (!t || !t.node || Store.recon.nodeStatus[t.node] !== "live") return null;
-  if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return "old";
+  const sn = t && (t.served || t.node);             // a failover pair: the member serving it (docs/FAILOVER-PLAN.md R6)
+  if (!t || !sn || Store.recon.nodeStatus[sn] !== "live") return null;
+  if (!(((Store.stats[sn] || {}).net_deps || {}).limits)) return "old";
   if (!isSelfContainedTgt(t)) return null;
   const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
   return (nr.reach_unvouched || []).includes(t.iface) ? "unv" : rawUnvouchedIn(nr, t.iface) ? "raw" : null;   // the one RAW rule, nr in hand (verify F15/F21)
@@ -127,7 +128,7 @@ export function limitGaps(targets) {
   const old = new Set(), unv = new Map();
   for (const t of targets || []) {
     const g = gapOf(t);
-    if (g === "old") old.add(t.node);
+    if (g === "old") old.add(t.served || t.node);
     else if (g) unv.set(t.node + "|" + t.iface + "|" + g, t.iface + (g === "raw" ? " (RAW)" : "") + " · " + Store.nodeName(t.node));
   }
   return { old: [...old], unv: [...unv.values()] };

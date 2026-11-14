@@ -850,6 +850,9 @@ export async function escrowAutoVerify() {
   } finally { _evRunning = false; }
 }
 
+// The failover panel's Unlock vault (docs/FAILOVER-PLAN.md §4.7): the auto-restore is one attempt per interface a session,
+// so a door the operator presses forgets that node's attempts first — or a key that failed once would never be tried again.
+export function ifaceKeyRetry(nid) { for (const k of Object.keys(_ikTried)) if (k.startsWith(nid + "|")) delete _ikTried[k]; }
 export async function ifaceKeyAutoRestore() {
   if (_ikRunning || !subSKCached()) return;      // vault locked → the card's button is the door
   _ikRunning = true;
