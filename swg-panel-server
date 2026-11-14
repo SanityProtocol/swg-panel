@@ -6819,8 +6819,8 @@ def node_remove(deps, nid):
     # goes with this node, as before. To remove a node and its peers on purpose: detach its failover node first.
     _fo_b = failover_pairs(nodes).get(nid)
     _fo_snaps = deps.get("node_snaps") or {}
-    _fo_moved, _fo_left = (failover_takeover(nodes, roster, nid, _fo_b, _fo_holds(
-        nodes, _fo_snaps, nid, _fo_b, _fo_live(deps.get("node_seen"), _fo_b), assume=True), _fo_snaps) if _fo_b else ([], []))
+    _fo_moved, _fo_left, _fo_dropped = (failover_takeover(nodes, roster, nid, _fo_b, _fo_holds(
+        nodes, _fo_snaps, nid, _fo_b, _fo_live(deps.get("node_seen"), _fo_b), assume=True), _fo_snaps) if _fo_b else ([], [], []))
     if _fo_moved:
         failover_carry_settings(deps, nid, _fo_b)
     affected = {pid: p for pid, p in roster["peers"].items()
@@ -6864,7 +6864,7 @@ def node_remove(deps, nid):
             os.unlink(os.path.join(sd, f"live-{nid}.json"))
     ev_append(deps["roster_path"], "node", nid, "Removed node", nm)
     if _fo_b:                                                 # …and that its failover node took its peers, as a detach says
-        _fo_log_takeover(deps["roster_path"], _fo_b, nodes[_fo_b].get("name") or _fo_b, nm, _fo_moved, _fo_left)
+        _fo_log_takeover(deps["roster_path"], _fo_b, nodes[_fo_b].get("name") or _fo_b, nm, _fo_moved, _fo_left, _fo_dropped)
     # ⚠️ SAY WHOSE ROUTING THIS CHANGED. Rewriting an interface's egress is a traffic change on a node the
     # operator did not touch, so it is reported per node rather than folded into the removal line — the one
     # thing worse than an interface silently forwarding to a ghost is one silently repointed.
@@ -13218,9 +13218,11 @@ def failover_carry_settings(deps, aid, bid):
     return ch
 
 
-def _fo_log_takeover(roster_path, bid, bname, aname, moved, left):
-    _dv = {"v1": ", ".join(moved) or "—", "v2": aname, "v3": ", ".join(left)}
-    _dk = "took over {v1}; left on {v2}: {v3}" if left else "took over {v1}"
+def _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped=()):
+    """One event: what moved, what stayed on A, and which of B's own copies went (old ones, or of interfaces A no longer
+    has — F125: a take-over that deletes on B says so)."""
+    _dv = {"v1": ", ".join(moved) or "—", "v2": aname, "v3": ", ".join(left), "v4": ", ".join(dropped)}
+    _dk = ("took over {v1}; left on {v2}: {v3}" if left else "took over {v1}") + ("; old copies removed: {v4}" if dropped else "")
     ev_append(roster_path, "node", bid, "Detached failover node", bname, _dk.format(**_dv), detail_key=_dk, detail_vars=_dv)
 
 
@@ -13335,6 +13337,18 @@ def failover_idle(nodes, snaps, seen, now=None, pairs=None):
     return frozenset(idle)
 
 
+def _fo_copy_class(aov, bov):
+    """What B's record `bov` is for A's interface record `aov` — the one test _fo_holds, _fo_only_on_b and failover_view
+    share (F126): "absent" (no record, or a mesh link of B's own by that name, F116), "link" for the latter where a caller
+    must tell them apart, "stale" (B's record does not carry A's current key, or A has none, F119), "current"."""
+    if not isinstance(bov, dict):
+        return "absent"
+    if bov.get("system"):
+        return "link"
+    key = (aov or {}).get("public_key") or ""
+    return "current" if key and bov.get("public_key") == key else "stale"
+
+
 def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
     """(held, absent, unsure, stale): what B has of each of A's user interfaces — ONE reading, and a take-over acts on it
     alone (a sync landing between two reads made them disagree, F93). The first row that matches decides:
@@ -13356,9 +13370,10 @@ def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
         key = aov.get("public_key") or ""
         bov = (b.get("ifaces") or {}).get(n)
         rep_n = brep.get(n) if isinstance(brep, dict) and isinstance(brep.get(n), dict) else None
-        if not isinstance(bov, dict) or bov.get("system"):
+        cc = _fo_copy_class(aov, bov)
+        if cc in ("absent", "link"):
             absent.append(n)
-        elif not key or bov.get("public_key") != key:
+        elif cc == "stale":
             stale.append(n)
         elif (rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")
               and ((rep_n.get("meta") or {}).get("public_key") or "") == key):
@@ -13398,7 +13413,7 @@ def _fo_only_on_b(nodes, snaps, aid, bid, live_b):
     for n, aov in sorted(_fo_user_ifaces(nodes.get(aid)).items()):
         key = aov.get("public_key") or ""
         bov = ((nodes.get(bid) or {}).get("ifaces") or {}).get(n)
-        if (isinstance(bov, dict) and not bov.get("system") and key and bov.get("public_key") == key
+        if (_fo_copy_class(aov, bov) == "current"
                 and _fo_runs(brep.get(n), key, False) and not _fo_runs(arep.get(n), key, True)):
             out.append(n)
     return out
@@ -13420,7 +13435,7 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
     nothing of A's on B; its peers stay on A. STALE, and B's copies of interfaces A no longer has: dropped on B — never a
     copy of A's current identity, which is all a take-over keeps. UNSURE must be empty — the door refuses, node_remove
     assumes — or B would become an ordinary node holding a copy of A's key with nobody moved onto it: refused here too.
-    The flag goes last. Returns (moved interfaces, interfaces left on A)."""
+    The flag goes last. Returns (moved interfaces, interfaces left on A, B's copies removed)."""
     held, _absent, unsure, stale = cls
     if unsure:
         raise ValueError("failover take-over with interfaces in doubt: " + ", ".join(unsure))
@@ -13456,7 +13471,7 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
                                                     for t in p.get("targets") or []) else set())
             p["p2p_yield"] = sorted(ys)
     b.pop("failover_of", None)
-    return sorted(held), left
+    return sorted(held), left, old
 
 
 def _fo_resolves_to(host, ips):
@@ -13539,10 +13554,14 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None):
         asub = (aov.get("_lastcfg") or {}).get("subnet")
         lp = meta.get("listen_port") or aov.get("listen_port")
         st, why, more = "ready", "", {}
-        if not isinstance(bov, dict):
+        cc = _fo_copy_class(aov, bov)
+        if cc == "absent":
             st, why = "needs_vault", "no_copy"
-        elif bov.get("public_key") != aov.get("public_key"):
-            st, why, more = "problem", "key", {"resync": True}    # a copy from before A's key changed (_fo_holds' STALE)
+        elif cc == "link":
+            st, why = "problem", "name_taken"                    # B's own mesh link has the name: never copied there, and
+            #                                                      never offered a Re-sync (it would tear the link down, F124)
+        elif cc == "stale":
+            st, why, more = "problem", "key", {"resync": True}    # a copy from before A's key changed (F123: _fo_holds' STALE)
         elif rep is None and any(k in (aov.get("awg_params") or {}) for k in AWG3_FIELDS) and awg_gen_refusal(bsnap, "", n):
             st, why = "problem", "awg"                 # the mirror stages no restore a 2.0 box would bring back wrong
         elif rep is None:
@@ -31789,13 +31808,13 @@ def api(method, path, qs, body, deps):
                       detail_key="peers kept on {v1}", detail_vars={"v1": aname})
             return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": []}}
         roster = roster_load(roster_path)
-        moved, left = failover_takeover(nodes, roster, aid, bid, cls, snaps)
+        moved, left, dropped = failover_takeover(nodes, roster, aid, bid, cls, snaps)
         nodes_save(deps["nodes_path"], nodes)
         if moved:
             roster_save(roster_path, roster)
             failover_carry_settings(deps, aid, bid)
-        _fo_log_takeover(roster_path, bid, bname, aname, moved, left)
-        return 200, {"ok": True, "data": {"id": bid, "moved": moved, "left": left}}
+        _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped)
+        return 200, {"ok": True, "data": {"id": bid, "moved": moved, "left": left, "removed": dropped}}
 
     if method == "POST" and path == "/api/nodes/create":
         name = (body.get("name") or "").strip()

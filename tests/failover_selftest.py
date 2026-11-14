@@ -71,6 +71,8 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      keep-keyless a device reported up without a key counts as not running (F117 on B; on A it blocks keep, F105)
      stale-keep   a take-over keeps B's old copies and copies of interfaces A no longer has (F119, F120)
      leftover-late "A no longer has it" taken after A's held interfaces are dropped (deletes the copy the peers moved onto)
+     view-link    the status offers a Re-sync for a mesh link of B's named like A's interface (F124)
+     log-dropped  a take-over that removes copies on B does not say so in the event (F125)
      system-copy  a mesh link of B's own named like one of A's interfaces is taken as A's copy (F116)
      absent-any   an interface in doubt is taken as absent (its peers left on A, or purged with it)
      held-loose   held without checking the key B reports
@@ -159,9 +161,11 @@ PLANTS = {   # (file, anchor, replacement)
         _fo_drop_iface(b, n, now_)'''),
     "leftover-late": ("panel", '    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))   # taken BEFORE A\'s held interfaces are dropped below\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
                       '    old = sorted(set(stale))\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
-    "system-copy": ("panel", '''        if not isinstance(bov, dict) or bov.get("system"):
-            absent.append(n)''', '''        if not isinstance(bov, dict):
-            absent.append(n)'''),
+    "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
+    "log-dropped": ("panel", '''+ ("; old copies removed: {v4}" if dropped else "")''', '''+ ""'''),
+    "system-copy": ("panel", '''    if bov.get("system"):
+        return "link"''', '''    if False:
+        return "link"'''),
     "absent-any": ("panel", '''            (held if assume else unsure).append(n)''', '''            absent.append(n)'''),
     "held-loose": ("panel", '''              and ((rep_n.get("meta") or {}).get("public_key") or "") == key):''', '''              ):'''),
     "held-down": ("panel", '''rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")''',
@@ -709,7 +713,7 @@ def sec8():
         check("[8] B's awg0 %s: in doubt, not lacking" % ("down" if st.get("down") else "stopped" if st.get("stopped") else "with no key"),
               "awg0" in P._fo_holds(ny, sy, "na", "nb", True)[2], P._fo_holds(ny, sy, "na", "nb", True))
     n["nb"]["ifaces"].pop("wg1"); n["nb"].pop("create")      # B never had a copy of wg1: absent
-    moved, left = P.failover_takeover(n, r, "na", "nb", P._fo_holds(n, snaps, "na", "nb", True), snaps)
+    moved, left, _dropped = P.failover_takeover(n, r, "na", "nb", P._fo_holds(n, snaps, "na", "nb", True), snaps)
     check("[8] the interface B holds moves; the one it lacks stays", moved == ["awg0"] and left == ["wg1"], (moved, left))
     check("[8] targets moved A→B", all(t["node"] == "nb" for p in ("p1", "p2", "p3", "p0") for t in r["peers"][p]["targets"])
           and r["peers"]["p5"]["targets"][0]["node"] == "na")
@@ -729,9 +733,18 @@ def sec8():
     check("[8] keep: a malformed snapshot is no report, not a 500 (F121)",
           P._fo_only_on_b(to_fleet(), {"na": {"interfaces": ["x"]}, "nb": {"interfaces": "y"}}, "na", "nb", True) == [])
     nl = to_fleet(); nl["nb"]["ifaces"].pop("wg1"); nl["nb"].pop("create"); nl["nb"]["ifaces"]["wg2"] = {"public_key": "O" * 43 + "="}
-    P.failover_takeover(nl, roster(), "na", "nb", P._fo_holds(nl, snaps, "na", "nb", True), snaps)
-    check("[8] a take-over drops B's copy of an interface A no longer has (F120)", "wg2" not in nl["nb"]["ifaces"] and "wg2" in (nl["nb"].get("delete") or {}),
-          (nl["nb"].get("ifaces"), nl["nb"].get("delete")))
+    _r = P.failover_takeover(nl, roster(), "na", "nb", P._fo_holds(nl, snaps, "na", "nb", True), snaps)
+    check("[8] a take-over drops B's copy of an interface A no longer has, and says so (F120, F125)",
+          "wg2" not in nl["nb"]["ifaces"] and "wg2" in (nl["nb"].get("delete") or {}) and _r[2] == ["wg2"], (_r, nl["nb"].get("delete")))
+    # the status reads the same copy test (F123, F124, F126)
+    nv = to_fleet(); nv["nb"]["ifaces"]["wg1"] = {"system": True, "public_key": "M" * 43 + "="}
+    rows = {r["iface"]: r for r in P.failover_view(nv, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW)["rows"]}
+    check("[8] status: a mesh link of B's named like A's interface is a problem of its own, never a Re-sync (F124)",
+          rows.get("wg1", {}).get("why") == "name_taken" and not rows["wg1"].get("resync"), rows.get("wg1"))
+    nk = to_fleet(); nk["na"]["ifaces"]["awg0"].pop("public_key"); nk["nb"]["ifaces"]["awg0"].pop("public_key")
+    rk = {r["iface"]: r for r in P.failover_view(nk, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW)["rows"]}
+    check("[8] status: no key on either side offers the Re-sync the door asks for (F123)", rk.get("awg0", {}).get("resync") is True
+          and "awg0" in P._fo_holds(nk, snaps, "na", "nb", True)[3], rk.get("awg0"))
     owner_after = {q: o for q, o in [(e[1], e[0]) for e in P.p2p_fwd_for_node(None, r, "nb", ("direct", ["10.99.0.0/16"]))]}
     check("[8] each port keeps its holder", owner_before == owner_after and owner_before, (owner_before, owner_after))
     check("[8] A's interface dropped as a delete; B takes A's host", "awg0" not in n["na"]["ifaces"] and "awg0" in n["na"]["delete"]
@@ -801,6 +814,16 @@ def sec8():
     evs = open(os.path.join(d, "events.jsonl")).read() if os.path.exists(os.path.join(d, "events.jsonl")) else \
         "".join(open(x).read() for x in glob.glob(os.path.join(d, "*event*")))
     check("[8] node_remove(A): the take-over is logged", "took over" in evs, evs[-400:])
+    d5 = os.path.join(TMP, "rm5"); os.makedirs(d5)
+    deps5 = {"nodes_path": os.path.join(d5, "nodes.json"), "roster_path": os.path.join(d5, "users.json"), "stats_dir": d5,
+             "node_snaps": {"na": snaps["na"], "nb": snaps["nb"]}, "node_seen": {"nb": time.time()}, "panel_settings": {}}
+    f5 = to_fleet(); f5["nb"]["ifaces"]["wg1"]["public_key"] = "Q" * 43 + "="          # a copy from before A's key changed
+    json.dump(f5, open(deps5["nodes_path"], "w")); json.dump(roster(), open(deps5["roster_path"], "w"))
+    P.node_remove(deps5, "na")
+    n5 = json.load(open(deps5["nodes_path"]))
+    ev5 = "".join(open(x).read() for x in glob.glob(os.path.join(d5, "*event*")))
+    check("[8] node_remove(A) with a stale copy on B: it is removed there, and the event says so (F125)",
+          "wg1" not in n5["nb"]["ifaces"] and "old copies removed" in ev5, (n5["nb"].get("ifaces"), ev5[-300:]))
 
 
 # ── [11] the take-over table ─────────────────────────────────────────────────────────────────────────────────────────
@@ -844,7 +867,7 @@ def sec11():
                 continue
             nn, r = json.loads(json.dumps(n)), roster()
             try:
-                moved, left = P.failover_takeover(nn, r, "na", "nb", got, sn)
+                moved, left, dropped = P.failover_takeover(nn, r, "na", "nb", got, sn)
             except ValueError:
                 if exp != "unsure":
                     inv.append((case, assume, "refused without doubt"))
@@ -858,6 +881,8 @@ def sec11():
             gone = set(nn["nb"].get("delete") or {}) | (set(n["nb"].get("ifaces") or {}) - set(nn["nb"].get("ifaces") or {}))
             if gone - ({"awg0"} if exp == "stale" else set()):                # I1: only an old copy is ever deleted on B
                 inv.append((case, assume, "I1 a take-over deleted %s on B" % sorted(gone)))
+            if set(dropped) != gone:                                          # …and every deletion is said (F125)
+                inv.append((case, assume, "a deletion on B not returned: %s vs %s" % (dropped, sorted(gone))))
             if on_b != (exp == "held"):                                       # I2: peers move onto what B holds, and only that
                 inv.append((case, assume, "I2 peers moved: %s, class %s" % (on_b, exp)))
             if bkey and not on_b:                                             # I3: an ordinary B never keeps a copy unmoved
