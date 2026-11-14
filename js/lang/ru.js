@@ -2063,8 +2063,8 @@ export const STR = {
   "Not enforced over RAW for {iface} on {node} — this server build can't prove which device connected over RAW, so while this one connects over RAW every device there still reaches it.":
     "Через RAW не действует для {iface} на {node} — эта сборка сервера не может подтвердить, какое устройство подключилось через RAW, поэтому, пока это устройство подключено через RAW, все устройства там имеют к нему доступ.",
   "not over RAW": "не через RAW",
-  "AppArmor's wg-quick profile on this node won't read the exit's config (Ubuntu 25.04+). Update the node, or allow it in /etc/apparmor.d/local/wg-quick.":
-    "Профиль AppArmor для wg-quick на этой ноде не даёт прочитать конфигурацию выхода (Ubuntu 25.04+). Обновите ноду или разрешите чтение в /etc/apparmor.d/local/wg-quick.",
+  "AppArmor's wg-quick profile on this node won't read the exit's config (Ubuntu 25.04+). Update the node, or let that profile read the exits directory.":
+    "Профиль AppArmor для wg-quick на этой ноде не даёт прочитать конфигурацию выхода (Ubuntu 25.04+). Обновите ноду или разрешите этому профилю читать каталог выходов.",
   "Saving this opens it again.":
     "После сохранения доступ снова откроется.",
   "The device opens to everyone on {nodes}.":

@@ -2725,23 +2725,33 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
       printf '%s\n' "$block"
       continue
     fi
-    # ⚠️ PRESENT WITH OTHER CONTENT IS REWRITTEN (review F3): a block from an older release, or for a state dir that has
-    # since moved, would otherwise stand forever — this check alone said "done" and only reloaded it. Only our span goes.
-    if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null \
-       && [ "$(sed -n "\|$APPARMOR_LOCAL_BEGIN|,\|$APPARMOR_LOCAL_END|p" "$loc")" != "$block" ] && ! ${DRYRUN:-false}; then
+    # ⚠️ OUR SPAN IS READ ONCE AND DECIDES EVERYTHING (review F11/F14/F15). The file may hold the operator's own rules
+    # around it, so nothing is cut unless our markers pair up cleanly — a begin with no end after it (a hand edit, a write
+    # cut short) would make `sed '/begin/,/end/d'` run to the end of the file and take their rules with it.
+    if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null; then
+      if ! awk -v b="$APPARMOR_LOCAL_BEGIN" -v e="$APPARMOR_LOCAL_END" '
+             index($0, b) { if (o) bad = 1; o = 1; next }
+             index($0, e) { if (!o) bad = 1; o = 0 }
+             END { exit (bad || o) ? 1 : 0 }' "$loc"; then
+        warn "$loc has a swgPanel block without its end marker — left alone; mend it by hand, then: apparmor_parser -r $prof"
+        continue
+      fi
+      if [ "$(sed -n "\|$APPARMOR_LOCAL_BEGIN|,\|$APPARMOR_LOCAL_END|p" "$loc")" = "$block" ]; then
+        # ⚠️ PRESENT IS NOT LOADED. The block is written first and the profile reloaded second, so a
+        # reload that failed once (a transient parse error, an abstraction missing mid-upgrade, the
+        # module not up yet) left the rules on disk and unread — and every later run would stop HERE,
+        # meaning the heal that exists to fix exactly this could never fire again. Reloading a profile
+        # that already carries them is a cheap no-op, so it is not conditional on anything.
+        ${DRYRUN:-false} && { echo "    [skip] re-assert $loc via apparmor_parser -r $prof"; continue; }
+        apparmor_parser -r "$prof" 2>/dev/null \
+          || warn "$loc carries the swgPanel rules but $prof would not reload — run: apparmor_parser -r $prof"
+        continue
+      fi
+      # PRESENT WITH OTHER CONTENT IS REWRITTEN (review F3): a block from an older release, or for a state dir that has
+      # since moved, would otherwise stand forever. Only our span goes; the append below puts this release's back.
+      if ${DRYRUN:-false}; then echo "    [skip] refresh the swgPanel rules in $loc (they differ from this release's) + apparmor_parser -r $prof"; continue; fi
       sed -i "\|$APPARMOR_LOCAL_BEGIN|,\|$APPARMOR_LOCAL_END|d" "$loc" 2>/dev/null \
         || { warn "couldn't refresh the swgPanel rules in $loc — replace them by hand"; continue; }
-    fi
-    if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null; then
-      # ⚠️ PRESENT IS NOT LOADED. The block is written first and the profile reloaded second, so a
-      # reload that failed once (a transient parse error, an abstraction missing mid-upgrade, the
-      # module not up yet) left the rules on disk and unread — and every later run would stop HERE,
-      # meaning the heal that exists to fix exactly this could never fire again. Reloading a profile
-      # that already carries them is a cheap no-op, so it is not conditional on anything.
-      ${DRYRUN:-false} && { echo "    [skip] re-assert $loc via apparmor_parser -r $prof"; continue; }
-      apparmor_parser -r "$prof" 2>/dev/null \
-        || warn "$loc carries the swgPanel rules but $prof would not reload — run: apparmor_parser -r $prof"
-      continue
     fi
     # NB: no `changed=yes` here. A dry-run that also prints the ✓ line below is claiming a policy
     # change it did not make — the [skip] line is the whole report.

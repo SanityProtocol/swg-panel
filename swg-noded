@@ -11213,7 +11213,8 @@ _EXITS = {"list": []}                          # what we report back about them,
 # that has not run yet, or could not (no <local/wg-quick> include, SWG_NO_APPARMOR_FIX=1). Interpolation-free: the panel
 # translates it as a key (T(l.error)).
 EXIT_AA_REFUSED = ("AppArmor's wg-quick profile on this node won't read the exit's config (Ubuntu 25.04+). "
-                   "Update the node, or allow it in /etc/apparmor.d/local/wg-quick.")   # ⚠️ under the 160 the error is cut at
+                   "Update the node, or let that profile read the exits directory.")   # ⚠️ ≤ 160: the error is cut there
+# F13: right whether or not the profile includes local/wg-quick (where it does not, Update cannot add the rule).
 AA_PROFILES_FILE = "/sys/kernel/security/apparmor/profiles"
 
 
@@ -11229,7 +11230,7 @@ def exit_aa_refused(stderr):
         return False
     try:
         with open(AA_PROFILES_FILE) as f:
-            return any(re.match(r"(wg-quick|/usr/bin/wg-quick) \(enforce\)$", ln.strip()) for ln in f)
+            return any(re.match(r"(wg-quick|/usr/bin/wg-quick|/bin/wg-quick) \(enforce\)$", ln.strip()) for ln in f)   # lib/common.sh's three names (F12)
     except OSError:
         return False
 

@@ -9,6 +9,8 @@
 #   [3] SWG_NODED_STATE moves the node's state → the block names that directory; behind a symlink → its RESOLVED path
 #       (AppArmor mediates the real path, and wg-quick readlink -f's the .conf) — review F1
 #   [2b] a block already there with other content (an older release, a moved state dir) is rewritten, once — review F3
+#   [2c] a begin marker with no end after it → the file is left alone, the operator's lines kept, a warning — verify F11
+#   [2d] a dry run says it would refresh a block that differs, and changes nothing — verify F14
 #   [4] complain mode, no profile loaded, or no <local/wg-quick> include → no file written (the last one prints the block)
 #   [5] wg and wg-quick both enforcing → each gets ITS block: sockets in local/wg, the exits in local/wg-quick, never crossed
 #   [6] uninstall.sh's reap (its own loop, run) removes the wg-quick span, the file it created, and reloads the profile
@@ -21,6 +23,7 @@
 #      --perturb-noded  exit_aa_refused never matches                     expects RED on [7]
 #      --perturb-resolve the block names the state dir unresolved        expects RED on [3]
 #      --perturb-stale  a block present with other content is kept       expects RED on [2b]
+#      --perturb-pair   the begin/end pairing check skipped               expects RED on [2c]
 #      --perturb-enforce noded claims AppArmor with no wg-quick profile   expects RED on [7]
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -39,7 +42,8 @@ case "$P" in
   --perturb-block) plant "$LIB" '    if [ "$t" = wg-quick ]; then block="$(apparmor_wgq_block)";' '    if [ "$t" = wg-quick ]; then block="$APPARMOR_LOCAL_BLOCK";' block ;;
   --perturb-noded) plant "$NODED" '    if not any(re.search(re.escape(d)' '    if True or not any(re.search(re.escape(d)' noded ;;
   --perturb-resolve) plant "$LIB" '  d="$(readlink -m "$s" 2>/dev/null)"; d="${d:-$s}/exits"' '  d="$s/exits"' resolve ;;
-  --perturb-stale) plant "$LIB" '|p" "$loc")" != "$block" ]' '|p" "$loc")" = "never" ]' stale ;;
+  --perturb-stale) plant "$LIB" '      sed -i "\|$APPARMOR_LOCAL_BEGIN|,\|$APPARMOR_LOCAL_END|d" "$loc" 2>/dev/null \' '      true \' stale ;;
+  --perturb-pair) plant "$LIB" '             END { exit (bad || o) ? 1 : 0 }' '             END { exit 0 }' pair ;;
   --perturb-enforce) plant "$NODED" '            return any(re.match(' '            return True or any(re.match(' enforce ;;
   "") ;;
   *) echo "unknown $P"; exit 2 ;;
@@ -88,6 +92,21 @@ printf 'keep me\n  %s\n  /old/state/exits/*.conf r,\n%s\n' "$BEGIN" '  # --- swg
 run_box b2 >/dev/null
 grep -qxF '  /var/lib/swg-noded/exits/*.conf r,' "$T/b2/aa/local/wg-quick" && ! grep -q '/old/state' "$T/b2/aa/local/wg-quick"; check "rewritten to the current grant (review F3)" $? "$(cat "$T/b2/aa/local/wg-quick")"
 [ "$(grep -cF "$BEGIN" "$T/b2/aa/local/wg-quick")" = 1 ] && grep -qx 'keep me' "$T/b2/aa/local/wg-quick"; check "…one block, and what was not ours is kept" $?
+
+echo "[2c] a begin marker with no end"
+box b2c 'wg-quick (enforce)\n' wg-quick:include
+printf '  %s\n  /old/state/exits/*.conf r,\n  /home/op/own/** r,\n  /srv/op-rule r,\n' "$BEGIN" > "$T/b2c/aa/local/wg-quick"
+cp "$T/b2c/aa/local/wg-quick" "$T/b2c/before"
+o="$(run_box b2c)"
+cmp -s "$T/b2c/before" "$T/b2c/aa/local/wg-quick"; check "⚠️ the file is left exactly as it was — the operator's rules after it survive (verify F11)" $? "$(cat "$T/b2c/aa/local/wg-quick")"
+printf '%s\n' "$o" | grep -q 'WARN.*without its end marker'; check "…and it says so" $? "$o"
+
+echo "[2d] a dry run"
+box b2d 'wg-quick (enforce)\n' wg-quick:include
+printf '  %s\n  /old/state/exits/*.conf r,\n%s\n' "$BEGIN" '  # --- swgPanel: userspace WireGuard datapaths (end) ---' > "$T/b2d/aa/local/wg-quick"
+cp "$T/b2d/aa/local/wg-quick" "$T/b2d/before"
+o="$(run_box b2d DRYRUN=true)"
+cmp -s "$T/b2d/before" "$T/b2d/aa/local/wg-quick" && printf '%s\n' "$o" | grep -q '\[skip\] refresh the swgPanel rules'; check "a dry run announces the refresh and changes nothing (verify F14)" $? "$o"
 
 echo "[3] the node's state elsewhere"
 box b3 'wg-quick (enforce)\n' wg-quick:include
@@ -154,6 +173,8 @@ m.AA_PROFILES_FILE = os.path.join(T, "no-such-file")
 chk("…and none readable → not claimed either", not m.exit_aa_refused(real))
 open(prof, "w").write("/usr/bin/wg-quick (enforce)\n"); m.AA_PROFILES_FILE = prof
 chk("a profile named by its path counts as enforcing", m.exit_aa_refused(real))
+open(prof, "w").write("/bin/wg-quick (enforce)\n")
+chk("…and by /bin, as lib/common.sh reads it (verify F12)", m.exit_aa_refused(real))
 chk("the sentence fits the 160 the exit error is cut at (or T() misses it)", len(m.EXIT_AA_REFUSED) <= 160)
 chk("…and has a Russian line", json.dumps(m.EXIT_AA_REFUSED, ensure_ascii=False) in ru)
 chk("the bring-up uses it", "EXIT_AA_REFUSED if exit_aa_refused(r.stderr) else r.stderr" in open(sys.argv[1]).read())
