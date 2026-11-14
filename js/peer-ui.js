@@ -576,7 +576,9 @@ export function QRUserFoot({ uid }) {
 export function openUserEdit(user) {
   // Wider than the default sheet: this one carries the widest thing in the panel that is not a table — the user's networks, a row
   // per network with its node and device counts — and at 640 those rows wrapped while the fields beside them sat half empty.
-  // dirtyRef: the speed limit's pills are buttons, which the Sheet's input listener never sees — the card says when it changed
+  // dirtyRef: the card's whole Save gate (name, tag, note, date, limits — clicks included, an edit undone included). Its own fields
+  // are data-tracked, so the Sheet's typed flag guards only the rest (a VK link, a group pill): a field added to the card goes in
+  // `dirty` AND carries data-tracked, or neither.
   const dirtyRef = { current: false };
   openModal(html`<${Sheet} title=${T("Edit · {v1}", { v1: user.name })} width=${780} subject=${{ kind: "user", id: user.id }} dirtyRef=${dirtyRef}><${UserEditCard} user=${user} done=${closeModal} dirtyRef=${dirtyRef}/><//>`);
 }

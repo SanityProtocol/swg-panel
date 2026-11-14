@@ -5,7 +5,7 @@
 // carry — nothing on the 5 s poll is added for it (SCALE-PLAN U1).
 import { Store, api } from "./store.js";
 import { tgtXfer, isSelfContainedTgt } from "./model.js";
-import { namedFew } from "./views.js";
+import { namedFew, rawUnvouchedAt } from "./views.js";
 import { Ic, Sheet, footRow, pushModal, closeModal, dlul } from "./ui.js";
 import { T, locale } from "./i18n.js";
 import { h } from "preact";
@@ -120,7 +120,7 @@ export function gapOf(t) {
   if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return "old";
   if (!isSelfContainedTgt(t)) return null;
   const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
-  return (nr.reach_unvouched || []).includes(t.iface) ? "unv" : (nr.reach_unvouched_raw || []).includes(t.iface) ? "raw" : null;
+  return (nr.reach_unvouched || []).includes(t.iface) ? "unv" : rawUnvouchedAt(t) ? "raw" : null;
 }
 // Every gap a level's limit meets: the nodes (once each) and the keyless interfaces (once each, however many devices sit there).
 export function limitGaps(targets) {

@@ -32,7 +32,7 @@
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
  *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname|
- *                                              tracked|limtracked|peerdirty|usertracked|grouptracked
+ *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -50,7 +50,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   keyheld: ["js/limits.js", "  if (!t || isSelfContainedTgt(t) || gapOf(t)) return null;", "  if (!t) return null;"],                                         // [4]
   clean: ["js/limits.js", "  return ks.every(k => okRate(raw[k])) ? raw : null;", "  return raw;"],                                                       // [1]
   gapkey: ["js/limits.js", "if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return \"old\";", "if (!(((Store.stats[t.node] || {}).net_deps || {}).reach)) return \"old\";"],   // [5]
-  rawgap: ["js/limits.js", ": (nr.reach_unvouched_raw || []).includes(t.iface) ? \"raw\" : null;", ": null;"],                                           // [5]
+  rawgap: ["js/limits.js", ": rawUnvouchedAt(t) ? \"raw\" : null;", ": null;"],                                           // [5]
   rcarry: ["reconcile.js", "limits: t.limits || null,   // THIS deployment's own", "limits: null,   // THIS deployment's own"],                                                  // [2]
   kcarry: ["reconcile.js", "                 limits: t.limits || null,   // its own speed limit (R7)", "                 limits: null,   // its own speed limit (R7)"],   // [2]
   sep: ["js/limits.js", "SEP_RE.test(s) ? \"sep\" :", "false ? \"sep\" :"],                                                                             // [1]
@@ -58,7 +58,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   gcarry: ["js/store.js", "limits: g[id].limits || null, volume: g[id].volume || null }))", "limits: null, volume: g[id].volume || null }))"],                         // [2]
   usersend: ["js/peer-ui.js", "expiry: expSec, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) }), setSaveErr, setBusy);", "expiry: expSec, ...(volume ? { volume } : {}) }), setSaveErr, setBusy);"],    // [6]
   tgtdoor: ["js/sheets-crud.js", "iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });", "iface: t.iface });"],                                       // [6]
-  dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}", "    dirtyRef=${{ current: false }}"],   // [6]
+  dirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: _dirty }}", "    dirtyRef=${{ current: false }}"],   // [6]
   r7: ["js/sheets-crud.js", "  const limGone = removed.filter(t => limClean(t.limits));", "  const limGone = [];"],                                         // [6]
   issues: ["swg-panel-server", "    for _k in (sorted(_le) if isinstance(_le, dict) else ()):", "    for _k in ():"],                                        // [5]
   volcut: ["reconcile.js", "|| (!!vol && vol[pid] === \"cut\");", ";"],                                                                         // [8]
@@ -79,6 +79,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   limtracked: ["js/limits.js", "<div class=\"field limfield\" data-tracked>", "<div class=\"field limfield\">"],   // [10]
   peerdirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: _dirty }}", "    dirtyRef=${{ current: lim.changed || vol.changed }}"],   // [10]
   usertracked: ["js/peer-ui.js", "<input data-tracked value=${tag} onInput", "<input value=${tag} onInput"],   // [10]
+  ipfollow: ["js/sheets-crud.js", "if (!(k in next) || (seen[k] !== ip && next[k] === seen[k])) {", "if (!(k in next)) {"],   // [10]
   grouptracked: ["js/peer-ui.js", "<div class=\"sharebar\" data-tracked>", "<div class=\"sharebar\">"],   // [10]
   limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
   limsguard: ["js/peer-ui.js", "foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),", "foot=${footRow({ onCancel: closeModal, cancelLabel: T(\"Close\"),"],   // [9]
@@ -382,6 +383,18 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
     const gs = body(pu2, "function GroupSheet(");
     check("the group editor: its name and the person search are tracked (who was added or removed is in the dirtyRef), the old hand-back is gone",
           /<input data-tracked value=\$\{name\}/.test(gs) && gs.includes('<div class="sharebar" data-tracked>') && !gs.includes("typedOnly"));
+    // review F3: the fields mark themselves, so a sheet that hosts one and leaves lim / vol .changed out of its dirtyRef drops an
+    // edit unasked. Every host is listed here, each checked above; a new one turns this red until it is checked too.
+    const hosts = {};
+    for (const f of fs.readdirSync(path.join(ROOT, "js")).filter(f => f.endsWith(".js"))) {
+      const n = (source("js/" + f).match(/<\$\{(?:Limit|Volume)Field\}/g) || []).length;
+      if (n) hosts[f] = n;
+    }
+    check("every sheet that hosts a limit field is one whose dirtyRef tracks it (limits 1, peer-ui 8, sheets-crud 2)",
+          JSON.stringify(hosts) === JSON.stringify({ "limits.js": 1, "peer-ui.js": 8, "sheets-crud.js": 2 }), hosts);
+    check("review F1: an address moved elsewhere (Fix address, Restore) is followed while its field is untouched — Save no longer sends the old one back, Close no longer asks",
+          ep.includes("if (!(k in next) || (seen[k] !== ip && next[k] === seen[k])) { next[k] = ip; seen[k] = ip; ch = true; } });")
+          && ep.includes('}, [live.targets.map(t => tkey(t.node, t.iface) + "=" + (t.ip || "")).join(",")]);'));
     const ls = body(pu2, "export function LimitsSheet(");
     check("the Limits sheet: the date tracked, no effect handing the guard back any more", ls.includes('class="datein" data-tracked') && !ls.includes("cleanRef"));
   }

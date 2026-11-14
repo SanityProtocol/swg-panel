@@ -22,6 +22,7 @@
  *      --perturb       counts a grantee's devices FLEET-WIDE instead of per node, and expects RED.
  *      --perturb-off   privateOffOpens reads the device as still private, and expects RED on [4e].
  *      --perturb-raw   reads RAW-not-vouched by the instance's raw_iface again (never a deployment's iface), and expects RED on [4f].
+ *      --perturb-rawpick  the first allowing deployment names a reach row again (a RAW-narrowed one beside an open one), RED on [4f].
  */
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,16 +31,19 @@ import { ROOT, check, done } from "./spa_env.mjs";
 const PERTURB = process.argv.includes("--perturb");
 const PERTURB_OFF = process.argv.includes("--perturb-off");
 const PERTURB_RAW = process.argv.includes("--perturb-raw");   // rawUnvouchedAt back to the clause that never matched → RED on [4f]
+const PERTURB_RAWPICK = process.argv.includes("--perturb-rawpick");   // the first allowing deployment names the row again → RED on [4f]
 const imp = f => import(pathToFileURL(path.join(ROOT, "js", f)).href);
 const { Store } = await imp("store.js");
 // --perturb: count a grantee's devices FLEET-WIDE instead of on the nodes this device is actually deployed to. That is the
 // difference between "this grant is worth 3 devices" and "worth nothing", and [3] must go red on it.
 let VSRC = path.join(ROOT, "js", "views.js");
-if (PERTURB || PERTURB_OFF || PERTURB_RAW) {
+if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK) {
   const fs = await import("node:fs");
   let src = fs.readFileSync(VSRC, "utf8");
   const [anchor, to] = PERTURB
     ? ["&& (q.targets || []).some(t => t && nodes.includes(t.node))).length;", "&& (q.targets || []).some(t => !!t)).length;"]
+    : PERTURB_RAWPICK
+    ? ["      const t = ok.find(x => !rawOnlyWg(x)) || ok[0];", "      const t = ok[0];"]
     : PERTURB_RAW
     ? ["(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);",
        "(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).some(ifn => ((((Store.nodes || []).find(x => x.id === t.node) || {}).wdtt_cfg || {})[ifn] || {}).raw_iface === t.iface);"]
@@ -55,7 +59,7 @@ let V;
 try {
   V = await import(pathToFileURL(VSRC).href);
 } finally {
-  if (PERTURB || PERTURB_OFF || PERTURB_RAW) { try { (await import("node:fs")).unlinkSync(VSRC); } catch (_) { /* already gone */ } }
+  if (PERTURB || PERTURB_OFF || PERTURB_RAW || PERTURB_RAWPICK) { try { (await import("node:fs")).unlinkSync(VSRC); } catch (_) { /* already gone */ } }
 }
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -251,6 +255,14 @@ console.log("\n[4f] RAW not vouched — a qWDTT 1.4.3 instance: the WG path is v
   check("…the group bubble says the same", !!(V.reachableByGroup("carl").find(d => d.peer.id === "rc") || {}).raw, V.reachableByGroup("carl"));
   check("a Private device there is protected on both paths — nothing to say", V.privateUnenforced({ ...rp[1], private: true }).length === 0,
         V.privateUnenforced({ ...rp[1], private: true }));
+  // review F2: RAW narrows ONE deployment. The same device also at Everyone on awg0 is reached whichever path it dials there.
+  rp[1].targets.push({ node: "n1", iface: "awg0", ip: "10.8.0.41", online: true });
+  const keepMeta2 = Store.ifaceMeta; Store.ifaceMeta = (node, iface) => ({ reach: iface === "awg0" ? "everyone" : "user" });
+  setLevel("user", true);
+  check("⚠️ a device also on an interface RAW does not narrow is not marked — that deployment names the row",
+        carlFor() && !carlFor().raw && carlFor().ip === "10.8.0.41", carlFor());
+  check("…in the group bubble too", (d => d && !d.raw)(V.reachableByGroup("carl").find(d => d.peer.id === "rc")), V.reachableByGroup("carl"));
+  rp[1].targets.pop(); Store.ifaceMeta = keepMeta2;
   setLevel("user", false);
   check("an instance whose build vouches for RAW too carries no mark", carlFor() && !carlFor().raw, carlFor());
   setLevel("everyone", true);

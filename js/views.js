@@ -470,8 +470,8 @@ const ifaceLevelOf = t => {
 // ⚠️ A node below `reach: 2`, or one not reporting now, ENFORCES NOTHING — so everything on it reaches everything, and that is
 // what this says. Claiming isolation a box does not have is the one answer worse than no answer.
 const nodeEnforces = nid => ((Store.stats[nid] || {}).net_deps || {}).reach >= 2 && Store.recon.nodeStatus[nid] === "live";
-// A7: an instance whose REPORTED build cannot prove who owns a device acts as Nobody; one that proves only its WireGuard path
-// does so for the devices on its RAW TUN — the node names the INSTANCE, so its RAW tun is found through the node's wdtt_cfg.
+// A7: an instance whose REPORTED build cannot prove who owns a device acts as Nobody at "user" — on every path. One that proves
+// only its WireGuard path (`reach_unvouched_raw`) is rawUnvouchedAt's, below: a per-path note, never a level.
 const unvouchedTarget = t => (((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched || []).includes(t.iface);
 // A WDTT instance whose build vouches for the WG path but not RAW (qWDTT 1.4.3): the panel's `reach_unvouched_raw` names the
 // INSTANCE, which is what a deployment's iface is (wdttN, never its RAW TUN wdttrawN — the clause that compared raw_iface with
@@ -479,6 +479,8 @@ const unvouchedTarget = t => (((Store.nodes || []).find(x => x.id === t.node) ||
 // at "Same user and their groups" a device connected over RAW is reached by nobody (A7); at Everyone a Private one is guarded
 // by its WG address only.
 export const rawUnvouchedAt = t => !!t && (((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);
+// Reached at "Same user and their groups" over WG only: over RAW nobody reaches it (at Everyone RAW changes nothing).
+const rawOnlyWg = t => targetOpen(t) === "user" && rawUnvouchedAt(t);
 // PROMOTED: an interface set to Everyone with a private device on it, so the node has a table for it — it guards the private
 // devices by address and passes everything else. The PANEL decides which (it builds the table) and publishes it per node;
 // this reads that verdict rather than deriving a second one. It changes nobody's reach but the private devices' — it is what
@@ -554,9 +556,9 @@ export function reachableByGroup(uid) {
   const out = [];
   for (const p of Store.peersByUser(uid)) {
     if (p.disabled || p.expired || p.unassigned) continue;
-    const t = (p.targets || []).find(x => x && x.node && !(p.private && nodeEnforces(x.node))
-      && (targetOpen(x) === "everyone" || targetOpen(x) === "user"));
-    if (t) out.push({ peer: p, node: t.node, online: (p.targets || []).some(x => x && x.online), raw: targetOpen(t) === "user" && rawUnvouchedAt(t) });
+    const ok = (p.targets || []).filter(x => x && x.node && !(p.private && nodeEnforces(x.node)) && (lv => lv === "everyone" || lv === "user")(targetOpen(x)));
+    const t = ok.find(x => !rawOnlyWg(x)) || ok[0];    // a deployment RAW does not narrow names the row when there is one
+    if (t) out.push({ peer: p, node: t.node, online: (p.targets || []).some(x => x && x.online), raw: rawOnlyWg(t) });
   }
   return out.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || deviceLabel(a.peer).localeCompare(deviceLabel(b.peer)));
 }
@@ -599,10 +601,12 @@ export function userReach(uid) {
       // node too old to restrict, or one not reporting, the bubble reported a device as reached by nobody while everything
       // on that subnet still reached it: claiming an isolation the box does not have, which is the one answer this file
       // says is worse than none. The panel plans the node's table the same way, so the two cannot disagree.
-      const t = (p.targets || []).find(x => allows(x, other) && !(p.private && nodeEnforces(x.node)));
+      // ⚠️ RAW NARROWS ONE DEPLOYMENT, NOT THE DEVICE: one on a qWDTT 1.4.3 instance at "user" is reached over WG only, but the
+      // same device at Everyone on awg0 is reached whichever path it dials — so a deployment RAW does not narrow names the row.
+      const ok = (p.targets || []).filter(x => allows(x, other) && !(p.private && nodeEnforces(x.node)));
+      const t = ok.find(x => !rawOnlyWg(x)) || ok[0];
       if (!t) continue;
-      devices.push({ peer: p, online: !!t.online, node: t.node, ip: t.ip ? String(t.ip).split("/")[0] : "",
-                     raw: targetOpen(t) === "user" && rawUnvouchedAt(t) });   // reached over WG; over RAW by nobody
+      devices.push({ peer: p, online: !!t.online, node: t.node, ip: t.ip ? String(t.ip).split("/")[0] : "", raw: rawOnlyWg(t) });
     }
     devices.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || deviceLabel(a.peer).localeCompare(deviceLabel(b.peer)));
     if (devices.length) rows.push({ user: u, devices, online: devices.filter(d => d.online).length });

@@ -854,11 +854,17 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const targetsOrdered = useStableOrder(live.targets);   // frozen at open — the primary ★ won't re-shuffle rows mid-edit
   const [title, setTitle] = useState(peer.title || "");
   const [ips, setIps] = useState(() => Object.fromEntries(live.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
-  useEffect(() => {                                  // a newly-added target appears live → give it an IP field
-    setIps(prev => { const next = { ...prev }; let ch = false;
-      live.targets.forEach(t => { const k = tkey(t.node, t.iface); if (!(k in next)) { next[k] = (t.ip || "").split("/")[0]; ch = true; } });
+  const ipSeen = useRef(null);                       // the live address each field last took — what "not edited here" means
+  if (!ipSeen.current) ipSeen.current = { ...ips };
+  // A newly-added target appears live → give it an IP field. ⚠️ AN ADDRESS MOVED ELSEWHERE (Fix address from this sheet, a
+  // Restore, another tab) is followed while its field is untouched: the field kept the old one, so Save sent it back — undoing
+  // the fix — and the close guard (the Save gate since limits-f14raw) asked about an edit nobody made. One edited here is kept.
+  useEffect(() => {
+    setIps(prev => { const next = { ...prev }, seen = ipSeen.current; let ch = false;
+      live.targets.forEach(t => { const k = tkey(t.node, t.iface), ip = (t.ip || "").split("/")[0];
+        if (!(k in next) || (seen[k] !== ip && next[k] === seen[k])) { next[k] = ip; seen[k] = ip; ch = true; } });
       return ch ? next : prev; });
-  }, [live.targets.map(t => tkey(t.node, t.iface)).join(",")]);
+  }, [live.targets.map(t => tkey(t.node, t.iface) + "=" + (t.ip || "")).join(",")]);
   const setIpFor = (k, v) => setIps(m => ({ ...m, [k]: v }));
   const [loaded, setLoaded] = useState(false);
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
