@@ -163,14 +163,15 @@ function reconcile(roster, stats, now, cfg) {
       }
       // A FAILOVER PAIR (docs/FAILOVER-PLAN.md §4.6): `cfg.mirrors` {primary: failover node}. The target keeps `node` (every
       // door names the primary) and gains `served`, the member every per-node read below takes: the one this device is
-      // online on, else a live one that reports the interface, else the primary. Both count as managed: never orphans.
+      // online on, else a live one that reports the interface up, else the primary. Both count as managed: never orphans.
       const mb = cfg.mirrors ? cfg.mirrors[t.node] : null;
       let sn = t.node;
       if (mb) {
-        managed[mb + "|" + t.iface + "|" + pubkey] = true;
+        managed[t.node + "|" + t.iface + "|" + pubkey] = managed[mb + "|" + t.iface + "|" + pubkey] = true;
+        const pair = [t.node, mb];
         const onl = n => nodeStatus[n] === "live" && !!(observed[n + "|" + t.iface + "|" + pubkey] || {}).online;
-        const has = n => nodeStatus[n] === "live" && !!(((stats[n] || {}).interfaces || {})[t.iface]);
-        sn = onl(t.node) ? t.node : onl(mb) ? mb : has(t.node) ? t.node : has(mb) ? mb : t.node;
+        const has = n => nodeStatus[n] === "live" && !!(((stats[n] || {}).interfaces || {})[t.iface]) && !ifDown[n + "|" + t.iface];
+        sn = pair.find(onl) || pair.find(has) || t.node;
       }
       const key = sn + "|" + t.iface + "|" + pubkey;
       managed[key] = true;

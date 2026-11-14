@@ -49,6 +49,8 @@ PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-serv
 REF = "8edb7878"                                  # origin/dev before the limits: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else None
 FAILS = []
+for _v in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+    os.environ.pop(_v, None)                     # [6] talks to panels on 127.0.0.1: a desktop proxy answers 503 instead
 
 
 def check(name, cond, detail=""):
