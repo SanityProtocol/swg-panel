@@ -32,9 +32,8 @@ Run: python3 tests/p2p_router_selftest.py     (0 = pass)
      --perturb   plant each defect in turn → every one must go RED (exit 0 when all are caught)
 """
 import json, os, socket, subprocess, sys, tempfile, time, types
-import os as _os
 for _v in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
-    _os.environ.pop(_v, None)                     # its real panels answer on 127.0.0.1: a desktop proxy would answer instead
+    os.environ.pop(_v, None)                     # its real panels answer on 127.0.0.1: a desktop proxy would answer instead
 import urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -61,7 +60,7 @@ PLANTS = {   # name: (file, old text, planted text) — each re-introduces a def
     "arr-dup":      ("panel", 'for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)', 'for S, vs in vias.items() if next(iter(vs)) in by_dev)'),
     "arr-unwired":  ("panel", 'p2p_routers_cached(_rmark, roster, _rid, lambda: p2p_arrivals(node, my_plan, nodes if _fo_pairs else None), slot=nid)', 'p2p_routers_cached(_rmark, roster, _rid, slot=nid)'),
     "arr-always":   ("panel", '        if not anyr[1]:\n            return []\n        arrivals = arrivals()', '        arrivals = arrivals()'),
-    "cache-noarr":  ("panel", '    key = (mark, tuple(arrivals))', '    key = (mark,)'),
+    "cache-noarr":  ("panel", '    key = (mark, node_id, tuple(arrivals))', '    key = (mark, node_id)'),
     "wire-stale":   ("panel", '    if mark is not None and hit and hit[0] == key:', '    if hit:'),
     "wire-keyless": ("panel", '            if not isinstance(t, dict) or _is_self_contained_target(t):\n                continue\n            with contextlib.suppress(ValueError):\n                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])\n                if a.version == 4 and (',
                      '            if not isinstance(t, dict):\n                continue\n            with contextlib.suppress(ValueError):\n                a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])\n                if a.version == 4 and ('),
