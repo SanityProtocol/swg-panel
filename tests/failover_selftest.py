@@ -38,6 +38,10 @@
       B's whole reply equals A's but for the node's own keys (dev_reach, p2p, limits included) and the doors work end to
       end: detach-keep with clients on B needs the typed name, a string take_over is not a take-over.
 
+  [12] The detach door against an old copy on real panels: refused while the vault can rebuild (the Re-sync then runs),
+      going on without it where it cannot (Re-sync names the vault).
+  [13] A Re-sync that repairs one interface names the one whose key the vault cannot rebuild.
+
 Run: python3 tests/failover_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
      follow-key   the pass follows `public_key` (an Adopt on A reaches B)
@@ -71,6 +75,8 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      keep-keyless a device reported up without a key counts as not running (F117 on B; on A it blocks keep, F105)
      stale-keep   a take-over keeps B's old copies and copies of interfaces A no longer has (F119, F120)
      leftover-late "A no longer has it" taken after A's held interfaces are dropped (deletes the copy the peers moved onto)
+     report-condemns a key A merely reported makes B's other-key copy stale (a seeded old snapshot deletes it, F147)
+     resync-partial-silent a Re-sync that repairs some rows does not name the key rows the vault cannot rebuild (F149)
      stale-deadend the take-over refuses an old copy the vault cannot rebuild (no way out, F136)
      unknown-stale A with no key makes B's copy stale (a removal deletes the copy serving the clients, F128)
      resync-unbuildable the status offers a Re-sync the vault cannot rebuild (it would delete B's copy for good, F128)
@@ -165,13 +171,16 @@ PLANTS = {   # (file, anchor, replacement)
         _fo_drop_iface(b, n, now_)'''),
     "leftover-late": ("panel", '    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))   # taken BEFORE A\'s held interfaces are dropped below\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
                       '    old = sorted(set(stale))\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
-    "stale-deadend": ("panel", '''        _rebuild = [n for n in (cls[3] if take else ()) if _iface_key_source((nodes[aid].get("ifaces") or {}).get(n) or {}, None, _ivk) == "vault"]''',
-                      '''        _rebuild = list(cls[3] if take else ())'''),
-    "unknown-stale": ("panel", '''    if not key:
-        return "unknown"''', '''    if False:
-        return "unknown"'''),
+    "stale-deadend": ("panel", '''if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]''', ''']'''),
+    "report-condemns": ("panel", '''    return "current" if reported and bov.get("public_key") == reported else "unknown"''',
+                        '''    return "current" if reported and bov.get("public_key") == reported else ("stale" if reported else "unknown")'''),
+    "resync-partial-silent": ("panel", '''        return 200, {"ok": True, "data": {"id": bid, "ifaces": bad, "vault_needed": _nv}}''',
+                              '''        return 200, {"ok": True, "data": {"id": bid, "ifaces": bad}}'''),
+    "unknown-stale": ("panel", '''    if blessed:
+        return "current" if bov.get("public_key") == blessed else "stale"''', '''    if True:
+        return "current" if bov.get("public_key") == blessed else "stale"'''),
     "resync-unbuildable": ("panel", '''Re-sync only where the vault can rebuild A's (F128)
-            more = {"resync": True} if _iface_key_source(aov, None, ivk) == "vault" else {}''', '''Re-sync only where the vault can rebuild A's (F128)
+            more = {"resync": True} if _fo_rebuildable(aov, ivk) else {}''', '''Re-sync only where the vault can rebuild A's (F128)
             more = {"resync": True}'''),
     "keep-unknown": ("panel", '''        if (cc in ("current", "unknown") and''', '''        if (cc == "current" and'''),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
@@ -761,9 +770,15 @@ def sec8():
     check("[8] status: A with no key — a problem of its own, no Re-sync (it could not rebuild), unsure to the door (F128)",
           rk.get("awg0", {}).get("why") == "primary_no_key" and not rk["awg0"].get("resync")
           and "awg0" in P._fo_holds(nk, sk, "na", "nb", True)[2], rk.get("awg0"))
-    nr = to_fleet(); nr["na"]["ifaces"]["awg0"].pop("public_key"); nr["nb"]["ifaces"]["awg0"]["public_key"] = "Q" * 43 + "="
-    check("[8] A's record not blessed but its box reports the key: B's other-key copy is stale, judged by that key (F135)",
-          "awg0" in P._fo_holds(nr, snaps, "na", "nb", True, assume=True)[3], P._fo_holds(nr, snaps, "na", "nb", True, assume=True))
+    nr = to_fleet(); nr["na"]["ifaces"]["awg0"].pop("public_key")
+    check("[8] A's record not blessed, its box reports the key B's copy carries: held (F135)",
+          "awg0" in P._fo_holds(nr, snaps, "na", "nb", True)[0], P._fo_holds(nr, snaps, "na", "nb", True))
+    nr["nb"]["ifaces"]["awg0"]["public_key"] = "Q" * 43 + "="
+    check("[8] …B's copy under another key: a report never condemns it — unsure, kept on removal (F147)",
+          "awg0" in P._fo_holds(nr, snaps, "na", "nb", True)[2] and "awg0" in P._fo_holds(nr, snaps, "na", "nb", True, assume=True)[0],
+          P._fo_holds(nr, snaps, "na", "nb", True))
+    bad = json.loads(json.dumps(snaps)); bad["na"]["interfaces"]["awg0"]["meta"]["public_key"] = {}
+    check("[8] a non-string reported key is no report (F153)", P._fo_akey({}, bad, "na", "awg0") == ("", ""), P._fo_akey({}, bad, "na", "awg0"))
     ns = to_fleet(); ns["nb"]["ifaces"]["awg0"]["public_key"] = "Q" * 43 + "="
     for ivk_, want in ((IVK, True), ("", False)):
         rs = {r["iface"]: r for r in P.failover_view(ns, None, "na", "nb", snaps, {"na": NOW, "nb": NOW}, frozenset(), now=NOW, ivk=ivk_)["rows"]}
@@ -861,8 +876,8 @@ def table_want(rec, akey, live, snap, waits, rep, down, stopped, key):
         return "absent"
     if akey == "none":
         return "unsure"                    # A's key unknown — no blessed key, none reported: cannot be judged (F128)
-    if rec != "A":
-        return "stale"
+    if rec != "A":                         # another key: stale only against the BLESSED key — a report never condemns (F147)
+        return "stale" if akey == "rec" else "unsure"
     if live and snap and rep and not down and not stopped and key == "A":
         return "held"
     return "unsure"
@@ -917,7 +932,9 @@ def sec11():
                 inv.append((case, assume, "I2 peers moved: %s, class %s" % (on_b, exp)))
             if bkey and not on_b:                                             # I3: an ordinary B never keeps a copy unmoved
                 inv.append((case, assume, "I3 B kept a copy, peers left on A"))
-            if on_b and akey != "none" and bkey != KA:                        # I4: peers land on A's current identity
+            # I4: peers land on A's current identity — judged where A HAS one (a blessed key). Without one, a removal keeps
+            # the peer records on B's copy rather than purging them (_fo_holds UNSURE, F139/F147): nothing to judge by.
+            if on_b and akey == "rec" and bkey != KA:
                 inv.append((case, assume, "I4 peers moved onto a copy without A's key"))
     check("[11] _fo_holds follows its table in all 4608 cases (2304 × assume)", not bad, bad[:3])
     check("[11] the take-over keeps the four invariants in every case, and refuses only in doubt", not inv, inv[:3])
@@ -1091,7 +1108,7 @@ def sec10():
     rC = sync(port, tk["nc"], "nc")
     check("[10] a third node gets none of them", not (rC.get("desired") or {}).get("awg0"), rC.get("desired"))
     c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
-    check("[10] a Re-sync with nothing to repair says so instead of an empty success (F136)", c == 409 and o.get("code") == "nothing_to_resync", (c, o))
+    check("[10] a Re-sync with problems it does not repair says so, never an empty success (F150)", c == 409 and o.get("code") == "not_resyncable", (c, o))
     c, o = req(port, "/api/iface/update", {"node": "nb", "iface": "awg0", "mtu": 1400})
     check("[10] an edit on B is refused at the door", c == 409 and o.get("code") == "failover_read_only", (c, o))
     sync(port, tk["na"], "na", {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}})
@@ -1124,6 +1141,9 @@ def sec12():
         tk = {n: req(port, "/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in ("na", "nb", "nc")}
         sync(port, tk["na"], "na", {"awg0": snap_iface()})
         sync(port, tk["nb"], "nb", {"awg0": snap_iface(key="Q" * 43 + "=")})
+        if want == "goes on":
+            c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
+            check("[12] no vault: Re-sync names the vault as what is missing (F136, F148)", c == 409 and o.get("code") == "vault_needed", (c, o))
         c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": True, "confirm": "hel-2"})
         if want == "refused":
             check("[12] the vault can rebuild A's key: the take-over waits for a Re-sync", c == 409 and o.get("code") == "failover_stale", (c, o))
@@ -1134,9 +1154,23 @@ def sec12():
                   c == 200 and o["data"]["moved"] == [] and o["data"]["left"] == ["awg0"] and o["data"]["removed"] == ["awg0"], (c, o))
 
 
+def sec13():
+    print("[13] a Re-sync that repairs one interface and cannot rebuild another (F149)")
+    f = fleet()
+    f["na"]["ifaces"]["wg1"] = a_iface(public_key=KX, key_blob={"pub": KX, "ct": "c", "vault": "an-older-vault"}, endpoint_host="")
+    f["nb"]["ifaces"] = {"awg0": {"public_key": "Q" * 43 + "=", "listen_port": 443}, "wg1": {"public_key": "R" * 43 + "=", "listen_port": 443}}
+    port, d = start_panel(NEW, "partial", f, roster(), vault={"ivk_enabled": True, "ivk_pub": IVK})
+    tk = {n: req(port, "/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in ("na", "nb", "nc")}
+    sync(port, tk["na"], "na", {"awg0": snap_iface(), "wg1": snap_iface(key=KX)})
+    sync(port, tk["nb"], "nb", {"awg0": snap_iface(key="Q" * 43 + "="), "wg1": snap_iface(key="R" * 43 + "=")})
+    c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
+    check("[13] Re-sync repairs awg0 and names wg1, whose key the vault cannot rebuild",
+          c == 200 and o["data"]["ifaces"] == ["awg0"] and o["data"].get("vault_needed") == ["wg1"], (c, o))
+
+
 def main():
     for name, fn in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7),
-                     ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11), ("[12]", sec12)):
+                     ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11), ("[12]", sec12), ("[13]", sec13)):
         guarded(name, fn)
     for p in PROCS:
         p.terminate()
