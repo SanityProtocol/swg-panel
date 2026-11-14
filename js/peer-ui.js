@@ -518,8 +518,7 @@ export function LimitsSheet({ kind, id, dirtyRef }) {
   const lim = useLimit(rec ? rec.limits : null);
   const vol = useVolume(rec ? rec.volume : null);
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
-  const closeRef = useRef(null), cleanRef = useRef(null);  // Close goes through the sheet's guard: an edit is never dropped unasked
-  useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });   // …and an edit undone asks nothing
+  const closeRef = useRef(null);  // Close goes through the sheet's guard: an edit is never dropped unasked (every field is data-tracked: one undone asks nothing)
   if (!rec) { closeModal(); return null; }
   const owner = !isUser && rec.user_id ? Store.user(rec.user_id) : null;
   const ownerExp = owner ? +(owner.expiry || 0) : 0;   // a device can't outlive its user's subscription
@@ -541,11 +540,11 @@ export function LimitsSheet({ kind, id, dirtyRef }) {
     toast(T("Limits saved."), "ok");
   };
   const nm = rec.name || rec.title || "";
-  return html`<${Sheet} title=${T("Limits") + (nm ? " · " + nm : "")} width=${620} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef} onClose=${closeModal} onBack=${closeModal}
+  return html`<${Sheet} title=${T("Limits") + (nm ? " · " + nm : "")} width=${620} dirtyRef=${dirtyRef} closeRef=${closeRef} onClose=${closeModal} onBack=${closeModal}
       subject=${{ kind: isUser ? "user" : "peer", id }} err=${err}
       foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T("Close"), disabled: busy || !dirtyRef.current, onAction: save, action: T("Save") })}>
     <div class="field"><label>${T("Access until")}</label>
-      <div class="daterow"><input type="date" class="datein" min=${expiryInputVal(now_s())} max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${d}
+      <div class="daterow"><input type="date" class="datein" data-tracked min=${expiryInputVal(now_s())} max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${d}
         onInput=${e => { setD(e.target.value); setErr(""); }}/>${d ? html`<button class="btn btn-ghost btn-mini" onClick=${() => { setD(""); setErr(""); }}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${isUser
         ? T("After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires.")
@@ -987,6 +986,9 @@ function UserGroupsField({ user }) {
 
 // Who this person's devices can open connections to: each person, then their devices, online ones lit. Group NAMES used to be
 // listed here and said nothing — a group is a means, and what an operator is looking for is who ends up reaching whom.
+// A device reached at "Same user and their groups" on a WDTT instance whose build vouches for WG but not RAW: over RAW nobody
+// reaches it (views.js rawUnvouchedAt). Which path it dials is the client's choice, so the row stays and says which path.
+const rawNote = d => (d.raw ? html`<span class="faint" title=${T("This server build can't prove which user a device connected over RAW belongs to, so no other device can reach those devices.")}>${T("not over RAW")}</span>` : null);
 function ReachBody({ user }) {
   const rows = userReach(user.id);
   const anyOnline = rows.some(r => r.online);
@@ -1011,7 +1013,7 @@ function ReachBody({ user }) {
         <span class=${"nb-dot2 " + (d.online ? "on" : "idle")}></span>
         <b>${deviceNameAt(d.peer, d.node)}</b>
         <span class="faint">${T("prep|on")}</span>
-        <span class="nb-node" style=${"color:" + (Store.nodeColor(d.node) || "var(--dim)")}>${Store.nodeName(d.node)}</span>
+        <span class="nb-node" style=${"color:" + (Store.nodeColor(d.node) || "var(--dim)")}>${Store.nodeName(d.node)}</span>${rawNote(d)}
       </div>`}/>
     </div>`}/>` : html`<div class="netbub-row sub">${T("Nobody — no shared group, and no interface here is open to everyone.")}</div>`}
   <//>`;
@@ -1195,7 +1197,7 @@ function GroupMemberDevicesBody({ devs, all }) {
       <span class=${"nb-dot2 " + (d.online ? "on" : "idle")}></span>
       <b>${deviceNameAt(d.peer, d.node)}</b>
       <span class="faint">${T("prep|on")}</span>
-      <span class="nb-node" style=${"color:" + (Store.nodeColor(d.node) || "var(--dim)")}>${Store.nodeName(d.node)}</span>
+      <span class="nb-node" style=${"color:" + (Store.nodeColor(d.node) || "var(--dim)")}>${Store.nodeName(d.node)}</span>${rawNote(d)}
     </div>`}/>
     ${all > devs.length ? html`<div class="netbub-row sub foot">${T("{n} not counted: Private, or on an interface that doesn't let others in.", { n: plural(all - devs.length, "device") })}</div>` : null}
   <//>`;
@@ -1232,8 +1234,6 @@ function GroupSheet({ gid, seed }) {
     setPage(Math.floor([...list, id].sort(byName).indexOf(id) / LIST_PAGE) + 1);   // to the page the new member lands on
   };
   const drop = id => setMembers(m => m.filter(x => x !== id));
-  // Sheet marks itself dirty on ANY input; the filter and the person search change nothing, so they hand the guard back (§18.1).
-  const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };
   const shares = gid ? groupShares(gid) : [];
   const save = async () => {
     const nm = name.trim();
@@ -1262,9 +1262,10 @@ function GroupSheet({ gid, seed }) {
       <span class="grow"></span>
       <button class="btn btn-ghost btn-dismiss" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>
-    <div class="field"><label>${T("Name")}</label><input value=${name} maxlength="64" placeholder=${T("Ivanov family")} onInput=${e => setName(e.target.value)}/></div>
+    <div class="field"><label>${T("Name")}</label><input data-tracked value=${name} maxlength="64" placeholder=${T("Ivanov family")} onInput=${e => setName(e.target.value)}/></div>
     <div class="field"><label>${T("Members")} <span class="faint gcount">${list.length}</span></label>
-      <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
+      ${/* the person search and the filter change nothing; who was added or removed is in the dirtyRef (§18.1) */""}
+      <div class="sharebar" data-tracked>
         <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person…")} exclude=${list} onChange=${addOne}/></div>
         ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
           aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
@@ -1300,7 +1301,7 @@ export function UserEditCard({ user, done, dirtyRef }) {
   const vol = useVolume(user.volume);                                        // …and volume limit (§3.5)
   const showVk = Store.peersOfUser(user.id).some(p => targetsWantVk(p.targets));   // a peer behind a turn-proxy, or on a WDTT server
   const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0) || lim.changed || vol.changed;   // VK links save on their own (VkLinkField) → not part of this
-  if (dirtyRef) dirtyRef.current = lim.changed || vol.changed;
+  if (dirtyRef) dirtyRef.current = dirty;   // the Sheet's guard: exactly this, on the fields marked data-tracked (an edit undone asks nothing)
   const save = async () => {
     if (!name.trim()) { toast(T("Name can't be empty."), "err"); return; }
     const expSec = expiryFromInput(expDate);
@@ -1333,14 +1334,14 @@ export function UserEditCard({ user, done, dirtyRef }) {
         call: () => api.userDelete({ id: user.id }) }); } });
   return html`<div class="card" style="max-width:740px">
     <${SubStatusLine} user=${user} pos="center"/>
-    <div class="field"><label>${T("Name")}</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
+    <div class="field"><label>${T("Name")}</label><input data-tracked value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
     <div class="fieldrow">
-      <div class="field"><label>${T("Tag")}</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend, Family, Work…")} maxlength="32"/></div>
-      <div class="field"><label>${T("Note")}</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")} maxlength="200"/></div>
+      <div class="field"><label>${T("Tag")}</label><input data-tracked value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend, Family, Work…")} maxlength="32"/></div>
+      <div class="field"><label>${T("Note")}</label><input data-tracked value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")} maxlength="200"/></div>
     </div>
     <${UserGroupsField} user=${user}/>
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— the whole subscription; blank = never")}</span></label>
-      <div class="daterow"><input type="date" class="datein" value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
+      <div class="daterow"><input type="date" class="datein" data-tracked value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${T("On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.")}</div></div>
     <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="user" fallback=${fallbackFor("user", user)} gaps=${() => limitGaps(targetsOfUsers([user.id]))}/>
     <${VolumeField} draft=${vol.draft} onChange=${vol.set} err=${vol.err} level="user" kind="user" id=${user.id}/>

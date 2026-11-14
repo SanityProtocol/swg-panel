@@ -21,6 +21,7 @@
  * Run: node tests/spa_netbubbles_selftest.mjs        (0 = pass)
  *      --perturb       counts a grantee's devices FLEET-WIDE instead of per node, and expects RED.
  *      --perturb-off   privateOffOpens reads the device as still private, and expects RED on [4e].
+ *      --perturb-raw   reads RAW-not-vouched by the instance's raw_iface again (never a deployment's iface), and expects RED on [4f].
  */
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,16 +29,20 @@ import { ROOT, check, done } from "./spa_env.mjs";
 
 const PERTURB = process.argv.includes("--perturb");
 const PERTURB_OFF = process.argv.includes("--perturb-off");
+const PERTURB_RAW = process.argv.includes("--perturb-raw");   // rawUnvouchedAt back to the clause that never matched → RED on [4f]
 const imp = f => import(pathToFileURL(path.join(ROOT, "js", f)).href);
 const { Store } = await imp("store.js");
 // --perturb: count a grantee's devices FLEET-WIDE instead of on the nodes this device is actually deployed to. That is the
 // difference between "this grant is worth 3 devices" and "worth nothing", and [3] must go red on it.
 let VSRC = path.join(ROOT, "js", "views.js");
-if (PERTURB || PERTURB_OFF) {
+if (PERTURB || PERTURB_OFF || PERTURB_RAW) {
   const fs = await import("node:fs");
   let src = fs.readFileSync(VSRC, "utf8");
   const [anchor, to] = PERTURB
     ? ["&& (q.targets || []).some(t => t && nodes.includes(t.node))).length;", "&& (q.targets || []).some(t => !!t)).length;"]
+    : PERTURB_RAW
+    ? ["(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);",
+       "(((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).some(ifn => ((((Store.nodes || []).find(x => x.id === t.node) || {}).wdtt_cfg || {})[ifn] || {}).raw_iface === t.iface);"]
     : ["const p = { ...(peer || {}), private: false };", "const p = { ...(peer || {}) };"];
   if (!src.includes(anchor)) { console.log("ANCHOR MISSING — the perturbation cannot be applied"); process.exit(1); }
   src = src.replace(anchor, to);
@@ -50,7 +55,7 @@ let V;
 try {
   V = await import(pathToFileURL(VSRC).href);
 } finally {
-  if (PERTURB || PERTURB_OFF) { try { (await import("node:fs")).unlinkSync(VSRC); } catch (_) { /* already gone */ } }
+  if (PERTURB || PERTURB_OFF || PERTURB_RAW) { try { (await import("node:fs")).unlinkSync(VSRC); } catch (_) { /* already gone */ } }
 }
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -222,6 +227,40 @@ console.log("\n[4c] the browser READS the flag — not just receives it");
         V.userReach("bob").map(r => [r.user.id, r.devices.map(d => d.peer.id)]));
   Store.nodes = keepN;
   Store.recon = keepRecon; Store.stats = keepStats; Store.ifaceMeta = keepMeta;
+}
+
+console.log("\n[4f] RAW not vouched — a qWDTT 1.4.3 instance: the WG path is vouched, RAW is not (limits-l3 F5)");
+// The panel's `reach_unvouched_raw` names the INSTANCE (wdtt1), which is what a deployment's iface is — the old clause compared
+// the instance's raw_iface (wdttraw1) with it and never matched, so device access never said a device connected over RAW is
+// reached by nobody at "Same user and their groups", nor that a Private one is unguarded over RAW at Everyone.
+{
+  const keep = { nodes: Store.nodes, recon: Store.recon, stats: Store.stats, roster: Store.roster };
+  const W = (ip) => ({ node: "n1", iface: "wdtt1", ip, online: true });
+  const rp = [{ id: "rb", user_id: "bob", title: "bob phone", targets: [W("10.11.0.2")] },
+              { id: "rc", user_id: "carl", title: "carl phone", targets: [W("10.11.0.3")] }];
+  const setLevel = (reach, raw) => {
+    Store.nodes = [{ id: "n1", name: "node-one", wdtt_cfg: { wdtt1: { reach, raw_iface: "wdttraw1" } }, reach_unvouched_raw: raw ? ["wdtt1"] : [] }];
+    Store.recon = { peers: rp, users, nodeStatus: { n1: "live" } };   // a new identity each time: both answers are memoised per poll
+  };
+  Store.stats = { n1: { net_deps: { reach: 2 } } };
+  Store.roster = { users: Object.fromEntries(users.map(u => [u.id, u])), groups: { fam: { name: "Family", users: ["bob", "carl"] } } };
+  const carlFor = () => ((V.userReach("bob").find(r => r.user.id === "carl") || { devices: [] }).devices.find(d => d.peer.id === "rc"));
+  setLevel("user", true);
+  check("⚠️ at \"Same user and their groups\" a device on it is still listed (its WG path is vouched)…", !!carlFor(), V.userReach("bob"));
+  check("⚠️ …and marked: over RAW nobody reaches it", !!(carlFor() || {}).raw, carlFor());
+  check("…the group bubble says the same", !!(V.reachableByGroup("carl").find(d => d.peer.id === "rc") || {}).raw, V.reachableByGroup("carl"));
+  check("a Private device there is protected on both paths — nothing to say", V.privateUnenforced({ ...rp[1], private: true }).length === 0,
+        V.privateUnenforced({ ...rp[1], private: true }));
+  setLevel("user", false);
+  check("an instance whose build vouches for RAW too carries no mark", carlFor() && !carlFor().raw, carlFor());
+  setLevel("everyone", true);
+  check("at Everyone nothing is marked — everyone on the node reaches it over RAW too", carlFor() && !carlFor().raw, carlFor());
+  check("⚠️ …but a Private device there is named: guarded by its WG address only, not over RAW",
+        JSON.stringify(V.privateUnenforced({ ...rp[1], private: true })) === JSON.stringify([{ node: "n1", iface: "wdtt1", why: "raw" }]),
+        V.privateUnenforced({ ...rp[1], private: true }));
+  setLevel("everyone", false);
+  check("…and not where RAW is vouched", V.privateUnenforced({ ...rp[1], private: true }).length === 0, V.privateUnenforced({ ...rp[1], private: true }));
+  Object.assign(Store, keep);
 }
 
 console.log("\n[4d] promoted — the panel's verdict, read rather than derived");

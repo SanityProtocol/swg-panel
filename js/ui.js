@@ -786,7 +786,10 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
     const root = ref.current; if (!root) return;
     // [data-nodirty]: a control that only chooses what the sheet SHOWS (a traffic window's dates, the vault's unlock) — nothing to
     // save, nothing to lose, and its Enter is its own (below)
-    const onEdit = e => { if (!(e.target && e.target.closest && e.target.closest("[data-nodirty]"))) dirty.current = true; };
+    // [data-tracked]: a field whose change the caller's `dirtyRef` already tracks EXACTLY (against what the sheet opened on), so
+    // its own input does not arm the guard — an edit undone there asks nothing (limits-l5 F14: the guard OR'd a typed flag that
+    // never cleared). Only on a field the caller's dirtyRef covers: anything left unmarked is guarded as before.
+    const onEdit = e => { if (!(e.target && e.target.closest && e.target.closest("[data-nodirty],[data-tracked]"))) dirty.current = true; };
     root.addEventListener("input", onEdit, true);
     root.addEventListener("change", onEdit, true);
     // fields can opt out of autofocus with [data-noautofocus] (e.g. the VK box); and a view modal (noGuard)

@@ -239,7 +239,8 @@ export function LimitField({ draft, onChange, level, fallback, gaps, err }) {
       class=${err && badBox(parseBox(draft[k])) ? "bad" : ""}
       onInput=${e => set({ [k]: e.target.value })}/><span class="limin-u">${T("Mbit/s")}</span></label>`;
   const own = draft.mode !== "none";
-  return html`<div class="field limfield">
+  // data-tracked (ui.js Sheet): every sheet this field sits in hands its Sheet `lim.changed` in the dirtyRef — keep it so
+  return html`<div class="field limfield" data-tracked>
     <label>${T("Speed limit")}</label>
     <div class="segrow" role="radiogroup" aria-label=${T("Speed limit")}>
       ${seg("none", T("No limit"))}${seg("du", T("Download / upload"))}${seg("c", T("Combined"))}
@@ -375,7 +376,7 @@ export function VolumeField({ draft, onChange, level, err, kind, id }) {
     <input type="text" inputmode="decimal" value=${draft[k]} placeholder=${k === "c" ? "" : T("no limit")} aria-label=${label}
       class=${err && badGb(parseBox(draft[k])) ? "bad" : ""} onInput=${e => set({ [k]: e.target.value })}/><span class="limin-u">${T("GB")}</span></label>`;
   const own = draft.mode !== "none";
-  return html`<div class="field limfield volfield">
+  return html`<div class="field limfield volfield" data-tracked>
     <label>${T("Volume limit")}</label>
     <div class="segrow" role="radiogroup" aria-label=${T("Volume limit")}>
       ${pill("mode", "none", T("No limit"))}${pill("mode", "du", T("Download / upload"))}${pill("mode", "c", T("Combined"))}

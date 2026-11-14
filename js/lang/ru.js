@@ -2060,6 +2060,9 @@ export const STR = {
     "Не действует для {iface} на {node} — у устройства нет пользователя, поэтому все устройства там по-прежнему имеют к нему доступ.",
   "Not enforced for {iface} on {node} — this server build can't prove which address the device has, so every device there still reaches it.":
     "Не действует для {iface} на {node} — эта сборка сервера не может подтвердить адрес устройства, поэтому все устройства там по-прежнему имеют к нему доступ.",
+  "Not enforced over RAW for {iface} on {node} — this server build can't prove which device connected over RAW, so while this one connects over RAW every device there still reaches it.":
+    "Через RAW не действует для {iface} на {node} — эта сборка сервера не может подтвердить, какое устройство подключилось через RAW, поэтому, пока это устройство подключено через RAW, все устройства там имеют к нему доступ.",
+  "not over RAW": "не через RAW",
   "Saving this opens it again.":
     "После сохранения доступ снова откроется.",
   "The device opens to everyone on {nodes}.":

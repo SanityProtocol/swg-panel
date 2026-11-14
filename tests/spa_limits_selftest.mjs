@@ -24,11 +24,15 @@
  *     used line asks for the drafted period and only with a limit drafted
  * [9] the Limits button and sheet (limits-l5): in both QR footers; the button counts what is set (expiry, speed, volume) and says
  *     cut off / slowed / set; the sheet sends only what changed and its Close goes through the discard guard
+ * [10] an edit undone asks nothing (limits-l5 F14): the Sheet's typed guard skips a [data-tracked] field, and each editor marks
+ *     exactly the fields its dirtyRef — its own Save gate — compares (Edit user, Edit peer, the group editor, LimitsSheet, the
+ *     limit fields); a field it does not track (a VK link, a group pill, a search) still arms the guard
  *
  * Run: node tests/spa_limits_selftest.mjs     --perturb lowest|persp|heldsum|share|keyheld|rcarry|kcarry|gcarry|gapkey|rawgap|
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
- *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname
+ *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname|
+ *                                              tracked|limtracked|peerdirty|usertracked|grouptracked
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -70,7 +74,12 @@ const PLANTS = {   // name: [file, anchor, replacement]
   limsowner: ["js/peer-ui.js", "  const ids = [rec.id, ...(owner ? [owner.id] : [])];", "  const ids = [rec.id];"],   // [9]
   limsnoname: ["js/peer-ui.js", "owner: owner ? owner.name || T(\"lim|its owner\") : \"\",", "owner: owner ? owner.name || \"\" : \"\","],   // [9]
   limswhy: ["js/peer-ui.js", ": owner && v[owner.id] === \"cut\" ? \"ovol\" : v[rec.id] === \"slow\" ? \"slow\" : slow ? \"oslow\" : \"\";", ": owner && v[owner.id] === \"cut\" ? \"vol\" : v[rec.id] === \"slow\" ? \"slow\" : slow ? \"slow\" : \"\";"],   // [9]
-  limsclean: ["js/peer-ui.js", "  useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });", ""],   // [9]
+  limsclean: ["js/peer-ui.js", "<input type=\"date\" class=\"datein\" data-tracked min=${expiryInputVal(now_s())}", "<input type=\"date\" class=\"datein\" min=${expiryInputVal(now_s())}"],   // [9]
+  tracked: ["js/ui.js", "e.target.closest(\"[data-nodirty],[data-tracked]\")", "e.target.closest(\"[data-nodirty]\")"],   // [10]
+  limtracked: ["js/limits.js", "<div class=\"field limfield\" data-tracked>", "<div class=\"field limfield\">"],   // [10]
+  peerdirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: _dirty }}", "    dirtyRef=${{ current: lim.changed || vol.changed }}"],   // [10]
+  usertracked: ["js/peer-ui.js", "<input data-tracked value=${tag} onInput", "<input value=${tag} onInput"],   // [10]
+  grouptracked: ["js/peer-ui.js", "<div class=\"sharebar\" data-tracked>", "<div class=\"sharebar\">"],   // [10]
   limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
   limsguard: ["js/peer-ui.js", "foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),", "foot=${footRow({ onCancel: closeModal, cancelLabel: T(\"Close\"),"],   // [9]
   limsexp: ["js/peer-ui.js", "const body = { ...(expChanged ? { expiry: sec } : {}),", "const body = { expiry: sec,"],   // [9]
@@ -257,8 +266,8 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   has("Edit peer: the device's limit through peers/update", sc, "const r = await api.peerUpdate({ peer_id: peer.id, ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) });");
   has("…a deployment's through update-target only, when staged and changed", sc, "if (!tlimChanged(t)) continue;\n        const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, limits: tlims[tkey(t.node, t.iface)] });");
   has("…either change enables Save", sc, "|| lim.changed || vol.changed || (live.targets || []).some(tlimChanged);");
-  has("…and guards the close (the pills are buttons, a deployment's is staged in its own sheet)", sc, "    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}");
-  has("Edit user guards a changed limit on close", pu, "  if (dirtyRef) dirtyRef.current = lim.changed || vol.changed;");
+  has("…and guards the close with its Save gate itself (the switches, the pills and a staged deployment limit are clicks)", sc, "    dirtyRef=${{ current: _dirty }}");
+  has("Edit user guards the close with its Save gate", pu, "  if (dirtyRef) dirtyRef.current = dirty;");
   has("a field's change is against what it opened on, never a later poll's copy", lj, "!limSame(out.lim, limFromDraft(seed).lim)");
   check("the deployment's gauge is not the gear (a gate waits for .topt-gear as the sign a config loaded)", !/class=\$\{"[^"]*topt-gear/.test(lj));
   has("Peer targets: R7, a removed row's own limit is named", sc, "  const limGone = removed.filter(t => limClean(t.limits));");
@@ -335,8 +344,8 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
   const pus = source("js/peer-ui.js");
   check("both QR footers carry the Limits button (the expiry-only button is gone)", pus.includes('<${LimitsButton} kind="peer" id=${pid} rec=${p}/>')
     && pus.includes('<span class="grow"></span><${LimitsButton} kind="user" id=${uid} rec=${u}/>') && !pus.includes("openSetExpiry("));
-  check("an edit undone asks nothing on Close (the sheet's own typed flag is handed back), and editing the date clears its refusal",
-    pus.includes("useEffect(() => { if (!dirtyRef.current && cleanRef.current) cleanRef.current(); });")
+  check("an edit undone asks nothing on Close (every field is data-tracked: the sheet's dirtyRef decides), and editing the date clears its refusal",
+    pus.includes('<input type="date" class="datein" data-tracked min=${expiryInputVal(now_s())}')
     && pus.includes('onInput=${e => { setD(e.target.value); setErr(""); }}'));
   check("the sheet sends only what changed, and its Close asks before dropping an edit",
     pus.includes("const body = { ...(expChanged ? { expiry: sec } : {}), ...(limits ? { limits } : {}), ...(volume ? { volume } : {}) };")
@@ -345,6 +354,37 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
                    "Cut off now: its access date has passed", "Cut off now: a volume limit is used up", "Cut off now: {name}'s subscription has ended",
                    "Cut off now: {name} has used up a volume limit", "Slowed to 1 Mbit/s now: a volume limit is used up",
                    "Slowed to 1 Mbit/s now: {name} has used up a volume limit", "lim|its owner"]) RUKEYS.add(k);
+
+  console.log("\n[10] an edit undone asks nothing — the editor's own Save gate decides its fields (limits-l5 F14)");
+  {
+    const ui = source("js/ui.js"), lj2 = source("js/limits.js"), pu2 = source("js/peer-ui.js"), sc2 = source("js/sheets-crud.js");
+    const body = (src, from) => { const i = src.indexOf(from), j = src.indexOf("\nexport function ", i + 10), k = src.indexOf("\nfunction ", i + 10);
+      return i < 0 ? "" : src.slice(i, Math.min(...[j, k].filter(x => x > 0), src.length)); };
+    check("the Sheet's typed guard skips a field its caller tracks (data-tracked), as it skips data-nodirty",
+          ui.includes('const onEdit = e => { if (!(e.target && e.target.closest && e.target.closest("[data-nodirty],[data-tracked]"))) dirty.current = true; };'));
+    check("…and data-tracked owns no Enter: only data-nodirty does", !/\[data-nodirty\][^\n]*data-tracked|data-tracked[^\n]*\.closest\("button/.test(ui.split("const onKey")[1] || ""));
+    check("the speed and volume fields mark themselves — every sheet they sit in hands its Sheet lim / vol .changed",
+          lj2.includes('<div class="field limfield" data-tracked>') && lj2.includes('<div class="field limfield volfield" data-tracked>'));
+    const ue = body(pu2, "export function UserEditCard(");
+    check("Edit user: the Sheet gets the Save gate, and its four own fields are tracked",
+          ue.includes("if (dirtyRef) dirtyRef.current = dirty;") && (ue.match(/<input[^>]*data-tracked/g) || []).length === 4
+          && ["name", "tag", "note", "expDate"].every(v => new RegExp("<input[^>]*data-tracked[^>]*value=\\$\\{" + v + "\\}").test(ue)), (ue.match(/<input[^>]*data-tracked[^>]*>/g) || []));
+    check("…the fields that save themselves are not (a VK link typed and not saved still asks)",
+          ue.includes("<${VkLinkField} user=${user}/>") && !/data-tracked[^\n]*VkLinkField|VkLinkField[^\n]*data-tracked/.test(ue));
+    const ep = body(sc2, "export function EditPeerSheet(");
+    check("Edit peer: the Sheet gets the Save gate, and title, user, date and each address are tracked",
+          ep.includes("dirtyRef=${{ current: _dirty }}") && /<input autofocus data-tracked value=\$\{title\}/.test(ep)
+          && ep.includes('<div class="field" data-tracked><label>${T("col|User")}</label>') && /class="datein" data-tracked[^>]*value=\$\{expDate\}/.test(ep)
+          && /topt-ip [^\n]*data-tracked value=\$\{ips\[k\]/.test(ep)
+          && ep.includes('<label class="toggle-row" data-tracked><${Switch} on=${priv}') && ep.includes('<label class="toggle-row" data-tracked><${Switch} on=${router}'));
+    check("…its Save gate compares every one of them", ["title.trim() !== (peer.title || \"\").trim()", "(userId || \"\") !== (peer.user_id || \"\")",
+          "expDate !== expiryInputVal(peer.ownExpiry || 0)", "(live.targets || []).some(ipChangedFor)", "lim.changed || vol.changed", "(priv !== (peer.private === true))", "(router !== (peer.router === true))"].every(x => ep.includes(x)));
+    const gs = body(pu2, "function GroupSheet(");
+    check("the group editor: its name and the person search are tracked (who was added or removed is in the dirtyRef), the old hand-back is gone",
+          /<input data-tracked value=\$\{name\}/.test(gs) && gs.includes('<div class="sharebar" data-tracked>') && !gs.includes("typedOnly"));
+    const ls = body(pu2, "export function LimitsSheet(");
+    check("the Limits sheet: the date tracked, no effect handing the guard back any more", ls.includes('class="datein" data-tracked') && !ls.includes("cleanRef"));
+  }
 
   console.log("\n[7] Russian");
   const keys = new Set(RUKEYS);

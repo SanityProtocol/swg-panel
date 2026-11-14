@@ -1106,14 +1106,15 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // Targets, Networks, Rotate keys, Block, Cancel, Save) need ~686px of button plus a QR that is not always there, so 780
   // fitted six labels and nothing more — the moment a peer had configs to show, they were shoulder to shoulder again.
   // Sheet still caps itself at calc(100vw - 32px), so this is a ceiling and not a floor.
-  // dirtyRef: a limit's pills are buttons and a deployment's is staged in a sheet of its own — the input listener sees neither
+  // dirtyRef: `_dirty`, the Save gate — the switches, a limit's pills and a deployment's staged limit are clicks the input listener
+  // never sees, and an edit undone on a data-tracked field asks nothing (limits-l5 F14)
   return html`<${Sheet} title=${T("Edit peer")} width=${880} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    dirtyRef=${{ current: lim.changed || vol.changed || (live.targets || []).some(tlimChanged) }}
+    dirtyRef=${{ current: _dirty }}
     foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${hasKeyed
         ? html`<button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${(live.routes || []).length ? T("Networks · {n}", { n: live.routes.length }) : T("Networks")}</button>` : isMobile() ? html`<button class="btn btn-danger m-pdel" onClick=${() => confirmDeletePeer(peer, null, true)}>${T("Delete")}</button>` : null}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
-    <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. iPhone, Work laptop")}/></div>
-    <div class="field"><label>${T("col|User")}</label>
+    <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input autofocus data-tracked value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. iPhone, Work laptop")}/></div>
+    <div class="field" data-tracked><label>${T("col|User")}</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
       <div class=${"hint"}>${
         peer.unassigned ? T("Pick a user to assign this peer to — the existing key and config are kept, applied when you Save.")
@@ -1122,7 +1123,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         : T("On Save you'll confirm reassigning — the current user loses access for good and the new user needs a fresh config.")
       }</div></div>
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— this peer only; blank = {fallback}", { fallback: ownerExp ? T("follows the subscription") : T("never") })}</span></label>
-      <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
+      <div class="daterow"><input type="date" class="datein" data-tracked max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class=${"hint"}>${T("On this date the peer stops working (it reappears if you extend it).")}${ownerExp ? T(" Can't be later than the subscription's expiry ({v1}).", { v1: fmtDate(ownerExp) }) : ""}</div></div>
     <${LimitField} draft=${lim.draft} onChange=${lim.set} err=${lim.err} level="device"
       fallback=${fallbackFor("device", { user_id: userId || null })} gaps=${() => limitGaps(live.targets)}/>
@@ -1130,7 +1131,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     ${/* ⚠️ Reuses `Switch` and the .toggle-row label shape the panel already uses for a boolean with an explanation
           under it, rather than drawing a new control. The hint is the whole promise in one line, because "private"
           on its own would leave an operator guessing whether it hides the device or only its networks. */""}
-    <div class="field"><label class="toggle-row"><${Switch} on=${priv} onChange=${v => setPriv(v)}/><span>${T("Private")}</span></label>
+    <div class="field"><label class="toggle-row" data-tracked><${Switch} on=${priv} onChange=${v => setPriv(v)}/><span>${T("Private")}</span></label>
       <div class="hint">${T("Only this user's own devices reach it and the networks behind it — not the people they share a group with, and not everyone on the node, whatever the interface allows.")}</div>
       ${/* ⚠️ The switch promises "not everyone on the node, whatever the interface allows". On a node too old to enforce,
             or one not reporting now, that promise is not kept and NOTHING said so — and this file's own rule is that
@@ -1140,6 +1141,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
           ? T("Not enforced on {node} — it runs an older version, or hasn't reported yet. Devices there still reach this one.", { node: Store.nodeName(u.node) })
           : u.why === "no_user"
           ? T("Not enforced for {iface} on {node} — the device has no user, so every device there still reaches it.", { iface: u.iface, node: Store.nodeName(u.node) })
+          : u.why === "raw"
+          ? T("Not enforced over RAW for {iface} on {node} — this server build can't prove which device connected over RAW, so while this one connects over RAW every device there still reaches it.", { iface: u.iface, node: Store.nodeName(u.node) })
           : T("Not enforced for {iface} on {node} — this server build can't prove which address the device has, so every device there still reaches it.",
               { iface: u.iface, node: Store.nodeName(u.node) })}</span></div>`)}
       ${/* ⚠️ THE DIRECTION THAT OPENS SOMETHING. Turning Private OFF hands the device back to whatever its stored share
@@ -1159,7 +1162,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
           (a user's report: a NAT router's OpenVPN). Only where it can mean something: a wg/awg deployment; a keyless one
           is not a router. The hint says the cost in the same breath as the gain. */""}
     ${router || routerCapable(live) ? html`<div class="field">
-      <label class="toggle-row"><${Switch} on=${router} onChange=${v => setRouter(v)}/><span>${T("Router — several devices share this address")}</span></label>
+      <label class="toggle-row" data-tracked><${Switch} on=${router} onChange=${v => setRouter(v)}/><span>${T("Router — several devices share this address")}</span></label>
       <div class="hint">${T("Torrents are still blocked connection by connection, but one device's torrent no longer cuts the other devices' VPNs, calls and games. The cost: an encrypted torrent behind it with DHT off gets through.")}</div></div>` : null}
     <div class="field"><label>${T("label|Deployments")}</label>
       <div class="targetpick">${targetsOrdered.map(t => {
@@ -1179,7 +1182,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
             ${sc
               ? html`<span class="topt-ip faint" title=${ity === "csqtt" ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto IP")}</span>`
-              : html`<input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>`}
+              : html`<input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} data-tracked value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>`}
             <${LimitGauge} peer=${{ ...live, user_id: userId || null, limits: lim.cur }} t=${t} value=${k in tlims ? tlims[k] : t.limits} onApply=${v => setTlims(m => ({ ...m, [k]: v }))}/>
             ${(!sc && confs[k]) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${topts[k]} onSave=${v => setOptsFor(k, v)}/>` : null}
           </div>
