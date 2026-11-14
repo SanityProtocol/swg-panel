@@ -113,6 +113,13 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **Undoing an edit no longer leaves an editor asking to discard it.** Edit user, Edit peer and the group editor now ask
+  on close only when something still differs from what they opened with. A date removed with its Clear button now asks
+  too; before, the editor closed without a word and the change was lost.
+- **Device access says when a device is reached over WG only.** On a qWDTT 1.4.3 server, whose build vouches for the WG
+  path and not RAW, a device at "Same user and their groups" is unreachable by others while it connects over RAW. The
+  reach and group bubbles now say "not over RAW" beside it, and a Private device there at "Everyone on this node" warns that it is not
+  protected over RAW.
 - **A WDTT or csqtt server keeps its protections when its outbound NAT fails to write.** For that pass the node also
   dropped the server from its tunnel firewall, its MSS clamp and the LAN block, and a WDTT server's RAW tunnel was
   skipped altogether. Only the NAT is retried now; everything else stays in place.
