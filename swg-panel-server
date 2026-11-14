@@ -13336,60 +13336,48 @@ def failover_idle(nodes, snaps, seen, now=None, pairs=None):
 
 
 def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
-    """(held, lacking, unsure): what B runs of A's interfaces — ONE table, the first row that matches decides, and a take-over
-    acts on it alone (it never reads the snapshot again: a sync landing between two reads made them disagree, F93):
+    """(held, absent, unsure): what B runs of A's interfaces — ONE table, and a take-over acts on it alone (it never reads
+    the snapshot again: a sync landing between two reads made them disagree, F93):
 
-      1  B has no record of it carrying A's blessed key                         LACKING
-      2  B is not reporting now (`live`: _fo_live), or sent no snapshot          UNSURE   a snapshot alone proves nothing:
-                                                                                         the panel seeds the last one from
-                                                                                         the stats mirror at startup (F87)
-      3  the reporting B waits for its key (ifaces_awaiting_key)               LACKING  it has no key there (F95)
-      4  the reporting B does not report it                                    LACKING
-      5  reported down or stopped                                              UNSURE   for the moment
-      6  reported with A's blessed key                                         HELD
-      7  reported with no key                                                  UNSURE   an older node, a key not read (F94)
-      8  reported with another key                                             LACKING  not A's identity there
+      ABSENT  B has no record of it: nothing of A's there, nothing to move or delete.
+      HELD    B's record carries A's blessed key, and B is reporting now (`live`: _fo_live — a snapshot alone proves
+              nothing, the panel seeds the last one from the stats mirror at startup, F87) and reports it up, not
+              stopped, with that key.
+      UNSURE  everything else: B holds a copy whose box does not run A's identity right now — not reporting, no snapshot,
+              waiting for the key, not created yet, down, stopped, reported with no key or another, or a record from
+              before A's key changed. Every one is recoverable on B (the vault holds A's key: the mirror, a Re-sync or a
+              Restore brings it back), so nothing deletes B's copy on its account (F107) — a take-over deletes nothing.
 
-    LACKING is certain, so a take-over may delete B's copy; UNSURE is not, so nothing may act on it. `assume`
-    (node_remove, whose alternative is purging the peers): UNSURE counts as HELD — the copy carries A's key."""
+    The detach door refuses while anything is UNSURE. `assume` (node_remove, whose alternative is purging the peers):
+    UNSURE counts as HELD — the peers move onto B's copy, which the take-over gives A's current identity."""
     a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
     bsnap = (snaps or {}).get(bid) if live else None
     brep = bsnap.get("interfaces") if isinstance(bsnap, dict) else None
-    waiting = set(bsnap.get("ifaces_awaiting_key") or ()) if isinstance(bsnap, dict) else set()
-    held, lacking, unsure = [], [], []
+    held, absent, unsure = [], [], []
     for n, aov in sorted(_fo_user_ifaces(a).items()):
         key = aov.get("public_key") or ""
         bov = (b.get("ifaces") or {}).get(n)
         rep_n = brep.get(n) if isinstance(brep, dict) and isinstance(brep.get(n), dict) else None
-        rk = ((rep_n or {}).get("meta") or {}).get("public_key") or ""
-        if not (key and isinstance(bov, dict) and bov.get("public_key") == key):
-            cls = lacking                                          # 1
-        elif not isinstance(brep, dict):
-            cls = unsure                                           # 2
-        elif n in waiting or rep_n is None:
-            cls = lacking                                          # 3, 4
-        elif rep_n.get("down") or rep_n.get("stopped"):
-            cls = unsure                                           # 5
-        elif rk == key:
-            cls = held                                             # 6
-        elif not rk:
-            cls = unsure                                           # 7
+        if not isinstance(bov, dict) or not key:
+            absent.append(n)
+        elif (bov.get("public_key") == key and rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")
+              and ((rep_n.get("meta") or {}).get("public_key") or "") == key):
+            held.append(n)
         else:
-            cls = lacking                                          # 8
-        (held if cls is unsure and assume else cls).append(n)
-    return held, lacking, unsure
+            (held if assume else unsure).append(n)
+    return held, absent, unsure
 
 
-def _fo_primary_runs(nodes, snaps, aid, live):
-    """A's interfaces A does NOT run right now — not reporting, not reported, down, stopped, or under another key. A
-    detach that keeps the peers on A deletes B's copies, so it waits until this is empty: else it deletes the only running
-    copy of that interface."""
-    asnap = (snaps or {}).get(aid) if live else None
-    arep = asnap.get("interfaces") if isinstance(asnap, dict) else None
+def _fo_only_on_b(nodes, snaps, aid, held):
+    """A's interfaces that run on B alone right now: B holds them (`held`, from _fo_holds) and A — reporting, the door
+    checked — reports them down or not at all. Not one A STOPPED: the operator took it out of service, and B's copy goes
+    with that choice (F104). Not one A reports up without a key: that is A running it (F105). A detach that keeps the peers
+    on A deletes B's copies, so it waits while this is not empty: else it cuts those clients off."""
+    arep = ((snaps or {}).get(aid) or {}).get("interfaces") or {}
     out = []
-    for n, aov in sorted(_fo_user_ifaces(nodes.get(aid)).items()):
-        r = arep.get(n) if isinstance(arep, dict) and isinstance(arep.get(n), dict) else None
-        if not r or r.get("down") or r.get("stopped") or ((r.get("meta") or {}).get("public_key") or "") != (aov.get("public_key") or "-"):
+    for n in held:
+        r = arep.get(n) if isinstance(arep.get(n), dict) else None
+        if r is None or (r.get("down") and not r.get("stopped")):
             out.append(n)
     return out
 
@@ -13406,11 +13394,11 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
     `nodes` and `roster` (an owned copy); the caller saves both. HELD: its wg/awg targets move A→B, each moved device that
     yields its torrent port on A yields it on B (A dropped once no target stays there), B's interface takes A's effective
     host as its endpoint, and A's interface is dropped as /api/iface/delete drops it (delete staged, record gone) minus
-    the target strip — so A's stale snapshot never keeps A planned, and an A that comes back stops serving them. LACKING:
-    B's copy goes (a peerless duplicate of A's key and subnet on an ordinary node is a clash), the peers stay on A.
-    UNSURE must be empty — the door refuses, node_remove assumes — or B would become an ordinary node holding a copy of
-    A's key nobody moved: refused here too. The flag goes last. Returns (moved interfaces, interfaces left on A)."""
-    held, lacking, unsure = cls
+    the target strip — so A's stale snapshot never keeps A planned, and an A that comes back stops serving them. ABSENT:
+    nothing of A's on B; its peers stay on A. Nothing on B is ever deleted. UNSURE must be empty — the door refuses,
+    node_remove assumes — or B would become an ordinary node holding a copy of A's key with nobody moved onto it: refused
+    here too. The flag goes last. Returns (moved interfaces, interfaces left on A)."""
+    held, _absent, unsure = cls
     if unsure:
         raise ValueError("failover take-over with interfaces in doubt: " + ", ".join(unsure))
     a, b = nodes[aid], nodes[bid]
@@ -13418,13 +13406,14 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
     now_ = int(time.time())
     asnap = (snaps or {}).get(aid) or {}
     for n in held:
-        host = _fo_effective_host(a, (a.get("ifaces") or {}).get(n), asnap, n)
+        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]
+        for k in FO_IF_CLONE:                         # a copy from before A's key changed takes A's identity now: the
+            if aov.get(k) and bov.get(k) != aov[k]:   # peers' configs carry it, and the vault restores it on B
+                bov[k] = _fo_copy(aov[k])             # (B's box then reports another key: the sync records the drift)
+        host = _fo_effective_host(a, aov, asnap, n)
         if host and not _ip_literal(host):            # A's own address would send B's new configs to A (§4.1 warned)
             b["ifaces"][n]["endpoint_host"] = host
         _fo_drop_iface(a, n, now_)
-    for n in lacking:                                 # only what B certainly does not run: never on a missing snapshot
-        if n in _fo_user_ifaces(b) or n in (b.get("create") or {}):
-            _fo_drop_iface(b, n, now_)
     hs = set(held)
     for p in (roster.get("peers") or {}).values():
         if not isinstance(p, dict):
@@ -31753,20 +31742,19 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, **perr("{v1} is not reporting: removing the copies on {v2} would delete the only one "
                                              "running — move the peers to {v2} instead", v1=aname, v2=bname),
                          "code": "primary_offline"}
-        # keeping the peers on A deletes B's copies: never one of an interface A is not running that B may be running
-        _adown = [] if take else [n for n in _fo_primary_runs(nodes, snaps, aid, True)
-                                  if n not in _fo_holds(nodes, snaps, aid, bid, _fo_live(seen, bid, now()))[1]]
-        if _adown:
-            return 409, {"ok": False, **perr("Not running on {v1} right now: {v2} — removing the copies on {v3} would delete the "
-                                             "only ones running. Move the peers to {v3} instead", v1=aname, v2=", ".join(_adown),
-                                             v3=bname), "code": "primary_not_running"}
+        # keeping the peers on A deletes B's copies: not while one runs on B alone — one reading of each (F109)
+        _only_b = [] if take else _fo_only_on_b(nodes, snaps, aid, _fo_holds(nodes, snaps, aid, bid, _fo_live(seen, bid, now()))[0])
+        if _only_b:
+            return 409, {"ok": False, **perr("Running only on {v1} right now: {v2} — removing the copies there would cut its clients "
+                                             "off. Move the peers to {v1}, or keep them once {v3} runs these again",
+                                             v1=bname, v2=", ".join(_only_b), v3=aname), "code": "primary_not_running"}
         cut = bid if not take else aid                 # the member whose clients this cuts off
         if (_fo_live(seen, cut, now()) and _fo_online(snaps.get(cut) or {}, set(_fo_user_ifaces(nodes[aid])))
                 and (body.get("confirm") or "") != bname):
             return 409, {"ok": False, **perr("{v1} is serving clients: type {v2} to go on", v1=nodes[cut].get("name") or cut,
                                              v2=bname), "code": "confirm_required"}
-        if not take:                                   # B's copies of A's interfaces go; an interface of B's own stays
-            for n in sorted(set(_fo_user_ifaces(nodes[bid])) & set(_fo_user_ifaces(nodes[aid]))):
+        if not take:                                   # every record on B is the mirror's: all go (F106 — a copy of one
+            for n in sorted(_fo_user_ifaces(nodes[bid])):  # A is still deleting would else stay with A's key)
                 _fo_drop_iface(nodes[bid], n, now())
             nodes[bid].pop("failover_of", None)
             nodes_save(deps["nodes_path"], nodes)

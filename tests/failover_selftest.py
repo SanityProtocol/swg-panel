@@ -24,9 +24,14 @@
       egress_node naming B, a padded id, a fresh recreate); the allow-list passes (rotate, update, detach, the node sheet's own
       fields, a connection card's reset, deleting B's own interface, routing/who); a list-valued id raises nothing.
   [8] Take-over and removal: targets move, `p2p_yield` follows (each port keeps its holder), A's interface dropped, B takes
-      A's host (never an IP literal; the host the node reports when none is set); an interface B lacks stays on A with its
-      peers and B's copy of it goes; with no snapshot of B nothing is held; node_remove(A) keeps every held peer, carries A's
-      node-keyed settings to B, archives A whole and logs the take-over; the preview refuses a node in transfer.
+      A's host (never an IP literal; the host the node reports when none is set); an interface B has no copy of stays on A
+      with its peers; a take-over deletes nothing on B and refuses while any copy is in doubt (B not reporting, a device
+      down, stopped, keyless, waiting for its key); node_remove(A) moves the peers of every copy B has, carries A's
+      node-keyed settings to B, archives A whole and logs the take-over; keeping the peers on A waits while an interface
+      runs on B alone (not one A stopped); the preview refuses a node in transfer.
+  [11] The take-over table (absent / held / unsure), written again here, against _fo_holds in all 768 cases, and four
+      invariants on the take-over in each: nothing on B is deleted; peers move onto what B holds and only that; B never
+      ends an ordinary node keeping a copy with the peers left on A; peers land on A's current identity.
   [9] reconcile.js: A stale, B online → online, no orphans; A live too → still no orphan on A; A stale, B without the
       interface or reporting it down → unknown, no Restore; no mirrors → unchanged.
   [10] Real panels: with no failover node the sync reply is byte-identical to the reference build's (7c7987e8); with one,
@@ -56,18 +61,17 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      portok       `p2p_portok_none` is not followed
      blob-follow  the same key re-sealed on A is not followed
      walk-pos     the serving member walks at its own position (not A's)
-     left-copy    a take-over keeps B's copies of the interfaces it did not hold
-     holds-rec    with no snapshot of B, a record carrying A's key counts as held (a detach would move peers blind)
-     nosnap-drop  with no snapshot of B, every copy counts as lacking (a take-over deletes the only working copy, F75)
-     down-held    an interface B reports stopped counts as held (F78)
      remove-assume  removing A with no snapshot of B purges the peers instead of moving them onto B's copies
      restore-race a device B reports down is recreated while the autostart is still starting it (F77)
      stale-live   a snapshot of a B that is not reporting is trusted as certain (F87, F88)
      door-unsure  the detach door moves peers while B reports one of the interfaces down (F89)
-     waiting-late an interface B waits the key for, reported down, is in doubt instead of lacking (F95)
-     nokey-lacking an interface B reports up with no key is lacking — its copy deleted (F94)
      unsure-guard a take-over acts while an interface is in doubt (B ordinary, holding A's key, F93)
-     keep-guard   keeping the peers on A deletes B's copy of an interface A is not running
+     keep-guard   keeping the peers on A deletes B's copy of an interface only B is running
+     keep-stopped an interface the operator stopped on A blocks keeping the peers there (F104)
+     absent-any   an interface in doubt is taken as absent (its peers left on A, or purged with it)
+     held-loose   held without checking the key B reports
+     held-down    a device B reports down is held
+     identity-copy removing A moves peers onto a B copy from before A's key changed, without A's identity
      carry        a take-over leaves the node-keyed settings naming A only
      strip        the read-only guard reads ids unstripped
      orphan       reconcile.js does not mark the primary's copy managed
@@ -137,20 +141,19 @@ PLANTS = {   # (file, anchor, replacement)
     "blob-follow": ("panel", '''        if aov.get("key_blob") and bov.get("public_key") == aov.get("public_key") and bov.get("key_blob") != aov["key_blob"]:''',
                     '''        if False:'''),
     "walk-pos": ("panel", '''key=lambda kv: (kv[0] in idle, _pos[failover_rid(nodes, kv[0])])''', '''key=lambda kv: (kv[0] in idle, _pos[kv[0]])'''),
-    "left-copy": ("panel", '''    for n in lacking:                                 # only what B certainly does not run: never on a missing snapshot''',
-                  '''    for n in ():'''),
-    "holds-rec": ("panel", '''            cls = unsure                                           # 2''', '''            cls = held'''),
-    "nosnap-drop": ("panel", '''            cls = unsure                                           # 2''', '''            cls = lacking'''),
-    "down-held": ("panel", '''        elif rep_n.get("down") or rep_n.get("stopped"):''', '''        elif rep_n.get("down"):'''),
     "remove-assume": ("panel", '''_fo_live(deps.get("node_seen"), _fo_b), assume=True), _fo_snaps)''', '''_fo_live(deps.get("node_seen"), _fo_b), assume=False), _fo_snaps)'''),
-    "waiting-late": ("panel", '''        elif n in waiting or rep_n is None:''', '''        elif rep_n is None:'''),
-    "nokey-lacking": ("panel", '''            cls = unsure                                           # 7''', '''            cls = lacking'''),
     "unsure-guard": ("panel", '''    if unsure:
         raise ValueError''', '''    if False:
         raise ValueError'''),
-    "keep-guard": ("panel", '''                                  if n not in _fo_holds(nodes, snaps, aid, bid, _fo_live(seen, bid, now()))[1]]
-        if _adown:''', '''                                  if n not in _fo_holds(nodes, snaps, aid, bid, _fo_live(seen, bid, now()))[1]]
-        if False:'''),
+    "keep-guard": ("panel", '''        if _only_b:''', '''        if False:'''),
+    "keep-stopped": ("panel", '''        if r is None or (r.get("down") and not r.get("stopped")):''',
+                     '''        if r is None or r.get("down") or r.get("stopped"):'''),
+    "absent-any": ("panel", '''            (held if assume else unsure).append(n)''', '''            absent.append(n)'''),
+    "held-loose": ("panel", '''              and ((rep_n.get("meta") or {}).get("public_key") or "") == key):''', '''              ):'''),
+    "held-down": ("panel", '''rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")''',
+                  '''rep_n is not None and not rep_n.get("stopped")'''),
+    "identity-copy": ("panel", '''            if aov.get(k) and bov.get(k) != aov[k]:   # peers' configs carry it, and the vault restores it on B''',
+                      '''            if False:'''),
     "stale-live": ("panel", '''    bsnap = (snaps or {}).get(bid) if live else None''', '''    bsnap = (snaps or {}).get(bid)'''),
     "door-unsure": ("panel", '''        if take and cls[2]:''', '''        if False:'''),
     "restore-race": ("panel", '''and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):''',
@@ -693,13 +696,19 @@ def sec8():
         sy = {"na": snaps["na"], "nb": {"interfaces": {"awg0": st}}}
         check("[8] B's awg0 %s: in doubt, not lacking" % ("down" if st.get("down") else "stopped" if st.get("stopped") else "with no key"),
               "awg0" in P._fo_holds(ny, sy, "na", "nb", True)[2], P._fo_holds(ny, sy, "na", "nb", True))
+    n["nb"]["ifaces"].pop("wg1"); n["nb"].pop("create")      # B never had a copy of wg1: absent
     moved, left = P.failover_takeover(n, r, "na", "nb", P._fo_holds(n, snaps, "na", "nb", True), snaps)
     check("[8] the interface B holds moves; the one it lacks stays", moved == ["awg0"] and left == ["wg1"], (moved, left))
     check("[8] targets moved A→B", all(t["node"] == "nb" for p in ("p1", "p2", "p3", "p0") for t in r["peers"][p]["targets"])
           and r["peers"]["p5"]["targets"][0]["node"] == "na")
     check("[8] p2p_yield follows (A dropped, B added)", r["peers"]["p0"].get("p2p_yield") == ["nb"], r["peers"]["p0"].get("p2p_yield"))
-    check("[8] B's copy of the interface it did not hold goes", "wg1" not in n["nb"]["ifaces"] and "wg1" in (n["nb"].get("delete") or {})
-          and "wg1" not in (n["nb"].get("create") or {}), (n["nb"].get("ifaces"), n["nb"].get("create"), n["nb"].get("delete")))
+    check("[8] a take-over deletes nothing on B", not n["nb"].get("delete"), n["nb"].get("delete"))
+    for st, want in (({"down": "x", "meta": {}, "peers": []}, ["awg0"]), (dict(snap_iface(), stopped=True), []), (None, ["awg0"]),
+                     (snap_iface(key=""), [])):
+        ka = {"na": {"interfaces": {"awg0": st} if st else {}}}
+        check("[8] keep: awg0 on A %s → runs only on B: %s" % ("down" if st and st.get("down") else "stopped" if st and st.get("stopped")
+              else "not reported" if not st else "up without a key", want), P._fo_only_on_b(to_fleet(), ka, "na", ["awg0"]) == want,
+              P._fo_only_on_b(to_fleet(), ka, "na", ["awg0"]))
     owner_after = {q: o for q, o in [(e[1], e[0]) for e in P.p2p_fwd_for_node(None, r, "nb", ("direct", ["10.99.0.0/16"]))]}
     check("[8] each port keeps its holder", owner_before == owner_after and owner_before, (owner_before, owner_after))
     check("[8] A's interface dropped as a delete; B takes A's host", "awg0" not in n["na"]["ifaces"] and "awg0" in n["na"]["delete"]
@@ -707,7 +716,7 @@ def sec8():
     check("[8] the flag goes", "failover_of" not in n["nb"])
     # the host: never an IP literal; the one the node reports when none is set
     for host_a, rep_ep, want in (("1.2.3.4", "", None), ("", "vpn2.example.com:443", "vpn2.example.com"), ("", "localhost:443", None)):
-        nx = to_fleet()
+        nx = to_fleet(); nx["nb"]["ifaces"].pop("wg1"); nx["nb"].pop("create")
         nx["na"]["ifaces"]["awg0"]["endpoint_host"] = host_a
         nx["na"]["endpoint_host"] = ""
         sx = json.loads(json.dumps(snaps)); sx["na"]["interfaces"]["awg0"]["meta"]["endpoint"] = rep_ep
@@ -724,7 +733,8 @@ def sec8():
     deps = {"nodes_path": os.path.join(d, "nodes.json"), "roster_path": os.path.join(d, "users.json"), "stats_dir": d,
             "node_snaps": {"na": snaps["na"], "nb": snaps["nb"]}, "node_seen": {"nb": time.time()}, "panel_settings": ps,
             "panel_settings_path": os.path.join(d, "panel-settings.json")}
-    json.dump(to_fleet(), open(deps["nodes_path"], "w"))
+    _f = to_fleet(); _f["nb"]["ifaces"].pop("wg1"); _f["nb"].pop("create")     # B has no copy of wg1
+    json.dump(_f, open(deps["nodes_path"], "w"))
     rr = roster()
     rr["peers"]["p5"] = {"id": "p5", "user_id": "u2", "pubkey": PK[4], "psk": PK[6], "title": "nas",
                          "targets": [{"node": "na", "iface": "wg1", "ip": "10.9.0.2"}]}
@@ -734,7 +744,7 @@ def sec8():
     nn = json.load(open(deps["nodes_path"]))
     check("[8] node_remove(A): the held peers are on B", all(t["node"] == "nb" for p in ("p1", "p2", "p3") for t in after["peers"][p]["targets"]),
           {k: v["targets"] for k, v in after["peers"].items()})
-    check("[8] node_remove(A): the interface B lacked goes with A", "p5" not in after["peers"])
+    check("[8] node_remove(A): an interface B has no copy of goes with A", "p5" not in after["peers"])
     check("[8] node_remove(A): B is an ordinary node", "na" not in nn and "failover_of" not in nn["nb"], nn.get("nb"))
     d2 = os.path.join(TMP, "rm2"); os.makedirs(d2)
     deps2 = {"nodes_path": os.path.join(d2, "nodes.json"), "roster_path": os.path.join(d2, "users.json"), "stats_dir": d2,
@@ -748,9 +758,14 @@ def sec8():
     deps3 = {"nodes_path": os.path.join(d3, "nodes.json"), "roster_path": os.path.join(d3, "users.json"), "stats_dir": d3,
              "node_snaps": {"na": snaps["na"], "nb": {"interfaces": {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}}}},
              "node_seen": {"nb": time.time()}, "panel_settings": {}}
-    json.dump(to_fleet(), open(deps3["nodes_path"], "w")); json.dump(roster(), open(deps3["roster_path"], "w"))
+    r3 = roster()
+    r3["peers"]["p5"] = {"id": "p5", "user_id": "u2", "pubkey": PK[4], "psk": PK[6], "title": "nas",
+                         "targets": [{"node": "na", "iface": "wg1", "ip": "10.9.0.2"}]}
+    json.dump(to_fleet(), open(deps3["nodes_path"], "w")); json.dump(r3, open(deps3["roster_path"], "w"))
     P.node_remove(deps3, "na")
     after3 = json.load(open(deps3["roster_path"]))
+    check("[8] node_remove(A): a copy B still waits the key for takes its peers, never purged (F107)",
+          after3["peers"].get("p5", {}).get("targets", [{}])[0].get("node") == "nb", after3["peers"].get("p5"))
     check("[8] node_remove(A) while B's awg0 is down: its peers move onto B's copy, never purged (F89)",
           all(t["node"] == "nb" for p in ("p1", "p2", "p3") for t in after3["peers"][p]["targets"]), after3["peers"])
     psd = json.load(open(deps["panel_settings_path"])) if os.path.exists(deps["panel_settings_path"]) else {}
@@ -767,20 +782,16 @@ def sec8():
 
 # ── [11] the take-over table ─────────────────────────────────────────────────────────────────────────────────────────
 def table_want(rec, live, snap, waits, rep, down, stopped, key):
-    """The table of _fo_holds, written again here from its docstring: the first row that matches decides."""
-    if rec != "A":
-        return "lacking"
-    if not (live and snap):
-        return "unsure"
-    if waits or not rep:
-        return "lacking"
-    if down or stopped:
-        return "unsure"
-    return {"A": "held", "": "unsure", "X": "lacking"}[key]
+    """The table of _fo_holds, written again here from its docstring."""
+    if rec == "none":
+        return "absent"
+    if rec == "A" and live and snap and rep and not down and not stopped and key == "A":
+        return "held"
+    return "unsure"
 
 
 def sec11():
-    print("[11] the take-over table — every case, and three invariants")
+    print("[11] the take-over table — every case, and four invariants")
     import itertools
     bad, inv = [], []
     for rec, live, snap, waits, rep, down, stopped, key in itertools.product(
@@ -800,7 +811,7 @@ def sec11():
         for assume in (False, True):
             got = P._fo_holds(n, sn, "na", "nb", bool(live), assume)
             exp = "held" if (assume and want == "unsure") else want
-            if got != tuple([["awg0"] if c == exp else [] for c in ("held", "lacking", "unsure")]):
+            if got != tuple([["awg0"] if c == exp else [] for c in ("held", "absent", "unsure")]):
                 bad.append((case, assume, got, exp))
                 continue
             nn, r = json.loads(json.dumps(n)), roster()
@@ -813,17 +824,18 @@ def sec11():
             if exp == "unsure":
                 inv.append((case, assume, "acted in doubt"))
                 continue
-            dropped = "awg0" in (nn["nb"].get("delete") or {})
             on_b = all(t["node"] == "nb" for t in r["peers"]["p1"]["targets"])
-            kept_key = (nn["nb"].get("ifaces") or {}).get("awg0", {}).get("public_key") == KA
-            if dropped and rec == "A" and not (live and exp == "lacking"):    # I1: delete A's key only where a reporting B certainly lacks it
-                inv.append((case, assume, "I1 deleted B's copy"))
-            if on_b and exp != "held":                                        # I2: peers only onto what B holds
-                inv.append((case, assume, "I2 peers moved onto a lacking interface"))
-            if kept_key and not on_b:                                         # I3: an ordinary B never keeps A's key unmoved
-                inv.append((case, assume, "I3 B kept A's key, peers left on A"))
+            bkey = (nn["nb"].get("ifaces") or {}).get("awg0", {}).get("public_key")
+            if nn["nb"].get("delete") or nn["nb"].get("ifaces", {}).keys() != n["nb"].get("ifaces", {}).keys():
+                inv.append((case, assume, "I1 a take-over deleted something on B"))
+            if on_b != (exp == "held"):                                       # I2: peers move onto what B holds, and only that
+                inv.append((case, assume, "I2 peers moved: %s, class %s" % (on_b, exp)))
+            if bkey and not on_b:                                             # I3: an ordinary B never keeps a copy unmoved
+                inv.append((case, assume, "I3 B kept a copy, peers left on A"))
+            if on_b and bkey != KA:                                           # I4: peers land on A's current identity
+                inv.append((case, assume, "I4 peers moved onto a copy without A's key"))
     check("[11] _fo_holds follows its table in all 768 cases (384 × assume)", not bad, bad[:3])
-    check("[11] the take-over keeps the three invariants in every case, and refuses only in doubt", not inv, inv[:3])
+    check("[11] the take-over keeps the four invariants in every case, and refuses only in doubt", not inv, inv[:3])
 
 
 # ── [9] reconcile.js ─────────────────────────────────────────────────────────────────────────────────────────────────

@@ -6364,7 +6364,7 @@ export const STR = {
   "not a failover node": "это не нода-зеркало",
   "{v1} is not reporting — move the peers once it is": "{v1} не выходит на связь — переносите пиры, когда выйдет",
   "Not running on {v1} with {v2}'s key right now: {v3} — move the peers once they are": "Сейчас не работают на {v1} с ключом {v2}: {v3} — переносите пиры, когда заработают",
-  "Not running on {v1} right now: {v2} — removing the copies on {v3} would delete the only ones running. Move the peers to {v3} instead": "Сейчас не работают на {v1}: {v2} — удалить копии на {v3} значит удалить единственные работающие. Перенесите пиры на {v3}",
+  "Running only on {v1} right now: {v2} — removing the copies there would cut its clients off. Move the peers to {v1}, or keep them once {v3} runs these again": "Сейчас работают только на {v1}: {v2} — удаление копий там отключит её клиентов. Перенесите пиры на {v1} или оставьте их, когда {v3} снова их запустит",
   "take_over must be true or false": "take_over должен быть true или false",
   "this node is being transferred to another panel": "эта нода переносится на другую панель",
   "{v1} has a failover node — detach it before a transfer": "У {v1} есть зеркало — отсоедините его перед переносом",
