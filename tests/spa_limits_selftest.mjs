@@ -32,7 +32,7 @@
  *                                              sep|seed|usersend|tgtdoor|dirty|r7|issues|crash|volcut|volcarry|volgb|clean|
  *                                              slowlim|volreason|substate|groupguard|usedperiod|usedown|
  *                                              limscut|limsn|limsguard|limsexp|limsfoot|limsowner|limsclean|limswhy|limsnoname|
- *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow
+ *                                              tracked|limtracked|peerdirty|usertracked|grouptracked|ipfollow|iplanded
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -50,7 +50,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   keyheld: ["js/limits.js", "  if (!t || isSelfContainedTgt(t) || gapOf(t)) return null;", "  if (!t) return null;"],                                         // [4]
   clean: ["js/limits.js", "  return ks.every(k => okRate(raw[k])) ? raw : null;", "  return raw;"],                                                       // [1]
   gapkey: ["js/limits.js", "if (!(((Store.stats[t.node] || {}).net_deps || {}).limits)) return \"old\";", "if (!(((Store.stats[t.node] || {}).net_deps || {}).reach)) return \"old\";"],   // [5]
-  rawgap: ["js/limits.js", ": rawUnvouchedAt(t) ? \"raw\" : null;", ": null;"],                                           // [5]
+  rawgap: ["js/limits.js", ": (nr.reach_unvouched_raw || []).includes(t.iface) ? \"raw\" : null;", ": null;"],                                           // [5]
   rcarry: ["reconcile.js", "limits: t.limits || null,   // THIS deployment's own", "limits: null,   // THIS deployment's own"],                                                  // [2]
   kcarry: ["reconcile.js", "                 limits: t.limits || null,   // its own speed limit (R7)", "                 limits: null,   // its own speed limit (R7)"],   // [2]
   sep: ["js/limits.js", "SEP_RE.test(s) ? \"sep\" :", "false ? \"sep\" :"],                                                                             // [1]
@@ -79,7 +79,8 @@ const PLANTS = {   // name: [file, anchor, replacement]
   limtracked: ["js/limits.js", "<div class=\"field limfield\" data-tracked>", "<div class=\"field limfield\">"],   // [10]
   peerdirty: ["js/sheets-crud.js", "    dirtyRef=${{ current: _dirty }}", "    dirtyRef=${{ current: lim.changed || vol.changed }}"],   // [10]
   usertracked: ["js/peer-ui.js", "<input data-tracked value=${tag} onInput", "<input value=${tag} onInput"],   // [10]
-  ipfollow: ["js/sheets-crud.js", "if (!(k in next) || (seen[k] !== ip && next[k] === seen[k])) {", "if (!(k in next)) {"],   // [10]
+  ipfollow: ["js/sheets-crud.js", "    else if (next[k] !== ip) { next[k] = ip; ch = true; }", ""],   // [10] an untouched field no longer follows
+  iplanded: ["js/sheets-crud.js", "    else if (typed.has(k)) { if (next[k] === ip) typed.delete(k); }", "    else if (typed.has(k)) { }"],   // [10] a landed edit never follows again
   grouptracked: ["js/peer-ui.js", "<div class=\"sharebar\" data-tracked>", "<div class=\"sharebar\">"],   // [10]
   limsn: ["js/peer-ui.js", "  const n = (exp ? 1 : 0) + (limClean(rec.limits) ? 1 : 0) + (volClean(rec.volume) ? 1 : 0);", "  const n = exp ? 1 : 0;"],   // [9]
   limsguard: ["js/peer-ui.js", "foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), cancelLabel: T(\"Close\"),", "foot=${footRow({ onCancel: closeModal, cancelLabel: T(\"Close\"),"],   // [9]
@@ -390,13 +391,33 @@ print(json.dumps([m._node_issues({}, {"limit_err": {"awg0": "tc: no", "caps": "r
       const n = (source("js/" + f).match(/<\$\{(?:Limit|Volume)Field\}/g) || []).length;
       if (n) hosts[f] = n;
     }
-    check("every sheet that hosts a limit field is one whose dirtyRef tracks it (limits 1, peer-ui 8, sheets-crud 2)",
+    // ⚠️ A COUNT, NOT A PROOF (verify F12): it cannot see which sheet a field sits in. It turns red when a host is added, removed
+    // or moved, so the change is looked at: each host's dirtyRef must carry lim / vol .changed (the checks above name each one).
+    check("the hosts of a limit field are the ones checked above (limits 1, peer-ui 8, sheets-crud 2) — a change here needs a look",
           JSON.stringify(hosts) === JSON.stringify({ "limits.js": 1, "peer-ui.js": 8, "sheets-crud.js": 2 }), hosts);
-    check("review F1: an address moved elsewhere (Fix address, Restore) is followed while its field is untouched — Save no longer sends the old one back, Close no longer asks",
-          ep.includes("if (!(k in next) || (seen[k] !== ip && next[k] === seen[k])) { next[k] = ip; seen[k] = ip; ch = true; } });")
-          && ep.includes('}, [live.targets.map(t => tkey(t.node, t.iface) + "=" + (t.ip || "")).join(",")]);'));
+    check("review F1: Edit peer's fields follow the live addresses through followIps, typing marks a field",
+          ep.includes("useEffect(() => { setIps(prev => followIps(prev, live.targets, ipTyped.current)); },")
+          && ep.includes("const setIpFor = (k, v) => { ipTyped.current.add(k); setIps(m => ({ ...m, [k]: v })); };"));
     const ls = body(pu2, "export function LimitsSheet(");
     check("the Limits sheet: the date tracked, no effect handing the guard back any more", ls.includes('class="datein" data-tracked') && !ls.includes("cleanRef"));
+    // followIps run, not read (verify F8/F11/F13): an address moved elsewhere vs what was typed in the sheet
+    const SC = await load("js/sheets-crud.js");
+    const T1 = ip => [{ node: "n1", iface: "awg0", ip: ip + "/32" }];
+    let typed = new Set(), f = { "n1|awg0": "10.0.0.5" };
+    f = SC.followIps(f, T1("10.0.0.7"), typed);
+    check("an untouched field follows an address moved elsewhere (Fix address, Restore, another tab)", f["n1|awg0"] === "10.0.0.7", f);
+    const same = SC.followIps(f, T1("10.0.0.7"), typed);
+    check("…and nothing new hands back the same object (no re-render)", same === f);
+    typed.add("n1|awg0"); f = { "n1|awg0": "10.0.0.5" };          // F11: typed back to the opening address
+    f = SC.followIps(f, T1("10.0.0.7"), typed);
+    check("⚠️ a field typed in is kept, even typed back to the address the sheet opened with (F11)", f["n1|awg0"] === "10.0.0.5" && typed.has("n1|awg0"), f);
+    typed = new Set(["n1|awg0"]); f = { "n1|awg0": "10.0.0.9" };    // F8: the edit lands live (a save the sheet stayed open after)
+    f = SC.followIps(f, T1("10.0.0.9"), typed);
+    check("⚠️ once the live address equals what was typed, the edit has landed — the field is untouched again (F8)", !typed.has("n1|awg0"), [...typed]);
+    f = SC.followIps(f, T1("10.0.0.20"), typed);
+    check("⚠️ …so a later move elsewhere is followed, not undone by Save", f["n1|awg0"] === "10.0.0.20", f);
+    f = SC.followIps({}, [{ node: "n2", iface: "wg0", ip: "10.1.0.2" }], new Set());
+    check("a deployment added while the sheet is open gets its field", f["n2|wg0"] === "10.1.0.2", f);
   }
 
   console.log("\n[7] Russian");

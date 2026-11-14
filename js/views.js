@@ -479,8 +479,19 @@ const unvouchedTarget = t => (((Store.nodes || []).find(x => x.id === t.node) ||
 // at "Same user and their groups" a device connected over RAW is reached by nobody (A7); at Everyone a Private one is guarded
 // by its WG address only.
 export const rawUnvouchedAt = t => !!t && (((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched_raw || []).includes(t.iface);
-// Reached at "Same user and their groups" over WG only: over RAW nobody reaches it (at Everyone RAW changes nothing).
-const rawOnlyWg = t => targetOpen(t) === "user" && rawUnvouchedAt(t);
+// Which deployment names a device's row, of those that let the viewer in (`lv` = each one's targetOpen, computed once). The first,
+// as always (spa_scale's equivalence with the pre-K3 walk) — unless RAW narrows it: on a qWDTT 1.4.3 instance at "user" a device
+// is reached over WG only (`raw`), while the same device at Everyone on awg0 is reached whichever path it dials, so a deployment
+// RAW does not narrow names it instead — but only one at least as online (verify F9/F10: a device connected only over the
+// narrowed one reads online there, with its note). ⚠️ RAW NARROWS ONE DEPLOYMENT, NOT THE DEVICE. Both bubbles ask here.
+function reachPick(ok) {
+  if (!ok.length) return null;
+  const rawOf = ({ t, lv }) => lv === "user" && rawUnvouchedAt(t);
+  const first = ok[0];
+  if (!rawOf(first)) return { t: first.t, raw: false };
+  const alt = ok.find(o => !rawOf(o) && (o.t.online || !first.t.online));
+  return alt ? { t: alt.t, raw: false } : { t: first.t, raw: true };
+}
 // PROMOTED: an interface set to Everyone with a private device on it, so the node has a table for it — it guards the private
 // devices by address and passes everything else. The PANEL decides which (it builds the table) and publishes it per node;
 // this reads that verdict rather than deriving a second one. It changes nobody's reach but the private devices' — it is what
@@ -556,9 +567,14 @@ export function reachableByGroup(uid) {
   const out = [];
   for (const p of Store.peersByUser(uid)) {
     if (p.disabled || p.expired || p.unassigned) continue;
-    const ok = (p.targets || []).filter(x => x && x.node && !(p.private && nodeEnforces(x.node)) && (lv => lv === "everyone" || lv === "user")(targetOpen(x)));
-    const t = ok.find(x => !rawOnlyWg(x)) || ok[0];    // a deployment RAW does not narrow names the row when there is one
-    if (t) out.push({ peer: p, node: t.node, online: (p.targets || []).some(x => x && x.online), raw: rawOnlyWg(t) });
+    const ok = [];
+    for (const x of p.targets || []) {
+      if (!x || !x.node || (p.private && nodeEnforces(x.node))) continue;
+      const lv = targetOpen(x);
+      if (lv === "everyone" || lv === "user") ok.push({ t: x, lv });
+    }
+    const pick = reachPick(ok);
+    if (pick) out.push({ peer: p, node: pick.t.node, online: (p.targets || []).some(x => x && x.online), raw: pick.raw });
   }
   return out.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || deviceLabel(a.peer).localeCompare(deviceLabel(b.peer)));
 }
@@ -582,10 +598,10 @@ export function userReach(uid) {
     if (p.disabled || p.expired || p.unassigned) continue;
     for (const t of p.targets || []) if (t && t.node) myNodes.add(t.node);
   }
-  const allows = (t, owner) => {
-    if (!t || !t.node || !myNodes.has(t.node)) return false;
+  const allowed = (t, owner) => {             // the level that lets this user in there, or null
+    if (!t || !t.node || !myNodes.has(t.node)) return null;
     const lv = targetOpen(t);
-    return lv === "everyone" || (lv === "user" && mates.has(owner));
+    return lv === "everyone" || (lv === "user" && mates.has(owner)) ? lv : null;
   };
   const rows = [];
   for (const other of reachOwners(uid)) {
@@ -595,18 +611,23 @@ export function userReach(uid) {
     for (const p of Store.peersByUser(other)) {
       if (p.disabled || p.expired) continue;
       // The deployment that ALLOWS it names the row: its address and its node. A device reachable on two shared nodes is
-      // still one device — it is listed once, at the first deployment that lets this user in.
+      // still one device — it is listed once, at the deployment reachPick chooses of those that let this user in.
       // ⚠️ Every device in this loop belongs to SOMEBODY ELSE (reachOwners never returns the viewer), so a private one is
       // not reachable — but only WHERE THE NODE ENFORCES IT. Private was applied before targetOpen() was consulted, so on a
       // node too old to restrict, or one not reporting, the bubble reported a device as reached by nobody while everything
       // on that subnet still reached it: claiming an isolation the box does not have, which is the one answer this file
       // says is worse than none. The panel plans the node's table the same way, so the two cannot disagree.
-      // ⚠️ RAW NARROWS ONE DEPLOYMENT, NOT THE DEVICE: one on a qWDTT 1.4.3 instance at "user" is reached over WG only, but the
-      // same device at Everyone on awg0 is reached whichever path it dials — so a deployment RAW does not narrow names the row.
-      const ok = (p.targets || []).filter(x => allows(x, other) && !(p.private && nodeEnforces(x.node)));
-      const t = ok.find(x => !rawOnlyWg(x)) || ok[0];
-      if (!t) continue;
-      devices.push({ peer: p, online: !!t.online, node: t.node, ip: t.ip ? String(t.ip).split("/")[0] : "", raw: rawOnlyWg(t) });
+      // Of several that allow it, reachPick chooses (online first, then one RAW does not narrow).
+      const ok = [];
+      for (const x of p.targets || []) {
+        if (p.private && x && nodeEnforces(x.node)) continue;
+        const lv = allowed(x, other);
+        if (lv) ok.push({ t: x, lv });
+      }
+      const pick = reachPick(ok);
+      if (!pick) continue;
+      const t = pick.t;
+      devices.push({ peer: p, online: !!t.online, node: t.node, ip: t.ip ? String(t.ip).split("/")[0] : "", raw: pick.raw });
     }
     devices.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || deviceLabel(a.peer).localeCompare(deviceLabel(b.peer)));
     if (devices.length) rows.push({ user: u, devices, online: devices.filter(d => d.online).length });

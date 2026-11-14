@@ -847,6 +847,19 @@ export function openEditPeer(peer, focus, done, flash) {
   const child = modalDepth() > 0;   // opened from another modal (peer view) → child; closing pops back to it
   (child ? pushModal : openModal)(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal} flash=${flash} child=${child}/>`);
 }
+// Edit peer's address fields against the live deployments (see EditPeerSheet): a new one gets a field, an untouched one follows
+// the live address, one typed in (`typed`, a Set of keys) is kept until the live address equals it — then it has landed and
+// follows again. Returns `prev` itself when nothing changed. Exported for the gate (spa_limits_selftest [10]).
+export function followIps(prev, targets, typed) {
+  const next = { ...prev }; let ch = false;
+  for (const t of targets || []) {
+    const k = tkey(t.node, t.iface), ip = (t.ip || "").split("/")[0];
+    if (!(k in next)) { next[k] = ip; ch = true; }
+    else if (typed.has(k)) { if (next[k] === ip) typed.delete(k); }
+    else if (next[k] !== ip) { next[k] = ip; ch = true; }
+  }
+  return ch ? next : prev;
+}
 export function EditPeerSheet({ peer, focus, done, flash, child }) {
   done = done || closeModal;
   useStore();                                        // re-render on poll so a target added via the Targets sheet shows up live
@@ -854,18 +867,15 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const targetsOrdered = useStableOrder(live.targets);   // frozen at open — the primary ★ won't re-shuffle rows mid-edit
   const [title, setTitle] = useState(peer.title || "");
   const [ips, setIps] = useState(() => Object.fromEntries(live.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
-  const ipSeen = useRef(null);                       // the live address each field last took — what "not edited here" means
-  if (!ipSeen.current) ipSeen.current = { ...ips };
+  const ipTyped = useRef(new Set());                 // the fields typed in here whose value has not landed live yet
   // A newly-added target appears live → give it an IP field. ⚠️ AN ADDRESS MOVED ELSEWHERE (Fix address from this sheet, a
   // Restore, another tab) is followed while its field is untouched: the field kept the old one, so Save sent it back — undoing
-  // the fix — and the close guard (the Save gate since limits-f14raw) asked about an edit nobody made. One edited here is kept.
-  useEffect(() => {
-    setIps(prev => { const next = { ...prev }, seen = ipSeen.current; let ch = false;
-      live.targets.forEach(t => { const k = tkey(t.node, t.iface), ip = (t.ip || "").split("/")[0];
-        if (!(k in next) || (seen[k] !== ip && next[k] === seen[k])) { next[k] = ip; seen[k] = ip; ch = true; } });
-      return ch ? next : prev; });
-  }, [live.targets.map(t => tkey(t.node, t.iface) + "=" + (t.ip || "")).join(",")]);
-  const setIpFor = (k, v) => setIps(m => ({ ...m, [k]: v }));
+  // the fix — and the close guard (the Save gate since limits-f14raw) asked about an edit nobody made. "Untouched" is a fact,
+  // never guessed from values (verify F8/F11): typed in here and not yet live is kept, a revert to the opening address included;
+  // once the live address equals what was typed, the edit has landed and the field follows again.
+  useEffect(() => { setIps(prev => followIps(prev, live.targets, ipTyped.current)); },
+    [live.targets.map(t => tkey(t.node, t.iface) + "=" + (t.ip || "")).join(",")]);
+  const setIpFor = (k, v) => { ipTyped.current.add(k); setIps(m => ({ ...m, [k]: v })); };
   const [loaded, setLoaded] = useState(false);
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
   // "node|iface" -> {dns,mtu,keepalive,allowed} for THAT deployment. Was one set for the whole peer, which
