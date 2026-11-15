@@ -56,7 +56,7 @@ if P_LATCH:
     src = src.replace(a1, '        st["mute"] = 0', 1).replace(a2, '    if False:', 1)
 
 ANY = PERTURB or P_LATCH
-path = os.path.join(ROOT, "__perturb_noded.py") if ANY else NODED
+path = os.path.join(ROOT, "__perturb_noded_%d.py" % os.getpid()) if ANY else NODED   # per run: plants run side by side
 if ANY:
     open(path, "w").write(src)
 l = importlib.machinery.SourceFileLoader("noded_bh", path)
