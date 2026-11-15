@@ -105,7 +105,6 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      srv-absent      a csqtt copy not made yet says "waiting for the vault"
      srv-reply-rid   the sync handler builds B's WDTT reply without its primary's passwords
      upd-b        the updates sheet lists B's WDTT / csqtt, whose Update is refused there
-     pf-turn      the preview's "turn proxies not copied" reads only a pending request
      r2-del       a server copy whose delete is staged reads as unmanaged
      r2-domain    a take-over leaves a server listening on every address without A's domain
      r3-v6wild    a take-over carries A's domain into an IPv6 wildcard (B then binds IPv4 only)
@@ -193,8 +192,8 @@ PLANTS = {   # (file, anchor, replacement)
         return "current" if bk == blessed else "stale"'''),
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
-    "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):',
-                      '        if r["cc"] != "current":'),
+    "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown") or not r["kind"].moves:',
+                      '        if r["cc"] != "current" or not r["kind"].moves:'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
                     '    if left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    else:\n        _dk = "took over {v1}"'),
@@ -242,6 +241,26 @@ PLANTS = {   # (file, anchor, replacement)
                       '        if True:\n            return True\n        blessed = self.bkey(src)'),
     'srv-ports': ("panel", '            if 0 < p <= 65535:\n                out.append(p)\n        return out',
                       '            if False:\n                out.append(p)\n        return out'),
+    # copies by kind, R2: the turn proxies (§12)
+    'tp-bind': ("panel", '"title": str(src.get("title") or "").strip(),\n              "at": int(time.time())}',
+                '"title": str(src.get("title") or "").strip(), "bind_ip": src.get("bind_ip") or "",\n              "at": int(time.time())}'),
+    'tp-pending': ("panel", '                and n not in (w.get("turn") or {}))\n\n    def clone(',
+                   '                )\n\n    def clone('),
+    'tp-capable': ("panel", "        return (bool(bs) and bs.get(\"turn_manage\") is not False and bs.get(\"turn_capable\") is not False\n",
+                   "        return (bool(bs)\n"),
+    'tp-norm': ("panel", '        diff = [k for k in FO_TP_FOLLOW if _fo_norm(src.get(k)) != _fo_norm(bov.get(k))]',
+                '        diff = [k for k in FO_TP_FOLLOW if (src.get(k) or "") != (bov.get(k) or "")]'),
+    'tp-title': ("panel", '        if diff == ["title"]:', '        if False:'),
+    'tp-wait': ("panel", '        if bov.get("installing") or n in (w.get("turn") or {}):', '        if bov.get("installing"):'),
+    'tp-moves': ("panel", '    kind, identity, moves = "turn", False, False', '    kind, identity, moves = "turn", False, True'),
+    'tp-door': ("panel", '        and svc not in _FoTurn._rows(asnap)', '        or True'),
+    'tp-unmanaged': ("panel", '    if isinstance(asnap, dict) and isinstance(asnap.get("turn_proxies"), list):   # A\'s own report says what it runs',
+                     '    if isinstance(asnap, dict):'),
+    'tp-dial': ("panel", '        if host not in _FO_WILD:\n            return host', '        if True:\n            return host'),
+    'tp-absent': ("panel", '            return "problem", "no_turn", {}', '            return "syncing", "creating", {}'),
+    'tp-hold': ("panel", '    return bool(_turn_hold_get(failover_rid(nodes, nid), "fork:" + fork))',
+                '    return bool(_turn_hold_get(nid, "fork:" + fork))'),
+    'tp-ports': ("panel", '        return [p] if isinstance(p, int) and 0 < p <= 65535 else []', '        return []'),
     'srv-subnet': ("panel", ' or nm.split(" (raw)")[0] in _copies:', ':'),
     'srv-stale-door': ("panel", '        _rebuild = [n for n in (cls[3] if take else ()) if n in _srcs and _srcs[n][0].rebuildable(_srcs[n][1], _ivk)]',
                       '        _rebuild = [n for n in (cls[3] if take else ()) if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]'),
@@ -261,7 +280,6 @@ PLANTS = {   # (file, anchor, replacement)
     'r2-domain': ("panel", '            bov["listen"] = "%s:%d" % (host, p)', '            pass'),
     'r3-v6wild': ("panel", ' and h in ("", "0.0.0.0", "*"):', ':'),
     'r2-nolisten': ("panel", '        if not p:\n            return\n        if _fp_bind_host(bov["listen"]):', '        if _fp_bind_host(bov["listen"]):'),
-    'pf-turn': ("panel", '    if snap.get("turn_proxies") or a.get("turn"):', '    if a.get("turn"):'),
     'upd-b': ("panel", '''        if kind != "turn" and nid in _fob:''', '''        if False:'''),
     'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)'),
 }
@@ -1432,10 +1450,6 @@ def sec14():
           and {"iface": "csqtt1", "port": 56002} in pf["warn"]["ports"]
           and any(x["iface"] == "wdtt1" for x in pf["warn"]["ip_endpoint"])
           and not any(x["iface"] == "csqtt1" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
-    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, t_fleet(), "na",
-                              dict(snaps, na=dict(snaps["na"], turn_proxies=[{"service": "vk-turn-proxy-x-1"}])), {"na": NOW})
-    check("[14] a turn proxy A runs, no request pending: the preview says it is not copied (F11)",
-          [x for x in pf["warn"]["not_mirrored"] if x["kind"] == "turn"], pf["warn"]["not_mirrored"])
     nv = t_fleet(); nv["na"]["wdtt"]["wdtt1"]["key_blob"]["vault"] = "an-older-vault"
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, nv, "na", snaps, {"na": NOW})
     check("[14] a WDTT whose key the vault cannot rebuild is refused, as an interface is",
@@ -1546,9 +1560,173 @@ def sec14():
           c == 409 and o.get("code") == "failover_stale" and "wdtt1" in (o.get("error") or ""), (c, o))
 
 
+TPS = "vk-turn-proxy-cacggghp-56100"
+
+
+def tp_row(svc=TPS, **kw):
+    r = {"service": svc, "listen": "0.0.0.0:56100", "connect": "127.0.0.1:443", "params": "-wrap -wrap-key abc",
+         "wrap_key": "abc", "title": "main", "version": "v1.2", "running": True, "bind_ip": "203.0.113.5"}
+    r.update(kw)
+    return r
+
+
+def sec15():
+    print("[15] the turn proxies")
+    seen = {"na": NOW, "nb": NOW}
+    sa = {"interfaces": {"awg0": snap_iface()}, "turn_proxies": [tp_row()]}
+    sb = {"interfaces": {"awg0": snap_iface()}, "turn_proxies": [], "arch": "amd64"}
+    n = fleet()
+    P.failover_mirror(DEPS, n, "nb", {"na": sa, "nb": sb}, seen, now=NOW)
+    rq = (n["nb"].get("turn") or {}).get(TPS) or {}
+    check("[15] a proxy A reports and B does not: B gets an install of it — A's listen verbatim, its connect, params (A's "
+          "wrap key, which A's clients hold) and title",
+          rq.get("action") == "install" and rq.get("listen") == "0.0.0.0:56100" and rq.get("connect") == "127.0.0.1:443"
+          and rq.get("params") == "-wrap -wrap-key abc" and rq.get("title") == "main" and rq.get("owner"), rq)
+    check("[15] …never A's \"Listen on\" pin (B's addresses are its own), and no pin the panel holds no bytes for",
+          "bind_ip" not in rq and "pin" not in rq, rq)
+    check("[15] …and a pass with the install pending changes nothing",
+          P.failover_mirror(DEPS, n, "nb", {"na": sa, "nb": sb}, seen, now=NOW) is False, n["nb"].get("turn"))
+    n["nb"]["turn"][TPS]["at"] = NOW - 100
+    P.failover_mirror(DEPS, n, "nb", {"na": sa, "nb": sb}, seen, now=NOW)
+    check("[15] …an install already staged is left as it is (its age is what clears a failed one)",
+          n["nb"]["turn"][TPS]["at"] == NOW - 100, n["nb"]["turn"][TPS])
+    nd = fleet()
+    P.failover_mirror(DEPS, nd, "nb", {"na": sa, "nb": sb}, {"na": NOW - 10_000, "nb": NOW}, now=NOW)
+    check("[15] A not reporting: installed from its last snapshot all the same (adding is safe)",
+          TPS in (nd["nb"].get("turn") or {}), nd["nb"].get("turn"))
+    for flag in ("turn_capable", "turn_manage"):
+        nx = fleet()
+        P.failover_mirror(DEPS, nx, "nb", {"na": sa, "nb": dict(sb, **{flag: False})}, seen, now=NOW)
+        check("[15] B says it cannot run turn proxies (%s): nothing staged" % flag, not nx["nb"].get("turn"), nx["nb"].get("turn"))
+    nx = fleet()
+    P.failover_mirror(DEPS, nx, "nb", {"na": sa}, seen, now=NOW)
+    check("[15] B never reported: nothing staged", not nx["nb"].get("turn"), nx["nb"].get("turn"))
+
+    # follow: B reports it — as each box reports it configured, so the comparison settles
+    nf = fleet()
+    sbr = dict(sb, turn_proxies=[tp_row(bind_ip="")])
+    P.failover_mirror(DEPS, nf, "nb", {"na": sa, "nb": sbr}, seen, now=NOW)       # the first pass clones the interface
+    check("[15] B reporting the same proxy: steady, nothing written",
+          P.failover_mirror(DEPS, nf, "nb", {"na": sa, "nb": sbr}, seen, now=NOW) is False and not nf["nb"].get("turn"),
+          nf["nb"].get("turn"))
+    sa2 = dict(sa, turn_proxies=[tp_row(listen="a.example.com:56200", params="-wrap  -wrap-key   xyz")])
+    P.failover_mirror(DEPS, nf, "nb", {"na": sa2, "nb": sbr}, seen, now=NOW)
+    mq = (nf["nb"].get("turn") or {}).get(TPS) or {}
+    check("[15] A's listen and params change: one manage carrying A's values",
+          mq.get("action") == "manage" and mq.get("listen") == "a.example.com:56200" and mq.get("params") == "-wrap  -wrap-key   xyz"
+          and mq.get("connect") == "127.0.0.1:443" and "bind_ip" not in mq, mq)
+    nf2 = fleet()
+    P.failover_mirror(DEPS, nf2, "nb", {"na": sa, "nb": dict(sb, turn_proxies=[tp_row(params=" -wrap -wrap-key abc ")])}, seen, now=NOW)
+    check("[15] the same params spaced otherwise: no manage (a restart of a serving proxy for nothing)",
+          not nf2["nb"].get("turn"), nf2["nb"].get("turn"))
+    nf3 = fleet()
+    P.failover_mirror(DEPS, nf3, "nb", {"na": dict(sa, turn_proxies=[tp_row(title="renamed")]), "nb": sbr}, seen, now=NOW)
+    check("[15] a title alone: the title request, which never restarts the proxy",
+          ((nf3["nb"].get("turn") or {}).get(TPS) or {}).get("action") == "title"
+          and nf3["nb"]["turn"][TPS].get("title") == "renamed", nf3["nb"].get("turn"))
+    nf4 = fleet(); nf4["nb"]["turn"] = {TPS: {"action": "reinstall", "at": NOW, "auto": True}}
+    P.failover_mirror(DEPS, nf4, "nb", {"na": sa2, "nb": sbr}, seen, now=NOW)
+    check("[15] a request of B's in flight (an auto-update): the follow waits for it",
+          nf4["nb"]["turn"][TPS].get("action") == "reinstall", nf4["nb"]["turn"])
+
+    # never deleted: A live and its report agreeing does not drop a proxy
+    ng = fleet()
+    P.failover_mirror(DEPS, ng, "nb", {"na": dict(sa, turn_proxies=[]), "nb": sbr}, seen, now=NOW)
+    check("[15] A no longer reports it: B's proxy is never deleted by the mirror", not ng["nb"].get("turn"), ng["nb"].get("turn"))
+
+    # status
+    def view(nn, bs, asn=sa):
+        fv = P.failover_view(nn, roster(), "na", "nb", {"na": asn, "nb": bs}, seen, frozenset(), now=NOW, ivk=IVK)
+        return {r["iface"]: r for r in fv["rows"]}, fv
+    rows, _ = view(n, sb)
+    check("[15] status: installing — a row of kind turn", rows.get(TPS, {}).get("why") == "creating"
+          and rows[TPS].get("kind") == "turn" and rows[TPS].get("state") == "syncing", rows.get(TPS))
+    rows, _ = view(fleet(), sbr)
+    check("[15] B runs it as A does: no row", TPS not in rows, rows.get(TPS))
+    rows, _ = view(fleet(), dict(sb, turn_proxies=[tp_row(running=False)]))
+    check("[15] B's proxy not running: down", rows.get(TPS, {}).get("why") == "down" and rows[TPS]["state"] == "problem", rows.get(TPS))
+    rows, _ = view(fleet(), dict(sb, turn_proxies=[tp_row(connect="127.0.0.1:444")]))
+    check("[15] B's differs from A's: drift, the keys named", rows.get(TPS, {}).get("why") == "drift"
+          and rows[TPS].get("keys") == ["connect"], rows.get(TPS))
+    rows, _ = view(fleet(), dict(sb, turn_capable=False))
+    check("[15] B cannot run one: said, not \"creating\" for ever", rows.get(TPS, {}).get("why") == "no_turn", rows.get(TPS))
+    _, fv = view(fleet(), dict(sbr, turn_proxies=[tp_row(bind_ip=""), tp_row("vk-turn-proxy-cacggghp-56300")]))
+    check("[15] a proxy B runs that A's report does not name is listed as B's own",
+          {"kind": "unmanaged_turn", "services": ["vk-turn-proxy-cacggghp-56300"]} in fv["problems"], fv["problems"])
+    _, fv = view(fleet(), dict(sbr, turn_proxies=[tp_row("vk-turn-proxy-cacggghp-56300")]), asn={"interfaces": {"awg0": snap_iface()}})
+    check("[15] …never on a report of A's that carries no proxy list (a report confirms, never condemns)",
+          not any(x["kind"] == "unmanaged_turn" for x in fv["problems"]), fv["problems"])
+
+    # the take-over and detach: a proxy has no roster target and no identity — nothing to move, nothing they remove
+    snaps_ = {"na": sa, "nb": dict(sb, turn_proxies=[tp_row(running=False)])}
+    nh = fleet(); P.failover_mirror(DEPS, nh, "nb", {"na": sa, "nb": dict(sb, interfaces={})}, seen, now=NOW)
+    h = P._fo_holds(nh, snaps_, "na", "nb", True)
+    check("[15] a proxy down on B never puts the take-over in doubt", not any(TPS in x for x in h), h)
+    check("[15] …nor is it listed as moved or left, or removed by a keep",
+          TPS not in sum(P._fo_takeover_plan(nh, "na", "nb", h, snaps_)[:3], []) and TPS not in P._fo_b_copies(nh["nb"]), h)
+
+    # the doors: B's own proxy is B's to delete; A's copy, and every other turn door, stays refused
+    nr = fleet()
+    sn = {"na": sa, "nb": sbr}
+    f = lambda path, body, snaps=sn: P.failover_ro_refusal(path, body, nr, snaps)
+    check("[15] deleting a proxy of B's own is allowed", f("/api/turn/delete", {"node": "nb", "service": "vk-turn-proxy-x-1"}) is None)
+    check("[15] deleting A's copy on B is refused (the mirror would put it straight back)",
+          (f("/api/turn/delete", {"node": "nb", "service": TPS}) or [0])[0] == 409)
+    check("[15] …and with no report of A's to tell them apart, refused",
+          (f("/api/turn/delete", {"node": "nb", "service": "vk-turn-proxy-x-1"}, {"nb": sbr}) or [0])[0] == 409)
+    check("[15] installing, editing or stopping a proxy on B is refused",
+          all((f(p_, {"node": "nb", "service": "vk-turn-proxy-x-1", "fork": "x", "listen": "1.2.3.4:1", "connect": "127.0.0.1:2"}) or [0])[0] == 409
+              for p_ in ("/api/turn/install", "/api/turn/manage", "/api/turn/stop", "/api/turn/reinstall")))
+
+    # the preview
+    pa = dict(sa, turn_proxies=[tp_row(), tp_row("vk-turn-proxy-cacggghp-56400", listen="198.51.100.7:56400")])
+    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, fleet(), "na", {"na": pa}, {"na": NOW})
+    check("[15] the preview names a proxy's port, and the one clients reach by IP",
+          {"iface": TPS, "port": 56100} in pf["warn"]["ports"] and {"iface": "vk-turn-proxy-cacggghp-56400", "port": 56400} in pf["warn"]["ports"]
+          and any(x["iface"] == "vk-turn-proxy-cacggghp-56400" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
+    check("[15] …a proxy on a wildcard is dialled at the interface it forwards to (a name: no warning)",
+          not any(x["iface"] == TPS for x in pf["warn"]["ip_endpoint"]), pf["warn"]["ip_endpoint"])
+    check("[15] …and no longer files turn proxies as not copied",
+          not [x for x in pf["warn"]["not_mirrored"] if x["kind"] == "turn"], pf["warn"]["not_mirrored"])
+
+    # the auto-updater: a failover node runs the build its primary is held on (a rollback on A holds B's copy too)
+    td = tempfile.mkdtemp(dir=TMP)
+    lt = time.localtime()
+    json.dump({"turn_update": {"every_days": 1, "at": "%02d:%02d" % (lt.tm_hour, lt.tm_min)}}, open(os.path.join(td, "ps.json"), "w"))
+    json.dump(fleet(), open(os.path.join(td, "nodes.json"), "w"))
+    json.dump({"na|fork:cacggghp": {"tag": "v1.2"}}, open(os.path.join(td, "holds.json"), "w"))
+    _saved = (P.TURN_HOLDS_PATH, P._resolve_turn_tag, P.turn_pin, getattr(P.Handler, "deps", None))
+    P.TURN_HOLDS_PATH, P._resolve_turn_tag, P.turn_pin = os.path.join(td, "holds.json"), (lambda o: "v2.0"), (lambda *a, **k: {})
+    P.Handler.deps = {"panel_settings_path": os.path.join(td, "ps.json"), "nodes_path": os.path.join(td, "nodes.json"),
+                      "roster_path": os.path.join(td, "users.json"), "node_snaps": {"nb": dict(sbr, turn_proxies=[tp_row(version="v1.2")])}}
+    try:
+        P._turn_autoupdate_tick()
+    finally:
+        P.TURN_HOLDS_PATH, P._resolve_turn_tag, P.turn_pin, P.Handler.deps = _saved
+    check("[15] the auto-updater holds B's copy where A is held", not json.load(open(os.path.join(td, "nodes.json")))["nb"].get("turn"),
+          json.load(open(os.path.join(td, "nodes.json")))["nb"].get("turn"))
+
+    # the sync: B's reply carries the install; B reporting the proxy clears it
+    port, d = start_panel(NEW, "turn-proxy", fleet(), roster(), vault={"ivk_enabled": True, "ivk_pub": IVK})
+    tk = {x: req(port, "/api/nodes/rotate", {"id": x})[1]["data"]["token"] for x in ("na", "nb", "nc")}
+
+    def psync(nid, tps):
+        snap = {"hostname": nid, "generated_at": int(time.time()), "noded_version": "t", "interfaces": {"awg0": snap_iface()},
+                "net_deps": {"limits": True, "reach": 2}, "turn_proxies": tps, "arch": "amd64"}
+        c_, r_ = req(port, "/api/node/sync", {"snapshot": snap}, tk[nid])
+        assert c_ == 200, (c_, r_)
+        return r_
+    psync("na", [tp_row()])
+    rb = psync("nb", [])
+    check("[15] B's sync reply carries the install", ((rb.get("turn") or {}).get(TPS) or {}).get("action") == "install", rb.get("turn"))
+    rb = psync("nb", [tp_row(bind_ip="")])
+    check("[15] …and B reporting the proxy clears it, with nothing new staged", not (rb.get("turn") or {}).get(TPS), rb.get("turn"))
+
+
 def main():
     for name, fn in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7),
-                     ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11), ("[12]", sec12), ("[13]", sec13), ("[14]", sec14)):
+                     ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11), ("[12]", sec12), ("[13]", sec13), ("[14]", sec14),
+                     ("[15]", sec15)):
         guarded(name, fn)
     for p in PROCS:
         p.terminate()

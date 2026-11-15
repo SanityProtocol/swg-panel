@@ -2246,6 +2246,12 @@ def _turn_update_due(sched, last_ts, now_ts):
     return start <= cur < start + 60
 
 
+def _turn_held(nodes, nid, fork):
+    """The auto-updater's hold test: per node and fork (the binary is shared), and a failover node is held where its primary
+    is — it runs the build A is held on (docs/FAILOVER-PLAN.md §12.4)."""
+    return bool(_turn_hold_get(failover_rid(nodes, nid), "fork:" + fork))
+
+
 def _turn_autoupdate_tick():
     deps = getattr(Handler, "deps", None) or {}
     psp = deps.get("panel_settings_path")
@@ -2293,7 +2299,7 @@ def _turn_autoupdate_tick():
             # The operator recreates it as a free-turn-proxy proxy; one already on -obf-profile updates normally.
             if fork == "samosvalishe" and "-wrap" in (tp.get("params") or "") and "-obf" not in (tp.get("params") or ""):
                 continue
-            if _turn_hold_get(nid, "fork:" + fork):      # operator rolled this fork back to a specific version → don't auto-roll it forward (per node+fork: the binary is shared)
+            if _turn_held(nodes, nid, fork):             # operator rolled this fork back to a specific version → don't auto-roll it forward
                 continue
             if fork not in latest:
                 latest[fork] = _resolve_turn_tag(owner)
@@ -2316,7 +2322,7 @@ def _turn_autoupdate_tick():
                 # it with a reinstall resurrected a deleted proxy (the pre-2026-09-18 check looked only for "reinstall").
                 if (nodes[nid].get("turn") or {}).get(svc):
                     continue
-                if _turn_hold_get(nid, "fork:" + fork):  # rolled back while pass 1 fetched → the hold stands
+                if _turn_held(nodes, nid, fork):         # rolled back while pass 1 fetched → the hold stands
                     continue
                 _now_v = {(t or {}).get("service"): (t or {}).get("version") for t in ((live.get(nid) or {}).get("turn_proxies") or [])}
                 if svc not in _now_v or _now_v[svc] == tag:
@@ -13265,6 +13271,9 @@ def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
       - stage: what B should run and does not report — the kind stages it (an interface holds for its key, which the
         browser releases — ifaceKeyAutoRestore). Needs nothing from A, so B repairs itself while A is down.
 
+    A turn proxy has no record on either box: its clone is an install request, its follow a manage, and it is never dropped
+    (_FoTurn).
+
     A key or subnet that differs on B: nothing here (status says `problem`; Re-sync is the operator's)."""
     b = nodes.get(bid)
     aid = failover_rid(nodes, bid)
@@ -13285,22 +13294,22 @@ def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
     for kd in _FO_KINDS:
         kd.prepare(w)
         srcs = kd.a(a, asnap)
-        bs = kd.b(w)                                       # once a kind: a clone hands back its own record
+        bs = kd.b(w, bsnap)                                # once a kind: a clone hands back its own record
         for n, src in srcs.items():
             bov = bs.get(n)
             if bov is None:
-                if not kd.clonable(w, n, src, ivk):
+                if not kd.clonable(w, n, src, ivk, bsnap):
                     continue
-                bov = kd.clone(w, n, src)
+                bov = kd.clone(w, n, src, bsnap)
             if not isinstance(bov, dict) or kd.is_link(bov):
                 continue                                   # a record of B's own that shares the name: never touched
-            kd.follow(bov, src)
+            kd.follow(bov, src, w, n)
         if alive:
             arep = kd.a_reports(asnap)
-            for n in [n for n, ov in kd.b(w).items() if isinstance(ov, dict) and not kd.is_link(ov)
+            for n in [n for n, ov in kd.b(w, bsnap).items() if isinstance(ov, dict) and not kd.is_link(ov)
                       and n not in srcs and n not in arep]:
                 kd.drop(w, n, now_)
-        for n, bov in list(kd.b(w).items()):
+        for n, bov in list(kd.b(w, bsnap).items()):
             if isinstance(bov, dict) and not kd.is_link(bov):
                 kd.stage(w, n, bov, kd.rep(bsnap, n), bsnap, b, bid, ivk)
     prune_exit_refs(w)                                     # B has no exits: a reference to one of A's is the default here,
@@ -13393,6 +13402,8 @@ class _FoKind:
     """The contract. A kind that has no answer to a question keeps the default."""
     kind = ""
     identity = True                  # a kind with no identity (csqtt): any record by the name is A's copy, never stale
+    moves = True                     # the take-over and detach act on it; a kind with no roster target and no identity
+    #                                  (turn) has nothing for them to move or drop: its copy stays where it runs
 
     def bkey(self, rec):
         """The key B's record of a copy carries (what `keys` is compared against)."""
@@ -13402,8 +13413,9 @@ class _FoKind:
         """{name: src} — what A has of this kind."""
         return {}
 
-    def b(self, b_rec):
-        """{name: rec} — what B holds of this kind, B's own included (the copy class tells them apart)."""
+    def b(self, b_rec, bsnap=None):
+        """{name: rec} — what B holds of this kind, B's own included (the copy class tells them apart). `bsnap`: B's report,
+        for a kind whose copies are only what the box reports (turn); None where the caller has no live one."""
         return {}
 
     def a_reports(self, asnap):
@@ -13442,18 +13454,23 @@ class _FoKind:
         """Is roster target `t` one of this kind's (its `iface` then names the copy)?"""
         return False
 
+    def ports(self, src):
+        """The UDP ports A's clients reach `src` on — the preview's firewall list."""
+        return ()
+
     # the mirror pass's writers, on B's scratch record `w`
     def prepare(self, w):
         """Shape B's scratch record before the pass (a kind's container, as the pass always wrote it)."""
         pass
 
-    def clonable(self, w, n, src, ivk):
+    def clonable(self, w, n, src, ivk, bsnap=None):
         return False
 
-    def clone(self, w, n, src):
+    def clone(self, w, n, src, bsnap=None):
+        """Stage B's copy of A's `n`; the record to follow, or None when nothing is followed until B reports it."""
         return None
 
-    def follow(self, bov, src):
+    def follow(self, bov, src, w=None, n=None):
         pass
 
     def drop(self, c, n, now_):
@@ -13487,7 +13504,7 @@ class _FoIface(_FoKind):
     def a(self, a_rec, asnap):
         return _fo_user_ifaces(a_rec)
 
-    def b(self, b_rec):
+    def b(self, b_rec, bsnap=None):
         return {n: ov for n, ov in ((b_rec or {}).get("ifaces") or {}).items()}
 
     def a_reports(self, asnap):
@@ -13521,15 +13538,15 @@ class _FoIface(_FoKind):
     def target(self, t):
         return not _is_self_contained_target(t)
 
-    def clonable(self, w, n, src, ivk):
+    def clonable(self, w, n, src, ivk, bsnap=None):
         # no blob the vault can open yet: status names it, a later pass clones; a Re-sync's delete in flight: after it closes
         return bool((src.get("_lastcfg") or {}).get("subnet") and _fo_rebuildable(src, ivk) and n not in (w.get("delete") or {}))
 
-    def clone(self, w, n, src):
+    def clone(self, w, n, src, bsnap=None):
         bov = w.setdefault("ifaces", {})[n] = {k: _fo_copy(src[k]) for k in FO_IF_CLONE if src.get(k)}
         return bov
 
-    def follow(self, bov, src):
+    def follow(self, bov, src, w=None, n=None):
         if src.get("key_blob") and bov.get("public_key") == src.get("public_key") and bov.get("key_blob") != src["key_blob"]:
             bov["key_blob"] = _fo_copy(src["key_blob"])    # the same key re-sealed on A (a stamp, a new vault): B's opens too
         for k in FO_IF_FOLLOW:
@@ -13628,7 +13645,7 @@ class _FoServer(_FoKind):
     def a(self, a_rec, asnap):
         return {n: ov for n, ov in ((a_rec or {}).get(self.fam) or {}).items() if isinstance(ov, dict)}
 
-    def b(self, b_rec):
+    def b(self, b_rec, bsnap=None):
         return {n: ov for n, ov in ((b_rec or {}).get(self.fam) or {}).items()}
 
     def _rows(self, snap):
@@ -13681,12 +13698,12 @@ class _FoServer(_FoKind):
     def target(self, t):
         return (_is_wdtt_target if self.fam == "wdtt" else _is_csqtt_target)(t)
 
-    def clonable(self, w, n, src, ivk):
+    def clonable(self, w, n, src, ivk, bsnap=None):
         # a delete of B's in flight (a Re-sync, a drop): the node removes it first, or the same name would be "run" and
         # "remove" in one reply and the old identity would stay (`wdtt_remove` subtracts the desired set)
         return n not in (w.get(self.fam + "_delete") or {}) and self.rebuildable(src, ivk)
 
-    def clone(self, w, n, src):
+    def clone(self, w, n, src, bsnap=None):
         bov = w.setdefault(self.fam, {})[n] = {"iface": n}
         if self.identity and src.get("key_blob"):
             bov["key_blob"] = _fo_copy(src["key_blob"])
@@ -13694,7 +13711,7 @@ class _FoServer(_FoKind):
                 bov["server_pub"] = src["server_pub"]
         return bov
 
-    def follow(self, bov, src):
+    def follow(self, bov, src, w=None, n=None):
         if self.identity and src.get("key_blob") and self.bkey(bov) == self.bkey(src) and bov.get("key_blob") != src["key_blob"]:
             bov["key_blob"] = _fo_copy(src["key_blob"])    # the same identity re-sealed on A: B's opens too
         for k in self.fields:
@@ -13773,7 +13790,130 @@ class _FoServer(_FoKind):
             #                                               wildcard stays (a name binds IPv4 only, F44)
 
 
-_FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False))
+# vk-turn-proxy services (§12.1, R2). Neither box keeps a record of one: a proxy is what its box reports (`turn_proxies`,
+# by service name), and the panel's only writes are one-shot requests the node clears by reporting. So B's copy of A's
+# proxy is the service of the same name B reports; the mirror installs it from A's LAST snapshot (live or not: adding is
+# safe, B repairs itself while A is down) and follows `listen connect params title` as each box reports them — noded
+# reports `listen` as configured (SWG_DIAL, else SWG_LISTEN: what clients dial, never the bound wildcard), so the
+# comparison settles; `params` carries A's wrap key, which A's clients hold. Never: the "Listen on" pin (B's addresses
+# are its own), stop/start, the version after the install (the panel-wide auto-update moves both; a hold on A holds B).
+# Never deleted: once its install request clears nothing tells B's copy from a proxy of B's own, so one A no longer
+# reports is listed as B's own (`unmanaged_turn`) and the operator removes it — the one turn door B keeps open.
+FO_TP_FOLLOW = ("listen", "connect", "params", "title")
+_FO_WILD = ("", "0.0.0.0", "::", "[::]")
+
+
+def _fo_norm(v):
+    return " ".join(str(v or "").split())
+
+
+def _fo_turn_pin(owner, ver, arch):
+    """A's running build as B's install pin — only where the panel holds verified bytes for B's arch (no I/O: this runs in
+    B's sync). None otherwise: the node takes the fork's latest, as a rebuild's re-issue does."""
+    ver = ver.strip() if isinstance(ver, str) else ""
+    if not ver or not _TAG_RE.match(ver) or arch not in TURN_ARCHES:
+        return None
+    with _TURN_SUMS_LOCK:
+        sha = _TURN_SUMS.get(owner + "|" + ver + "|" + arch)
+    return {"tag": ver, "sums": {arch: sha}} if sha else None
+
+
+class _FoTurn(_FoKind):
+    kind, identity, moves = "turn", False, False
+
+    @staticmethod
+    def _rows(snap):
+        r = snap.get("turn_proxies") if isinstance(snap, dict) else None
+        return {x["service"]: x for x in (r if isinstance(r, list) else ())
+                if isinstance(x, dict) and isinstance(x.get("service"), str) and x["service"]}
+
+    def a(self, a_rec, asnap):
+        # what can be installed as reported: a service name the node accepts, an address pair, no control characters
+        return {n: x for n, x in self._rows(asnap).items()
+                if _TURN_SVC_RE.match(n) and isinstance(x.get("listen"), str) and valid_hostport(x["listen"].strip())
+                and isinstance(x.get("connect"), str) and valid_hostport(x["connect"].strip())
+                and no_ctrl(str(x.get("params") or "")) and no_ctrl(str(x.get("title") or ""))}
+
+    def b(self, b_rec, bsnap=None):
+        # what B reports, as copies (the writers never touch a snapshot); a staged install is not one yet — `clonable` waits
+        # on it, and an absent copy reads "creating"
+        return {n: dict(x) for n, x in self._rows(bsnap).items()}
+
+    def a_reports(self, asnap):
+        return set(self._rows(asnap))
+
+    def rep(self, snap, n):
+        return self._rows(snap).get(n)
+
+    def clonable(self, w, n, src, ivk, bsnap=None):
+        # B reports, and can run turn proxies (both flags explicit, as the auto-updater reads them); any request of B's for
+        # that service is the node's to finish first
+        bs = bsnap if isinstance(bsnap, dict) else {}
+        return (bool(bs) and bs.get("turn_manage") is not False and bs.get("turn_capable") is not False
+                and n not in (w.get("turn") or {}))
+
+    def clone(self, w, n, src, bsnap=None):
+        owner = src.get("owner") if isinstance(src.get("owner"), str) and _OWNER_RE.match(src["owner"]) else \
+            turn_fork_owner(turn_fork(n))
+        rq = {"action": "install", "owner": owner, "listen": src["listen"].strip(), "connect": src["connect"].strip(),
+              "params": str(src.get("params") or "").strip(), "title": str(src.get("title") or "").strip(),
+              "at": int(time.time())}
+        pin = _fo_turn_pin(owner, src.get("version"), (bsnap or {}).get("arch"))
+        if pin:
+            rq["pin"] = pin
+        w.setdefault("turn", {})[n] = rq
+        return None                                   # followed once B reports it
+
+    def follow(self, bov, src, w=None, n=None):
+        if bov.get("installing") or n in (w.get("turn") or {}):
+            return                                    # installing, or a request in flight: the node finishes first
+        diff = [k for k in FO_TP_FOLLOW if _fo_norm(src.get(k)) != _fo_norm(bov.get(k))]
+        if not diff:
+            return
+        now_ = int(time.time())
+        if diff == ["title"]:                         # a label: the node's record only, no restart of a serving proxy
+            w.setdefault("turn", {})[n] = {"action": "title", "title": str(src.get("title") or "").strip(), "at": now_}
+        else:
+            w.setdefault("turn", {})[n] = {"action": "manage", "at": now_,
+                                           **{k: str(src.get(k) or "").strip() for k in FO_TP_FOLLOW}}
+
+    def dial_host(self, a_rec, src, asnap, n):
+        # the client link builders' rule (turn-artifacts.js dialListen): `listen`'s host, and for a wildcard the host of
+        # the interface it forwards to (connect's port is that interface's listen port)
+        host, _p = _hostport_split(src.get("listen") or "")
+        if host not in _FO_WILD:
+            return host
+        cp = _port_of(str(src.get("connect") or ""))
+        reps = (asnap or {}).get("interfaces") if isinstance((asnap or {}).get("interfaces"), dict) else {}
+        for i, ov in sorted(_fo_user_ifaces(a_rec).items()):
+            lp = ov.get("listen_port") or (((reps.get(i) or {}).get("meta") or {}) if isinstance(reps.get(i), dict) else {}).get("listen_port")
+            if cp and str(lp or "") == cp:
+                return _fo_effective_host(a_rec, ov, asnap, i)
+        return ""
+
+    def ports(self, src):
+        p = _hostport_split(src.get("listen") or "")[1]
+        return [p] if isinstance(p, int) and 0 < p <= 65535 else []
+
+    def status(self, r, ctx):
+        rep = r["rep"]
+        if rep is None or rep.get("installing"):
+            return "syncing", "creating", {}
+        if rep.get("stopped") or rep.get("running") is False:
+            return "problem", "down", {}
+        keys = [k for k in ("listen", "connect", "params") if _fo_norm(r["src"].get(k)) != _fo_norm(rep.get(k))]
+        if keys:
+            return "syncing", "drift", {"keys": keys}     # the follow is on its way
+        return "ready", "", {}
+
+    def absent(self, ctx):
+        bs = ctx["bsnap"]
+        if bs.get("turn_manage") is False or bs.get("turn_capable") is False:
+            return "problem", "no_turn", {}               # B's box cannot run one: nothing is staged
+        return "syncing", "creating", {}
+
+
+_FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False), _FoTurn())
 
 
 def _fo_copies(nodes, snaps, aid, bid, live):
@@ -13786,7 +13926,7 @@ def _fo_copies(nodes, snaps, aid, bid, live):
     bsnap = (snaps or {}).get(bid) if live else None
     rows = []
     for k in _FO_KINDS:
-        bs = k.b(b)
+        bs = k.b(b, bsnap)
         for n, src in sorted(k.a(a, asnap).items()):
             keys = k.keys(src, snaps, aid, n)
             bov = bs.get(n)
@@ -13800,13 +13940,15 @@ def _fo_copies(nodes, snaps, aid, bid, live):
 
 
 def _fo_b_copies(b_rec):
-    """{name: kind} — every copy B's record holds, every kind, its own same-named records left out (what a keep removes)."""
-    return {n: k for k in _FO_KINDS for n, ov in k.b(b_rec).items() if isinstance(ov, dict) and not k.is_link(ov)}
+    """{name: kind} — every copy B's record holds, every kind that moves, its own same-named records left out (what a keep
+    removes)."""
+    return {n: k for k in _FO_KINDS if k.moves for n, ov in k.b(b_rec).items() if isinstance(ov, dict) and not k.is_link(ov)}
 
 
 def _fo_srcs(a_rec, asnap):
-    """{name: (kind, src)} — A's copies of every kind, by name (names never collide across kinds)."""
-    return {n: (k, src) for k in _FO_KINDS for n, src in k.a(a_rec, asnap).items()}
+    """{name: (kind, src)} — A's copies of every kind that moves, by name (names never collide across kinds): what a
+    take-over acts on."""
+    return {n: (k, src) for k in _FO_KINDS if k.moves for n, src in k.a(a_rec, asnap).items()}
 
 
 def _fo_clients(snap, a_rec):
@@ -13834,6 +13976,8 @@ def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
               kept, on B, rather than purged — for the unknown case that is the one choice that loses nothing (F139)."""
     held, absent, unsure, stale = [], [], [], []
     for r in _fo_copies(nodes, snaps, aid, bid, live):
+        if not r["kind"].moves:
+            continue
         n, cc = r["name"], r["cc"]
         if cc in ("absent", "link"):
             absent.append(n)
@@ -13852,7 +13996,8 @@ def _fo_leftovers(nodes, aid, bid):
     a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
     out = set()
     for k in _FO_KINDS:
-        out |= {n for n, ov in k.b(b).items() if isinstance(ov, dict) and not k.is_link(ov)} - set(k.a(a, None))
+        if k.moves:
+            out |= {n for n, ov in k.b(b).items() if isinstance(ov, dict) and not k.is_link(ov)} - set(k.a(a, None))
     return sorted(out)
 
 
@@ -13878,7 +14023,7 @@ def _fo_only_on_b(nodes, snaps, aid, bid, live_b):
     asnap = (snaps or {}).get(aid)
     out = []
     for r in _fo_copies(nodes, snaps, aid, bid, live_b):
-        if r["cc"] not in ("current", "unknown"):
+        if r["cc"] not in ("current", "unknown") or not r["kind"].moves:
             continue
         k, key = r["kind"], (r["key"] if r["cc"] == "current" else None)   # A's key unknown: whatever B runs counts (F128)
         if k.runs(r["rep"], key, False) and not k.runs(k.rep(asnap, r["name"]), key, True):
@@ -14009,8 +14154,9 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
                or ((_rep.get("meta") or {}) if isinstance(_rep, dict) else {}).get("listen_port"))
         if isinstance(_lp, int) and _lp > 0:
             warn["ports"].append({"iface": n, "port": _lp})
-    # the turn family's servers (§12.5): the interfaces' checks, by each server's own fields — its key in the vault, the
-    # address and port clients hand VK (`listen`), a pinned egress
+    # the turn family (§12.5): the interfaces' checks, by each kind's own answers — a server's key in the vault, the host
+    # clients hand VK (`dial_host`: a proxy listening on a wildcard is dialled at the interface it forwards to), the ports
+    # (`ports`), a pinned egress
     _ivk = _current_ivk_pub(deps)
     for k, n, src in _servers:
         if k.identity and not k.rebuildable(src, _ivk):
@@ -14030,8 +14176,6 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
         _mc = mesh_cfg(deps)
         warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
-    if snap.get("turn_proxies") or a.get("turn"):    # what A runs (its report), or one being set up (F11)
-        warn["not_mirrored"].append({"kind": "turn", "name": ""})
     # B has no exits (§7): what the mirror's own prunes take off B's copy — run on a scratch copy of what it follows
     _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs,
                    **{k: a[k] for k in ("wdtt", "csqtt") if isinstance(a.get(k), dict)}})
@@ -14046,9 +14190,10 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
 
 def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     """The status both members' cards show (plan §4.6): {primary, failover, serving, state, rows, problems}. `state` rolls
-    up to offline | problem | needs_vault | syncing | ready; a row appears only when an interface is not ready, its `why` a
-    code the SPA words (no_copy, name_taken, primary_no_key, awg, awaiting_key, creating, down, key, subnet, drift + keys,
-    firewall + port, peers + n, port); a row Re-sync repairs carries `resync` — the door reads that, one predicate. A
+    up to offline | problem | needs_vault | syncing | ready; a row appears only when a copy is not ready, with its `kind`,
+    its `why` a code the SPA words (no_copy, name_taken, primary_no_key, awg, awaiting_key, creating, down, key, subnet,
+    drift + keys, firewall + port, peers + n, port, no_turn); `problems` adds cmd_errors, unmanaged + ifaces and
+    unmanaged_turn + services (B's own proxies, B's to remove); a row Re-sync repairs carries `resync` — the door reads that, one predicate. A
     `key` row carries it only where the vault can rebuild A's key (`ivk`); without it the SPA says the vault is what is
     missing (F140). Derived, never stored (called under the
     state memo)."""
@@ -14087,6 +14232,11 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
         extra.append({"kind": "cmd_errors"})
     if um:
         extra.append({"kind": "unmanaged", "ifaces": sorted(um)})
+    asnap = (snaps or {}).get(aid)
+    if isinstance(asnap, dict) and isinstance(asnap.get("turn_proxies"), list):   # A's own report says what it runs
+        ut = sorted(set(_FoTurn._rows(bsnap)) - set(_FoTurn._rows(asnap)))
+        if ut:                                       # B's own, or A's deleted one: B's to remove (the door allows it)
+            extra.append({"kind": "unmanaged_turn", "services": ut})
     if extra:
         worst = "problem"
     state = "offline" if not _fo_live(seen, bid, now) else worst
@@ -14145,11 +14295,20 @@ _FO_NODE_LOCAL = frozenset(("id", "name", "color", "endpoint_host", "endpoint_ho
 _FO_IF_LOCAL = frozenset(("node", "iface", "drops_reset", "mesh_reset"))   # the counters on B's own connection cards
 
 
-def failover_ro_refusal(path, body, nodes):
+def _fo_turn_own(body, asnap):
+    """Is the proxy a turn door names on B one of B's own — A's report is there and does not name it? No report of A's: not
+    known, refused (fail-closed). A copy deleted there would come straight back with the mirror's next install."""
+    svc = _fo_str(body.get("service"))
+    return isinstance(asnap, dict) and isinstance(asnap.get("turn_proxies"), list) and bool(svc) \
+        and svc not in _FoTurn._rows(asnap)
+
+
+def failover_ro_refusal(path, body, nodes, snaps=None):
     """(status, body) refusing a POST that names a failover node where it may not, else None. Names read (strings only,
     stripped as the doors strip them): `node`, `id` (on node doors), `egress_node`, `p2p.node`, `target.node`,
     `targets[].node`, and /api/peers/targets' `base[] add[] address[] remove[]` (refresh R3). A failover node is one whose
-    primary is in the store — failover_pairs' test, the one the sync and the doors use. Free with no failover node."""
+    primary is in the store — failover_pairs' test, the one the sync and the doors use. Free with no failover node.
+    `snaps`: a turn proxy of B's that A's own report does not name is B's to delete (§12.1: the mirror never does)."""
     fo = failover_pairs(nodes)
     if not fo or not isinstance(body, dict):
         return None
@@ -14173,7 +14332,8 @@ def failover_ro_refusal(path, body, nodes):
             or (path == "/api/nodes/update" and set(body) <= _FO_NODE_LOCAL)
             or (path == "/api/iface/update" and set(body) <= _FO_IF_LOCAL)
             or (path in ("/api/iface/delete", "/api/iface/ignore", "/api/iface/unignore", "/api/iface/update",
-                         "/api/iface/recreate", "/api/iface/restart") and own)):
+                         "/api/iface/recreate", "/api/iface/restart") and own)
+            or (path == "/api/turn/delete" and _fo_turn_own(body, (snaps or {}).get(fo[b])))):
         return None
     return 409, {"ok": False, **perr("{v1} is a failover node: it mirrors {v2} and is read-only — edit {v2}, or detach it first",
                                      v1=nodes[b].get("name") or b, v2=nodes[fo[b]].get("name") or fo[b]),
@@ -27701,7 +27861,7 @@ def api(method, path, qs, body, deps):
     snaps = deps.get("node_snaps") or {}; seen = deps.get("node_seen") or {}
     now = deps.get("now", lambda: int(time.time()))
     if method == "POST":                             # a failover node is read-only (docs/FAILOVER-PLAN.md §4.7): fail-closed
-        _fo_ref = failover_ro_refusal(path, body, nodes)
+        _fo_ref = failover_ro_refusal(path, body, nodes, snaps)
         if _fo_ref:
             return _fo_ref
     # How client configs are kept at rest: "encrypted" (an AES-GCM blob the server can't read; default) or
