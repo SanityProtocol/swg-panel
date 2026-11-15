@@ -13267,8 +13267,9 @@ def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
     for kd in _FO_KINDS:
         kd.prepare(w)
         srcs = kd.a(a, asnap)
+        bs = kd.b(w)                                       # once a kind: a clone hands back its own record
         for n, src in srcs.items():
-            bov = kd.b(w).get(n)
+            bov = bs.get(n)
             if bov is None:
                 if not kd.clonable(w, n, src, ivk):
                     continue
@@ -13696,6 +13697,7 @@ def _fo_takeover_plan(nodes, aid, bid, cls, snaps):
     a = nodes[aid]
     asnap = (snaps or {}).get(aid) or {}
     srcs = _fo_srcs(a, asnap)
+    held = [n for n in held if n in srcs]              # a name A no longer has is neither taken nor said to be moved
     left = sorted(n for n in srcs if n not in held)
     old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))
     hosts = {n: srcs[n][0].dial_host(a, srcs[n][1] or {}, asnap, n) if n in srcs else "" for n in held}
@@ -13830,7 +13832,8 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     missing (F140). Derived, never stored (called under the
     state memo)."""
     b = nodes.get(bid) or {}
-    bsnap = (snaps or {}).get(bid) or {}
+    snaps = {aid: (snaps or {}).get(aid), bid: (snaps or {}).get(bid)}   # each member's report read ONCE: a sync may
+    bsnap = snaps[bid] or {}                                             # replace it while this view is built (F4)
     held = set(bsnap.get("ifaces_awaiting_key") or ())
     want, addr = _fo_want(roster, aid) if roster is not None else ({}, {})
     ranges = _parse_port_ranges(bsnap.get("udp_ports"))

@@ -189,6 +189,7 @@ PLANTS = {   # (file, anchor, replacement)
                       '                )'),
     "held-down": ("panel", 'rep is not None and not rep.get("down") and not rep.get("stopped")',
                       'rep is not None and not rep.get("stopped")'),
+    "plan-gone": ("panel", '    held = [n for n in held if n in srcs]              # a name A', '    held = list(held)              # a name A'),
     "stale-live": ("panel", '''    bsnap = (snaps or {}).get(bid) if live else None''', '''    bsnap = (snaps or {}).get(bid)'''),
     "door-unsure": ("panel", '''        if take and cls[2]:''', '''        if False:'''),
     "restore-race": ("panel", '''and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):''',
@@ -1177,6 +1178,8 @@ def sec12():
         else:
             check("[12] no vault to rebuild it: the take-over goes on, the old copy removed, its peers left on A",
                   c == 200 and o["data"]["moved"] == [] and o["data"]["left"] == ["awg0"] and o["data"]["removed"] == ["awg0"], (c, o))
+    mv = P._fo_takeover_plan(fleet(), "na", "nb", (["awg0", "gone0"], [], [], []), {"na": {"interfaces": {"awg0": snap_iface()}}})
+    check("[12] a held name A no longer has is neither taken nor reported as moved", mv[0] == ["awg0"] and "gone0" not in mv[3], mv)
 
 
 def sec13():
