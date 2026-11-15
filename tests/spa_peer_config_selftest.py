@@ -44,7 +44,7 @@ Run: python3 tests/spa_peer_config_selftest.py    (0 = pass; needs google-chrome
        --perturb-ver      the old marks are kept                                                      → RED [6]
        --perturb-hit      a lookup that finds the config leaves the note                              → RED [7]
        --perturb-banner   the sheet never says the key is missing, and has no unlock                  → RED [4]
-       --perturb-addr     a csqtt deployment's read-back counts as an edit                            → RED [8]
+       --perturb-addr     a csqtt deployment's read-back counts as an edit (no guard, no follow)      → RED [8]
        --perturb-addrall  no deployment's address counts as an edit                                   → RED [8]
        --perturb-door     the sheet has no unlock                                                     → RED [9]
        --perturb-doorepoch  an unlock leaves the open sheet as it was                                 → RED [9]
@@ -96,7 +96,10 @@ PERTURBS = {
     "ver": [("js/crypto.js", 'const _NOCONF_V = "3";', 'const _NOCONF_V = "2";')],
     "hit": [("js/crypto.js", "const hit = () => { _configMiss.delete(mk); if (peer) subNoConfClear(peer.id); };", "const hit = () => { _configMiss.delete(mk); };")],
     "banner": [("js/sheets-crud.js", _DOOR, '${false ? html`<div class="notice warn">')],
-    "addr": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { const v")],
+    # Two defences since followIps: the guard, and an untouched field following the live address (a csqtt one has no input,
+    # so it always follows). Either alone keeps the read-back from counting as an edit — the plant takes both.
+    "addr": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { const v"),
+             ("js/sheets-crud.js", "    else if (ipNorm(next[k]) !== ip) { next[k] = ip; ch = true; }", "")],
     "addrall": [("js/sheets-crud.js", _ADDR, "const ipChangedFor = t => { if (t) return false; const v")],
     "door": [("js/sheets-crud.js", _DOOR, '${(hasKeyed && loaded && !editable) ? html`<div class="notice warn">')],
     "doorepoch": [("js/peer-ui.js", 'try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }\n    catch (e) { toast((e && e.message) || T("That password didn’t unlock',

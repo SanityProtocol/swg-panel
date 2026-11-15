@@ -50,11 +50,11 @@ if P_CTST:  # the shape this shipped in: the socket rule matching a SYN as well 
 if P_MSS:
     cut('out = run(["ip", "route", "get", "1.1.1.1", "from", gw] + (["mark", str(mark)] if mark else [])).stdout or ""',
         'out = run(["ip", "route", "get", "1.1.1.1", "from", gw]).stdout or ""', "mss mark")
-if P_FWD:
-    cut('_m = ("meta mark 0x%x " % e["mark"]) if e.get("mark") else ""',
-        '_m = "meta mark 0x%x " % (e.get("mark") or 1)', "forward inertness")
+if P_FWD:   # forward mode's match is the P2P_BIT compare that overrides the mark one: plant the mark match there
+    cut('            _m = "meta mark & %#x == 0 " % P2P_BIT',
+        '            _m = "meta mark 0x1 meta mark & %#x == 0 " % P2P_BIT', "forward inertness")
 
-path = os.path.join(ROOT, "__perturb_multileg.py")
+path = os.path.join(ROOT, "__perturb_multileg_%d.py" % os.getpid())   # per run: plants run side by side (runperturb --jobs)
 if P_SOCK or P_MSS or P_FWD or P_CTST:
     open(path, "w").write(src)
 l = importlib.machinery.SourceFileLoader("noded_ml", path if (P_SOCK or P_MSS or P_FWD or P_CTST) else NODED)
