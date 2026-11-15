@@ -15387,10 +15387,10 @@ def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
     snaps = deps.get("node_snaps") or {}
     out = []
     for nid, node in (nodes or {}).items():
-        # a mirror's copy is its primary's subnet, not a second use of it (docs/FAILOVER-PLAN.md §4.4) — but an interface
-        # of the failover node's own is one like any other
+        # a mirror's copy is its primary's subnet, not a second use of it (docs/FAILOVER-PLAN.md §4.4, §12) — every kind:
+        # an interface, a WDTT or csqtt server; one of the failover node's own is a use like any other
         _rid = failover_rid(nodes, nid)
-        _copies = _fo_user_ifaces(nodes[_rid]) if _rid != nid else ()
+        _copies = _fo_srcs(nodes[_rid], None) if _rid != nid else ()
         snap = snaps.get(nid)
         if snap:
             with contextlib.suppress(Exception):
@@ -15402,7 +15402,7 @@ def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
         # WDTT (a qWDTT RAW listener owns a SECOND subnet — just as unique-per-fleet) and csqtt TUN subnets; an instance
         # being created/edited is skipped whole, RAW with it
         for nm, net in _tunnel_networks(node):
-            if nid == skip_node and nm.split(" (raw)")[0] == skip_iface:
+            if (nid == skip_node and nm.split(" (raw)")[0] == skip_iface) or nm.split(" (raw)")[0] in _copies:
                 continue
             out.append((nid, nm, net))
     return out

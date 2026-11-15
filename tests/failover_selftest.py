@@ -225,6 +225,7 @@ PLANTS = {   # (file, anchor, replacement)
                       '        if True:\n            return True\n        blessed = self.bkey(src)'),
     'srv-ports': ("panel", '            if 0 < _p <= 65535:\n                warn["ports"].append({"iface": n, "port": _p})',
                       '            if False:\n                warn["ports"].append({"iface": n, "port": _p})'),
+    'srv-subnet': ("panel", ' or nm.split(" (raw)")[0] in _copies:', ':'),
     'srv-stale-door': ("panel", '        _rebuild = [n for n in (cls[3] if take else ()) if n in _srcs and _srcs[n][0].rebuildable(_srcs[n][1], _ivk)]',
                       '        _rebuild = [n for n in (cls[3] if take else ()) if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]'),
 }
@@ -1355,6 +1356,15 @@ def sec14():
     check("[14] …A's records go as their delete doors drop them, B's stay as B's own",
           "wdtt1" not in (nt["na"].get("wdtt") or {}) and "wdtt1" in (nt["na"].get("wdtt_delete") or {})
           and "wdtt1" in nt["nb"]["wdtt"] and "failover_of" not in nt["nb"], (nt["na"].get("wdtt"), nt["nb"].get("wdtt")))
+
+    # the fleet's subnet check: B's copy is A's subnet, not a second use — A's own servers stay editable
+    ns = t_fleet(); P.failover_mirror(DEPS, ns, "nb", snaps, seen, now=NOW)
+    sd = {"node_snaps": {}}
+    check("[14] editing A's WDTT or csqtt server is not refused for B's copy of its subnet",
+          not P.subnet_fleet_conflict(sd, ns, "10.11.0.1/24", skip_node="na", skip_iface="wdtt1")
+          and not P.subnet_fleet_conflict(sd, ns, "10.10.0.1/24", skip_node="na", skip_iface="csqtt1"), ns["nb"].get("wdtt"))
+    check("[14] …while another node taking that subnet is still refused",
+          bool(P.subnet_fleet_conflict(sd, ns, "10.11.0.1/24", skip_node="nc", skip_iface="wdtt9")))
 
     # the preview
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, t_fleet(), "na", snaps, {"na": NOW})
