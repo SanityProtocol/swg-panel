@@ -166,14 +166,14 @@ PLANTS = {   # (file, anchor, replacement)
                       '    for n in ():\n'),
     "leftover-late": ("panel", "    for n in old:                                     # never A's current identity: an old copy, or one A no longer has\n",
                       "    old = sorted(set(cls[3]) | set(_fo_leftovers(nodes, aid, bid)))   # PLANT: taken AFTER A's held copies are dropped\n    for n in old:\n"),
-    "stale-deadend": ("panel", '''if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]''', ''']'''),
-    "report-condemns": ("panel", '''    return "current" if reported and bov.get("public_key") == reported else "unknown"''',
-                        '''    return "current" if reported and bov.get("public_key") == reported else ("stale" if reported else "unknown")'''),
+    "stale-deadend": ("panel", ''' if n in _srcs and _srcs[n][0].rebuildable(_srcs[n][1], _ivk)]''', ''']'''),
+    "report-condemns": ("panel", '''    return "current" if reported and bk == reported else "unknown"''',
+                        '''    return "current" if reported and bk == reported else ("stale" if reported else "unknown")'''),
     "resync-partial-silent": ("panel", '''        return 200, {"ok": True, "data": {"id": bid, "ifaces": bad, "vault_needed": _nv}}''',
                               '''        return 200, {"ok": True, "data": {"id": bid, "ifaces": bad}}'''),
     "unknown-stale": ("panel", '''    if blessed:
-        return "current" if bov.get("public_key") == blessed else "stale"''', '''    if True:
-        return "current" if bov.get("public_key") == blessed else "stale"'''),
+        return "current" if bk == blessed else "stale"''', '''    if True:
+        return "current" if bk == blessed else "stale"'''),
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
     "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):',
