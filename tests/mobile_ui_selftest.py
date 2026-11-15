@@ -496,7 +496,7 @@ try:
         check("[7] Check, Settings, Logs and More as labelled cells", cells == ["Check", "Settings", "Logs", "More"], cells)
         tab.ev("[...document.querySelectorAll('.dh-ver > .iconbtn')].find(b => b.dataset.lbl === 'More').click()"); settle(tab)
         rows = tab.ev("[...document.querySelectorAll('.overlay.show .msheet-it')].map(b => b.textContent.trim())")
-        check("[7] More holds Rotate token, Migrate, Transfer and Remove", rows == ["Rotate token", "Migrate", "Transfer", "Remove node"], rows)
+        check("[7] More holds Rotate token, Migrate, Transfer, Add failover node and Remove", rows == ["Rotate token", "Migrate", "Transfer", "Add failover node", "Remove node"], rows)
         close_all(tab)
 
     # ── [9] the title tap ──
