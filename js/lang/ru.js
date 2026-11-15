@@ -6383,6 +6383,7 @@ export const STR = {
   "Create failover node": "Создать зеркало",
   "Detach": "Отсоединить",
   "Detach · {v1}": "Отсоединить · {v1}",
+  "Open these UDP ports on the spare server's firewall — clients reach the copies on the same ports": "Откройте эти UDP-порты в файрволе запасного сервера — клиенты подключаются к копиям по тем же портам",
   "A failover node runs only {v1}'s interfaces: remove this one on the server": "Зеркало запускает только интерфейсы {v1}: удалите этот на сервере",
   "Clients of {v1} dial {v2}'s IP address, not a domain: after the move they still dial {v2}, and need new configs to reach {v3}": "Клиенты {v1} подключаются к IP-адресу {v2}, а не к домену: после переноса они по-прежнему подключаются к {v2}, и чтобы попасть на {v3}, им нужны новые конфиги",
   "Couldn't check what this would do. Try again in a moment.": "Не удалось проверить, что это сделает. Попробуйте ещё раз чуть позже.",

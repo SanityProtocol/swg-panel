@@ -814,6 +814,10 @@ def sec8():
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, dict(to_fleet(), na=dict(to_fleet()["na"], transfer={"state": "pending"})),
                               "na", snaps, {"na": NOW})
     check("[8] the preview refuses a node in transfer", any("transferred" in x["why"] for x in pf["refused"]), pf["refused"])
+    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, to_fleet(), "na", snaps, {"na": NOW})
+    check("[8] the preview names the UDP port of each interface the spare's firewall must open",
+          {"iface": "awg0", "port": 443} in pf["warn"]["ports"] and all(isinstance(x["port"], int) for x in pf["warn"]["ports"]),
+          pf["warn"]["ports"])
     # node_remove(A) keeps every held peer
     d = os.path.join(TMP, "rm"); os.makedirs(d)
     ps = {"block_catalog": {"categories": {"ads": {"enabled_nodes": ["na"]}}},

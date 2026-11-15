@@ -11,8 +11,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   makes a second server a live, read-only copy of it — the same interfaces, keys, ports, subnets, AmneziaWG parameters
   and peers, with its speed and volume limits — so if the node goes down, pointing its domain at the spare is the whole
   failover: devices reconnect there and nobody re-imports. The preview first says what stops it (an interface key not in
-  the Encryption Vault, one the panel never captured) and what is worth knowing (an interface clients reach by IP, a
-  domain that does not point at the node, what is not copied: WDTT, csqtt, turn proxies and exits). Both pages carry a
+  the Encryption Vault, one the panel never captured) and what is worth knowing (the UDP ports to open on the spare's
+  firewall, an interface clients reach by IP, a domain that does not point at the node, what is not copied: WDTT,
+  csqtt, turn proxies and exits). Both pages carry a
   *Failover* badge and panel: who is serving, every interface not ready yet with what to do (*Unlock vault*, *Re-sync* an
   old copy, update AmneziaWG), and, while the node is down, "point its domain at …" with the address. The spare's
   settings follow the node and cannot be edited on it. *Detach* keeps the peers on the node (the copies go) or moves them

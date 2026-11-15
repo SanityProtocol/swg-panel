@@ -2782,6 +2782,9 @@ function FailoverSetupSheet({ node }) {
   const p2p = nm.filter(x => x.kind === "p2p");
   const row = (label, value) => html`<div class="ifrow ifrow-stack"><span class="l">${label}</span><span class="r">${value}</span></div>`;
   const warns = [
+    // the panel cannot see the spare's firewall: these ports must be open there, or "Ready" serves nobody (rig drill 2026-11-15)
+    ...((w.ports || []).length ? [row(T("Open these UDP ports on the spare server's firewall — clients reach the copies on the same ports"),
+                                      w.ports.map(x => x.iface + " " + x.port).join(", "))] : []),
     ...(w.ip_endpoint || []).map(x => row(x.host ? T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give the interface a domain as its endpoint first.", { v1: x.iface, v2: x.host })
                                                  : T("Clients of {v1} have no domain to dial — give the interface a domain as its endpoint first.", { v1: x.iface }), x.iface)),
     ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), x.iface)),
