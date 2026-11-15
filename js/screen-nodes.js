@@ -1354,14 +1354,17 @@ function FailoverTag({ fo }) {
   return html`<${StatusTag} cls=${cls} icon=${icon} label=${T("Failover · {v1}", { v1: foStateLabel(fo.state) })}
     title=${T("{v1} keeps a live copy of {v2}", { v1: Store.nodeName(fo.failover), v2: Store.nodeName(fo.primary) })}/>`;
 }
-function foWhy(r, bn) {
+function foWhy(r, bn, an) {
   switch (r.why) {
+    case "name_taken": return T("{v1} has a mesh link by this name, so it is not copied there — its clients have only {v2}", { v1: bn, v2: an });
+    case "primary_no_key": return T("the panel holds no confirmed key of {v1}'s for it yet, so the copy on {v2} can't be checked", { v1: an, v2: bn });
     case "no_copy": return T("not copied yet — its key has to be sealed to the vault first; it is on the node's next sync once the vault is set up");
     case "awaiting_key": return T("waiting for its key — unlock the vault in this browser to hand it over");
     case "creating": return T("being created on {v1}", { v1: bn });
     case "awg": return T("needs AmneziaWG 3.1 on {v1} — update that node", { v1: bn });
     case "down": return T("down on {v1} — it is being brought back", { v1: bn });
-    case "key": return T("{v1} runs it with a different key — re-sync it", { v1: bn });
+    case "key": return r.resync ? T("{v1} runs it with a different key — re-sync it", { v1: bn })
+      : T("{v1} runs it with a different key, and the vault the panel holds can't rebuild {v2}'s — unlock or set up the vault", { v1: bn, v2: an });
     case "subnet": return T("{v1} runs it on a different subnet — re-sync it", { v1: bn });
     case "drift": return T("{v1} has not applied {v2} yet", { v1: bn, v2: (r.keys || []).join(", ") });
     case "firewall": return T("UDP {v1} is outside {v2}'s declared firewall range — clients can't reach it there", { v1: r.port, v2: bn });
@@ -1384,14 +1387,14 @@ function FailoverPanel({ nrec }) {
     if (ok) { ifaceKeyRetry(b); ifaceKeyAutoRestore(); toast(T("Handing the keys to {v1}…", { v1: bn }), "ok"); }
   };
   const bAddr = (bRec.ips || []).find(ip => !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|fe80|fd|::1)/i.test(ip)) || (bRec.ips || [])[0] || "";
-  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l">${r.iface}</span><span class="r">${foWhy(r, bn)}</span></div>`);
+  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l">${r.iface}</span><span class="r">${foWhy(r, bn, an)}</span></div>`);
   const probs = (fo.problems || []).map(p => html`<div class="ifrow ifrow-stack"><span class="l">${p.kind === "cmd_errors"
     ? T("{v1} reports commands that failed — its page says which", { v1: bn })
     : T("{v1} runs interfaces the panel doesn't manage — remove them on that server", { v1: bn })}</span><span class="r">${(p.ifaces || []).join(", ")}</span></div>`);
   const actions = html`<div class="panel-tools">
     ${isMobile() ? null : html`<${StatusTag} cls=${cls} icon=${icon} label=${foStateLabel(fo.state)}/>`}
     ${waiting ? html`<button class="btn btn-mini" style="margin-left:9px" onClick=${unlock}><${Ic} i="key"/> ${T("Unlock vault")}</button>` : null}
-    ${fo.resync ? html`<button class="btn btn-mini" style="margin-left:9px" disabled=${!fo.primary_live} title=${fo.primary_live ? "" : T("{v1} is not reporting — re-sync once it is", { v1: an })} onClick=${() => openFailoverResync(bRec)}><${Ic} i="refresh"/> ${T("Re-sync")}</button>` : null}
+    ${fo.resync ? html`<button class="btn btn-mini" style="margin-left:9px" onClick=${() => openFailoverResync(bRec)}><${Ic} i="refresh"/> ${T("Re-sync")}</button>` : null}
     ${isB ? html`<button class="btn btn-mini" style="margin-left:9px" onClick=${() => openFailoverDetach(nrec)}>${T("Detach")}</button>` : null}
   </div>`;
   return html`<${Panel} icon="shield" title=${T("Failover")} actions=${actions}>

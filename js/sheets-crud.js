@@ -2810,7 +2810,11 @@ function FailoverResyncSheet({ b }) {
     try {
       const r = await api.failoverResync({ id: b.id });
       if (!r.ok) return toast(srvText(r) || T("couldn't re-sync"), "err");
-      closeModal(); toast(T("Re-syncing {v1}", { v1: ifs.join(", ") }), "ok"); Store.poll().catch(() => {});
+      const d = r.data || {}, done = d.ifaces || [], nv = d.vault_needed || [];
+      closeModal();
+      if (done.length) toast(T("Re-syncing {v1}", { v1: done.join(", ") }), "ok");
+      if (nv.length) toast(T("{v1}'s key for {v2} is not in the vault the panel holds now, so nothing can rebuild it on {v3} — unlock or set up the vault", { v1: aname, v2: nv.join(", "), v3: b.name }), "warn");
+      Store.poll().catch(() => {});
     } finally { setBusy(false); }
   };
   return html`<${Sheet} title=${T("Re-sync · {v1}", { v1: b.name })}
@@ -2819,6 +2823,14 @@ function FailoverResyncSheet({ b }) {
   <//>`;
 }
 
+function detachSaid(d, aname) {
+  const moved = (d.moved || []).join(", ") || "—", left = (d.left || []).join(", "), gone = (d.removed || []).join(", ");
+  if (!(d.moved || []).length && !left) return T("peers kept on {v1}; copies removed: {v2}", { v1: aname, v2: gone || "—" });
+  if (left && gone) return T("took over {v1}; left on {v2}: {v3}; old copies removed: {v4}", { v1: moved, v2: aname, v3: left, v4: gone });
+  if (left) return T("took over {v1}; left on {v2}: {v3}", { v1: moved, v2: aname, v3: left });
+  if (gone) return T("took over {v1}; old copies removed: {v4}", { v1: moved, v4: gone });
+  return T("took over {v1}", { v1: moved });
+}
 export function openFailoverDetach(b) { openModal(html`<${FailoverDetachSheet} id=${b.id}/>`); }
 function FailoverDetachSheet({ id }) {
   useStore();
@@ -2830,29 +2842,43 @@ function FailoverDetachSheet({ id }) {
   useEffect(() => { if (!b) closeModal(); }, [!b]);
   if (!b) return null;
   const aname = Store.nodeName(fo.primary);
-  // what the take-over leaves on A: the interfaces B does not run with A's key (the server's _fo_holds) — a row that is only
-  // still copying peers, a port or a setting is held, and moves
-  const notHeld = (fo.rows || []).filter(r => ["no_copy", "awaiting_key", "creating", "awg", "down", "key"].includes(r.why)).map(r => r.iface);
+  // what the take-over does with each interface, read from the status rows as the server's _fo_holds classes them: no
+  // usable copy on B (none, B's own mesh link has the name, or an old key the vault cannot rebuild) → stays on A with its
+  // peers; an old copy Re-sync can replace → refused until it is; not running on B with A's key right now → refused. A row
+  // only still copying peers, a port or a setting is held, and moves. The server decides; this only says it beforehand.
+  const ifs = (pred) => (fo.rows || []).filter(pred).map(r => r.iface).join(", ");
+  const left = ifs(r => r.why === "no_copy" || r.why === "name_taken" || (r.why === "key" && !r.resync));
+  const stale = ifs(r => r.why === "key" && r.resync);
+  const unsure = ifs(r => ["primary_no_key", "awaiting_key", "creating", "awg", "down"].includes(r.why));
   const keepOff = mode === "keep" && !aLive;
+  const moveOff = mode === "move" && fo.state === "offline";
+  const off = keepOff || moveOff;
   const go = async () => {
-    if (busy || keepOff || (need && txt !== b.name)) return; setBusy(true);
+    if (busy || off || (need && txt !== b.name)) return; setBusy(true);
     try {
       const r = await api.failoverDetach({ id, take_over: mode === "move", ...(need ? { confirm: txt } : {}) });
-      if (!r.ok) { if (r.code === "confirm_required") setNeed(true); return toast(srvText(r) || T("couldn't detach"), "err"); }
-      closeModal(); toast(T("{v1} is an ordinary node now", { v1: b.name }), "ok"); Store.poll().catch(() => {});
+      if (!r.ok) {
+        if (r.code === "confirm_required" && !need) return setNeed(true);   // the field below says why; nothing failed
+        return toast(srvText(r) || T("couldn't detach"), "err");
+      }
+      closeModal(); toast(T("{v1} is an ordinary node now", { v1: b.name }) + " — " + detachSaid(r.data || {}, aname), "ok");
+      Store.poll().catch(() => {});
     } finally { setBusy(false); }
   };
   const seg = (v, label) => html`<button type="button" role="radio" aria-checked=${mode === v} class=${"seg" + (mode === v ? " on" : "")}
     onClick=${() => { setMode(v); setNeed(false); setTxt(""); }}>${label}</button>`;
   return html`<${Sheet} title=${T("Detach · {v1}", { v1: b.name })}
-    foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || keepOff || (need && txt !== b.name), action: T("Detach") })}>
+    foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || off || (need && txt !== b.name), action: T("Detach") })}>
     <div class="segrow" role="radiogroup" aria-label=${T("Detach")}>${seg("keep", T("Keep the peers on {v1}", { v1: aname }))}${seg("move", T("Move the peers to {v1}", { v1: b.name }))}</div>
     ${mode === "keep"
       ? html`<div class=${"notice" + (keepOff ? " danger" : "")}><${Ic} i=${keepOff ? "err" : "info"}/><span>${keepOff
           ? T("{v1} is not reporting: removing the copies on {v2} would delete the only one running. Move the peers to {v2} instead.", { v1: aname, v2: b.name })
           : T("The copies on {v1} are removed and the peers stay on {v2}. {v1} becomes an empty, ordinary node.", { v1: b.name, v2: aname })}</span></div>`
+      : moveOff ? html`<div class="notice danger"><${Ic} i="err"/><span>${T("{v1} is not reporting — move the peers once it is", { v1: b.name })}</span></div>`
       : html`<div class="notice"><${Ic} i="info"/><span>${T("For every interface {v1} runs with {v2}'s key, the peers move to {v1} and {v2}'s copy is removed. Client configs don't change, so nobody re-imports. Use this when {v2} is gone for good.", { v1: b.name, v2: aname })}</span></div>
-        ${notHeld.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not running on {v1} yet, so they stay on {v2} with their peers: {v3}", { v1: b.name, v2: aname, v3: notHeld.join(", ") })}</span></div>` : null}`}
+        ${stale ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1}'s copy of {v2} is not {v3}'s current key — re-sync it first", { v1: b.name, v2: stale, v3: aname })}</span></div>` : null}
+        ${unsure ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not running on {v1} with {v2}'s key right now: {v3} — move the peers once they are", { v1: b.name, v2: aname, v3: unsure })}</span></div>` : null}
+        ${left ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} has no usable copy of these, so they stay on {v2} with their peers: {v3}", { v1: b.name, v2: aname, v3: left })}</span></div>` : null}`}
     ${need ? html`<div class="field"><label>${typeToConfirm(b.name)}</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${b.name} autocomplete="off" spellcheck="false"/>
       <div class="hint">${mode === "move" ? T("{v1} is serving clients right now: they lose their connection there.", { v1: aname }) : T("{v1} is serving clients right now: they lose their connection there.", { v1: b.name })}</div></div>` : null}
   <//>`;
