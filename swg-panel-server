@@ -13235,18 +13235,19 @@ def _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped=()):
 
 
 def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
-    """One pass of B's mirror (plan §4.2), in B's sync under the lock. Mutates nodes[bid] in place; True when it changed
+    """One pass of B's mirror (plan §4.2, §12), in B's sync under the lock. Mutates nodes[bid] in place; True when it changed
     (the caller saves). Steady state changes nothing: the pass is built on a scratch copy, the prunes run there, and
-    only a real difference is written.
+    only a real difference is written. Per kind (_FO_KINDS), the same three steps, each written once here:
 
-    Settings follow A → B every pass (FO_NODE_FOLLOW, FO_IF_FOLLOW, FO_IF_FWD in forward mode). Identity is cloned once,
-    when B has no record and A has a blessed key, an escrow blob and a captured config. Structure:
-      - B holds a record it does not report, nothing pending, and the vault can open its key: stage the restore (it holds
-        for the key, which the browser releases — ifaceKeyAutoRestore). Needs nothing from A, so B repairs itself while
-        A is down.
-      - B holds a record A does not, A is reporting, and A's snapshot does not report it either: drop it as
-        /api/iface/delete does. Record and box agreeing is what makes it deliberate; a dead A removes nothing.
-      - A key or subnet that differs on B: nothing here (status says `problem`; Re-sync is the operator's)."""
+      - follow: B's copy follows A's settings every pass (the kind's `follow`); a copy B has no record of is cloned once,
+        when the kind says the vault can rebuild A's identity (`clonable`). A record of B's own that only shares the name
+        (`is_link`) is never touched (F116).
+      - drop: B holds a copy A does not, A is reporting, and A's own report does not show it either: the kind drops it as
+        its delete door does. Record and box agreeing is what makes it deliberate; a dead A removes nothing.
+      - stage: what B should run and does not report — the kind stages it (an interface holds for its key, which the
+        browser releases — ifaceKeyAutoRestore). Needs nothing from A, so B repairs itself while A is down.
+
+    A key or subnet that differs on B: nothing here (status says `problem`; Re-sync is the operator's)."""
     b = nodes.get(bid)
     aid = failover_rid(nodes, bid)
     if aid == bid or not isinstance(b, dict):
@@ -13258,59 +13259,31 @@ def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
             w[k] = _fo_copy(a[k])
         else:
             w.pop(k, None)
-    aifs = _fo_user_ifaces(a)
-    wifs = w.setdefault("ifaces", {})
     ivk = _current_ivk_pub(deps)
-    for n, aov in aifs.items():
-        bov = wifs.get(n)
-        if bov is None:
-            if not ((aov.get("_lastcfg") or {}).get("subnet") and _fo_rebuildable(aov, ivk)):
-                continue                                   # no blob the vault can open yet: status names it, a later pass clones
-            if n in (w.get("delete") or {}):
-                continue                                   # a Re-sync's delete still in flight: clone after it closes
-            bov = wifs[n] = {k: _fo_copy(aov[k]) for k in FO_IF_CLONE if aov.get(k)}
-        if not isinstance(bov, dict) or bov.get("system"):
-            continue                                       # a link of B's own that shares the name: never touched
-        if aov.get("key_blob") and bov.get("public_key") == aov.get("public_key") and bov.get("key_blob") != aov["key_blob"]:
-            bov["key_blob"] = _fo_copy(aov["key_blob"])    # the same key re-sealed on A (a stamp, a new vault): B's opens too
-        for k in FO_IF_FOLLOW:
-            old = bov.get(k)
-            if k in aov:
-                bov[k] = _fo_copy(aov[k])
-            else:
-                bov.pop(k, None)
-            if k in _FO_RESYNC_KEYS and bov.get(k) != old:
-                (bov.get("_synced") or {}).pop(k, None); (bov.get("_drift") or {}).pop(k, None)
-        fwd = aov.get("egress_mode") == "forward"
-        for k in FO_IF_FWD:
-            if fwd and k in aov:
-                bov[k] = aov[k]
-            else:
-                bov.pop(k, None)                           # direct mode: A's own address or NIC — B is Auto (§4.1)
-    if _fo_live(seen, aid, now):
-        arep = ((snaps or {}).get(aid) or {}).get("interfaces") or {}
-        for n in [n for n, ov in wifs.items() if isinstance(ov, dict) and not ov.get("system") and n not in aifs
-                  and n not in arep]:
-            _fo_drop_iface(w, n, time.time() if now is None else now)
+    asnap = (snaps or {}).get(aid) or {}
     bsnap = (snaps or {}).get(bid) or {}
-    brep = bsnap.get("interfaces") or {}
-    _busy = (set(w.get("iface_start") or {}) | set(w.get("iface_stop") or {})
-             if not ((w.get("rebuild") or {}).get("at") or w.get("transfer")) else None)
-    for n, bov in (w.get("ifaces") or {}).items():
-        rep_n = brep.get(n) if isinstance(brep.get(n), dict) else None
-        if (not isinstance(bov, dict) or bov.get("system") or n in (w.get("create") or {}) or n in (w.get("delete") or {})
-                or _iface_key_source(bov, None, ivk) != "vault"):
-            continue
-        # A device B reports DOWN is restored like an absent one — but only once the sync's own autostart has given up on
-        # it (a conf kept is started, not recreated), with no start or stop pending and no rebuild or transfer in flight.
-        if rep_n is not None and not (rep_n.get("down") and not rep_n.get("stopped") and _busy is not None and n not in _busy
-                                      and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):
-            continue
-        req = iface_restore_req(bov, ivk)
-        if req is None or (any(k in (req.get("awg_params") or {}) for k in AWG3_FIELDS)
-                           and awg_gen_refusal(bsnap, b.get("name") or bid, n) is not None):
-            continue                                       # a box that cannot run 3.1 would bring it back wrong: status says so
-        w.setdefault("create", {})[n] = req
+    alive = _fo_live(seen, aid, now)
+    now_ = time.time() if now is None else now
+    for kd in _FO_KINDS:
+        kd.prepare(w)
+        srcs = kd.a(a, asnap)
+        for n, src in srcs.items():
+            bov = kd.b(w).get(n)
+            if bov is None:
+                if not kd.clonable(w, n, src, ivk):
+                    continue
+                bov = kd.clone(w, n, src)
+            if not isinstance(bov, dict) or kd.is_link(bov):
+                continue                                   # a record of B's own that shares the name: never touched
+            kd.follow(bov, src)
+        if alive:
+            arep = kd.a_reports(asnap)
+            for n in [n for n, ov in kd.b(w).items() if isinstance(ov, dict) and not kd.is_link(ov)
+                      and n not in srcs and n not in arep]:
+                kd.drop(w, n, now_)
+        for n, bov in list(kd.b(w).items()):
+            if isinstance(bov, dict) and not kd.is_link(bov):
+                kd.stage(w, n, bov, kd.rep(bsnap, n), bsnap, b, bid, ivk)
     prune_exit_refs(w)                                     # B has no exits: a reference to one of A's is the default here,
     prune_default_exit(w)                                  # and the record says so, so no prune elsewhere rewrites it
     derive_default_exit(w)
@@ -13339,8 +13312,7 @@ def failover_idle(nodes, snaps, seen, now=None, pairs=None):
         return frozenset()
     idle = set()
     for a, b in pairs.items():
-        ifs = set(_fo_user_ifaces(nodes.get(a)))
-        on = {x: (_fo_online((snaps or {}).get(x), ifs) if _fo_live(seen, x, now) else 0) for x in (a, b)}
+        on = {x: (_fo_clients((snaps or {}).get(x), nodes.get(a)) if _fo_live(seen, x, now) else 0) for x in (a, b)}
         idle.add(a if on[b] > 2 * on[a] else b)
     return frozenset(idle)
 
@@ -13390,39 +13362,280 @@ def _fo_rebuildable(aov, ivk):
     return _iface_key_source(aov or {}, None, ivk) == "vault"
 
 
-def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
-    """(held, absent, unsure, stale): what B has of each of A's user interfaces — ONE reading, and a take-over acts on it
-    alone (a sync landing between two reads made them disagree, F93). The first row that matches decides:
+# ── Copies by kind (docs/FAILOVER-PLAN.md §12) ──────────────────────────────────────────────────────────────────────────
+# A copy is (kind, name): something of A's that B runs as A runs it. Each kind answers one fixed contract (_FoKind) about
+# its own kind only; everything the review rounds paid for — one reading, a report confirms but never condemns, a dead
+# primary removes nothing, B's own things are never copies, down/stopped/waiting are their own states, removals are
+# returned — is written ONCE, in the generic code below, for every kind. Names never collide across kinds: interfaces,
+# WDTT and csqtt TUNs are Linux interfaces of one box, turn proxies are `vk-turn-proxy-…` services.
 
-      ABSENT  B has no record of it, or only a mesh link of its own by that name (F116): nothing of A's there.
+class _FoKind:
+    """The contract. A kind that has no answer to a question keeps the default."""
+    kind = ""
+
+    def a(self, a_rec, asnap):
+        """{name: src} — what A has of this kind."""
+        return {}
+
+    def b(self, b_rec):
+        """{name: rec} — what B holds of this kind, B's own included (the copy class tells them apart)."""
+        return {}
+
+    def a_reports(self, asnap):
+        """The names A's own snapshot reports — the second witness a drop needs (§12.3)."""
+        return set()
+
+    def rep(self, snap, n):
+        """B's (or A's) report of `n` as a dict, or None for no report."""
+        return None
+
+    def keys(self, src, snaps, aid, n):
+        """(blessed, reported): A's key for `n` — ("", "") for a kind with no identity."""
+        return "", ""
+
+    def rebuildable(self, src, ivk):
+        """Can the vault the operator holds now rebuild A's identity on B (§12.3: one predicate per kind)?"""
+        return True
+
+    def runs(self, rep, key, own):
+        """Is `rep` this copy serving `key`? `own`: A's report, where a STOPPED copy counts as running (F104)."""
+        return False
+
+    def held(self, rep, key):
+        """Is `rep` B certainly serving A's `key` right now — up, not stopped, not waiting, with that key?"""
+        return False
+
+    def online(self, snap, names):
+        """Client devices online on `names` in one snapshot."""
+        return 0
+
+    def is_link(self, rec):
+        """A record of B's own that only shares the name — never a copy, never touched (F116)."""
+        return False
+
+    def target(self, t):
+        """Is roster target `t` one of this kind's (its `iface` then names the copy)?"""
+        return False
+
+    # the mirror pass's writers, on B's scratch record `w`
+    def prepare(self, w):
+        """Shape B's scratch record before the pass (a kind's container, as the pass always wrote it)."""
+        pass
+
+    def clonable(self, w, n, src, ivk):
+        return False
+
+    def clone(self, w, n, src):
+        return None
+
+    def follow(self, bov, src):
+        pass
+
+    def drop(self, c, n, now_):
+        pass
+
+    def stage(self, w, n, bov, rep_n, bsnap, b, bid, ivk):
+        pass
+
+    def dial_host(self, a_rec, src, asnap, n):
+        """The host A's clients dial for `n` ("" for none known): the take-over gives it to B, the preview warns on an IP."""
+        return ""
+
+    def status(self, r, ctx):
+        """(state, why, more) for a copy past the generic classes (current, B's report read): the kind's own checks."""
+        return "ready", "", {}
+
+    # the take-over
+    def take(self, a, b, n, host, now_):
+        """A's `n` is B's from now on: A's record of it goes (as its delete door drops it), B's takes `host` if it can."""
+        pass
+
+
+class _FoIface(_FoKind):
+    """wg/awg user interfaces — the first kind, the plan's §4 as built and qualified (card failover-p1p2)."""
+    kind = "iface"
+
+    def a(self, a_rec, asnap):
+        return _fo_user_ifaces(a_rec)
+
+    def b(self, b_rec):
+        return {n: ov for n, ov in ((b_rec or {}).get("ifaces") or {}).items()}
+
+    def a_reports(self, asnap):
+        r = (asnap or {}).get("interfaces")
+        return set(r) if isinstance(r, dict) else set()
+
+    def rep(self, snap, n):
+        r = snap.get("interfaces") if isinstance(snap, dict) else None
+        r = r.get(n) if isinstance(r, dict) else None
+        return r if isinstance(r, dict) else None                      # a malformed snapshot is no report (F121)
+
+    def keys(self, src, snaps, aid, n):
+        return _fo_akey(src, snaps, aid, n)
+
+    def rebuildable(self, src, ivk):
+        return _fo_rebuildable(src, ivk)
+
+    def runs(self, rep, key, own):
+        return _fo_runs(rep, key, own)
+
+    def held(self, rep, key):
+        return (rep is not None and not rep.get("down") and not rep.get("stopped")
+                and ((rep.get("meta") or {}).get("public_key") or "") == key)
+
+    def online(self, snap, names):
+        return _fo_online(snap, names)
+
+    def is_link(self, rec):
+        return bool(rec.get("system"))
+
+    def target(self, t):
+        return not _is_self_contained_target(t)
+
+    def clonable(self, w, n, src, ivk):
+        # no blob the vault can open yet: status names it, a later pass clones; a Re-sync's delete in flight: after it closes
+        return bool((src.get("_lastcfg") or {}).get("subnet") and _fo_rebuildable(src, ivk) and n not in (w.get("delete") or {}))
+
+    def clone(self, w, n, src):
+        bov = w.setdefault("ifaces", {})[n] = {k: _fo_copy(src[k]) for k in FO_IF_CLONE if src.get(k)}
+        return bov
+
+    def follow(self, bov, src):
+        if src.get("key_blob") and bov.get("public_key") == src.get("public_key") and bov.get("key_blob") != src["key_blob"]:
+            bov["key_blob"] = _fo_copy(src["key_blob"])    # the same key re-sealed on A (a stamp, a new vault): B's opens too
+        for k in FO_IF_FOLLOW:
+            old = bov.get(k)
+            if k in src:
+                bov[k] = _fo_copy(src[k])
+            else:
+                bov.pop(k, None)
+            if k in _FO_RESYNC_KEYS and bov.get(k) != old:
+                (bov.get("_synced") or {}).pop(k, None); (bov.get("_drift") or {}).pop(k, None)
+        fwd = src.get("egress_mode") == "forward"
+        for k in FO_IF_FWD:
+            if fwd and k in src:
+                bov[k] = src[k]
+            else:
+                bov.pop(k, None)                           # direct mode: A's own address or NIC — B is Auto (§4.1)
+
+    def drop(self, c, n, now_):
+        _fo_drop_iface(c, n, now_)
+
+    def stage(self, w, n, bov, rep_n, bsnap, b, bid, ivk):
+        if (n in (w.get("create") or {}) or n in (w.get("delete") or {})
+                or _iface_key_source(bov, None, ivk) != "vault"):
+            return
+        # A device B reports DOWN is restored like an absent one — but only once the sync's own autostart has given up on
+        # it (a conf kept is started, not recreated), with no start or stop pending and no rebuild or transfer in flight.
+        _busy = (set(w.get("iface_start") or {}) | set(w.get("iface_stop") or {})
+                 if not ((w.get("rebuild") or {}).get("at") or w.get("transfer")) else None)
+        if rep_n is not None and not (rep_n.get("down") and not rep_n.get("stopped") and _busy is not None and n not in _busy
+                                      and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):
+            return
+        req = iface_restore_req(bov, ivk)
+        if req is None or (any(k in (req.get("awg_params") or {}) for k in AWG3_FIELDS)
+                           and awg_gen_refusal(bsnap, b.get("name") or bid, n) is not None):
+            return                                         # a box that cannot run 3.1 would bring it back wrong: status says so
+        w.setdefault("create", {})[n] = req
+
+    def prepare(self, w):
+        w.setdefault("ifaces", {})
+
+    def dial_host(self, a_rec, src, asnap, n):
+        return _fo_effective_host(a_rec, src, asnap, n)
+
+    def status(self, r, ctx):
+        n, aov, bov, rep, ak = r["name"], r["src"], r["bov"], r["rep"], r["key"]
+        bsnap = ctx["bsnap"]
+        meta = (rep or {}).get("meta") or {}
+        asub = (aov.get("_lastcfg") or {}).get("subnet")
+        lp = meta.get("listen_port") or aov.get("listen_port")
+        if rep is None and any(k in (aov.get("awg_params") or {}) for k in AWG3_FIELDS) and awg_gen_refusal(bsnap, "", n):
+            return "problem", "awg", {}                    # the mirror stages no restore a 2.0 box would bring back wrong
+        if rep is None:
+            return ("needs_vault", "awaiting_key", {}) if n in ctx["held"] else ("syncing", "creating", {})
+        if rep.get("down"):
+            return "problem", "down", {}                   # the mirror restores it; until then nothing serves there
+        if meta.get("public_key") and meta["public_key"] != ak:
+            return "problem", "key", ({"resync": True} if _fo_rebuildable(aov, ctx["ivk"]) else {})
+        if meta.get("subnet") and asub and meta["subnet"] != asub and not _fo_fits(meta["subnet"], ctx["addr"].get(n)):
+            return "problem", "subnet", {"resync": True}   # B's is the roster's: A's box drifted, A's card says so
+        if bov.get("_drift"):
+            return "problem", "drift", {"keys": sorted(bov["_drift"])}
+        if ctx["ranges"] and isinstance(lp, int) and not any(x <= lp <= y for x, y in ctx["ranges"]):
+            return "problem", "firewall", {"port": lp}     # B's declared firewall shuts the port A's clients dial
+        have = {(p or {}).get("public_key") for p in (rep.get("peers") or ())}
+        miss = len((ctx["want"].get(n) or set()) - have)
+        if miss:
+            return "syncing", "peers", {"n": miss}
+        if str(aov.get("listen_port") or "") not in ("", str(meta.get("listen_port") or aov.get("listen_port"))):
+            return "syncing", "port", {}
+        return "ready", "", {}
+
+    def take(self, a, b, n, host, now_):
+        if host and not _ip_literal(host):                # A's own address would send B's new configs to A (§4.1 warned)
+            b["ifaces"][n]["endpoint_host"] = host
+        _fo_drop_iface(a, n, now_)
+
+
+_FO_KINDS = (_FoIface(),)
+
+
+def _fo_copies(nodes, snaps, aid, bid, live):
+    """THE reading (§12.2): one row per copy A has, of every kind — {kind, name, src, bov, keys, key, cc, rep}. `cc` is
+    _fo_copy_class, `rep` B's report (None when B is not `live`: a snapshot alone proves nothing, the panel seeds the last
+    one from the stats mirror at startup, F87). Every consumer — status, holds, the keep guard, the take-over — reads
+    this and none re-derives a class (F93, F109, F126)."""
+    a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
+    asnap = (snaps or {}).get(aid)
+    bsnap = (snaps or {}).get(bid) if live else None
+    rows = []
+    for k in _FO_KINDS:
+        bs = k.b(b)
+        for n, src in sorted(k.a(a, asnap).items()):
+            keys = k.keys(src, snaps, aid, n)
+            bov = bs.get(n)
+            rows.append({"kind": k, "name": n, "src": src, "bov": bov, "keys": keys, "key": _fo_key_of(keys),
+                         "cc": _fo_copy_class(bov, keys), "rep": k.rep(bsnap, n)})
+    return rows
+
+
+def _fo_srcs(a_rec, asnap):
+    """{name: (kind, src)} — A's copies of every kind, by name (names never collide across kinds)."""
+    return {n: (k, src) for k in _FO_KINDS for n, src in k.a(a_rec, asnap).items()}
+
+
+def _fo_clients(snap, a_rec):
+    """Client devices online on A's copies, every kind, in one snapshot (`serving`, the typed-name gate)."""
+    return sum(k.online(snap, set(k.a(a_rec, None))) for k in _FO_KINDS)
+
+
+def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
+    """(held, absent, unsure, stale): what B has of each of A's copies, every kind — partitions THE reading (_fo_copies),
+    and a take-over acts on it alone (a sync landing between two reads made them disagree, F93). The first row that matches
+    decides:
+
+      ABSENT  B has no record of it, or only one of its own by that name (F116): nothing of A's there.
       STALE   B's record carries another key than A's BLESSED one — a copy from before A's key changed. (A reported key
-              never makes a copy stale: it may be a seeded old snapshot, F147.) It can never serve the configs A's clients hold. Re-sync replaces it
-              where the vault can rebuild A's key; the door refuses until then, and where the vault cannot, the take-over
-              goes on without it (F136). A removal drops it.
-      HELD    B's copy is "current" (_fo_copy_class: A's blessed key, or the key A reports where its record is not blessed
-              yet), and B is reporting now (`live`: _fo_live — a snapshot alone proves nothing, the panel seeds the last
-              one from the stats mirror at startup, F87) and reports it up, not stopped, with that key (F154).
-      UNSURE  B's record carries A's key but its box does not show it running that key right now — not reporting, no
+              never makes a copy stale: it may be a seeded old snapshot, F147.) It can never serve the configs A's clients
+              hold. Re-sync replaces it where the vault can rebuild A's key; the door refuses until then, and where the
+              vault cannot, the take-over goes on without it (F136). A removal drops it.
+      HELD    B's copy is "current" (_fo_copy_class) and B, reporting now (`live`: _fo_live — a snapshot alone proves
+              nothing, the panel seeds the last one from the stats mirror at startup, F87), runs it as the kind says a
+              copy serving A's key looks (`held`: up, not stopped, not waiting, with that key — F154).
+      UNSURE  B's record carries A's key but its box does not show it serving that key right now — not reporting, no
               snapshot, waiting for the key, not created yet, down, stopped, reported with no key or another — all of it
               recoverable there from the vault, so nothing deletes it (F107); or A's key is not known at all, so B's copy
               cannot be judged (F128). The door refuses. `assume` (node_remove) counts it as HELD: the peer records are
               kept, on B, rather than purged — for the unknown case that is the one choice that loses nothing (F139)."""
-    a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
-    bsnap = (snaps or {}).get(bid) if live else None
-    brep = bsnap.get("interfaces") if isinstance(bsnap, dict) else None
     held, absent, unsure, stale = [], [], [], []
-    for n, aov in sorted(_fo_user_ifaces(a).items()):
-        keys = _fo_akey(aov, snaps, aid, n)
-        key = _fo_key_of(keys)
-        bov = (b.get("ifaces") or {}).get(n)
-        rep_n = brep.get(n) if isinstance(brep, dict) and isinstance(brep.get(n), dict) else None
-        cc = _fo_copy_class(bov, keys)
+    for r in _fo_copies(nodes, snaps, aid, bid, live):
+        n, cc = r["name"], r["cc"]
         if cc in ("absent", "link"):
             absent.append(n)
         elif cc == "stale":
             stale.append(n)
-        elif cc == "current" and (rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")
-              and ((rep_n.get("meta") or {}).get("public_key") or "") == key):
+        elif cc == "current" and r["kind"].held(r["rep"], r["key"]):
             held.append(n)
         else:
             (held if assume else unsure).append(n)
@@ -13430,9 +13643,13 @@ def _fo_holds(nodes, snaps, aid, bid, live, assume=False):
 
 
 def _fo_leftovers(nodes, aid, bid):
-    """B's copies of interfaces A no longer has (A deleted one while not reporting, so the mirror's drop never ran): no
-    peers name them; on an ordinary node they would be a duplicate of A's old identity and subnet (F120)."""
-    return sorted(set(_fo_user_ifaces(nodes.get(bid))) - set(_fo_user_ifaces(nodes.get(aid))))
+    """B's copies, every kind, of what A no longer has (A deleted one while not reporting, so the mirror's drop never ran):
+    no peers name them; on an ordinary node they would be a duplicate of A's old identity (F120)."""
+    a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
+    out = set()
+    for k in _FO_KINDS:
+        out |= {n for n, ov in k.b(b).items() if isinstance(ov, dict) and not k.is_link(ov)} - set(k.a(a, None))
+    return sorted(out)
 
 
 def _fo_runs(rep, key, own):
@@ -13449,25 +13666,19 @@ def _fo_runs(rep, key, own):
 
 
 def _fo_only_on_b(nodes, snaps, aid, bid, live_b):
-    """A's interfaces that run on B alone right now: B, reporting, runs it with A's key (or reports no key, F117) and A —
-    reporting, the door checked — does not run it with that key: down, not reported, or under another key (F118). Where A's
-    key is not known at all (F128), any key B runs counts as B running it, and any key A runs as A running it (F141). A
-    detach that keeps the peers on A deletes B's copies, so it waits while this is not empty: else it cuts those clients
-    off."""
-    def ifs(x, live=True):
-        sn = (snaps or {}).get(x) if live else None
-        r = sn.get("interfaces") if isinstance(sn, dict) else None
-        return r if isinstance(r, dict) else {}                        # a malformed snapshot is no report (F121)
-    arep, brep = ifs(aid), ifs(bid, live_b)
+    """A's copies that run on B alone right now, every kind: B, reporting, runs it with A's key (or reports no key, F117)
+    and A — reporting, the door checked — does not run it with that key: down, not reported, or under another key (F118).
+    Where A's key is not known at all (F128), any key B runs counts as B running it, and any key A runs as A running it
+    (F141). A detach that keeps the peers on A deletes B's copies, so it waits while this is not empty: else it cuts those
+    clients off. One reading of B (_fo_copies) and one of A (the kind's `rep`) — F109."""
+    asnap = (snaps or {}).get(aid)
     out = []
-    for n, aov in sorted(_fo_user_ifaces(nodes.get(aid)).items()):
-        keys = _fo_akey(aov, snaps, aid, n)
-        key = _fo_key_of(keys)
-        bov = ((nodes.get(bid) or {}).get("ifaces") or {}).get(n)
-        cc = _fo_copy_class(bov, keys)                                 # A's key unknown: whatever B runs there counts (F128)
-        if (cc in ("current", "unknown") and _fo_runs(brep.get(n), key if cc == "current" else None, False)
-                and not _fo_runs(arep.get(n), key if cc == "current" else None, True)):
-            out.append(n)
+    for r in _fo_copies(nodes, snaps, aid, bid, live_b):
+        if r["cc"] not in ("current", "unknown"):
+            continue
+        k, key = r["kind"], (r["key"] if r["cc"] == "current" else None)   # A's key unknown: whatever B runs counts (F128)
+        if k.runs(r["rep"], key, False) and not k.runs(k.rep(asnap, r["name"]), key, True):
+            out.append(r["name"])
     return out
 
 
@@ -13480,46 +13691,49 @@ def _fo_effective_host(c, ov, snap, n):
 
 def _fo_takeover_plan(nodes, aid, bid, cls, snaps):
     """What a take-over acting on `cls` = _fo_holds(...) does — ONE answer for the act and the detach door's preview
-    (dry_run): (moved, left on A, B's copies removed, {moved interface: the host A's clients dial}). Reads only."""
+    (dry_run): (moved, left on A, B's copies removed, {moved copy: the host A's clients dial}). Every kind. Reads only."""
     held, _absent, _unsure, stale = cls
     a = nodes[aid]
     asnap = (snaps or {}).get(aid) or {}
-    left = sorted(n for n in _fo_user_ifaces(a) if n not in held)
+    srcs = _fo_srcs(a, asnap)
+    left = sorted(n for n in srcs if n not in held)
     old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))
-    hosts = {n: _fo_effective_host(a, (a.get("ifaces") or {}).get(n) or {}, asnap, n) for n in held}
+    hosts = {n: srcs[n][0].dial_host(a, srcs[n][1] or {}, asnap, n) if n in srcs else "" for n in held}
     return sorted(held), left, old, hosts
 
 
 def failover_takeover(nodes, roster, aid, bid, cls, snaps):
-    """Move A's peers to B, acting on `cls` = _fo_holds(...) taken ONCE by the caller (plan §4.8, §4.9, refresh R4). Mutates
-    `nodes` and `roster` (an owned copy); the caller saves both. HELD: its wg/awg targets move A→B, each moved device that
-    yields its torrent port on A yields it on B (A dropped once no target stays there), B's interface takes A's effective
-    host as its endpoint, and A's interface is dropped as /api/iface/delete drops it (delete staged, record gone) minus
-    the target strip — so A's stale snapshot never keeps A planned, and an A that comes back stops serving them. ABSENT:
-    nothing of A's on B; its peers stay on A. STALE, and B's copies of interfaces A no longer has: dropped on B — never a
-    copy of A's current identity, which is all a take-over keeps. UNSURE must be empty — the door refuses, node_remove
-    assumes — or B would become an ordinary node holding a copy of A's key with nobody moved onto it: refused here too.
-    The flag goes last. Returns (moved interfaces, interfaces left on A, B's copies removed)."""
+    """Move A's peers to B, acting on `cls` = _fo_holds(...) taken ONCE by the caller (plan §4.8, §4.9, §12, refresh R4).
+    Mutates `nodes` and `roster` (an owned copy); the caller saves both. HELD: each copy's kind takes it (an interface: B's
+    takes A's effective host as its endpoint, A's is dropped as its delete door drops it minus the target strip — so A's
+    stale snapshot never keeps A planned, and an A that comes back stops serving them), and the roster targets of that kind
+    and name move A→B, each moved device that yields its torrent port on A yielding it on B (A dropped once no target stays
+    there). ABSENT: nothing of A's on B; its peers stay on A. STALE, and B's copies of what A no longer has: dropped on B —
+    never a copy of A's current identity, which is all a take-over keeps. UNSURE must be empty — the door refuses,
+    node_remove assumes — or B would become an ordinary node holding a copy of A's key with nobody moved onto it: refused
+    here too. The flag goes last. Returns (moved, left on A, B's copies removed)."""
     if cls[2]:
-        raise ValueError("failover take-over with interfaces in doubt: " + ", ".join(cls[2]))
+        raise ValueError("failover take-over with copies in doubt: " + ", ".join(cls[2]))
     a, b = nodes[aid], nodes[bid]
-    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A's held interfaces are dropped
+    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A's held copies are dropped
+    srcs = _fo_srcs(a, (snaps or {}).get(aid) or {})
     now_ = int(time.time())
     for n in held:
-        host = hosts[n]
-        if host and not _ip_literal(host):            # A's own address would send B's new configs to A (§4.1 warned)
-            b["ifaces"][n]["endpoint_host"] = host
-        _fo_drop_iface(a, n, now_)
-    for n in old:
-        _fo_drop_iface(b, n, now_)                    # never A's current identity: an old copy, or one A no longer has
+        if n in srcs:                                 # `cls` is this request's reading of A: always, short of a race
+            srcs[n][0].take(a, b, n, hosts[n], now_)
+    for n in old:                                     # never A's current identity: an old copy, or one A no longer has
+        for k in _FO_KINDS:
+            if n in k.b(b):
+                k.drop(b, n, now_)
+                break
     hs = set(held)
     for p in (roster.get("peers") or {}).values():
         if not isinstance(p, dict):
             continue
         moved = False
         for t in p.get("targets") or []:
-            if (isinstance(t, dict) and t.get("node") == aid and t.get("iface") in hs
-                    and not _is_self_contained_target(t)):
+            if (isinstance(t, dict) and t.get("node") == aid and t.get("iface") in hs and t["iface"] in srcs
+                    and srcs[t["iface"]][0].target(t)):
                 t["node"] = bid
                 moved = True
         if not moved:
@@ -13615,56 +13829,29 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     `key` row carries it only where the vault can rebuild A's key (`ivk`); without it the SPA says the vault is what is
     missing (F140). Derived, never stored (called under the
     state memo)."""
-    a, b = nodes.get(aid) or {}, nodes.get(bid) or {}
+    b = nodes.get(bid) or {}
     bsnap = (snaps or {}).get(bid) or {}
-    brep = bsnap.get("interfaces") or {}
     held = set(bsnap.get("ifaces_awaiting_key") or ())
     want, addr = _fo_want(roster, aid) if roster is not None else ({}, {})
     ranges = _parse_port_ranges(bsnap.get("udp_ports"))
     rank = {"ready": 0, "syncing": 1, "needs_vault": 2, "problem": 3}
     rows, worst = [], "ready"
-    for n, aov in sorted(_fo_user_ifaces(a).items()):
-        bov = (b.get("ifaces") or {}).get(n)
-        rep = brep.get(n) if isinstance(brep.get(n), dict) else None
-        meta = (rep or {}).get("meta") or {}
-        asub = (aov.get("_lastcfg") or {}).get("subnet")
-        lp = meta.get("listen_port") or aov.get("listen_port")
+    ctx = {"bsnap": bsnap, "held": held, "want": want, "addr": addr, "ranges": ranges, "ivk": ivk}
+    for r in _fo_copies(nodes, snaps, aid, bid, True):   # the snapshot as it stands: `state` says offline on its own
+        n, cc = r["name"], r["cc"]
         st, why, more = "ready", "", {}
-        akeys = _fo_akey(aov, snaps, aid, n)
-        ak = _fo_key_of(akeys)
-        cc = _fo_copy_class(bov, akeys)
         if cc == "absent":
             st, why = "needs_vault", "no_copy"
         elif cc == "link":
-            st, why = "problem", "name_taken"                    # B's own mesh link has the name: never copied there, and
-            #                                                      never offered a Re-sync (it would tear the link down, F124)
+            st, why = "problem", "name_taken"                    # B's own record has the name: never copied there, and
+            #                                                      never offered a Re-sync (it would tear it down, F124)
         elif cc == "unknown":
             st, why = "problem", "primary_no_key"                # nothing to judge B's copy by, and nothing to rebuild it from
         elif cc == "stale":                                      # a copy from before A's key changed (F123: _fo_holds' STALE);
             st, why = "problem", "key"                           # Re-sync only where the vault can rebuild A's (F128)
-            more = {"resync": True} if _fo_rebuildable(aov, ivk) else {}
-        elif rep is None and any(k in (aov.get("awg_params") or {}) for k in AWG3_FIELDS) and awg_gen_refusal(bsnap, "", n):
-            st, why = "problem", "awg"                 # the mirror stages no restore a 2.0 box would bring back wrong
-        elif rep is None:
-            st, why = ("needs_vault", "awaiting_key") if n in held else ("syncing", "creating")
-        elif rep.get("down"):
-            st, why = "problem", "down"                # the mirror restores it; until then nothing serves there
-        elif meta.get("public_key") and meta["public_key"] != ak:
-            st, why = "problem", "key"
-            more = {"resync": True} if _fo_rebuildable(aov, ivk) else {}
-        elif meta.get("subnet") and asub and meta["subnet"] != asub and not _fo_fits(meta["subnet"], addr.get(n)):
-            st, why, more = "problem", "subnet", {"resync": True}   # B's is the roster's: A's box drifted, A's card says so
-        elif bov.get("_drift"):
-            st, why, more = "problem", "drift", {"keys": sorted(bov["_drift"])}
-        elif ranges and isinstance(lp, int) and not any(x <= lp <= y for x, y in ranges):
-            st, why, more = "problem", "firewall", {"port": lp}   # B's declared firewall shuts the port A's clients dial
+            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}
         else:
-            have = {(p or {}).get("public_key") for p in (rep.get("peers") or ())}
-            miss = len((want.get(n) or set()) - have)
-            if miss:
-                st, why, more = "syncing", "peers", {"n": miss}
-            elif str(aov.get("listen_port") or "") not in ("", str(meta.get("listen_port") or aov.get("listen_port"))):
-                st, why = "syncing", "port"
+            st, why, more = r["kind"].status(r, ctx)
         if st != "ready":
             rows.append({"iface": n, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst
@@ -31896,7 +32083,7 @@ def api(method, path, qs, body, deps):
                                              "off. Move the peers to {v1}, or keep them once {v3} runs these again",
                                              v1=bname, v2=", ".join(_only_b), v3=aname), "code": "primary_not_running"}
         cut = bid if not take else aid                 # the member whose clients this cuts off
-        _need = bool(_fo_live(seen, cut, now()) and _fo_online(snaps.get(cut) or {}, set(_fo_user_ifaces(nodes[aid]))))
+        _need = bool(_fo_live(seen, cut, now()) and _fo_clients(snaps.get(cut) or {}, nodes[aid]))
         if body.get("dry_run") is True:
             if not take:
                 return 200, {"ok": True, "data": {"id": bid, "preview": True, "moved": [], "left": [], "ip_dial": [],

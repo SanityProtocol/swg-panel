@@ -116,14 +116,10 @@ def check(name, cond, detail=""):
 PLANTS = {   # (file, anchor, replacement)
     "follow-key": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("public_key", "listen_port", '''),
     "endpoint": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("endpoint_host", "listen_port", '''),
-    "nokeysrc": ("panel", '''                or _iface_key_source(bov, None, ivk) != "vault"):
-            continue
-        # A device B reports DOWN''', '''                or False):
-            continue
-        # A device B reports DOWN'''),
-    "stale-del": ("panel", '''    if _fo_live(seen, aid, now):
-        arep = ''', '''    if True:
-        arep = '''),
+    "nokeysrc": ("panel", '                or _iface_key_source(bov, None, ivk) != "vault"):\n            return\n        # A device B reports DOWN',
+                      '                or False):\n            return\n        # A device B reports DOWN'),
+    "stale-del": ("panel", '        if alive:\n            arep = kd.a_reports(asnap)',
+                      '        if True:\n            arep = kd.a_reports(asnap)'),
     "rid": ("panel", '''        _rid = failover_rid(nodes, nid)
         # The shared parsed roster (P2): READ-ONLY.''', '''        _rid = nid
         # The shared parsed roster (P2): READ-ONLY.'''),
@@ -153,8 +149,8 @@ PLANTS = {   # (file, anchor, replacement)
     "served": ("recon", '''      const mb = cfg.mirrors ? cfg.mirrors[t.node] : null;''', '''      const mb = null;'''),
     "portok": ("panel", '''"lan_share", "ip_learning", "p2p", "p2p_portok", "p2p_portok_none", "catalog_cats")''',
                '''"lan_share", "ip_learning", "p2p", "p2p_portok", "catalog_cats")'''),
-    "blob-follow": ("panel", '''        if aov.get("key_blob") and bov.get("public_key") == aov.get("public_key") and bov.get("key_blob") != aov["key_blob"]:''',
-                    '''        if False:'''),
+    "blob-follow": ("panel", '        if src.get("key_blob") and bov.get("public_key") == src.get("public_key") and bov.get("key_blob") != src["key_blob"]:',
+                      '        if False:'),
     "walk-pos": ("panel", '''key=lambda kv: (kv[0] in idle, _pos[failover_rid(nodes, kv[0])])''', '''key=lambda kv: (kv[0] in idle, _pos[kv[0]])'''),
     "remove-assume": ("panel", '''_fo_live(deps.get("node_seen"), _fo_b), assume=True), _fo_snaps)''', '''_fo_live(deps.get("node_seen"), _fo_b), assume=False), _fo_snaps)'''),
     "unsure-guard": ("panel", '''    if cls[2]:
@@ -166,11 +162,10 @@ PLANTS = {   # (file, anchor, replacement)
         return False'''),
     "keep-keyless": ("panel", '''((rep.get("meta") or {}).get("public_key") or "") in ("", key)''',
                      '''((rep.get("meta") or {}).get("public_key") or "") == key'''),
-    "stale-keep": ("panel", '''    for n in old:
-        _fo_drop_iface(b, n, now_)''', '''    for n in ():
-        _fo_drop_iface(b, n, now_)'''),
-    "leftover-late": ("panel", '    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A\'s held interfaces are dropped\n    now_ = int(time.time())\n    for n in held:\n        host = hosts[n]\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            b["ifaces"][n]["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
-                      '    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A\'s held interfaces are dropped\n    old = sorted(set(cls[3]))\n    now_ = int(time.time())\n    for n in held:\n        host = hosts[n]\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            b["ifaces"][n]["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
+    "stale-keep": ("panel", "    for n in old:                                     # never A's current identity: an old copy, or one A no longer has\n",
+                      '    for n in ():\n'),
+    "leftover-late": ("panel", "    for n in old:                                     # never A's current identity: an old copy, or one A no longer has\n",
+                      "    old = sorted(set(cls[3]) | set(_fo_leftovers(nodes, aid, bid)))   # PLANT: taken AFTER A's held copies are dropped\n    for n in old:\n"),
     "stale-deadend": ("panel", '''if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]''', ''']'''),
     "report-condemns": ("panel", '''    return "current" if reported and bov.get("public_key") == reported else "unknown"''',
                         '''    return "current" if reported and bov.get("public_key") == reported else ("stale" if reported else "unknown")'''),
@@ -179,10 +174,10 @@ PLANTS = {   # (file, anchor, replacement)
     "unknown-stale": ("panel", '''    if blessed:
         return "current" if bov.get("public_key") == blessed else "stale"''', '''    if True:
         return "current" if bov.get("public_key") == blessed else "stale"'''),
-    "resync-unbuildable": ("panel", '''Re-sync only where the vault can rebuild A's (F128)
-            more = {"resync": True} if _fo_rebuildable(aov, ivk) else {}''', '''Re-sync only where the vault can rebuild A's (F128)
-            more = {"resync": True}'''),
-    "keep-unknown": ("panel", '''        if (cc in ("current", "unknown") and''', '''        if (cc == "current" and'''),
+    "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
+                      '            more = {"resync": True}'),
+    "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):',
+                      '        if r["cc"] != "current":'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
                     '    if left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    else:\n        _dk = "took over {v1}"'),
@@ -190,9 +185,10 @@ PLANTS = {   # (file, anchor, replacement)
         return "link"''', '''    if False:
         return "link"'''),
     "absent-any": ("panel", '''            (held if assume else unsure).append(n)''', '''            absent.append(n)'''),
-    "held-loose": ("panel", '''              and ((rep_n.get("meta") or {}).get("public_key") or "") == key):''', '''              ):'''),
-    "held-down": ("panel", '''rep_n is not None and not rep_n.get("down") and not rep_n.get("stopped")''',
-                  '''rep_n is not None and not rep_n.get("stopped")'''),
+    "held-loose": ("panel", '                and ((rep.get("meta") or {}).get("public_key") or "") == key)',
+                      '                )'),
+    "held-down": ("panel", 'rep is not None and not rep.get("down") and not rep.get("stopped")',
+                      'rep is not None and not rep.get("stopped")'),
     "stale-live": ("panel", '''    bsnap = (snaps or {}).get(bid) if live else None''', '''    bsnap = (snaps or {}).get(bid)'''),
     "door-unsure": ("panel", '''        if take and cls[2]:''', '''        if False:'''),
     "restore-race": ("panel", '''and int(((w.get("iface_autostart") or {}).get(n) or {}).get("n") or 0) >= len(IFACE_AUTOSTART_GAPS)):''',
