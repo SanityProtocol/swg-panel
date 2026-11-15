@@ -10347,7 +10347,7 @@ def who_report(roster, node_id, snap, iface, whos):
     return out
 
 
-def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
+def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk="", rid=None):
     """The WDTT PASSWORD set the roster assigns to each wdtt* instance on one node — the analogue of
     desired_for_node, keyed by the panel-owned per-peer password. Divergence from the WG path: a BLOCKED/EXPIRED
     WDTT peer is KEPT (with is_deactivated / expires_at set), not dropped — the WDTT server needs the password
@@ -10356,10 +10356,11 @@ def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
     insts = ((nodes.get(node_id) or {}).get("wdtt")) or {}
     if not insts:
         return {}
+    rid = rid or node_id                 # a failover node: its own instances, its primary's peers (§12.2)
     users = roster.get("users") or {}
     nowv = int(time.time())
     out = {}
-    for _k, p in _peers_on(roster, node_id):
+    for _k, p in _peers_on(roster, rid):
         if not isinstance(p, dict) or not p.get("wdtt_password"):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -10367,7 +10368,7 @@ def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
         exp = int(p.get("expiry") or 0) or int(u.get("expiry") or 0)
         vkh = _wdtt_vk_hashes(p, u, fallback_vk)   # WDTT's client splits this on commas — see _wdtt_vk_hashes
         for t in p.get("targets", []):
-            if t.get("node") != node_id:
+            if t.get("node") != rid:
                 continue
             iface = t.get("iface") or ""
             inst = insts.get(iface)
@@ -10380,13 +10381,13 @@ def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
     return out
 
 
-def _wdtt_reply(roster, nodes, node_id, fallback_vk=""):
+def _wdtt_reply(roster, nodes, node_id, fallback_vk="", rid=None):
     """The reply["wdtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED
     FROM THE ROSTER (never the node store — passwords are roster-owned)."""
     insts = ((nodes.get(node_id) or {}).get("wdtt")) or {}
     if not insts:
         return {}
-    derived = desired_wdtt_for_node(roster, nodes, node_id, fallback_vk)
+    derived = desired_wdtt_for_node(roster, nodes, node_id, fallback_vk, rid)
     restore = (nodes.get(node_id) or {}).get("wdtt_restore") or {}
     recreate = (nodes.get(node_id) or {}).get("wdtt_recreate") or {}
     out = {}
@@ -10405,7 +10406,7 @@ def _wdtt_reply(roster, nodes, node_id, fallback_vk=""):
         if _wfork in WDTT_BUILDS:
             # The binary is shared per fork on a node, so the version/hold is per (node, fork) — every instance of the
             # fork moves together (a per-iface hold would make two same-fork instances flap the shared binary).
-            _wver = _turn_hold_get(node_id, "wdtt:" + _wfork) or _wdtt_current_version(_wfork)
+            _wver = _turn_hold_get(rid or node_id, "wdtt:" + _wfork) or _wdtt_current_version(_wfork)   # B runs A's held build
             if _wver:
                 merged["ver"] = _wver
         fresh = iface in recreate                         # operator chose to abandon the vaulted identity → don't hold
@@ -10424,20 +10425,21 @@ def _wdtt_reply(roster, nodes, node_id, fallback_vk=""):
     return out
 
 
-def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
+def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk="", rid=None):
     """The csqtt PASSWORD set the roster assigns to each csqtt* instance on one node (analogue of
     desired_wdtt_for_node). A BLOCKED/EXPIRED peer is KEPT (is_deactivated/expires_at set) so the server can deny
     cleanly and unblock is instant. Returns { iface: { password: {expires_at, vk_hash, name, is_deactivated} } }."""
     insts = ((nodes.get(node_id) or {}).get("csqtt")) or {}
     if not insts:
         return {}
+    rid = rid or node_id                 # a failover node: its own instances, its primary's peers (§12.2)
     users = roster.get("users") or {}
     # App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §3): only a 2.5 server's, resolved here into each
     # password's own `app_routing` — none without a list, so a fleet without exceptions builds exactly what it did.
     exc = {i: _ar_except_index(roster, r["app_routing_except"]) for i, r in insts.items()
            if isinstance(r, dict) and r.get("app_routing_except") and str(r.get("line") or CSQTT_DEFAULT_LINE) != CSQTT_DEFAULT_LINE}
     out = {}
-    for pid, p in _peers_on(roster, node_id):
+    for pid, p in _peers_on(roster, rid):
         if not isinstance(p, dict) or not p.get("csqtt_password"):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -10446,7 +10448,7 @@ def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
         vkh = _csqtt_vk_hashes(p, u, fallback_vk)   # csqtt stores a SET here — see _csqtt_vk_hashes
         name = (p.get("title") or u.get("name") or "").strip()
         for t in p.get("targets", []):
-            if t.get("node") != node_id or t.get("iface") not in insts:
+            if t.get("node") != rid or t.get("iface") not in insts:
                 continue
             rec = out.setdefault(t["iface"], {})[p["csqtt_password"]] = {
                 "expires_at": exp, "vk_hash": vkh, "name": name, "is_deactivated": deact}
@@ -10458,7 +10460,7 @@ def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
     return out
 
 
-def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
+def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None, rid=None):
     """reply["csqtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED FROM
     THE ROSTER (passwords are roster-owned). The owner --password/--web-pass are node-owned → never shipped.
 
@@ -10470,7 +10472,8 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
     insts = ((nodes.get(node_id) or {}).get("csqtt")) or {}
     if not insts:
         return {}
-    derived = desired_csqtt_for_node(roster, nodes, node_id, fallback_vk)
+    derived = desired_csqtt_for_node(roster, nodes, node_id, fallback_vk, rid)
+    _hid = rid or node_id                # builds held as the primary's: B runs what A is held on
     _lines_ok = isinstance((snap or {}).get("csqtt_lines"), list)
     out, _runs, _stay = {}, {}, set()
     for iface, inst in insts.items():
@@ -10489,7 +10492,7 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
             if tab:
                 merged["ar_bodies"] = [b for _i, b in tab.values()]
         _line = str(merged.pop("line", "") or CSQTT_DEFAULT_LINE)
-        _cver = _turn_hold_get(node_id, _csqtt_hold_svc(_line)) or _csqtt_current_version(_line)   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
+        _cver = _turn_hold_get(_hid, _csqtt_hold_svc(_line)) or _csqtt_current_version(_line)   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
         if _line not in CSQTT_LINES:
             # A line this panel does not offer (the stand-in unset, a panel rolled back past a release): say NOTHING
             # about it — no line, no build — and the node keeps what runs. Mapping it to 2.1 would restart every such
@@ -10512,13 +10515,13 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
                     # old one — the server stays down (verify F7). So the move lands first, on what runs: this sync
                     # keeps the server on its line, and its 2.5 line on its build (no `ver`, below); the next names them.
                     merged["line"] = _line = _run
-                    _cver = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
+                    _cver = _turn_hold_get(_hid, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
                     if _run != CSQTT_DEFAULT_LINE:
                         _stay.add(_run)
             # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
             # too, or it gets no updates or rollbacks until the operator resolves the switch.
             if _run and _run != _line and _run in CSQTT_LINES:
-                _rv = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
+                _rv = _turn_hold_get(_hid, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
                 if _rv:
                     merged["cur_ver"] = _rv
         elif _line != CSQTT_DEFAULT_LINE:
@@ -13332,7 +13335,7 @@ def _fo_akey(aov, snaps, aid, n):
     return (bk if isinstance(bk, str) else ""), (rk if isinstance(rk, str) else "")
 
 
-def _fo_copy_class(bov, keys):
+def _fo_copy_class(bov, keys, bkey=None):
     """What B's record `bov` is for an interface of A whose keys are `keys` = _fo_akey(...) — the one test _fo_holds,
     _fo_only_on_b and failover_view share (F126). One of:
       "absent"   B has no record of it.
@@ -13346,9 +13349,10 @@ def _fo_copy_class(bov, keys):
     if bov.get("system"):
         return "link"
     blessed, reported = keys
+    bk = bov.get("public_key") if bkey is None else bkey   # the key B's record carries, as its kind stores it
     if blessed:
-        return "current" if bov.get("public_key") == blessed else "stale"
-    return "current" if reported and bov.get("public_key") == reported else "unknown"
+        return "current" if bk == blessed else "stale"
+    return "current" if reported and bk == reported else "unknown"
 
 
 def _fo_key_of(keys):
@@ -13373,6 +13377,11 @@ def _fo_rebuildable(aov, ivk):
 class _FoKind:
     """The contract. A kind that has no answer to a question keeps the default."""
     kind = ""
+    identity = True                  # a kind with no identity (csqtt): any record by the name is A's copy, never stale
+
+    def bkey(self, rec):
+        """The key B's record of a copy carries (what `keys` is compared against)."""
+        return rec.get("public_key") if isinstance(rec, dict) else None
 
     def a(self, a_rec, asnap):
         """{name: src} — what A has of this kind."""
@@ -13579,7 +13588,141 @@ class _FoIface(_FoKind):
         _fo_drop_iface(a, n, now_)
 
 
-_FO_KINDS = (_FoIface(),)
+# The turn family's self-contained servers (§12.1). A server's record IS what B should run: no create to stage — the sync
+# reply ships it, with WDTT's escrow blob as the HOLD signal, so a box without the identity waits for the browser to
+# re-seal it (ifaceKeyAutoRestore → /api/wdtt/restore). `listen` is followed verbatim: noded's turn_bind binds the
+# wildcard on that port for a host that is not on the box (A's IP, a domain resolving to A). Never copied: the owner
+# password and web password (node-owned; a WDTT identity restore brings A's owner password with its keypair), adopt
+# markers (noded would adopt a server B does not run, and hold for ever), one-shot requests and box pins.
+FO_TURN_FOLLOW = ("fork", "listen", "dns", "max_passwords", "params", "block", "p2p", "reach", "egress_mode",
+                  "egress_node", "exit_id", "routing", "routing_exit_ips", "web_port")
+FO_WDTT_FOLLOW = FO_TURN_FOLLOW + ("wg_addr", "wg_port", "raw_port", "raw_iface", "raw_addr")
+FO_CSQTT_FOLLOW = FO_TURN_FOLLOW + ("line", "tun_addr", "app_routing", "app_routing_except")
+
+
+class _FoServer(_FoKind):
+    """A WDTT or csqtt server (`fam`)."""
+
+    def __init__(self, fam, follow, identity):
+        self.kind, self.fam, self.fields, self.identity = fam, fam, follow, identity
+
+    def a(self, a_rec, asnap):
+        return {n: ov for n, ov in ((a_rec or {}).get(self.fam) or {}).items() if isinstance(ov, dict)}
+
+    def b(self, b_rec):
+        return {n: ov for n, ov in ((b_rec or {}).get(self.fam) or {}).items()}
+
+    def _rows(self, snap):
+        r = snap.get(self.fam) if isinstance(snap, dict) else None
+        return {x["iface"]: x for x in (r if isinstance(r, list) else ()) if isinstance(x, dict) and x.get("iface")}
+
+    def a_reports(self, asnap):
+        return set(self._rows(asnap))
+
+    def rep(self, snap, n):
+        return self._rows(snap).get(n)
+
+    def bkey(self, rec):
+        if not isinstance(rec, dict):
+            return None
+        return rec.get("server_pub") or (rec.get("key_blob") or {}).get("pub") or ""
+
+    def keys(self, src, snaps, aid, n):
+        if not self.identity:
+            return "", ""
+        rk = (self.rep((snaps or {}).get(aid), n) or {}).get("server_pub")
+        return self.bkey(src) or "", (rk if isinstance(rk, str) else "")
+
+    def rebuildable(self, src, ivk):
+        if not self.identity:
+            return True
+        blessed = self.bkey(src)                  # the interfaces' custody rule, one predicate (F164)
+        return _iface_key_source({"public_key": blessed, "key_blob": src.get("key_blob")}, None, ivk) == "vault"
+
+    def runs(self, rep, key, own):
+        if not isinstance(rep, dict):
+            return False
+        if rep.get("stopped"):
+            return own
+        if rep.get("active") != "active" or rep.get("await_restore"):
+            return False
+        return key is None or not self.identity or (rep.get("server_pub") or "") in ("", key)
+
+    def held(self, rep, key):
+        return (isinstance(rep, dict) and rep.get("active") == "active" and not rep.get("stopped")
+                and not rep.get("await_restore") and (not self.identity or (rep.get("server_pub") or "") == key))
+
+    def online(self, snap, names):
+        rows = self._rows(snap)
+        return sum(1 for n in names for p in ((rows.get(n) or {}).get("passwords") or {}).values()
+                   if isinstance(p, dict) and p.get("online"))
+
+    def target(self, t):
+        return (_is_wdtt_target if self.fam == "wdtt" else _is_csqtt_target)(t)
+
+    def clonable(self, w, n, src, ivk):
+        # a delete of B's in flight (a Re-sync, a drop): the node removes it first, or the same name would be "run" and
+        # "remove" in one reply and the old identity would stay (`wdtt_remove` subtracts the desired set)
+        return n not in (w.get(self.fam + "_delete") or {}) and self.rebuildable(src, ivk)
+
+    def clone(self, w, n, src):
+        bov = w.setdefault(self.fam, {})[n] = {"iface": n}
+        if self.identity and src.get("key_blob"):
+            bov["key_blob"] = _fo_copy(src["key_blob"])
+            if src.get("server_pub"):
+                bov["server_pub"] = src["server_pub"]
+        return bov
+
+    def follow(self, bov, src):
+        if self.identity and src.get("key_blob") and self.bkey(bov) == self.bkey(src) and bov.get("key_blob") != src["key_blob"]:
+            bov["key_blob"] = _fo_copy(src["key_blob"])    # the same identity re-sealed on A: B's opens too
+        for k in self.fields:
+            if k in src:
+                bov[k] = _fo_copy(src[k])
+            else:
+                bov.pop(k, None)
+        fwd = src.get("egress_mode") == "forward"
+        for k in FO_IF_FWD:                               # as an interface: in forward mode they name the far node
+            if fwd and k in src:
+                bov[k] = src[k]
+            else:
+                bov.pop(k, None)
+
+    def drop(self, c, n, now_):
+        """As /api/wdtt|csqtt/delete drops it: the record goes, its delete is staged, a pending restore with it."""
+        d = c.get(self.fam)
+        if isinstance(d, dict):
+            d.pop(n, None)
+            if not d:
+                c.pop(self.fam, None)
+        c.setdefault(self.fam + "_delete", {})[n] = {"at": int(now_)}
+        for k in (self.fam + "_restore", self.fam + "_recreate"):
+            if isinstance(c.get(k), dict):
+                c[k].pop(n, None)
+                if not c[k]:
+                    c.pop(k, None)
+
+    def dial_host(self, a_rec, src, asnap, n):
+        host, _port = _hostport_split(src.get("listen") or "")
+        return host or ""
+
+    def status(self, r, ctx):
+        rep = r["rep"]
+        if rep is None:
+            return "syncing", "creating", {}
+        if rep.get("await_restore"):
+            return "needs_vault", "awaiting_key", {}
+        if self.identity and rep.get("server_pub") and rep["server_pub"] != r["key"]:
+            return "problem", "key", ({"resync": True} if self.rebuildable(r["src"], ctx["ivk"]) else {})
+        if rep.get("active") != "active" and not rep.get("stopped"):
+            return "problem", "down", {}
+        return "ready", "", {}
+
+    def take(self, a, b, n, host, now_):
+        self.drop(a, n, now_)                             # A's goes as its delete door drops it; B's record is B's now
+
+
+_FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False))
 
 
 def _fo_copies(nodes, snaps, aid, bid, live):
@@ -13596,9 +13739,18 @@ def _fo_copies(nodes, snaps, aid, bid, live):
         for n, src in sorted(k.a(a, asnap).items()):
             keys = k.keys(src, snaps, aid, n)
             bov = bs.get(n)
+            if k.identity or not isinstance(bov, dict):
+                cc = _fo_copy_class(bov, keys, k.bkey(bov))
+            else:
+                cc = "link" if k.is_link(bov) else "current"
             rows.append({"kind": k, "name": n, "src": src, "bov": bov, "keys": keys, "key": _fo_key_of(keys),
-                         "cc": _fo_copy_class(bov, keys), "rep": k.rep(bsnap, n)})
+                         "cc": cc, "rep": k.rep(bsnap, n)})
     return rows
+
+
+def _fo_b_copies(b_rec):
+    """{name: kind} — every copy B's record holds, every kind, its own same-named records left out (what a keep removes)."""
+    return {n: k for k in _FO_KINDS for n, ov in k.b(b_rec).items() if isinstance(ov, dict) and not k.is_link(ov)}
 
 
 def _fo_srcs(a_rec, asnap):
@@ -13773,7 +13925,8 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     if a.get("transfer"):
         refused.append({"why": "this node is being transferred to another panel"})   # §4.9, both ways
     ifs = _fo_user_ifaces(a)
-    if not ifs:
+    _servers = [(k, n, src) for k in _FO_KINDS if k.kind != "iface" for n, src in sorted(k.a(a, snap).items())]
+    if not ifs and not _servers:
         refused.append({"why": "this node has no interfaces to mirror"})
     plan = rebuild_plan(deps, nodes, aid, snaps, seen, supersede=False)
     nv = set(plan["needs_vault"])
@@ -13805,15 +13958,35 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
                or ((_rep.get("meta") or {}) if isinstance(_rep, dict) else {}).get("listen_port"))
         if isinstance(_lp, int) and _lp > 0:
             warn["ports"].append({"iface": n, "port": _lp})
+    # the turn family's servers (§12.5): the interfaces' checks, by each server's own fields — its key in the vault, the
+    # address and port clients hand VK (`listen`), a pinned egress
+    _ivk = _current_ivk_pub(deps)
+    for k, n, src in _servers:
+        if k.identity and not k.rebuildable(src, _ivk):
+            refused.append({"iface": n, "why": "its key is not in the Encryption Vault — set the vault up; the key is sealed "
+                                              "on the node's next sync"})
+        host, port = _hostport_split(src.get("listen") or "")
+        if not host or _ip_literal(host):
+            warn["ip_endpoint"].append({"iface": n, "host": host or ""})
+        elif resolve and node_public_ip(snap):
+            if host not in _dns:
+                _dns[host] = _fo_resolves_to(host, snap.get("node_ips") or ())
+            if _dns[host] is False:
+                warn["dns"].append({"iface": n, "host": host})
+        if src.get("egress_mode") != "forward" and (src.get("egress_ip") or src.get("wan_iface")):
+            warn["pinned"].append(n)
+        for _p in (port, src.get("raw_port")):          # a stored port may be text: the record keeps what was typed
+            _p = int(_p) if isinstance(_p, int) or (isinstance(_p, str) and _p.isdigit()) else 0
+            if 0 < _p <= 65535:
+                warn["ports"].append({"iface": n, "port": _p})
     if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
         _mc = mesh_cfg(deps)
         warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
-    for k in ("wdtt", "csqtt"):
-        warn["not_mirrored"] += [{"kind": k, "name": n} for n in sorted(a.get(k) or {})]
     if a.get("turn"):
         warn["not_mirrored"].append({"kind": "turn", "name": ""})
     # B has no exits (§7): what the mirror's own prunes take off B's copy — run on a scratch copy of what it follows
-    _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs})
+    _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs,
+                   **{k: a[k] for k in ("wdtt", "csqtt") if isinstance(a.get(k), dict)}})
     warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_s)]
     if a.get("default_exit") and (prune_default_exit(_s) or not _s.get("default_exit")):
         warn["not_mirrored"].append({"kind": "default_exit", "name": str(a["default_exit"])})
@@ -13856,7 +14029,7 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
         else:
             st, why, more = r["kind"].status(r, ctx)
         if st != "ready":
-            rows.append({"iface": n, "state": st, "why": why, **more})
+            rows.append({"iface": n, "kind": r["kind"].kind, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst
     extra, um = [], _unmanaged_ifaces(b, bsnap)
     if bsnap.get("cmd_errors"):
@@ -13913,7 +14086,8 @@ _FO_RO_DOORS = frozenset(("/api/nodes/rotate", "/api/node/update", "/api/nodes/f
                           "/api/nodes/failover/resync", "/api/connection/update", "/api/nodes/remesh",
                           "/api/node/awg-load", "/api/node/routing-reset", "/api/node/proc-clear",
                           "/api/iface/escrow/verified", "/api/routing/who",
-                          "/api/iface/restore"))   # a drift's Restore re-asserts the record: on B, A's own value
+                          "/api/iface/restore",    # a drift's Restore re-asserts the record: on B, A's own value
+                          "/api/wdtt/restore"))    # the browser's re-seal of the clone's own identity (§12.4) — sealed only
 # the node sheet's fields that are B's own (its name, its address and mesh, its datapath) — never one it follows
 _FO_NODE_LOCAL = frozenset(("id", "name", "color", "endpoint_host", "endpoint_hosts", "fast_lane", "log_mb", "mesh_port",
                             "mesh_prefix", "mesh_subnet", "mesh_egress_ip", "default_egress_ip", "panel_ip"))
@@ -32029,6 +32203,8 @@ def api(method, path, qs, body, deps):
         fv = failover_view(nodes, roster_view(roster_path)[0], aid, bid, snaps, seen, frozenset(), now=now(),
                            ivk=_current_ivk_pub(deps))
         bad = [r["iface"] for r in fv["rows"] if r.get("resync")]
+        _kinds = {k.kind: k for k in _FO_KINDS}
+        _kind_of = {r["iface"]: _kinds.get(r.get("kind"), _FO_KINDS[0]) for r in fv["rows"]}
         # a key row it cannot repair is said — whether or not other rows were (F149): the vault is what is missing there
         _nv = [r["iface"] for r in fv["rows"] if r.get("why") == "key" and not r.get("resync")]
         if not bad and _nv:
@@ -32037,7 +32213,7 @@ def api(method, path, qs, body, deps):
                                              v2=", ".join(_nv), v3=nodes[bid].get("name") or bid), "code": "vault_needed"}
         for n in bad:                                  # nothing to repair: an empty success — a repeated call is no error (F157);
             #                                            the status already shows every other row, Re-sync answers for its own
-            _fo_drop_iface(nodes[bid], n, now())
+            _kind_of[n].drop(nodes[bid], n, now())     # as its kind's delete door drops it; the pass re-clones once it closes
         if bad:
             nodes_save(deps["nodes_path"], nodes)
             ev_append(roster_path, "node", bid, "Re-syncing failover interfaces", nodes[bid].get("name") or bid, ", ".join(bad))
@@ -32090,7 +32266,7 @@ def api(method, path, qs, body, deps):
         if body.get("dry_run") is True:
             if not take:
                 return 200, {"ok": True, "data": {"id": bid, "preview": True, "moved": [], "left": [], "ip_dial": [],
-                                                  "removed": sorted(_fo_user_ifaces(nodes[bid])), "confirm": _need}}
+                                                  "removed": sorted(_fo_b_copies(nodes[bid])), "confirm": _need}}
             _mv, _lf, _rm, _hs = _fo_takeover_plan(nodes, aid, bid, cls, snaps)
             return 200, {"ok": True, "data": {"id": bid, "preview": True, "moved": _mv, "left": _lf, "removed": _rm, "confirm": _need,
                                               "ip_dial": [n for n in _mv if not _hs[n] or _ip_literal(_hs[n])]}}
@@ -32098,9 +32274,10 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, **perr("{v1} is serving clients: type {v2} to go on", v1=nodes[cut].get("name") or cut,
                                              v2=bname), "code": "confirm_required"}
         if not take:                                   # every record on B is the mirror's: all go (F106 — a copy of one
-            _gone = sorted(_fo_user_ifaces(nodes[bid]))   # A is still deleting would else stay with A's key)
-            for n in _gone:
-                _fo_drop_iface(nodes[bid], n, now())
+            _gone = _fo_b_copies(nodes[bid])               # A is still deleting would else stay with A's key) — every kind
+            for n, k in _gone.items():
+                k.drop(nodes[bid], n, now())
+            _gone = sorted(_gone)
             nodes[bid].pop("failover_of", None)
             nodes_save(deps["nodes_path"], nodes)
             ev_append(roster_path, "node", bid, "Detached failover node", bname,
@@ -38231,7 +38408,9 @@ class Handler(BaseHTTPRequestHandler):
                         and (_kb.get("pub") != _pk or _kb.get("vault") != _ivk_pub):
                     _ivk_want.append(_ifn)
             _wstore2 = node.get("wdtt") or {}
-            for _w in (snap.get("wdtt") or []):   # a WDTT identity the panel doesn't hold a CURRENT sealed copy of
+            # off on a failover node (§12.4): its identity is A's, sealed on A — B sealing its own copy would overwrite the
+            # clone's blob and the mirror's re-copy of A's would flap against it
+            for _w in ((snap.get("wdtt") or []) if _rid == nid else ()):   # a WDTT identity the panel doesn't hold a CURRENT sealed copy of
                 _wi = _w.get("iface"); _wp = _w.get("server_pub")
                 _wov2 = _wstore2.get(_wi) if _wi else None
                 _wkb = (_wov2 or {}).get("key_blob") or {}
@@ -38262,8 +38441,8 @@ class Handler(BaseHTTPRequestHandler):
         # config generator puts in the link. Read live from deps (kept current on every settings save), not
         # captured at boot, so changing the fallback takes effect on the next sync rather than the next restart.
         _fb_vk = str(((Handler.deps.get("panel_settings") or {}) if Handler.deps else {}).get("vk_link") or "")
-        _wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)
-        _csqtt_des = _csqtt_reply(roster, nodes, nid, _fb_vk, snap)
+        _wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)
+        _csqtt_des = _csqtt_reply(roster, nodes, nid, _fb_vk, snap, _rid)
         # Take over a wg/awg server running in ANOTHER container (Amnezia). One-shot, like the adoption
         # markers above: the node stops that container and stands the same server up natively, then reports
         # what it found so the peers can be imported. Sent only while the request is live.
