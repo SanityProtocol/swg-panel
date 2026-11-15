@@ -6390,7 +6390,6 @@ export const STR = {
   "For every interface {v1} runs with {v2}'s key, the peers move to {v1} and {v2}'s copy is removed. Clients that dial a domain keep their configs: point it at {v1}. Use this when {v2} is gone for good.": "Для каждого интерфейса, который {v1} запускает с ключом {v2}, пиры переходят на {v1}, а копия на {v2} удаляется. Клиенты, подключающиеся по домену, сохраняют свои конфиги: направьте домен на {v1}. Выбирайте это, если {v2} больше не вернётся.",
   "It is {v1}'s failover node: removing it removes its copies and the peers stay on {v1}. Clients connected here right now lose their connection.": "Это зеркало {v1}: при удалении удаляются его копии, а пиры остаются на {v1}. Клиенты, подключённые сюда сейчас, потеряют соединение.",
   "Neither {v1} nor {v2} is reporting — bring one of them back before you move the domain.": "Ни {v1}, ни {v2} не выходят на связь — верните одну из них, прежде чем переносить домен.",
-  "Nothing left to hand over from this browser — if {v1} keeps waiting, its keys are not in this vault": "Этому браузеру больше нечего передать — если {v1} продолжает ждать, её ключей нет в этом хранилище",
   "Nothing to re-sync: {v1} already runs {v2}'s copies": "Пересинхронизировать нечего: {v1} уже запускает копии {v2}",
   "Put back": "Вернуть",
   "Torrents sent through an exit are blocked on the failover node": "Торренты, идущие через выход, на зеркале блокируются",

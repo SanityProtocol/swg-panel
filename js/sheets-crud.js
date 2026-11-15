@@ -151,8 +151,9 @@ export function AddPeersSheet({ userId, userName }) {
 // All deployable (node, iface) targets known from the consolidated state.
 export function allTargets() {
   const out = [];
-  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))   // a failover node serves its
-    if (!Store.isMirror(node) && !Store.ifaceIsSystem(node, iface)) out.push({ node, iface });                 // primary's peers: never a target   // never offer a mesh link (swg_*) as a peer target
+  // never a failover node (it serves its primary's peers) and never a mesh link (swg_*): neither is a peer target
+  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))
+    if (!Store.isMirror(node) && !Store.ifaceIsSystem(node, iface)) out.push({ node, iface });
   // WDTT/csqtt servers own their interface, which isn't a panel-managed WG iface (so it's absent from
   // `describe`) — add each so it is selectable as a (keyless) peer target.
   //
@@ -2853,10 +2854,12 @@ function FailoverDetachSheet({ id }) {
   const fo = (b && b.failover) || {};
   const [mode, setMode] = useState(fo.primary_live === false ? "move" : "keep");
   const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
+  const [asked, setAsked] = useState(false);       // the act asked for the typed name the preview did not (a client came online since)
   // the preview is the door's own dry run — the same checks on the same reading as the act, never a guess from the status:
-  // asked again when the mode or the pair's status changes. {data} what it would do · {err} what it refuses · undefined asking
+  // asked again when the mode or what the take-over reads changes — each interface's code, not the peer counts a syncing pair
+  // changes every poll. {data} what it would do · {err} what it refuses · undefined asking
   const [pv, setPv] = useState(undefined);
-  const foKey = JSON.stringify([fo.state, fo.primary_live, fo.rows, fo.problems]);
+  const foKey = JSON.stringify([fo.state, fo.primary_live, (fo.rows || []).map(r => [r.iface, r.why, !!r.resync]), fo.problems]);
   useEffect(() => {
     if (!b || !b.failover) return;
     let live = true;
@@ -2869,19 +2872,22 @@ function FailoverDetachSheet({ id }) {
   if (!b || !b.failover) return null;
   const aname = Store.nodeName(fo.primary);
   const d = (pv && pv.data) || null;
-  const need = !!(d && d.confirm);
+  const need = !!(d && d.confirm) || asked;
   const go = async () => {
     if (busy || !d || (need && txt !== b.name)) return; setBusy(true);
     try {
       const r = await api.failoverDetach({ id, take_over: mode === "move", confirm: txt });
-      if (!r.ok) return toast(srvText(r) || T("couldn't detach"), "err");
+      if (!r.ok) {
+        if (r.code === "confirm_required" && !need) return setAsked(true);   // the field below says why; nothing failed
+        return toast(srvText(r) || T("couldn't detach"), "err");
+      }
       closeModal(); toast(T("{v1} is an ordinary node now", { v1: b.name }) + " — " + detachSaid(r.data || {}, aname, mode === "move"), "ok");
       Store.poll().catch(() => {});
     } catch (_) { toast(T("couldn't detach"), "err"); }
     finally { setBusy(false); }
   };
   const seg = (v, label) => html`<button type="button" role="radio" aria-checked=${mode === v} class=${"seg" + (mode === v ? " on" : "")}
-    onClick=${() => { setMode(v); setTxt(""); setPv(undefined); }}>${label}</button>`;
+    onClick=${() => { setMode(v); setTxt(""); setAsked(false); setPv(undefined); }}>${label}</button>`;
   const j = xs => (xs || []).join(", ");
   return html`<${Sheet} title=${T("Detach · {v1}", { v1: b.name })}
     foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || !d || (need && txt !== b.name), action: T("Detach") })}>
@@ -3176,6 +3182,7 @@ export function ForceRemoveNodeSheet({ node }) {
   return html`<${Sheet} title=${T("Force remove · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, danger: true, disabled: !ok || busy, onAction: del, action: T("Force remove") })}>
     <div class="notice warn"><${Ic} i="warn"/><span>${forceRemoveWarn(node.name, onlyHere)}</span></div>
+    ${foB ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface it holds a copy of, and the rest go with this node. To remove this node and its peers on purpose, remove {v1} first.", { v1: Store.nodeName(foB) })}</span></div>` : null}
     <div class="field"><label>${typeToConfirm(phrase)}</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
 }

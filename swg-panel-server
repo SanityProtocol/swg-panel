@@ -13741,7 +13741,8 @@ def failover_ro_refusal(path, body, nodes):
         return None
     b = hit[0]
     own = _fo_str(body.get("iface")) not in _fo_user_ifaces(nodes[fo[b]])      # an interface of B's own, not a copy
-    if ((path in _FO_RO_DOORS and not (path == "/api/iface/recreate" and body.get("fresh")))   # fresh: B's own key
+    if ((path in _FO_RO_DOORS and not (path == "/api/iface/recreate" and body.get("fresh"))   # fresh: B's own key
+         and not (path == "/api/iface/restore" and body.get("key") == "public_key"))         # a key is Re-sync's, never this
             or (path == "/api/nodes/update" and set(body) <= _FO_NODE_LOCAL)
             or (path == "/api/iface/update" and set(body) <= _FO_IF_LOCAL)
             or (path in ("/api/iface/delete", "/api/iface/ignore", "/api/iface/unignore", "/api/iface/update",

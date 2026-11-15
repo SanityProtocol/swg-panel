@@ -39,7 +39,7 @@ import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit,
          AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, openNodeRollback, openNodeTransferWatch,
          openNodeMigrate, openNodeTransfer, unflagNode, bootCmd, openFailoverSetup, openFailoverResync, openFailoverDetach } from "./sheets-crud.js";
-import { ensureVaultUnlocked, ifaceKeyAutoRestore } from "./crypto.js";
+import { ensureVaultUnlocked, ifaceKeyAutoRestore, ifaceKeyRetry } from "./crypto.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey } from "./peer-actions.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
@@ -1372,13 +1372,19 @@ function foWhy(r, bn, an) {
     default: return r.why;
   }
 }
-// a drift row's repair: re-assert the record — on a failover node, its primary's value (the door allows only this)
+// a drift row's repair: re-assert the record — on a failover node, its primary's value. Never the key: that is Re-sync's
+const foPutKeys = r => (r.keys || []).filter(k => k !== "public_key");
+let _foPutting = false;
 async function foPutBack(b, r) {
-  for (const k of (r.keys || []).filter(k => k !== "public_key")) {
-    const res = await api.ifaceRestore({ node: b, iface: r.iface, key: k });
-    if (!res.ok) return toast(srvText(res) || T("Failed"), "err");
-  }
-  toast(T("Restoring the panel value on the next sync."), "ok"); Store.poll().catch(() => {});
+  if (_foPutting) return; _foPutting = true;
+  try {
+    for (const k of foPutKeys(r)) {
+      const res = await api.ifaceRestore({ node: b, iface: r.iface, key: k });
+      if (!res.ok) return toast(srvText(res) || T("Failed"), "err");
+    }
+    toast(T("Restoring the panel value on the next sync."), "ok"); Store.poll().catch(() => {});
+  } catch (_) { toast(T("Failed"), "err"); }
+  finally { _foPutting = false; }
 }
 function FailoverPanel({ nrec }) {
   const fo = nrec.failover;
@@ -1392,13 +1398,12 @@ function FailoverPanel({ nrec }) {
       reason: T("{v1} is waiting for {v2}'s interface keys. They are sealed to your vault: unlock it, and this browser re-seals each key to {v1} — the panel never sees one.", { v1: bn, v2: an }),
       consequence: T("{v1} keeps waiting, and serves nobody on those interfaces until the vault is unlocked here.", { v1: bn }) });
     if (!ok) return;
-    const sent = await ifaceKeyAutoRestore();      // null: a pass is already running, and hands them over itself
-    if (sent === 0) toast(T("Nothing left to hand over from this browser — if {v1} keeps waiting, its keys are not in this vault", { v1: bn }), "warn");
-    else toast(T("Handing the keys to {v1}…", { v1: bn }), "ok");
+    // a pass that ran while the vault was locked, or before B listed the interface, marked it tried: the press asks again
+    ifaceKeyRetry(b); ifaceKeyAutoRestore(); toast(T("Handing the keys to {v1}…", { v1: bn }), "ok");
   };
   // the address to point the domain at: a public one B reports (never a private, CGNAT or link-local one), else none named
   const bAddr = (bRec.ips || []).find(ip => ip && !isPrivIp(ip) && !/^(fe80|fd|fc|::1)/i.test(ip)) || "";
-  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l">${r.iface}</span><span class="r">${foWhy(r, bn, an)}${r.why === "drift" && bLive
+  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l">${r.iface}</span><span class="r">${foWhy(r, bn, an)}${r.why === "drift" && bLive && foPutKeys(r).length
     ? html` <button class="btn btn-mini" style="margin-left:6px" onClick=${() => foPutBack(b, r)}>${T("Put back")}</button>` : null}</span></div>`);
   const probs = (fo.problems || []).map(p => html`<div class="ifrow ifrow-stack"><span class="l">${p.kind === "cmd_errors"
     ? T("{v1} reports commands that failed — its page says which", { v1: bn })

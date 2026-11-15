@@ -853,10 +853,9 @@ export async function escrowAutoVerify() {
 // The failover panel's Unlock vault (docs/FAILOVER-PLAN.md §4.7): the auto-restore is one attempt per interface a session,
 // so a door the operator presses forgets that node's attempts first — or a key that failed once would never be tried again.
 export function ifaceKeyRetry(nid) { for (const k of Object.keys(_ikTried)) if (k.startsWith(nid + "|")) delete _ikTried[k]; }
-export async function ifaceKeyAutoRestore() {   // → how many interface keys this pass handed over; null when it did not run
-  if (_ikRunning || !subSKCached()) return null;   // vault locked → the card's button is the door
+export async function ifaceKeyAutoRestore() {
+  if (_ikRunning || !subSKCached()) return;      // vault locked → the card's button is the door
   _ikRunning = true;
-  let sent = 0;
   try {
     for (const n of (Store.nodes || [])) {
       for (const ifn of (n.awaiting_key || [])) {
@@ -867,7 +866,7 @@ export async function ifaceKeyAutoRestore() {   // → how many interface keys t
         if (!mi || mi.key_source !== "vault" || !mi.key_blob) continue;
         try {
           const sealed = await ivkResealForNode(n.id, mi);
-          if (sealed && (await api.ifaceRecreate({ node: n.id, iface: ifn, sealed_key: sealed })).ok) sent++;
+          if (sealed) await api.ifaceRecreate({ node: n.id, iface: ifn, sealed_key: sealed });
         } catch (_) { delete _ikTried[k]; }      // transport key not reported yet, say → let a later poll retry
       }
       /* …and the turn-family twin, which has HELD since long before interfaces did — and until now waited
@@ -888,7 +887,6 @@ export async function ifaceKeyAutoRestore() {   // → how many interface keys t
       }
     }
   } finally { _ikRunning = false; }
-  return sent;
 }
 
 export async function subAutoHeal() {

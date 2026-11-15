@@ -2456,7 +2456,12 @@ export function PanelSettingsScreen() {
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)
-  const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
+  const setNV = (nid, patch) => {
+    // a failover node's draft takes only its own fields: a followed one stays its primary's value — the notice on the
+    // routing and exits sections says so — and a fleet-wide edit (an unpinned list) leaves it alone
+    if (Store.isMirror(nid)) patch = Object.fromEntries(Object.entries(patch).filter(([k]) => FO_NODE_OWN.has(k)));
+    if (Object.keys(patch).length) setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
+  };
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
   // ⚠️ AN EXIT WRITE IS PRUNED ON THE SERVER, AND THE DEFAULT LIST WITH IT. Removing an exit rewrites every rule of the
   // node's list that named it to Direct and re-derives `default_exit` (prune_exit_refs, derive_default_exit) — a draft
@@ -2562,11 +2567,11 @@ export function PanelSettingsScreen() {
     let nerr = null;
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {};
-      // a failover node follows its primary in everything but its own address, mesh and log size (§4.7): a fleet-wide edit
-      // (an unpinned list) touches its draft too, and posting the followed fields would be refused — only its own go
+      // a failover node follows its primary in everything but its own address, mesh and log size (§4.7): its draft holds
+      // only those edits (setNV), and only they are posted — the followed fields would be refused
       const own = Store.isMirror(n.id) ? FO_NODE_OWN : null;
-      if (!Object.keys(nFields(n)).some(k => (!own || own.has(k)) && !eq(e[k], o[k]))) continue;
-      const body = { id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
+      if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
+      const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
         dns_upstream: String(e.dns_upstream || "").split(/[\s,]+/).filter(Boolean),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
@@ -2578,8 +2583,7 @@ export function PanelSettingsScreen() {
         p2p_portok: e.p2p_portok ?? null,   // the text as typed, so the panel names what it cannot take; [] = No exceptions; null = the fleet's
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
-        catalog_cats: e.catalog_cats || [], exits: e.exits || [], log_mb: +e.log_mb || 100 };
-      const nr = await api.nodeUpdate(own ? Object.fromEntries(Object.entries(body).filter(([k]) => k === "id" || own.has(k))) : body);
+        catalog_cats: e.catalog_cats || [], exits: e.exits || [], log_mb: +e.log_mb || 100 }, own);
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
       else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }

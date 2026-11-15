@@ -94,7 +94,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      keep-confirm detach-keep cuts B's clients without the typed name
      mesh-retire  a full mesh never retires a failover node's link
 """
-import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
+import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -157,7 +157,7 @@ PLANTS = {   # (file, anchor, replacement)
                     '''        if False:'''),
     "walk-pos": ("panel", '''key=lambda kv: (kv[0] in idle, _pos[failover_rid(nodes, kv[0])])''', '''key=lambda kv: (kv[0] in idle, _pos[kv[0]])'''),
     "remove-assume": ("panel", '''_fo_live(deps.get("node_seen"), _fo_b), assume=True), _fo_snaps)''', '''_fo_live(deps.get("node_seen"), _fo_b), assume=False), _fo_snaps)'''),
-    "unsure-guard": ("panel", '''    if unsure:
+    "unsure-guard": ("panel", '''    if cls[2]:
         raise ValueError''', '''    if False:
         raise ValueError'''),
     "keep-guard": ("panel", '''        if _only_b:''', '''        if False:'''),
@@ -169,8 +169,8 @@ PLANTS = {   # (file, anchor, replacement)
     "stale-keep": ("panel", '''    for n in old:
         _fo_drop_iface(b, n, now_)''', '''    for n in ():
         _fo_drop_iface(b, n, now_)'''),
-    "leftover-late": ("panel", '    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))   # taken BEFORE A\'s held interfaces are dropped below\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
-                      '    old = sorted(set(stale))\n    now_ = int(time.time())\n    asnap = (snaps or {}).get(aid) or {}\n    for n in held:\n        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]\n        host = _fo_effective_host(a, aov, asnap, n)\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            bov["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
+    "leftover-late": ("panel", '    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A\'s held interfaces are dropped\n    now_ = int(time.time())\n    for n in held:\n        host = hosts[n]\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            b["ifaces"][n]["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in old:\n',
+                      '    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A\'s held interfaces are dropped\n    old = sorted(set(cls[3]))\n    now_ = int(time.time())\n    for n in held:\n        host = hosts[n]\n        if host and not _ip_literal(host):            # A\'s own address would send B\'s new configs to A (§4.1 warned)\n            b["ifaces"][n]["endpoint_host"] = host\n        _fo_drop_iface(a, n, now_)\n    for n in sorted(set(old) | set(_fo_leftovers(nodes, aid, bid))):\n'),
     "stale-deadend": ("panel", '''if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]''', ''']'''),
     "report-condemns": ("panel", '''    return "current" if reported and bov.get("public_key") == reported else "unknown"''',
                         '''    return "current" if reported and bov.get("public_key") == reported else ("stale" if reported else "unknown")'''),
@@ -693,9 +693,18 @@ def sec7():
                  ("/api/connection/update", {"node": "nb"}), ("/api/iface/recreate", {"node": "nb", "iface": "awg0"}),
                  ("/api/iface/escrow/verified", {"node": "nb"}), ("/api/iface/restore", {"node": "nb", "iface": "awg0", "key": "mtu"})):
         check("[7] allowed: " + p, f(p, b) is None)
+    check("[7] a drift Restore of the key is refused on B — the key is Re-sync's", (f("/api/iface/restore", {"node": "nb", "iface": "awg0", "key": "public_key"}) or [0])[0] == 409)
     check("[7] the primary is not read-only", f("/api/iface/update", {"node": "na", "iface": "awg0"}) is None)
     check("[7] a fleet with none: nothing read", P.failover_ro_refusal("/api/iface/update", {"node": "nb"}, {"nb": {}}) is None)
     check("[7] a peer id on a peer door is not a node", f("/api/peers/update", {"id": "nb"}) is None)
+    # the Settings save posts a failover node's own fields only (screen-settings FO_NODE_OWN): the server's own list, as far as
+    # that save sends them — a field missing there is silently never saved, one too many fails the whole save (verify F70)
+    st = open(os.path.join(ROOT, "js", "screen-settings.js")).read()
+    own = set(re.findall(r'"(\w+)"', re.search(r"const FO_NODE_OWN = new Set\(\[(.*?)\]\)", st, re.S).group(1)))
+    blk = st[st.index("await api.nodeUpdate({"):]
+    sent = set(re.findall(r"\b(\w+):", blk[:blk.index("}, own)")]))
+    check("[7] the Settings save's own fields of a failover node are the server's, as far as it sends them",
+          own == (set(P._FO_NODE_LOCAL) & sent) - {"id"}, (sorted(own), sorted((set(P._FO_NODE_LOCAL) & sent) - {"id"})))
 
 
 # ── [8] take-over and removal ────────────────────────────────────────────────────────────────────────────────────────

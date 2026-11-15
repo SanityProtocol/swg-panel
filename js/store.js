@@ -116,7 +116,8 @@ export const api = {
   twofaDisable(b) { return this.post("/api/account/2fa/disable", b); },
   nodes() { return this.get("/api/nodes"); },
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
-  nodeUpdate(b) { return this.post("/api/nodes/update", b); },
+  // `only` (a Set): send just these fields and the id — a failover node's own (screen-settings FO_NODE_OWN)
+  nodeUpdate(b, only) { return this.post("/api/nodes/update", only ? Object.fromEntries(Object.entries(b).filter(([k]) => k === "id" || only.has(k))) : b); },
   nodeArrivedClear(b) { return this.post("/api/nodes/arrived/clear", b); },   // dismiss the "arrived here" note
   turnReclaim(b) { return this.post("/api/turn/reclaim", b); },   // a wdtt/csqtt server the node holds and no panel claims
   escrowVerified(b) { return this.post("/api/iface/escrow/verified", b); },   // the browser opened the blob: it is for THIS vault

@@ -1439,7 +1439,8 @@ export function Overview() {
   const sc = scopeCounts(sPeers);
   const sUsers = users.filter(u => sc.users.has(u.id));
   const liveNodes = fleetSel.filter(n => ns[n.id] === "live").length;
-  const ifaceCount = selIds.filter(id => !Store.isMirror(id))   // a failover node's copies are not more interfaces.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length + ((Store.stats[id] || {}).wdtt || []).filter(w => w && w.iface).length + ((Store.stats[id] || {}).csqtt || []).filter(c => c && c.iface).length, 0);   // + WDTT + csqtt interfaces (own their TUN, not in describe)
+  // a failover node's copies are not more interfaces
+  const ifaceCount = selIds.filter(id => !Store.isMirror(id)).reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length + ((Store.stats[id] || {}).wdtt || []).filter(w => w && w.iface).length + ((Store.stats[id] || {}).csqtt || []).filter(c => c && c.iface).length, 0);   // + WDTT + csqtt interfaces (own their TUN, not in describe)
   const nodesAlerting = fleetSel.filter(n => healthAlerts(((Store.nodes || []).find(x => x.id === n.id) || {}).health).length).length;
   let rx = 0, tx = 0;
   fleetSel.forEach(n => { const [r, t] = nodeRate(n.id); rx += r; tx += t; });
