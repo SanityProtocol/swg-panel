@@ -225,6 +225,8 @@ PLANTS = {   # (file, anchor, replacement)
                       '        if True:\n            return True\n        blessed = self.bkey(src)'),
     'srv-ports': ("panel", '            if 0 < _p <= 65535:\n                warn["ports"].append({"iface": n, "port": _p})',
                       '            if False:\n                warn["ports"].append({"iface": n, "port": _p})'),
+    'srv-stale-door': ("panel", '        _rebuild = [n for n in (cls[3] if take else ()) if n in _srcs and _srcs[n][0].rebuildable(_srcs[n][1], _ivk)]',
+                      '        _rebuild = [n for n in (cls[3] if take else ()) if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]'),
 }
 
 TMP = tempfile.mkdtemp(prefix="swg-failover-")
@@ -1385,6 +1387,18 @@ def sec14():
           rb.get("wdtt_vault_want"))
     check("[14] …and its reply carries A's identity as the hold, with A's users",
           ((rb.get("wdtt") or {}).get("wdtt1") or {}).get("key_blob", {}).get("pub") == KW, (rb.get("wdtt") or {}).get("wdtt1"))
+
+    # the detach door: a WDTT copy of another identity than A's, which the vault can rebuild, waits for a Re-sync —
+    # the take-over never drops it on the interfaces' predicate (it found no interface by that name)
+    fs = t_fleet()
+    fs["nb"]["wdtt"] = {"wdtt1": w_inst(server_pub=KX, key_blob={"pub": KX, "ct": "c", "eph": "e", "mac": "m", "vault": IVK})}
+    port, d = start_panel(NEW, "turn-stale", fs, roster(), vault={"ivk_enabled": True, "ivk_pub": IVK})
+    tk = {x: req(port, "/api/nodes/rotate", {"id": x})[1]["data"]["token"] for x in ("na", "nb", "nc")}
+    tsync("na", [w_row()])
+    tsync("nb", [w_row(pub=KX)])
+    c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": True, "dry_run": True})
+    check("[14] a stale WDTT copy the vault can rebuild: the take-over waits for a Re-sync",
+          c == 409 and o.get("code") == "failover_stale" and "wdtt1" in (o.get("error") or ""), (c, o))
 
 
 def main():

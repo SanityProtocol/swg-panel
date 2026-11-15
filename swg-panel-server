@@ -32244,7 +32244,8 @@ def api(method, path, qs, body, deps):
         # that. Where it cannot, nothing ever will — the take-over goes on, that copy is removed and its peers stay on A
         # (said in `left` / `removed` and the event), rather than a refusal with no way out (F136).
         _ivk = _current_ivk_pub(deps) if take else ""
-        _rebuild = [n for n in (cls[3] if take else ()) if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]
+        _srcs = _fo_srcs(nodes[aid], snaps.get(aid) or {}) if take else {}   # each copy's own kind decides (§12.3: one predicate a kind)
+        _rebuild = [n for n in (cls[3] if take else ()) if n in _srcs and _srcs[n][0].rebuildable(_srcs[n][1], _ivk)]
         if _rebuild:
             return 409, {"ok": False, **perr("{v1}'s copy of {v2} is not {v3}'s current key — re-sync it first",
                                              v1=bname, v2=", ".join(_rebuild), v3=aname), "code": "failover_stale"}
