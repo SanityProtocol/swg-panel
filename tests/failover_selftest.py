@@ -691,7 +691,7 @@ def sec7():
     check("[7] a B whose primary is gone is not read-only", P.failover_ro_refusal("/api/iface/update", {"node": "nb", "iface": "x"}, n2) is None)
     for p, b in (("/api/nodes/rotate", {"id": "nb"}), ("/api/node/update", {"node": "nb"}), ("/api/nodes/failover/detach", {"id": "nb"}),
                  ("/api/connection/update", {"node": "nb"}), ("/api/iface/recreate", {"node": "nb", "iface": "awg0"}),
-                 ("/api/iface/escrow/verified", {"node": "nb"})):
+                 ("/api/iface/escrow/verified", {"node": "nb"}), ("/api/iface/restore", {"node": "nb", "iface": "awg0", "key": "mtu"})):
         check("[7] allowed: " + p, f(p, b) is None)
     check("[7] the primary is not read-only", f("/api/iface/update", {"node": "na", "iface": "awg0"}) is None)
     check("[7] a fleet with none: nothing read", P.failover_ro_refusal("/api/iface/update", {"node": "nb"}, {"nb": {}}) is None)
@@ -1124,6 +1124,10 @@ def sec10():
     check("[10] a string take_over is refused (F76)", c == 400, (c, o))
     c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": False})
     check("[10] keep with clients on B needs the typed name", c == 409 and o.get("code") == "confirm_required", (c, o))
+    c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": False, "dry_run": True})
+    check("[10] a dry run of keep previews it — the copies it removes and that the name will be asked — and changes nothing",
+          c == 200 and o["data"].get("preview") and o["data"]["removed"] == ["awg0"] and o["data"]["confirm"] is True
+          and "failover_of" in json.load(open(os.path.join(d, "state", "nodes.json")))["nb"], (c, o))
     c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "confirm": "hel-2"})
     check("[10] detach-keep with A reporting and the name typed is allowed, and names what it removed (F132)",
           c == 200 and o["data"]["moved"] == [] and o["data"].get("removed") == ["awg0"], (c, o))
@@ -1145,6 +1149,13 @@ def sec12():
         if want == "goes on":
             c, o = req(port, "/api/nodes/failover/resync", {"id": "nb"})
             check("[12] no vault: Re-sync names the vault as what is missing (F136, F148)", c == 409 and o.get("code") == "vault_needed", (c, o))
+        c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": True, "dry_run": True})
+        if want == "refused":
+            check("[12] a dry run is refused the same way", c == 409 and o.get("code") == "failover_stale", (c, o))
+        else:
+            check("[12] a dry run says what the take-over does, and does nothing",
+                  c == 200 and o["data"]["moved"] == [] and o["data"]["left"] == ["awg0"] and o["data"]["removed"] == ["awg0"]
+                  and "failover_of" in json.load(open(os.path.join(d, "state", "nodes.json")))["nb"], (c, o))
         c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": True, "confirm": "hel-2"})
         if want == "refused":
             check("[12] the vault can rebuild A's key: the take-over waits for a Re-sync", c == 409 and o.get("code") == "failover_stale", (c, o))

@@ -18,7 +18,7 @@ import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
 import {
   kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnProxiesFor,
   suggestIface, suggestSubnet, suggestPort, portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr,
-  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No,
+  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No, foRoWhy,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag, meshGenLabel, meshGenColor } from "./ui.js";
@@ -644,7 +644,10 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const missIf = (_rawMiss && _rawMiss.key_source) ? _rawMiss : null;   // RECOVERABLE (key backup/vault) → read-only, only action Restore interface
   const ghostIf = (!meta && !missIf && ghostIface(node, iface)) || null;   // lost + KEYLESS → read-only, only action Recreate and rekey interface
   const live = Store.recon.nodeStatus[node] === "live";
-  const blocked = !live || inProc(nrec.proc_status) || !!missIf;   // missing → fully read-only (every edit/lifecycle button off; only Restore acts)
+  // a failover node's copy of its primary's interface: read-only like the rest of it (§4.7) — its own mesh links are not copies
+  const roWhy = Store.ifaceIsSystem(node, iface) ? "" : foRoWhy(node);
+  const blocked = !live || inProc(nrec.proc_status) || !!missIf || !!roWhy;   // missing → fully read-only (every edit/lifecycle button off; only Restore acts)
+  const offWhy = roWhy || T("Unavailable while the node is down / converting");   // why a control is off, when `blocked`
   // a pending listen-port change: desired (panel) != reported (node) until the node converges
   const updating = !!(meta && meta.desired_port && meta.listen_port && Number(meta.desired_port) !== Number(meta.listen_port));
   const type = ghostIf   // a ghost has no meta/awg_params → infer the badge from the peers that reference it (else it always reads "wg")
@@ -726,8 +729,8 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             // invites commands against an interface that is going away; show what is happening instead.
             ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
             : html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${ifopDone(op.verb)}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${ifopFail(op.verb)} msg=${op.err || T("the action failed on the node")} title=${T("Action failed on the node")}/>` : null}${(op && op.phase === "busy") ? null : notup
-              ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bring this interface up on the node")} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
-              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Take this interface down on the node (stays down until started)")} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/>${(isMobile() ? T("Edit") : T("Edit interface"))}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${T("Stop + remove this interface and its peers' deployments on it")} onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
+              ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : T("Bring this interface up on the node")} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
+              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : T("Take this interface down on the node (stays down until started)")} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : T("Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? offWhy : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/>${(isMobile() ? T("Edit") : T("Edit interface"))}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${roWhy || T("Stop + remove this interface and its peers' deployments on it")} onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -755,7 +758,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
         actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
-          : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> ${T("Add peer")}</button>`}>
+          : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> ${T("Add peer")}</button>`}>
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
     <//>
 

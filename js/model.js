@@ -635,3 +635,14 @@ export const tgtXfer = t => (t && (t.observed || t.kwXfer)) || null;
 // liveness IS a byte delta over the last poll — the honest age for that is "just now" while it's flowing,
 // and unknown otherwise (nothing remembers when a keyless peer was last seen).
 export const tgtSeenAge = t => (t && t.observed) ? t.observed.handshake_age : ((t && t.kwXfer && t.online) ? 0 : null);
+
+// A failover node is a read-only copy of its primary (docs/FAILOVER-PLAN.md §4.7). Every control that edits a node or its
+// interfaces reads this ONE sentence: "" for any other node, else why the control is off — its disabled state and its title.
+export const foRoWhy = id => {
+  if (!Store.isMirror(id)) return "";
+  const n = (Store.nodes || []).find(x => x.id === id) || {};
+  return T("Read-only: this node is a copy of {v1} — change {v1} instead", { v1: Store.nodeName(n.failover_of) });
+};
+
+// An interface setting's name as the console says it — a rebuild's preview and a failover node's drift row (one map).
+export const ifFieldLabel = k => ({ mtu: T("MTU"), listen_port: T("port"), address: T("address"), awg_params: T("obfuscation") })[k] || k;

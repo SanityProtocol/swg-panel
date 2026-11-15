@@ -13478,6 +13478,18 @@ def _fo_effective_host(c, ov, snap, n):
             or mesh_advertised_host(snap, n))
 
 
+def _fo_takeover_plan(nodes, aid, bid, cls, snaps):
+    """What a take-over acting on `cls` = _fo_holds(...) does — ONE answer for the act and the detach door's preview
+    (dry_run): (moved, left on A, B's copies removed, {moved interface: the host A's clients dial}). Reads only."""
+    held, _absent, _unsure, stale = cls
+    a = nodes[aid]
+    asnap = (snaps or {}).get(aid) or {}
+    left = sorted(n for n in _fo_user_ifaces(a) if n not in held)
+    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))
+    hosts = {n: _fo_effective_host(a, (a.get("ifaces") or {}).get(n) or {}, asnap, n) for n in held}
+    return sorted(held), left, old, hosts
+
+
 def failover_takeover(nodes, roster, aid, bid, cls, snaps):
     """Move A's peers to B, acting on `cls` = _fo_holds(...) taken ONCE by the caller (plan §4.8, §4.9, refresh R4). Mutates
     `nodes` and `roster` (an owned copy); the caller saves both. HELD: its wg/awg targets move A→B, each moved device that
@@ -13488,19 +13500,15 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
     copy of A's current identity, which is all a take-over keeps. UNSURE must be empty — the door refuses, node_remove
     assumes — or B would become an ordinary node holding a copy of A's key with nobody moved onto it: refused here too.
     The flag goes last. Returns (moved interfaces, interfaces left on A, B's copies removed)."""
-    held, _absent, unsure, stale = cls
-    if unsure:
-        raise ValueError("failover take-over with interfaces in doubt: " + ", ".join(unsure))
+    if cls[2]:
+        raise ValueError("failover take-over with interfaces in doubt: " + ", ".join(cls[2]))
     a, b = nodes[aid], nodes[bid]
-    left = sorted(n for n in _fo_user_ifaces(a) if n not in held)
-    old = sorted(set(stale) | set(_fo_leftovers(nodes, aid, bid)))   # taken BEFORE A's held interfaces are dropped below
+    held, left, old, hosts = _fo_takeover_plan(nodes, aid, bid, cls, snaps)   # taken BEFORE A's held interfaces are dropped
     now_ = int(time.time())
-    asnap = (snaps or {}).get(aid) or {}
     for n in held:
-        aov, bov = (a.get("ifaces") or {}).get(n) or {}, b["ifaces"][n]
-        host = _fo_effective_host(a, aov, asnap, n)
+        host = hosts[n]
         if host and not _ip_literal(host):            # A's own address would send B's new configs to A (§4.1 warned)
-            bov["endpoint_host"] = host
+            b["ifaces"][n]["endpoint_host"] = host
         _fo_drop_iface(a, n, now_)
     for n in old:
         _fo_drop_iface(b, n, now_)                    # never A's current identity: an old copy, or one A no longer has
@@ -13523,7 +13531,7 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
                                                     for t in p.get("targets") or []) else set())
             p["p2p_yield"] = sorted(ys)
     b.pop("failover_of", None)
-    return sorted(held), left, old
+    return held, left, old
 
 
 def _fo_resolves_to(host, ips):
@@ -13581,7 +13589,9 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_s)]
     if a.get("default_exit") and (prune_default_exit(_s) or not _s.get("default_exit")):
         warn["not_mirrored"].append({"kind": "default_exit", "name": str(a["default_exit"])})
-    warn["not_mirrored"] += [{"kind": "p2p", "name": w_} for _, w_ in prune_p2p_refs({k: (_s if k == aid else {}) for k in nodes})]
+    # a torrent route the prune turns into Block: named by its interface ("<node> · <iface>"), "" for the node's own route
+    warn["not_mirrored"] += [{"kind": "p2p", "name": w_.split(" · ", 1)[1] if " · " in w_ else ""}
+                             for _, w_ in prune_p2p_refs({k: (_s if k == aid else {}) for k in nodes})]
     return {"refused": refused, "needs_vault": sorted(nv & set(ifs)), "warn": warn}
 
 
@@ -13700,7 +13710,8 @@ _FO_RO_DOORS = frozenset(("/api/nodes/rotate", "/api/node/update", "/api/nodes/f
                           "/api/nodes/delete", "/api/iface/recreate", "/api/nodes/failover/detach",
                           "/api/nodes/failover/resync", "/api/connection/update", "/api/nodes/remesh",
                           "/api/node/awg-load", "/api/node/routing-reset", "/api/node/proc-clear",
-                          "/api/iface/escrow/verified", "/api/routing/who"))
+                          "/api/iface/escrow/verified", "/api/routing/who",
+                          "/api/iface/restore"))   # a drift's Restore re-asserts the record: on B, A's own value
 # the node sheet's fields that are B's own (its name, its address and mesh, its datapath) — never one it follows
 _FO_NODE_LOCAL = frozenset(("id", "name", "color", "endpoint_host", "endpoint_hosts", "fast_lane", "log_mb", "mesh_port",
                             "mesh_prefix", "mesh_subnet", "mesh_egress_ip", "default_egress_ip", "panel_ip"))
@@ -31833,7 +31844,10 @@ def api(method, path, qs, body, deps):
         # B becomes an ordinary node (plan §4.8). take_over false: B's copies are removed, the peers stay on A — refused
         # while A is not reporting (it would delete the only running copy). take_over true: the peers move to B for every
         # interface B holds. Either way, the member losing its clients' service while it has clients online needs
-        # `confirm` = B's name (typed in the sheet): keep with clients on B, take over with clients on A.
+        # `confirm` = B's name (typed in the sheet): keep with clients on B, take over with clients on A. `dry_run` true:
+        # the same checks on the same reading, nothing changed — the sheet's preview, so it never guesses the classes:
+        # {moved, left, removed, confirm (the typed name will be asked), ip_dial (moved interfaces whose clients dial an
+        # address, not a domain — a DNS change cannot move them)}.
         bid = _fo_str(body.get("id"))
         aid = failover_rid(nodes, bid)
         if bid not in nodes or aid == bid:
@@ -31869,8 +31883,15 @@ def api(method, path, qs, body, deps):
                                              "off. Move the peers to {v1}, or keep them once {v3} runs these again",
                                              v1=bname, v2=", ".join(_only_b), v3=aname), "code": "primary_not_running"}
         cut = bid if not take else aid                 # the member whose clients this cuts off
-        if (_fo_live(seen, cut, now()) and _fo_online(snaps.get(cut) or {}, set(_fo_user_ifaces(nodes[aid])))
-                and (body.get("confirm") or "") != bname):
+        _need = bool(_fo_live(seen, cut, now()) and _fo_online(snaps.get(cut) or {}, set(_fo_user_ifaces(nodes[aid]))))
+        if body.get("dry_run") is True:
+            if not take:
+                return 200, {"ok": True, "data": {"id": bid, "preview": True, "moved": [], "left": [], "ip_dial": [],
+                                                  "removed": sorted(_fo_user_ifaces(nodes[bid])), "confirm": _need}}
+            _mv, _lf, _rm, _hs = _fo_takeover_plan(nodes, aid, bid, cls, snaps)
+            return 200, {"ok": True, "data": {"id": bid, "preview": True, "moved": _mv, "left": _lf, "removed": _rm, "confirm": _need,
+                                              "ip_dial": [n for n in _mv if not _hs[n] or _ip_literal(_hs[n])]}}
+        if _need and (body.get("confirm") or "") != bname:
             return 409, {"ok": False, **perr("{v1} is serving clients: type {v2} to go on", v1=nodes[cut].get("name") or cut,
                                              v2=bname), "code": "confirm_required"}
         if not take:                                   # every record on B is the mirror's: all go (F106 — a copy of one

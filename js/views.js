@@ -442,8 +442,9 @@ export function privateUnenforced(peer) {
   const out = [], seen = new Set();
   for (const t of (peer.targets || [])) {
     if (!t || !t.node) continue;
-    if (!nodeEnforces(t.node)) {
-      if (!seen.has(t.node)) { seen.add(t.node); out.push({ node: t.node, why: "old" }); }
+    const en = t.served || t.node;                     // a failover pair: the member serving it, as targetOpen reads it
+    if (!nodeEnforces(en)) {
+      if (!seen.has(en)) { seen.add(en); out.push({ node: en, why: "old" }); }
     } else if (ifaceLevelOf(t) === "everyone" && (!Store.user(peer.user_id) || unvouchedTarget(t))) {
       out.push({ node: t.node, iface: t.iface, why: Store.user(peer.user_id) ? "unvouched" : "no_user" });
     } else if (ifaceLevelOf(t) === "everyone" && rawUnvouchedAt(t)) {
@@ -571,7 +572,7 @@ export function reachableByGroup(uid) {
     if (p.disabled || p.expired || p.unassigned) continue;
     const ok = [];
     for (const x of p.targets || []) {
-      if (!x || !x.node || (p.private && nodeEnforces(x.node))) continue;
+      if (!x || !x.node || (p.private && nodeEnforces(x.served || x.node))) continue;
       const lv = targetOpen(x);
       if (lv === "everyone" || lv === "user") ok.push({ t: x, lv });
     }
@@ -622,7 +623,7 @@ export function userReach(uid) {
       // Of several that allow it, reachPick chooses (online first, then one RAW does not narrow).
       const ok = [];
       for (const x of p.targets || []) {
-        if (p.private && x && nodeEnforces(x.node)) continue;
+        if (p.private && x && nodeEnforces(x.served || x.node)) continue;
         const lv = allowed(x, other);
         if (lv) ok.push({ t: x, lv });
       }

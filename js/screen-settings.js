@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokNone, portokRead, portokSame, portokText } from "./model.js";
+import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokNone, portokRead, portokSame, portokText, foRoWhy } from "./model.js";
 import {
   BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
 } from "./util.js";
@@ -85,6 +85,9 @@ const html = htm.bind(h);
 // request follows. A pool edit moves real users, so the panel should never make the operator watch a spinner
 // to find out whether their click landed.
 const VK_PAGE_INLINE = 5, VK_PAGE_SHEET = 15;
+// a failover node's own fields on the per-node save — the server's _FO_NODE_LOCAL; the rest it follows from its primary
+const FO_NODE_OWN = new Set(["endpoint_host", "endpoint_hosts", "log_mb", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_egress_ip",
+                             "default_egress_ip", "panel_ip"]);
 
 // The pool is NOT in the poll — it carries only vk_pool_rev, a live count and the check's state. The editor fetches
 // the list (GET /api/vk-pool) when that rev moves, and the check's answers when vk_check.seq does. One module-level
@@ -2559,8 +2562,11 @@ export function PanelSettingsScreen() {
     let nerr = null;
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {};
-      if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
-      const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
+      // a failover node follows its primary in everything but its own address, mesh and log size (§4.7): a fleet-wide edit
+      // (an unpinned list) touches its draft too, and posting the followed fields would be refused — only its own go
+      const own = Store.isMirror(n.id) ? FO_NODE_OWN : null;
+      if (!Object.keys(nFields(n)).some(k => (!own || own.has(k)) && !eq(e[k], o[k]))) continue;
+      const body = { id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
         dns_upstream: String(e.dns_upstream || "").split(/[\s,]+/).filter(Boolean),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
@@ -2572,7 +2578,8 @@ export function PanelSettingsScreen() {
         p2p_portok: e.p2p_portok ?? null,   // the text as typed, so the panel names what it cannot take; [] = No exceptions; null = the fleet's
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
-        catalog_cats: e.catalog_cats || [], exits: e.exits || [], log_mb: +e.log_mb || 100 });
+        catalog_cats: e.catalog_cats || [], exits: e.exits || [], log_mb: +e.log_mb || 100 };
+      const nr = await api.nodeUpdate(own ? Object.fromEntries(Object.entries(body).filter(([k]) => k === "id" || own.has(k))) : body);
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
       else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }
@@ -2847,6 +2854,7 @@ const sectionLabel = k => ({
       <div class="setpane">
         ${isMobile() && section ? html`<button class="m-setback" onClick=${() => { setSection(null); window.scrollTo(0, 0); }}><${Ic} i="back"/> ${T("Panel settings")}<span class="m-setcur">${sectionLabel(section)}</span></button>` : null}
         ${perNodeSection && section !== "links" && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
+        ${(section === "routing" || section === "exits") && foRoWhy(selNode) ? html`<div class="notice" style="margin-bottom:12px"><${Ic} i="info"/><span>${foRoWhy(selNode)}</span></div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
           ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel;
             const resetBtn = html`<${Popover} hoverOnly cls="rmode-resetwrap" popCls="rmode-reset-pop"
@@ -3688,6 +3696,7 @@ export function reachEveryoneRows() {
   const out = [];
   // A PROMOTED interface is listed like any other: everything on it but its private devices is still reached by everyone.
   for (const nd of (Store.nodes || [])) {
+    if (Store.isMirror(nd.id)) continue;                // a failover node's copies are its primary's: listed (and edited) there
     for (const [ifn, mm] of Object.entries(Store.describe[nd.id] || {})) if (mm && !mm.system && mm.reach === "everyone") out.push({ node: nd.id, iface: ifn });
     for (const [ifn, c] of Object.entries(nd.wdtt_cfg || {})) if (c && c.reach === "everyone") out.push({ node: nd.id, iface: ifn });
     for (const [ifn, c] of Object.entries(nd.csqtt_cfg || {})) if (c && c.reach === "everyone") out.push({ node: nd.id, iface: ifn });

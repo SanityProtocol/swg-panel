@@ -15,7 +15,7 @@ import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
 import { targetType, routerCapable, iTypeOf, kindOf, turnSeats, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
-         turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
+         turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised, ifFieldLabel, foRoWhy } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
@@ -151,9 +151,8 @@ export function AddPeersSheet({ userId, userName }) {
 // All deployable (node, iface) targets known from the consolidated state.
 export function allTargets() {
   const out = [];
-  const fo = new Set((Store.nodes || []).filter(n => n.failover_of).map(n => n.id));   // a failover node serves its primary's
-  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))   // peers: never a target
-    if (!fo.has(node) && !Store.ifaceIsSystem(node, iface)) out.push({ node, iface });   // never offer a mesh link (swg_*) as a peer target
+  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))   // a failover node serves its
+    if (!Store.isMirror(node) && !Store.ifaceIsSystem(node, iface)) out.push({ node, iface });                 // primary's peers: never a target   // never offer a mesh link (swg_*) as a peer target
   // WDTT/csqtt servers own their interface, which isn't a panel-managed WG iface (so it's absent from
   // `describe`) — add each so it is selectable as a (keyless) peer target.
   //
@@ -2113,7 +2112,6 @@ export function RebuildOutcome({ d, preview }) {
   /* WHAT DOESN'T — the same three sections, but per ITEM and with the reason, because here the reason is
      the whole message. One name can carry several (unrestorable AND no escrow AND missing its MTU), so
      they are collected by name and joined rather than listed as three separate rows about one interface. */
-  const FIELD = { mtu: T("MTU"), listen_port: T("port"), address: T("address"), awg_params: T("obfuscation") };
   const lostBy = new Map();      // name -> { proxy: bool, why: [reason, ...] }
   const note = (name, why, proxy) => {
     if (!name || !why) return;
@@ -2149,7 +2147,7 @@ export function RebuildOutcome({ d, preview }) {
   for (const x of orph) note(x && x.iface, T("its escrowed key opens for nobody — re-seal it before the box is wiped"));
   for (const x of incomp) {
     note(x && x.iface, T("comes back without its {v1}", {
-      v1: (x.missing || []).map(f => FIELD[f] || f).join(", ") }));
+      v1: (x.missing || []).map(ifFieldLabel).join(", ") }));
   }
   for (const x of tdead) {
     note(x && x.service, T("forwards to {v1}, which is not coming back", { v1: x && x.iface }), true);
@@ -2638,8 +2636,8 @@ export function NodeEditSheet({ node }) {
              the server arms the plan with supersede=False, so no rollback point is made and the tag never comes
              (caught in review). Two clocks would be a bug; two QUESTIONS, each answered by the side that acts. */
           node.status === "online" ? html`<${Fragment}>
-          <button class="btn btn-ghost" title=${T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
-          <button class="btn btn-ghost" title=${T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
+          <button class="btn btn-ghost" disabled=${!!foRoWhy(node.id)} title=${foRoWhy(node.id) || T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
+          <button class="btn btn-ghost" disabled=${!!foRoWhy(node.id) || !!node.failover} title=${foRoWhy(node.id) || (node.failover ? T("Detach its failover node before a transfer") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead"))} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
           <//>` : null}
       <//>`, onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), disabled: busy, onAction: save, action: T("Save") })}>
     <div class="field"><label>${T("Name")}</label>
@@ -2696,17 +2694,16 @@ async function armRebuild(node) {
    The answer comes from `rebuild_plan` on the server, the same call the arming applies, so the preview and
    the act cannot disagree. A pre-flight that FAILS never blocks the rebuild: the box may be broken, which
    is exactly when this is needed most, so it degrades to a note and the button still works. */
-function useRebuildPreflight(node) {
+function usePreflight(ask, key) {                   // asked again whenever `key` changes; the last answer stays shown meanwhile
   const [pf, setPf] = useState(undefined);          // undefined = still asking · null = unavailable
   useEffect(() => {
     let live = true;
-    api.nodeRebuildPreflight(node.id)
-      .then(r => { if (live) setPf(r && r.ok ? r.data : null); })
-      .catch(() => { if (live) setPf(null); });
+    ask().then(r => { if (live) setPf(r && r.ok ? r.data : null); }).catch(() => { if (live) setPf(null); });
     return () => { live = false; };
-  }, [node.id]);
+  }, [key]);
   return pf;
 }
+const useRebuildPreflight = node => usePreflight(() => api.nodeRebuildPreflight(node.id), node.id);
 function PreflightBlock({ pf }) {
   if (pf === undefined) return html`<div class="hint">${T("Checking what this would do…")}</div>`;
   if (!pf) return html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Couldn't check what this would do. The rebuild still works — it reports the same list once it runs.")}</span></div>`;
@@ -2750,29 +2747,38 @@ export function NodeMigrateSheet({ node }) {
    so pointing that node's domain at it is the whole failover. Set up from the primary's page (a preview, a name, the
    install command), detached from the mirror's. The panel sends codes; the words are here. */
 export function openFailoverSetup(node) { openModal(html`<${FailoverSetupSheet} node=${node}/>`); }
-export function FailoverSetupSheet({ node }) {
-  const [pf, setPf] = useState(undefined);          // undefined = still asking · null = unavailable
+function FailoverSetupSheet({ node }) {
+  useStore();
   const [name, setName] = useState(""); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null);
-  useEffect(() => {
-    let live = true;
-    api.failoverPreflight(node.id).then(r => { if (live) setPf(r && r.ok ? r.data : null); }).catch(() => { if (live) setPf(null); });
-    return () => { live = false; };
-  }, [node.id]);
-  const nameBad = name.trim() && !V.nodeName(name);
+  // asked again on each of the node's syncs while the answer is a refusal or no answer: "its key is not in the vault yet"
+  // clears on the sync that seals it, and Create must not stay off until the sheet is reopened
+  const seen = ((Store.nodes || []).find(n => n.id === node.id) || {}).last_seen;
+  const [pfKey, setPfKey] = useState(node.id + "|0");
+  const pf = usePreflight(() => api.failoverPreflight(node.id), pfKey);
   const refused = (pf && pf.refused) || [];
+  useEffect(() => { if (pf === null || refused.length) setPfKey(node.id + "|" + seen); }, [seen]);
+  const nameBad = name.trim() && !V.nodeName(name);
   const w = (pf && pf.warn) || {};
   const create = async () => {
     if (busy) return;
-    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: T("Name: 1–40 chars, letters/digits/-/_ only.") });
     setBusy(true); setMsg({ k: "work", t: T("creating…") });
-    try {
-      const r = await api.failoverCreate({ node: node.id, name: name.trim() });
-      if (!r.ok) { if (r.data && r.data.refused) setPf(r.data); return setMsg({ k: "err", t: srvText(r) || T("couldn't create node") }); }
-      await Store.poll(); openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
-    } finally { setBusy(false); }
+    let r;
+    try { r = await api.failoverCreate({ node: node.id, name: name.trim() }); }
+    catch (_) { r = null; }
+    finally { setBusy(false); }
+    if (!r || !r.ok) {
+      if (r && r.data && r.data.refused) setPfKey(node.id + "|create|" + Date.now());   // the preview shows what refused it
+      return setMsg({ k: "err", t: (r && srvText(r)) || T("couldn't create node") });
+    }
+    // the token is shown once and only its hash is kept: open it before anything else can fail
+    openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
+    Store.poll().catch(() => {});
   };
-  const turnish = (w.not_mirrored || []).filter(x => ["wdtt", "csqtt", "turn"].includes(x.kind));
-  const exitish = (w.not_mirrored || []).filter(x => !["wdtt", "csqtt", "turn"].includes(x.kind));
+  const TURNISH = ["wdtt", "csqtt", "turn"];
+  const nm = w.not_mirrored || [];
+  const turnish = nm.filter(x => TURNISH.includes(x.kind));
+  const exitish = nm.filter(x => x.kind === "exit" || x.kind === "default_exit");
+  const p2p = nm.filter(x => x.kind === "p2p");
   const row = (label, value) => html`<div class="ifrow ifrow-stack"><span class="l">${label}</span><span class="r">${value}</span></div>`;
   const warns = [
     ...(w.ip_endpoint || []).map(x => row(x.host ? T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give the interface a domain as its endpoint first.", { v1: x.iface, v2: x.host })
@@ -2780,7 +2786,9 @@ export function FailoverSetupSheet({ node }) {
     ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), x.iface)),
     ...((w.pinned || []).length ? [row(T("Pinned to one of {v1}'s own addresses — on the failover node they leave by its default way out", { v1: node.name }), w.pinned.join(", "))] : []),
     ...(turnish.length ? [row(T("Not copied: WDTT, csqtt and turn proxies stay on {v1} alone", { v1: node.name }), turnish.map(x => x.name || x.kind).join(", "))] : []),
-    ...(exitish.length ? [row(T("The failover node has no exits: what leaves through these leaves by its own address there"), exitish.map(x => x.name).join(", "))] : []),
+    ...(exitish.length ? [row(T("The failover node has no exits: what leaves through these leaves by its own address there"),
+                              exitish.map(x => x.kind === "default_exit" ? T("the node's default exit") : x.name).join(", "))] : []),
+    ...(p2p.length ? [row(T("Torrents sent through an exit are blocked on the failover node"), p2p.map(x => x.name || T("the node's torrent route")).join(", "))] : []),
   ];
   return html`<${Sheet} title=${T("Add failover node · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, onAction: create, disabled: busy || !pf || refused.length > 0 || !name.trim() || nameBad,
@@ -2800,10 +2808,15 @@ export function FailoverSetupSheet({ node }) {
   <//>`;
 }
 
-export function openFailoverResync(b) { openModal(html`<${FailoverResyncSheet} b=${b}/>`); }
-function FailoverResyncSheet({ b }) {
+export function openFailoverResync(b) { openModal(html`<${FailoverResyncSheet} id=${b.id}/>`); }
+function FailoverResyncSheet({ id }) {
+  useStore();                                       // the list below is the status as it is now, not as it was at the press
   const [busy, setBusy] = useState(false);
-  const fo = b.failover || {}, aname = Store.nodeName(fo.primary);
+  const b = (Store.nodes || []).find(n => n.id === id);
+  const fo = (b && b.failover) || {};
+  useEffect(() => { if (!b || !b.failover) closeModal(); }, [!(b && b.failover)]);
+  if (!b || !b.failover) return null;
+  const aname = Store.nodeName(fo.primary);
   const ifs = (fo.rows || []).filter(r => r.resync).map(r => r.iface);
   const go = async () => {
     if (busy) return; setBusy(true);
@@ -2814,18 +2827,20 @@ function FailoverResyncSheet({ b }) {
       closeModal();
       if (done.length) toast(T("Re-syncing {v1}", { v1: done.join(", ") }), "ok");
       if (nv.length) toast(T("{v1}'s key for {v2} is not in the vault the panel holds now, so nothing can rebuild it on {v3} — unlock or set up the vault", { v1: aname, v2: nv.join(", "), v3: b.name }), "warn");
+      if (!done.length && !nv.length) toast(T("Nothing to re-sync: {v1} already runs {v2}'s copies", { v1: b.name, v2: aname }), "ok");
       Store.poll().catch(() => {});
-    } finally { setBusy(false); }
+    } catch (_) { toast(T("couldn't re-sync"), "err"); }
+    finally { setBusy(false); }
   };
   return html`<${Sheet} title=${T("Re-sync · {v1}", { v1: b.name })}
     foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || !ifs.length, action: T("Re-sync") })}>
-    <div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} runs {v2} with a key or subnet that isn't {v3}'s. Re-sync deletes those interfaces on {v1} and builds them again from {v3}; any client connected to them there drops until they are back.", { v1: b.name, v2: ifs.join(", "), v3: aname })}</span></div>
+    <div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} runs {v2} with a key or subnet that isn't {v3}'s. Re-sync deletes those interfaces on {v1} and builds them again from {v3}; any client connected to them there drops until they are back.", { v1: b.name, v2: ifs.join(", ") || "—", v3: aname })}</span></div>
   <//>`;
 }
 
-function detachSaid(d, aname) {
+function detachSaid(d, aname, take) {
   const moved = (d.moved || []).join(", ") || "—", left = (d.left || []).join(", "), gone = (d.removed || []).join(", ");
-  if (!(d.moved || []).length && !left) return T("peers kept on {v1}; copies removed: {v2}", { v1: aname, v2: gone || "—" });
+  if (!take) return T("peers kept on {v1}; copies removed: {v2}", { v1: aname, v2: gone || "—" });
   if (left && gone) return T("took over {v1}; left on {v2}: {v3}; old copies removed: {v4}", { v1: moved, v2: aname, v3: left, v4: gone });
   if (left) return T("took over {v1}; left on {v2}: {v3}", { v1: moved, v2: aname, v3: left });
   if (gone) return T("took over {v1}; old copies removed: {v4}", { v1: moved, v4: gone });
@@ -2836,51 +2851,51 @@ function FailoverDetachSheet({ id }) {
   useStore();
   const b = (Store.nodes || []).find(n => n.id === id);
   const fo = (b && b.failover) || {};
-  const aLive = !!fo.primary_live;
-  const [mode, setMode] = useState(aLive ? "keep" : "move");
-  const [need, setNeed] = useState(false); const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
-  useEffect(() => { if (!b) closeModal(); }, [!b]);
-  if (!b) return null;
+  const [mode, setMode] = useState(fo.primary_live === false ? "move" : "keep");
+  const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
+  // the preview is the door's own dry run — the same checks on the same reading as the act, never a guess from the status:
+  // asked again when the mode or the pair's status changes. {data} what it would do · {err} what it refuses · undefined asking
+  const [pv, setPv] = useState(undefined);
+  const foKey = JSON.stringify([fo.state, fo.primary_live, fo.rows, fo.problems]);
+  useEffect(() => {
+    if (!b || !b.failover) return;
+    let live = true;
+    api.failoverDetach({ id, take_over: mode === "move", dry_run: true })
+      .then(r => { if (live) setPv(r.ok ? { data: r.data || {} } : { err: srvText(r) || T("couldn't detach") }); })
+      .catch(() => { if (live) setPv({ err: T("Couldn't check what this would do. Try again in a moment.") }); });
+    return () => { live = false; };
+  }, [mode, foKey]);
+  useEffect(() => { if (!b || !b.failover) closeModal(); }, [!(b && b.failover)]);   // the pair is gone: detached elsewhere, removed
+  if (!b || !b.failover) return null;
   const aname = Store.nodeName(fo.primary);
-  // what the take-over does with each interface, read from the status rows as the server's _fo_holds classes them: no
-  // usable copy on B (none, B's own mesh link has the name, or an old key the vault cannot rebuild) → stays on A with its
-  // peers; an old copy Re-sync can replace → refused until it is; not running on B with A's key right now → refused. A row
-  // only still copying peers, a port or a setting is held, and moves. The server decides; this only says it beforehand.
-  const ifs = (pred) => (fo.rows || []).filter(pred).map(r => r.iface).join(", ");
-  const left = ifs(r => r.why === "no_copy" || r.why === "name_taken" || (r.why === "key" && !r.resync));
-  const stale = ifs(r => r.why === "key" && r.resync);
-  const unsure = ifs(r => ["primary_no_key", "awaiting_key", "creating", "awg", "down"].includes(r.why));
-  const keepOff = mode === "keep" && !aLive;
-  const moveOff = mode === "move" && fo.state === "offline";
-  const off = keepOff || moveOff;
+  const d = (pv && pv.data) || null;
+  const need = !!(d && d.confirm);
   const go = async () => {
-    if (busy || off || (need && txt !== b.name)) return; setBusy(true);
+    if (busy || !d || (need && txt !== b.name)) return; setBusy(true);
     try {
-      const r = await api.failoverDetach({ id, take_over: mode === "move", ...(need ? { confirm: txt } : {}) });
-      if (!r.ok) {
-        if (r.code === "confirm_required" && !need) return setNeed(true);   // the field below says why; nothing failed
-        return toast(srvText(r) || T("couldn't detach"), "err");
-      }
-      closeModal(); toast(T("{v1} is an ordinary node now", { v1: b.name }) + " — " + detachSaid(r.data || {}, aname), "ok");
+      const r = await api.failoverDetach({ id, take_over: mode === "move", confirm: txt });
+      if (!r.ok) return toast(srvText(r) || T("couldn't detach"), "err");
+      closeModal(); toast(T("{v1} is an ordinary node now", { v1: b.name }) + " — " + detachSaid(r.data || {}, aname, mode === "move"), "ok");
       Store.poll().catch(() => {});
-    } finally { setBusy(false); }
+    } catch (_) { toast(T("couldn't detach"), "err"); }
+    finally { setBusy(false); }
   };
   const seg = (v, label) => html`<button type="button" role="radio" aria-checked=${mode === v} class=${"seg" + (mode === v ? " on" : "")}
-    onClick=${() => { setMode(v); setNeed(false); setTxt(""); }}>${label}</button>`;
+    onClick=${() => { setMode(v); setTxt(""); setPv(undefined); }}>${label}</button>`;
+  const j = xs => (xs || []).join(", ");
   return html`<${Sheet} title=${T("Detach · {v1}", { v1: b.name })}
-    foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || off || (need && txt !== b.name), action: T("Detach") })}>
+    foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || !d || (need && txt !== b.name), action: T("Detach") })}>
     <div class="segrow" role="radiogroup" aria-label=${T("Detach")}>${seg("keep", T("Keep the peers on {v1}", { v1: aname }))}${seg("move", T("Move the peers to {v1}", { v1: b.name }))}</div>
-    ${mode === "keep"
-      ? html`<div class=${"notice" + (keepOff ? " danger" : "")}><${Ic} i=${keepOff ? "err" : "info"}/><span>${keepOff
-          ? T("{v1} is not reporting: removing the copies on {v2} would delete the only one running. Move the peers to {v2} instead.", { v1: aname, v2: b.name })
-          : T("The copies on {v1} are removed and the peers stay on {v2}. {v1} becomes an empty, ordinary node.", { v1: b.name, v2: aname })}</span></div>`
-      : moveOff ? html`<div class="notice danger"><${Ic} i="err"/><span>${T("{v1} is not reporting — move the peers once it is", { v1: b.name })}</span></div>`
-      : html`<div class="notice"><${Ic} i="info"/><span>${T("For every interface {v1} runs with {v2}'s key, the peers move to {v1} and {v2}'s copy is removed. Client configs don't change, so nobody re-imports. Use this when {v2} is gone for good.", { v1: b.name, v2: aname })}</span></div>
-        ${stale ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1}'s copy of {v2} is not {v3}'s current key — re-sync it first", { v1: b.name, v2: stale, v3: aname })}</span></div>` : null}
-        ${unsure ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not running on {v1} with {v2}'s key right now: {v3} — move the peers once they are", { v1: b.name, v2: aname, v3: unsure })}</span></div>` : null}
-        ${left ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} has no usable copy of these, so they stay on {v2} with their peers: {v3}", { v1: b.name, v2: aname, v3: left })}</span></div>` : null}`}
+    <div class="notice"><${Ic} i="info"/><span>${mode === "keep"
+      ? T("The copies on {v1} are removed and the peers stay on {v2}. {v1} becomes an empty, ordinary node.", { v1: b.name, v2: aname })
+      : T("For every interface {v1} runs with {v2}'s key, the peers move to {v1} and {v2}'s copy is removed. Clients that dial a domain keep their configs: point it at {v1}. Use this when {v2} is gone for good.", { v1: b.name, v2: aname })}</span></div>
+    ${pv === undefined ? html`<div class="hint">${T("Checking what this would do…")}</div>`
+      : pv.err ? html`<div class="notice danger"><${Ic} i="err"/><span>${pv.err}</span></div>`
+      : mode === "move" ? html`
+        ${(d.ip_dial || []).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Clients of {v1} dial {v2}'s IP address, not a domain: after the move they still dial {v2}, and need new configs to reach {v3}", { v1: j(d.ip_dial), v2: aname, v3: b.name })}</span></div>` : null}
+        ${(d.left || []).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} has no usable copy of these, so they stay on {v2} with their peers: {v3}", { v1: b.name, v2: aname, v3: j(d.left) })}</span></div>` : null}` : null}
     ${need ? html`<div class="field"><label>${typeToConfirm(b.name)}</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${b.name} autocomplete="off" spellcheck="false"/>
-      <div class="hint">${mode === "move" ? T("{v1} is serving clients right now: they lose their connection there.", { v1: aname }) : T("{v1} is serving clients right now: they lose their connection there.", { v1: b.name })}</div></div>` : null}
+      <div class="hint">${T("{v1} is serving clients right now: they lose their connection there.", { v1: mode === "move" ? aname : b.name })}</div></div>` : null}
   <//>`;
 }
 
@@ -3139,7 +3154,8 @@ export function ForceRemoveNodeSheet({ node }) {
   const phrase = T("DELETE {v1}", { v1: node.name });
   const ok = txt === phrase;
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));
-  const onlyHere = here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
+  const foB = node.failover && node.failover.primary === node.id ? node.failover.failover : "";   // its failover node takes them over
+  const onlyHere = foB ? 0 : here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
   const del = () => {
     if (!ok || busy) return;
     setBusy(true); closeAllModals();
@@ -3147,6 +3163,7 @@ export function ForceRemoveNodeSheet({ node }) {
       key: "node:" + node.id,
       patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
         s.nodes = s.nodes.filter(x => x.id !== node.id);
+        if (foB) return;                             // the take-over moves them: the next poll shows where
         for (const id of Object.keys(s.roster.peers)) {
           const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.id);
           if (!p.targets.length) delete s.roster.peers[id];
@@ -3166,7 +3183,10 @@ export function NodeRemoveSheet({ node }) {
   const [flagged, setFlagged] = useState(!!node.removing);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));
   const onlyHere = here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
-  const note = !here.length ? T("No peers reference it.")
+  const fo = node.failover || {}, isA = fo.primary === node.id, isB = !!fo.primary && !isA;
+  const note = isB ? T("It is {v1}'s failover node: removing it removes its copies and the peers stay on {v1}. Clients connected here right now lose their connection.", { v1: Store.nodeName(fo.primary) })
+    : isA && here.length ? T("{v1} reference it.", { v1: plural(here.length, "peer") })
+    : !here.length ? T("No peers reference it.")
     : onlyHere ? T("{v1} reference it; {n} live only here and will be dropped.", { v1: plural(here.length, "peer"), n: onlyHere })
     : T("{v1} reference it.", { v1: plural(here.length, "peer") });
   // A declaratively-managed node cannot be uninstalled by `bootstrap.sh uninstall` — that command
@@ -3193,7 +3213,7 @@ export function NodeRemoveSheet({ node }) {
       : html`<div class="notice"><${Ic} i="info"/><span>${declarative
           ? T("This node is managed declaratively. Remove it from the configuration that declares it and rebuild — it won't sign off on its own, so Force-remove it here afterwards. It keeps serving its {v1} until then.", { v1: plural(here.length, "peer") })
           : T("Clean removal: flag the node, then run the uninstall command on the server. The node keeps serving its {v1} until it confirms, then drops itself from the panel.", { v1: plural(here.length, "peer") })} ${note}</span></div>`}
-    ${node.failover && node.failover.primary === node.id ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface it runs with this node's key, and the rest go with this node. To remove this node and its peers on purpose, detach {v1} first, keeping the peers here.", { v1: Store.nodeName(node.failover.failover) })}</span></div>` : null}
+    ${isA ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface it holds a copy of, and the rest go with this node. To remove this node and its peers on purpose, remove {v1} first.", { v1: Store.nodeName(fo.failover) })}</span></div>` : null}
     ${uninstall ? html`<div class="field" style="margin-top:14px"><label>${declarative ? T("Set in the node's configuration, then rebuild") : T("Run on the node to uninstall + sign off")}</label>
       <div class="cmdrow"><div class=${"tokenbox" + (declarative ? " block" : "")}>${uninstall}</div><button class="copyaction" onClick=${() => copy(uninstall, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
       <div class="hint">${declarative ? T("Removing the module stops swg-noded / swg-agent but does not tell the panel — Force remove clears it here.") : T("Removes swg-noded / swg-agent and tells the panel it's gone. Force remove is for when the server is unreachable.")}</div></div>` : null}

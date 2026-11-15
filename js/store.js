@@ -462,6 +462,7 @@ export const Store = {
     const nodeSeen = {}; for (const n of (this.nodes || [])) if (n && n.last_seen != null) nodeSeen[n.id] = n.last_seen;
     // Failover pairs {primary: failover node} (docs/FAILOVER-PLAN.md §4.6) — empty with none, so reconcile runs as before.
     const mirrors = {}; for (const n of (this.nodes || [])) if (n && n.failover_of) mirrors[n.failover_of] = n.id;
+    this.foIds = new Set(Object.values(mirrors));   // the failover nodes: read-only copies, nobody's target or way out (isMirror)
     this.recon = reconcile(this.roster, this.stats, panelNow(), { retiring, systemIfaces, nodeSeen, rotating: new Set(Object.keys(this.rotating)),
       vol: this.vol, mirrors,
       probSince: this._probSince,
@@ -522,6 +523,7 @@ export const Store = {
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
   nodeName(id) { const n = this.node(id); return (n && n.name) || id; }, // display title (falls back to id)
+  isMirror(id) { return !!(this.foIds && this.foIds.has(id)); },        // a failover node (docs/FAILOVER-PLAN.md §4.7)
   // ⚠️ THE FLEET HAS AN ORDER AND IT IS THE OPERATOR'S. The Nodes screen is drag-reorderable and the
   // position is persisted per node (`pos`, POST /api/order); the server sorts every node list it builds by
   // it, so `Store.nodes` — and this projection — arrive in that order. Screens that grouped by node then
