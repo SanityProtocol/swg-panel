@@ -35,6 +35,7 @@ Multi-hop in mind (edge entry → distant exit), and built to scale — from a c
 - [Quick start](#quick-start)
 - [Installing the panel](#installing-the-panel)
 - [Adding a node](#adding-a-node)
+- [Failover nodes](#failover-nodes)
 - [Managing peers](#managing-peers)
 - [Networks, device access and groups](#networks-device-access-and-groups)
 - [Subscriptions & access control](#subscriptions--access-control)
@@ -212,12 +213,53 @@ Against a **self-signed** panel the installer **auto-pins the cert on first cont
 
 **Per-node actions:** **Edit** (endpoint/colour — the endpoint goes into client configs), **Rotate token** (the old one stops working immediately; re-enroll), **Remove** (revokes the token and unassigns the node).
 
+## Failover nodes
+
+A **failover node** is a second server that is a live, read-only mirror of one node: the same interfaces with the same
+private keys, ports, subnets and AmneziaWG parameters, and every peer. A client config cannot tell the two apart, so the
+failover is a DNS change: point the interfaces' domain at the failover node and each device reconnects there. Nobody
+re-imports, and the panel does not have to be up.
+
+**Before you add one.** Every interface's key must be in the **Encryption Vault** (it is sealed on the node's next sync once
+the vault is set up), and its endpoint should be a **domain** with a short TTL (60 s). An interface whose clients dial an IP
+can only fail over after a re-import, and the preview says which.
+
+1. The node's page → the shield, **Add failover node** → read the preview: what is refused, what is only worth knowing (an
+   IP endpoint, a domain that does not point at the node, interfaces pinned to its own addresses, what is not copied).
+2. Give it a name and run the install command on the spare server, as for any node.
+3. If the panel asks, **Unlock vault**: this browser re-seals each interface key to the spare; the panel never sees one.
+   Both members then show **Failover · Ready**.
+4. Do the drill once: point a throwaway hostname at the spare, change only that on one test device, connect. "Ready" cannot
+   prove the provider's firewall lets clients in.
+
+**When the node goes down**, its page and the failover node's say *"Point its domain at …"*, with the address. Point it
+back when the node returns; nothing else changes. To automate the repoint, the `node.offline` webhook carries the node id.
+
+**The failover node is read-only.** Change settings on the node it mirrors; they follow, and its speed and volume limits
+are enforced there too. Its own box stays its own: name, address, mesh, datapath, Update, Check, its connection cards.
+The **Failover** panel on both pages shows who is serving and each interface that is not ready, worded with what to do:
+*Unlock vault* when keys are waiting, *Re-sync* when the copy runs an old key or subnet (it deletes that copy and builds it
+again; it works while the primary is down, which is when an old copy matters).
+
+**Detach** (on the failover node's page): **Keep the peers on** the primary removes the copies and leaves an ordinary,
+empty node (refused while the primary is not reporting: it would delete the only running copy); **Move the peers to** the
+failover node makes it an ordinary node holding them, for every interface it runs with the primary's key, and drops them on
+the primary. Client configs stay byte-identical. An interface it has no usable copy of stays on the primary with its
+peers, and the sheet names it first. Removing the primary moves its peers the same way; to remove it with its peers on
+purpose, detach first, keeping them there.
+
+**What it does not do:** clients still reconnect (a connected tunnel keeps dialling the old address until it restarts);
+one failover node per node, no shared spare; WDTT, csqtt, turn proxies and exits are not copied (what leaves by an exit on
+the primary leaves directly from the failover node, even with a kill switch); a node others cascade *through* is not
+covered; it is a mirror, not a backup — deleting on the primary deletes on the failover node. Transfer is refused until
+detached.
+
 ## Managing peers
 
-A **peer** is one identity (a keypair + IP + PSK) that can be deployed to several nodes at once for redundancy — the client fails over between them by changing its `Endpoint`.
+A **peer** is one identity (a keypair + IP + PSK) that can be deployed to several nodes at once for redundancy. Each deployment has its own config, dialling its own node and marked **Primary** or **Backup**: a device switches by switching configs. To have a second server take over with no new config at all, see [Failover nodes](#failover-nodes).
 
 - **Add peer** — pick the interface and one or more nodes, optionally a name. The panel allocates a free IP; your browser generates the keypair and PSK and builds the config(s). You are shown the **config + QR once** — the private key is never stored. The QR is large and tap-to-fullscreen for easy phone scanning.
-- **Assign / unassign** — deploying the same identity to more nodes just adds its public key + PSK there; the client config gains another endpoint to fail over to.
+- **Assign / unassign** — deploying the same identity to more nodes just adds its public key + PSK there; the device gets one more config, for that node.
 - **Copy to another server** — from a peer's page, copy it to a server it isn't on yet. It reuses the same key + PSK but gets a **fresh IP** from that server's subnet (a distinct tunnel sharing the identity). Needs the client private key, so it works when `store_configs` is on or right after the peer was created.
 - **Remove** — drops the peer from the roster; every node it lived on removes it on the next sync.
 
