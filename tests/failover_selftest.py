@@ -814,10 +814,14 @@ def sec8():
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, dict(to_fleet(), na=dict(to_fleet()["na"], transfer={"state": "pending"})),
                               "na", snaps, {"na": NOW})
     check("[8] the preview refuses a node in transfer", any("transferred" in x["why"] for x in pf["refused"]), pf["refused"])
-    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, to_fleet(), "na", snaps, {"na": NOW})
-    check("[8] the preview names the UDP port of each interface the spare's firewall must open",
-          {"iface": "awg0", "port": 443} in pf["warn"]["ports"] and all(isinstance(x["port"], int) for x in pf["warn"]["ports"]),
+    _pf = to_fleet(); _pf["na"]["ifaces"]["awg0"]["listen_port"] = 8443      # changed on A, not applied yet: A reports 443
+    _pf["na"]["ifaces"]["wg1"].pop("listen_port", None); _pf["na"]["ifaces"]["wg1"]["_lastcfg"] = {"listen_port": 51820}
+    _ps = json.loads(json.dumps(snaps)); _ps["na"]["interfaces"].pop("wg1", None)   # A does not report wg1 (down, restarted)
+    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, _pf, "na", _ps, {"na": NOW})
+    check("[8] the preview names the port the spare is BUILT with — the record's, then the captured config's (review F1, F2)",
+          {"iface": "awg0", "port": 8443} in pf["warn"]["ports"] and {"iface": "wg1", "port": 51820} in pf["warn"]["ports"],
           pf["warn"]["ports"])
+    check("[8] …and the mesh band its links need (review F3)", pf["warn"].get("mesh_ports") == [9999, 10098], pf["warn"].get("mesh_ports"))
     # node_remove(A) keeps every held peer
     d = os.path.join(TMP, "rm"); os.makedirs(d)
     ps = {"block_catalog": {"categories": {"ads": {"enabled_nodes": ["na"]}}},

@@ -13581,11 +13581,17 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
         if ov.get("egress_mode") != "forward" and (ov.get("egress_ip") or ov.get("wan_iface")):
             warn["pinned"].append(n)
         # the port A's clients dial, which the spare's firewall must let in: the panel cannot see a host firewall (ufw,
-        # nftables, a provider's) — the status's firewall check reads only a range a node declared (rig drill 2026-11-15)
+        # nftables, a provider's) — the status's firewall check reads only a range a node declared (rig drill 2026-11-15).
+        # The port the spare is BUILT with: the record, then the captured config (iface_restore_req's order), and only
+        # then what A reports — a change A has not applied yet is the one the spare listens on (card review F1, F2)
         _rep = ((snap.get("interfaces") or {}).get(n) or {}) if isinstance(snap.get("interfaces"), dict) else {}
-        _lp = ((_rep.get("meta") or {}) if isinstance(_rep, dict) else {}).get("listen_port") or ov.get("listen_port")
+        _lp = (ov.get("listen_port") or (ov.get("_lastcfg") or {}).get("listen_port")
+               or ((_rep.get("meta") or {}) if isinstance(_rep, dict) else {}).get("listen_port"))
         if isinstance(_lp, int) and _lp > 0:
             warn["ports"].append({"iface": n, "port": _lp})
+    if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
+        _mc = mesh_cfg(deps)
+        warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
     for k in ("wdtt", "csqtt"):
         warn["not_mirrored"] += [{"kind": k, "name": n} for n in sorted(a.get(k) or {})]
     if a.get("turn"):

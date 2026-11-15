@@ -226,7 +226,8 @@ can only fail over after a re-import, and the preview says which.
 
 1. The node's page → the shield, **Add failover node** → read the preview: what is refused, what is only worth knowing (the
    UDP ports to open on the spare's firewall, an IP endpoint, a domain that does not point at the node, interfaces pinned to
-   its own addresses, what is not copied). The panel cannot see a host firewall: open those ports on the spare yourself.
+   its own addresses, what is not copied). The panel cannot see a host firewall: open those ports, and the mesh band, on the
+   spare yourself.
 2. Give it a name and run the install command on the spare server, as for any node.
 3. If the panel asks, **Unlock vault**: this browser re-seals each interface key to the spare; the panel never sees one.
    Both members then show **Failover · Ready**.

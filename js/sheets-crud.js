@@ -2782,9 +2782,6 @@ function FailoverSetupSheet({ node }) {
   const p2p = nm.filter(x => x.kind === "p2p");
   const row = (label, value) => html`<div class="ifrow ifrow-stack"><span class="l">${label}</span><span class="r">${value}</span></div>`;
   const warns = [
-    // the panel cannot see the spare's firewall: these ports must be open there, or "Ready" serves nobody (rig drill 2026-11-15)
-    ...((w.ports || []).length ? [row(T("Open these UDP ports on the spare server's firewall — clients reach the copies on the same ports"),
-                                      w.ports.map(x => x.iface + " " + x.port).join(", "))] : []),
     ...(w.ip_endpoint || []).map(x => row(x.host ? T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give the interface a domain as its endpoint first.", { v1: x.iface, v2: x.host })
                                                  : T("Clients of {v1} have no domain to dial — give the interface a domain as its endpoint first.", { v1: x.iface }), x.iface)),
     ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), x.iface)),
@@ -2803,6 +2800,11 @@ function FailoverSetupSheet({ node }) {
       : refused.length ? html`<div class="notice danger"><${Ic} i="err"/><div style="flex:1;min-width:0"><b>${T("Not possible yet")}</b>
           <div class="ifcard-rows" style="margin-top:7px">${refused.map(x => row(T(x.why), x.iface || ""))}</div></div></div>`
       : null}
+    ${/* the panel cannot see the spare's firewall: these ports must be open there, or "Ready" serves nobody (rig drill
+          2026-11-15). Every pair needs it, so it is its own plain notice — in the amber box it would be there every time */""}
+    ${pf && (w.ports || []).length ? html`<div class="notice"><${Ic} i="info"/><div style="flex:1;min-width:0">${T("Open these UDP ports on the spare server's firewall — clients reach the copies on the same ports")}
+        <div class="ifcard-rows" style="margin-top:7px">${row(T("interfaces"), w.ports.map(x => x.iface + " " + x.port).join(", "))}${(w.mesh_ports || []).length === 2
+          ? row(T("mesh links"), w.mesh_ports[0] + "–" + w.mesh_ports[1]) : null}</div></div></div>` : null}
     ${pf && warns.length ? html`<div class="notice warn"><${Ic} i="warn"/><div style="flex:1;min-width:0"><b>${T("Worth knowing before you do this")}</b>
         <div class="ifcard-rows" style="margin-top:7px">${warns}</div></div></div>` : null}
     <div class="field"><label>${T("Name of the failover node")}</label>
