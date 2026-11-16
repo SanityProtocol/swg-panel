@@ -11500,6 +11500,12 @@ def _fp_secret(kind, value):
     return hashlib.sha256(kind.encode("utf-8") + b"\x00" + b).hexdigest()[:16]
 
 
+def _fo_dials_ip(host):
+    """A failover copy's clients cannot be moved by DNS: they dial an IP literal, or no host is known. The preview's
+    ip_endpoint warning and failover_view's ip_dial row read this one rule (ip_dial review F4)."""
+    return not host or _ip_literal(host)
+
+
 def _ip_literal(s):
     """True when `s` is an IP address literal rather than a hostname — the §1.5 test that decides whether
     an address may be carried across a rebuild. A hostname always survives (it re-resolves to the new box);
@@ -14155,7 +14161,7 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     _dns = {}                                          # one lookup a host: interfaces mostly share the node's name
     for n, ov in sorted(ifs.items()):
         host = _fo_effective_host(a, ov, snap, n)
-        if not host or _ip_literal(host):
+        if _fo_dials_ip(host):
             warn["ip_endpoint"].append({"iface": n, "host": host})
         elif resolve and node_public_ip(snap):          # behind NAT A's public address is unknown here: nothing to compare
             if host not in _dns:
@@ -14182,7 +14188,7 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
             refused.append({"iface": n, "kind": k.kind, "why": "its key is not in the Encryption Vault — set the vault up; "
                                                               "the key is sealed on the node's next sync"})
         host = k.dial_host(a, src, snap, n)             # the host its clients dial — the take-over's, one rule (F9, F17)
-        if not host or _ip_literal(host):
+        if _fo_dials_ip(host):
             warn["ip_endpoint"].append({"iface": n, "kind": k.kind, "host": host or ""})
         elif resolve and node_public_ip(snap):
             if host not in _dns:
@@ -14240,10 +14246,10 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
             more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}
         else:
             st, why, more = r["kind"].status(r, ctx)
-        if st == "ready":                                        # running as A's, but a DNS change can't move its clients:
-            _h = r["kind"].dial_host(a_rec, r["src"], snaps[aid] or {}, n)   # they dial an IP (the preview's ip_endpoint
-            if not _h or _ip_literal(_h):                        # rule, one predicate) — not "ready" (operator, 2026-11-16)
-                st, why, more = "problem", "ip_dial", {"host": _h or ""}
+        if st == "ready" and isinstance(snaps[aid], dict):     # running as A's, but a DNS change can't move its clients:
+            _h = r["kind"].dial_host(a_rec, r["src"], snaps[aid], n)   # they dial an IP (_fo_dials_ip, the preview's rule)
+            if _fo_dials_ip(_h):                                 # — not "ready" (operator, 2026-11-16). No report of A's:
+                st, why, more = "problem", "ip_dial", {"host": _h or ""}   # not judged — a report confirms (review F2)
         if st != "ready":
             rows.append({"iface": n, "kind": r["kind"].kind, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst

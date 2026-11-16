@@ -118,6 +118,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      upd-wide2    …or to start, restart or re-key one
      fo-order     B keeps its own interface and proxy order, not A's
      ip-dial      a copy whose clients dial A's IP reads ready
+     ip-dial-noreport  …or with no report of A's, every copy is condemned as having no host
      upd-manage   the reinstall is let through on a B that cannot manage proxies
      sc-has       a WDTT device online nowhere is read on the primary, not the live member running the server
      srv-title    B's WDTT / csqtt copy does not follow A's title
@@ -205,8 +206,9 @@ PLANTS = {   # (file, anchor, replacement)
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
     "fo-order": ("panel", ''',\n                  "iface_order", "turn_order")''', ''')'''),
-    "ip-dial": ("panel", '''            if not _h or _ip_literal(_h):                        # rule, one predicate) — not "ready" (operator, 2026-11-16)''',
+    "ip-dial": ("panel", '''            if _fo_dials_ip(_h):                                 # — not "ready" (operator, 2026-11-16). No report of A's:''',
                 '''            if False:'''),
+    "ip-dial-noreport": ("panel", '''        if st == "ready" and isinstance(snaps[aid], dict):''', '''        if st == "ready":'''),
     "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):', '        if r["cc"] != "current":'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
@@ -1579,6 +1581,11 @@ def sec14():
           "(ip_dial + the host, operator 2026-11-16); one on a name stays ready",
           rows.get("wdtt1", {}).get("why") == "ip_dial" and rows["wdtt1"].get("host") == "203.0.113.5"
           and rows["wdtt1"].get("state") == "problem" and "csqtt1" not in rows, fv["rows"])
+    fv = P.failover_view(nfw, roster(), "na", "nb", {"nb": {"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()],
+                                                            "csqtt": [w_row("csqtt1", pub="")]}},
+                         seen, frozenset(), now=NOW, ivk=IVK)
+    check("[14] …with no report of A's, nothing is judged ip_dial — a report confirms, never condemns (ip_dial review F2)",
+          not any(r.get("why") == "ip_dial" for r in fv["rows"]), fv["rows"])
     nfd = t_fleet(); P.failover_mirror(DEPS, nfd, "nb", snaps, seen, now=NOW)
     next(k for k in P._FO_KINDS if getattr(k, "fam", "") == "wdtt").drop(nfd["nb"], "wdtt1", NOW)   # a Re-sync's drop (F47: by kind)
     fv = P.failover_view(nfd, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()]}),
@@ -1785,6 +1792,10 @@ def sec15():
           TPS not in rows, rows.get(TPS))
     rows, _ = view(fleet(), dict(sbr, turn_proxies=[tp_row(bind_ip="", running=False)]), dict(sa, turn_proxies=[tp_row(installing=True)]))
     check("[15] …and a copy down on B is still said while A updates (verify F52)", rows.get(TPS, {}).get("why") == "down", rows.get(TPS))
+    rows, _ = view(fleet(), dict(sbr, turn_proxies=[tp_row(bind_ip="", listen="198.51.100.7:56100")]),
+                   dict(sa, turn_proxies=[tp_row(listen="198.51.100.7:56100")]))
+    check("[15] a proxy copy whose clients dial A's IP: ip_dial with the host (ip_dial review F5)",
+          rows.get(TPS, {}).get("why") == "ip_dial" and rows[TPS].get("host") == "198.51.100.7" and rows[TPS].get("kind") == "turn", rows.get(TPS))
     rows, _ = view(fleet(), dict(sb, turn_proxies=[tp_row(flapping=40)]))
     check("[15] B's proxy crash-looping (running between restarts): down (R2 F8)", rows.get(TPS, {}).get("why") == "down", rows.get(TPS))
     rows, _ = view(fleet(), dict(sbr, udp_ports="51820-51899"))

@@ -1408,8 +1408,12 @@ function foWhy(r, bn, an) {
     case "firewall": return T("UDP {v1} is outside {v2}'s declared firewall range — clients can't reach it there", { v1: r.port, v2: bn });
     case "peers": return T("{v1} still to copy", { v1: plural(r.n || 0, "peer") });
     case "port": return T("its port is still changing");
-    case "ip_dial": return r.host ? T("its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give it a hostname on {v3}.", { v1: r.host, v2: bn, v3: an })
-      : T("its clients have no hostname to dial — a domain change can't move them to {v1}. Give it a hostname on {v2}.", { v1: bn, v2: an });
+    // the fix differs by kind (review F1): an interface's clients dial its endpoint; a server's or proxy's dial its listen address
+    case "ip_dial": return r.host
+      ? (iface ? T("its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give the interface a domain as its endpoint on {v3}.", { v1: r.host, v2: bn, v3: an })
+               : T("its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give it a domain to listen on, on {v3}.", { v1: r.host, v2: bn, v3: an }))
+      : (iface ? T("its clients have no domain to dial — a domain change can't move them to {v1}. Give the interface a domain as its endpoint on {v2}.", { v1: bn, v2: an })
+               : T("its clients have no domain to dial — a domain change can't move them to {v1}. Give it a domain to listen on, on {v2}.", { v1: bn, v2: an }));
     default: return r.why;
   }
 }
