@@ -33,7 +33,8 @@
       four invariants on the take-over in each: on B only an old copy is ever deleted; peers move onto what B holds and only
       that; B never ends an ordinary node keeping a copy with the peers left on A; peers land on A's current identity.
   [9] reconcile.js: A stale, B online → online, no orphans; A live too → still no orphan on A; A stale, B without the
-      interface or reporting it down → unknown, no Restore; no mirrors → unchanged.
+      interface or reporting it down → unknown, no Restore; no mirrors → unchanged. R3: a WDTT device is read on the member
+      its password is online on, else the one running the server, else the primary (`served`).
   [10] Real panels: with no failover node the sync reply is byte-identical to the reference build's (7c7987e8); with one,
       B's whole reply equals A's but for the node's own keys (dev_reach, p2p, limits included) and the doors work end to
       end: detach-keep with clients on B needs the typed name, a string take_over is not a take-over.
@@ -109,6 +110,10 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      r2-domain    a take-over leaves a server listening on every address without A's domain
      r3-v6wild    a take-over carries A's domain into an IPv6 wildcard (B then binds IPv4 only)
      r2-nolisten  a take-over of a server with no listen raises half-way
+     sc-served    reconcile.js reads a WDTT / csqtt device on the primary only
+     sc-online    …on the first member running the server, not the one it is online on
+     pf-kind      the preview's ports carry no kind (the sheet cannot word a server or a proxy)
+     upd-door     the updates sheet's reinstall of B's proxy is refused
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -214,6 +219,13 @@ PLANTS = {   # (file, anchor, replacement)
     "orphan": ("recon", '''managed[t.node + "|" + t.iface + "|" + pubkey] = managed[mb + "|" + t.iface + "|" + pubkey] = true;''',
                '''managed[mb + "|" + t.iface + "|" + pubkey] = true;'''),
     "down-has": ("recon", '''[t.iface]) && !ifDown[n + "|" + t.iface];''', '''[t.iface]);'''),
+    # R3: a WDTT / csqtt device is read on the member serving it; the preview names kinds; the updates sheet and its door
+    "sc-served": ("recon", '''          ssn = pair.find(onl) || pair.find(has) || t.node;''', '''          ssn = t.node;'''),
+    "sc-online": ("recon", '''          ssn = pair.find(onl) || pair.find(has) || t.node;''', '''          ssn = pair.find(has) || t.node;'''),
+    "pf-kind": ("panel", '''        warn["ports"] += [{"iface": n, "kind": k.kind, "port": _p} for _p in k.ports(src)]''',
+                '''        warn["ports"] += [{"iface": n, "port": _p} for _p in k.ports(src)]'''),
+    "upd-door": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b)))):''',
+                 '''            ):'''),
     "keep-confirm": ("panel", '''        cut = bid if not take else aid                 # the member whose clients this cuts off''',
                      '''        cut = aid'''),
     "mesh-retire": ("panel", '''            need = {frozenset(ab) for ab in pairs}''', '''            pass'''),
@@ -1053,6 +1065,10 @@ def sec9():
     now = NOW * 1000
     roster_ = {"users": {"u1": {"name": "ann"}}, "peers": {"p1": {"user_id": "u1", "pubkey": PK[0], "created_at": NOW - 9999,
                                                             "targets": [{"node": "na", "iface": "awg0", "ip": "10.8.0.2"}]}}}
+    # R3: a WDTT device (a password, no key) — its read-back is the server's own row (§12.5)
+    roster_w = {"users": {"u1": {"name": "ann"}}, "peers": {"p1": {"user_id": "u1", "wdtt_password": "pw1", "created_at": NOW - 9999,
+                                                             "targets": [{"node": "na", "iface": "wdtt1", "type": "wdtt"}]}}}
+    wrow = lambda on, act="active": {"iface": "wdtt1", "active": act, "passwords": {"pw1": {"online": on, "ip": "10.9.0.5"}}}
     hs = {"public_key": PK[0], "online": True}
     cases = {
         "stale_b_online": ({"na": {"generated_at": NOW - 3600, "interfaces": {"awg0": snap_iface()}},
@@ -1069,13 +1085,23 @@ def sec9():
         "stale_b_down": ({"na": {"generated_at": NOW - 3600, "interfaces": {"awg0": snap_iface()}},
                           "nb": {"generated_at": NOW, "interfaces": {"awg0": {"down": "Cannot find device", "meta": {}, "peers": []}}}},
                          {"na": NOW - 3600, "nb": NOW}, {"na": "nb"}),
+        "w_stale_b_online": ({"na": {"generated_at": NOW - 3600, "wdtt": [wrow(False)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(True)]}},
+                             {"na": NOW - 3600, "nb": NOW}, {"na": "nb"}, "w"),
+        "w_online_on_a": ({"na": {"generated_at": NOW, "wdtt": [wrow(True)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(False)]}},
+                          {"na": NOW, "nb": NOW}, {"na": "nb"}, "w"),
+        "w_online_on_b": ({"na": {"generated_at": NOW, "wdtt": [wrow(False)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(True)]}},
+                          {"na": NOW, "nb": NOW}, {"na": "nb"}, "w"),
+        "w_b_down": ({"na": {"generated_at": NOW - 3600, "wdtt": [wrow(False)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(False, "failed")]}},
+                     {"na": NOW - 3600, "nb": NOW}, {"na": "nb"}, "w"),
+        "w_nomirror": ({"na": {"generated_at": NOW, "wdtt": [wrow(True)]}}, {"na": NOW}, None, "w"),
     }
     js = """
 await import(%s);
 const { reconcile } = await import(%s);
-const cases = %s, roster = %s, now = %d;
+const cases = %s, rosters = %s, now = %d;
 const out = {};
-for (const [k, [stats, seen, mirrors]] of Object.entries(cases)) {
+for (const [k, [stats, seen, mirrors, rk]] of Object.entries(cases)) {
+  const roster = rosters[rk || "i"];
   const r = reconcile(roster, stats, now, { nodeSeen: seen, nodeStaleMs: 30000, graceMs: 60000, restoreGraceMs: 0, probSince: {},
                                            ...(mirrors ? { mirrors } : {}) });
   const p = r.peers[0], t = p.targets[0];
@@ -1083,7 +1109,8 @@ for (const [k, [stats, seen, mirrors]] of Object.entries(cases)) {
              keys: Object.keys(t).sort() };
 }
 console.log(JSON.stringify(out));
-""" % (json.dumps("file://" + os.path.join(HERE, "spa_env.mjs")), json.dumps("file://" + NEWR), json.dumps(cases), json.dumps(roster_), now)
+""" % (json.dumps("file://" + os.path.join(HERE, "spa_env.mjs")), json.dumps("file://" + NEWR), json.dumps(cases),
+       json.dumps({"i": roster_, "w": roster_w}), now)
     f = os.path.join(TMP, "rc.mjs"); open(f, "w").write(js)
     o = subprocess.run(["node", f], capture_output=True, text=True)
     if o.returncode:
@@ -1101,6 +1128,17 @@ console.log(JSON.stringify(out));
     check("[9] A live too, the device online on B: served by B, no orphan on A", e["served"] == "nb" and e["orphans"] == 0, e)
     g = out["stale_b_down"]
     check("[9] A stale, B reports the interface down: unknown, no Restore", g["t"] == "unknown" and not g["restorable"], g)
+    w = out["w_stale_b_online"]
+    check("[9] WDTT: A stale, the password online on B: online, served by B, door names A",
+          w["status"] == "online" and w["served"] == "nb" and w["node"] == "na", w)
+    w = out["w_online_on_a"]
+    check("[9] WDTT: both live, online on A: served by A", w["served"] == "na" and w["status"] == "online", w)
+    w = out["w_online_on_b"]
+    check("[9] WDTT: both live, online on B: served by B", w["served"] == "nb" and w["status"] == "online", w)
+    w = out["w_b_down"]
+    check("[9] WDTT: A stale, B's server down: read on A — unknown", w["served"] == "na" and w["t"] == "unknown", w)
+    w = out["w_nomirror"]
+    check("[9] WDTT, no mirrors: no `served` key", "served" not in w["keys"] and w["status"] == "online", w)
 
 
 # ── [10] real panels ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1456,14 +1494,14 @@ def sec14():
     check("[14] the preview no longer files WDTT/csqtt as not copied",
           not [x for x in pf["warn"]["not_mirrored"] if x["kind"] in ("wdtt", "csqtt")], pf["warn"]["not_mirrored"])
     check("[14] …it names their ports — WDTT's raw port too — and a server clients reach by IP",
-          {"iface": "wdtt1", "port": 56000} in pf["warn"]["ports"] and {"iface": "wdtt1", "port": 56010} in pf["warn"]["ports"]
-          and {"iface": "csqtt1", "port": 56002} in pf["warn"]["ports"]
+          {"iface": "wdtt1", "kind": "wdtt", "port": 56000} in pf["warn"]["ports"] and {"iface": "wdtt1", "kind": "wdtt", "port": 56010} in pf["warn"]["ports"]
+          and {"iface": "csqtt1", "kind": "csqtt", "port": 56002} in pf["warn"]["ports"]
           and any(x["iface"] == "wdtt1" for x in pf["warn"]["ip_endpoint"])
           and not any(x["iface"] == "csqtt1" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
     nv = t_fleet(); nv["na"]["wdtt"]["wdtt1"]["key_blob"]["vault"] = "an-older-vault"
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, nv, "na", snaps, {"na": NOW})
     check("[14] a WDTT whose key the vault cannot rebuild is refused, as an interface is",
-          any(x.get("iface") == "wdtt1" for x in pf["refused"]), pf["refused"])
+          any(x.get("iface") == "wdtt1" and x.get("kind") == "wdtt" for x in pf["refused"]), pf["refused"])
 
     # card review round 1
     nw = t_fleet(); nw["na"]["wdtt"]["wdtt1"]["listen"] = "0.0.0.0:56000"
@@ -1749,15 +1787,38 @@ def sec15():
     check("[15] …nor one A has a request for (R2 F4)", (f("/api/turn/delete", {"node": "nb", "service": "vk-turn-proxy-x-1"}) or [0])[0] == 409)
     nr["na"].pop("turn")
     check("[15] installing, editing or stopping a proxy on B is refused",
-          all((f(p_, {"node": "nb", "service": "vk-turn-proxy-x-1", "fork": "x", "listen": "1.2.3.4:1", "connect": "127.0.0.1:2"}) or [0])[0] == 409
+          all((f(p_, {"node": "nb", "service": "vk-turn-proxy-x-2", "fork": "x", "listen": "1.2.3.4:1", "connect": "127.0.0.1:2"}) or [0])[0] == 409
               for p_ in ("/api/turn/install", "/api/turn/manage", "/api/turn/stop", "/api/turn/reinstall")))
+    # R3: the updates sheet moves B's proxies as it moves A's — a proxy's version is never followed (§12.7 R2)
+    check("[15] the updates sheet's reinstall of a proxy B reports is allowed (its version is B's own)",
+          f("/api/turn/reinstall", {"node": "nb", "service": TPS, "tag": "v2.0"}) is None)
+    check("[15] …and with no report of B's naming it, refused",
+          (f("/api/turn/reinstall", {"node": "nb", "service": TPS}, {"na": sa}) or [0])[0] == 409)
+
+    # R3: the updates sheet lists B's proxies, never its WDTT / csqtt — those run the build A is held on (§12.4)
+    _tl = dict(P.TURN_LATEST)
+    _hg = P._turn_hold_get
+    try:
+        P.TURN_LATEST["forks"] = {"cacggghp": "v2.0", "amurcanov": "9.9"}
+        P._turn_hold_get = lambda nid, key: None
+        _ud = {"node_snaps": {x: {"wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.0"}],
+                                  "turn_proxies": [tp_row(version="v1.2")]} for x in ("na", "nb")}}
+        ur = {(r["node"], r["kind"]) for r in P.turn_updates_view(_ud, fleet())}
+        check("[15] the updates sheet: A's WDTT and proxy, B's proxy — never B's WDTT",
+              ur == {("na", "wdtt"), ("na", "turn"), ("nb", "turn")}, sorted(ur))
+        ur0 = {(r["node"], r["kind"]) for r in P.turn_updates_view(_ud)}
+        check("[15] …and with no store at hand, every row as before", ("nb", "wdtt") in ur0, sorted(ur0))
+    finally:
+        P.TURN_LATEST.clear(); P.TURN_LATEST.update(_tl); P._turn_hold_get = _hg
 
     # the preview
     pa = dict(sa, turn_proxies=[tp_row(), tp_row("vk-turn-proxy-cacggghp-56400", listen="198.51.100.7:56400")])
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, fleet(), "na", {"na": pa}, {"na": NOW})
-    check("[15] the preview names a proxy's port, and the one clients reach by IP",
-          {"iface": TPS, "port": 56100} in pf["warn"]["ports"] and {"iface": "vk-turn-proxy-cacggghp-56400", "port": 56400} in pf["warn"]["ports"]
-          and any(x["iface"] == "vk-turn-proxy-cacggghp-56400" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
+    check("[15] the preview names a proxy's port, and the one clients reach by IP — each entry with its kind (R3: the sheet "
+          "words a proxy as a proxy)",
+          {"iface": TPS, "kind": "turn", "port": 56100} in pf["warn"]["ports"]
+          and {"iface": "vk-turn-proxy-cacggghp-56400", "kind": "turn", "port": 56400} in pf["warn"]["ports"]
+          and any(x["iface"] == "vk-turn-proxy-cacggghp-56400" and x.get("kind") == "turn" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
     check("[15] …a proxy on a wildcard is dialled at the interface it forwards to (a name: no warning)",
           not any(x["iface"] == TPS for x in pf["warn"]["ip_endpoint"]), pf["warn"]["ip_endpoint"])
     check("[15] …and no longer files turn proxies as not copied",

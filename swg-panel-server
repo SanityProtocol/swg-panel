@@ -13630,7 +13630,8 @@ class _FoIface(_FoKind):
 # password and web password (node-owned; a WDTT identity restore brings A's owner password with its keypair), adopt
 # markers (noded would adopt a server B does not run, and hold for ever), one-shot requests and box pins.
 FO_TURN_FOLLOW = ("fork", "listen", "dns", "max_passwords", "params", "block", "p2p", "reach", "egress_mode",
-                  "egress_node", "exit_id", "routing", "routing_exit_ips", "web_port")
+                  "egress_node", "exit_id", "routing", "routing_exit_ips", "web_port",
+                  "title")                     # the console's name for it: B's card says what A's does (a proxy's follows too)
 FO_WDTT_FOLLOW = FO_TURN_FOLLOW + ("wg_addr", "wg_port", "raw_port", "raw_iface", "raw_addr")
 FO_CSQTT_FOLLOW = FO_TURN_FOLLOW + ("line", "tun_addr", "app_routing", "app_routing_except")
 
@@ -14174,21 +14175,21 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     # clients hand VK (`dial_host`: a proxy listening on a wildcard is dialled at the interface it forwards to), the ports
     # (`ports`), a pinned egress
     _ivk = _current_ivk_pub(deps)
-    for k, n, src in _servers:
+    for k, n, src in _servers:                         # each entry names its kind: the sheet words a server or a proxy
         if k.identity and not k.rebuildable(src, _ivk):
-            refused.append({"iface": n, "why": "its key is not in the Encryption Vault — set the vault up; the key is sealed "
-                                              "on the node's next sync"})
+            refused.append({"iface": n, "kind": k.kind, "why": "its key is not in the Encryption Vault — set the vault up; "
+                                                              "the key is sealed on the node's next sync"})
         host = k.dial_host(a, src, snap, n)             # the host its clients dial — the take-over's, one rule (F9, F17)
         if not host or _ip_literal(host):
-            warn["ip_endpoint"].append({"iface": n, "host": host or ""})
+            warn["ip_endpoint"].append({"iface": n, "kind": k.kind, "host": host or ""})
         elif resolve and node_public_ip(snap):
             if host not in _dns:
                 _dns[host] = _fo_resolves_to(host, snap.get("node_ips") or ())
             if _dns[host] is False:
-                warn["dns"].append({"iface": n, "host": host})
+                warn["dns"].append({"iface": n, "kind": k.kind, "host": host})
         if src.get("egress_mode") != "forward" and (src.get("egress_ip") or src.get("wan_iface")):
             warn["pinned"].append(n)
-        warn["ports"] += [{"iface": n, "port": _p} for _p in k.ports(src)]
+        warn["ports"] += [{"iface": n, "kind": k.kind, "port": _p} for _p in k.ports(src)]
     if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
         _mc = mesh_cfg(deps)
         warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
@@ -14316,8 +14317,9 @@ def failover_ro_refusal(path, body, nodes, snaps=None, seen=None):
     stripped as the doors strip them): `node`, `id` (on node doors), `egress_node`, `p2p.node`, `target.node`,
     `targets[].node`, and /api/peers/targets' `base[] add[] address[] remove[]` (refresh R3). A failover node is one whose
     primary is in the store — failover_pairs' test, the one the sync and the doors use. Free with no failover node.
-    `snaps`, `seen`: a turn proxy of B's own (_fo_turn_b_own) is B's to delete (§12.1: the mirror never does); a copy
-    deleted there would come straight back with the mirror's next install."""
+    `snaps`, `seen`: a turn proxy of B's own (_fo_turn_b_own) is B's to delete (§12.1: the mirror never does) — a copy
+    deleted there would come straight back with the mirror's next install — and any proxy B reports takes the updates
+    sheet's reinstall (its version is B's own)."""
     fo = failover_pairs(nodes)
     if not fo or not isinstance(body, dict):
         return None
@@ -14342,7 +14344,10 @@ def failover_ro_refusal(path, body, nodes, snaps=None, seen=None):
             or (path == "/api/iface/update" and set(body) <= _FO_IF_LOCAL)
             or (path in ("/api/iface/delete", "/api/iface/ignore", "/api/iface/unignore", "/api/iface/update",
                          "/api/iface/recreate", "/api/iface/restart") and own)
-            or (path == "/api/turn/delete" and _fo_str(body.get("service")) in _fo_turn_b_own(nodes, snaps, seen, fo[b], b))):
+            or (path == "/api/turn/delete" and _fo_str(body.get("service")) in _fo_turn_b_own(nodes, snaps, seen, fo[b], b))
+            # a proxy's version is never followed (§12.7 R2) and the auto-update is off by default: the updates sheet
+            # moves B's proxies as it moves A's — B's own binary, nothing the mirror compares
+            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b)))):
         return None
     return 409, {"ok": False, **perr("{v1} is a failover node: it mirrors {v2} and is read-only — edit {v2}, or detach it first",
                                      v1=nodes[b].get("name") or b, v2=nodes[fo[b]].get("name") or fo[b]),

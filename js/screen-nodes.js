@@ -33,12 +33,13 @@ import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsP
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
          promotedAt, promotedBy } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
-         openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet, csqttRunLine } from "./turn.js";
+         openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet, csqttRunLine, DeleteTurnSheet } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
          AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, openNodeRollback, openNodeTransferWatch,
-         openNodeMigrate, openNodeTransfer, unflagNode, bootCmd, openFailoverSetup, openFailoverResync, openFailoverDetach } from "./sheets-crud.js";
+         openNodeMigrate, openNodeTransfer, unflagNode, bootCmd, openFailoverSetup, openFailoverResync, openFailoverDetach,
+         FoCopy, foCopyText } from "./sheets-crud.js";
 import { ensureVaultUnlocked, ifaceKeyAutoRestore, ifaceKeyRetry } from "./crypto.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey } from "./peer-actions.js";
 import { h, Fragment } from "preact";
@@ -626,9 +627,9 @@ export function NodeDetail({ node: rawName }) {
                 { iface: ifn, subnet: wc.wg_addr || "?" }), false, T("No escrowed identity is stored"));
           return html`<a class=${"ifcard missing" + (never ? " failed" : "")} key=${"wdtt-missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${never ? T("This server was never installed — remove it or fix the cause") : T("Open the WDTT server (read-only) — details and Restore")}>
             <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              ${never ? null : html`<button class="mi-restore" disabled=${blocked || restoring} title=${vaulted ? T("Bring this WDTT server back with its original identity — no user re-imports") : T("Recreate this WDTT server with a NEW identity — every user re-imports")}
+              ${never ? null : html`<button class="mi-restore" disabled=${blocked || restoring || (ro && !vaulted)} title=${ro && !vaulted ? roWhy : vaulted ? T("Bring this WDTT server back with its original identity — no user re-imports") : T("Recreate this WDTT server with a NEW identity — every user re-imports")}
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); vaulted ? wdttRestoreIdentity(name, ifn) : wdttRecreateFresh(name, ifn); }}><${Ic} i=${vaulted ? "shield" : "refresh"}/> ${restoring ? T("Restoring…") : vaulted ? T("Restore") : T("Recreate")}</button>`}
-              <button class="mi-restore danger" disabled=${blocked} title=${T("Remove this WDTT server from the panel")}
+              <button class="mi-restore danger" disabled=${blocked || ro} title=${roWhy || T("Remove this WDTT server from the panel")}
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${WdttDeleteSheet} node=${name} iface=${ifn}/>`); }}><${Ic} i="trash"/> ${T("Delete")}</button>
               <${StatusTag} cls="tg-del" icon="warn" label=${never ? T("not installed") : "missing"} title=${never ? nerr : T("This WDTT server is gone from the node")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
@@ -1353,19 +1354,25 @@ function FailoverTag({ fo }) {
   return html`<${StatusTag} cls=${cls} icon=${icon} label=${T("Failover · {v1}", { v1: label })}
     title=${T("{v1} keeps a live copy of {v2}", { v1: Store.nodeName(fo.failover), v2: Store.nodeName(fo.primary) })}/>`;
 }
+// a turn proxy's followed fields as its sheet names them (§12.7 R2: listen, connect, params)
+const foTpField = k => ({ listen: T("listen address"), connect: T("forward address"), params: T("server settings") })[k] || k;
 function foWhy(r, bn, an) {
+  const iface = !r.kind || r.kind === "iface";
   switch (r.why) {
+    case "no_turn": return T("{v1} can't run turn proxies — turn-proxy management is off there", { v1: bn });
     case "name_taken": return T("{v1} has a mesh link by this name, so it is not copied there — its clients have only {v2}", { v1: bn, v2: an });
     case "primary_no_key": return T("the panel holds no confirmed key of {v1}'s for it yet, so the copy on {v2} can't be checked", { v1: an, v2: bn });
     case "no_copy": return T("not on {v1} yet — a copy needs its key in the vault; if this stays, set up or unlock the vault", { v1: bn });
     case "awaiting_key": return T("waiting for its key — unlock the vault in this browser to hand it over");
     case "creating": return T("being created on {v1}", { v1: bn });
     case "awg": return T("needs AmneziaWG 3.1 on {v1} — update that node", { v1: bn });
-    case "down": return T("down on {v1} — it is being brought back", { v1: bn });
+    case "down": return iface ? T("down on {v1} — it is being brought back", { v1: bn }) : T("not running on {v1} — its page says why", { v1: bn });
     case "key": return r.resync ? T("{v1} runs it with a different key — re-sync it", { v1: bn })
       : T("{v1} runs it with a different key, and the vault the panel holds can't rebuild {v2}'s — unlock or set up the vault", { v1: bn, v2: an });
     case "subnet": return T("{v1} runs it on a different subnet — re-sync it", { v1: bn });
-    case "drift": return T("changed by hand on {v1}'s server: {v2} — put {v3}'s back", { v1: bn, v2: (r.keys || []).map(ifFieldLabel).join(", "), v3: an });
+    case "drift": return r.kind === "turn"
+      ? T("being brought in line with {v1}: {v2}", { v1: an, v2: (r.keys || []).map(foTpField).join(", ") })   // the follow is on its way
+      : T("changed by hand on {v1}'s server: {v2} — put {v3}'s back", { v1: bn, v2: (r.keys || []).map(ifFieldLabel).join(", "), v3: an });
     case "firewall": return T("UDP {v1} is outside {v2}'s declared firewall range — clients can't reach it there", { v1: r.port, v2: bn });
     case "peers": return T("{v1} still to copy", { v1: plural(r.n || 0, "peer") });
     case "port": return T("its port is still changing");
@@ -1403,9 +1410,17 @@ function FailoverPanel({ nrec }) {
   };
   // the address to point the domain at: a public one B reports (never a private, CGNAT or link-local one), else none named
   const bAddr = (bRec.ips || []).find(ip => ip && !isPrivIp(ip) && !/^(fe80|fd|fc|::1)/i.test(ip)) || "";
-  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l">${r.iface}</span><span class="r">${foWhy(r, bn, an)}${r.why === "drift" && bLive && foPutKeys(r).length
+  // each row names its copy as that copy's own page does — a server or a proxy behind its kind's tag (§12.5)
+  const rows = (fo.rows || []).map(r => html`<div class="ifrow"><span class="l"><${FoCopy} node=${a} kind=${r.kind} name=${r.iface}/></span><span class="r">${foWhy(r, bn, an)}${r.why === "drift" && (!r.kind || r.kind === "iface") && bLive && foPutKeys(r).length
     ? html` <button class="btn btn-mini" style="margin-left:6px" onClick=${() => foPutBack(b, r)}>${T("Put back")}</button>` : null}</span></div>`);
-  const probs = (fo.problems || []).map(p => html`<div class="ifrow ifrow-stack"><span class="l">${p.kind === "cmd_errors"
+  // B's own turn proxies — or a copy of one A no longer runs: the mirror never removes a proxy (§12.7 R2), the operator
+  // does, here; the panel allows exactly these on B (_fo_turn_b_own)
+  const tpDel = svc => openModal(html`<${DeleteTurnSheet} node=${b} service=${svc} label=${foCopyText(b, "turn", svc)}/>`);
+  const probs = (fo.problems || []).map(p => p.kind === "unmanaged_turn"
+    ? html`<div class="ifrow ifrow-stack"><span class="l">${T("{v1} runs turn proxies {v2} doesn't — remove the ones nothing on {v1} needs", { v1: bn, v2: an })}</span>
+        <span class="r fo-own">${(p.services || []).map(svc => html`<span class="fo-own-row"><${FoCopy} node=${b} kind="turn" name=${svc}/>${bLive
+          ? html`<button class="btn btn-mini danger" onClick=${() => tpDel(svc)}><${Ic} i="trash"/> ${T("Remove")}</button>` : null}</span>`)}</span></div>`
+    : html`<div class="ifrow ifrow-stack"><span class="l">${p.kind === "cmd_errors"
     ? T("{v1} reports commands that failed — its page says which", { v1: bn })
     : T("{v1} runs interfaces the panel doesn't manage — remove them on that server", { v1: bn })}</span><span class="r">${(p.ifaces || []).join(", ")}</span></div>`);
   const actions = html`<div class="panel-tools">
@@ -1415,8 +1430,8 @@ function FailoverPanel({ nrec }) {
   </div>`;
   return html`<${Panel} icon="shield" title=${T("Failover")} actions=${actions}>
     <p class="hint" style="margin:0 0 10px">${isB
-      ? T("This node is a read-only copy of {v1}: the same interfaces, keys, ports and peers. Change settings on {v1}; they follow here.", { v1: an })
-      : T("{v1} keeps a live copy of this node: the same interfaces, keys, ports and peers. If this node goes down, point its domain at {v1} and clients reconnect there.", { v1: bn })}
+      ? T("This node is a read-only copy of {v1}: the same interfaces, WDTT and csqtt servers, turn proxies, keys, ports and peers. Change settings on {v1}; they follow here.", { v1: an })
+      : T("{v1} keeps a live copy of this node: the same interfaces, WDTT and csqtt servers, turn proxies, keys, ports and peers. If this node goes down, point its domain at {v1} and clients reconnect there.", { v1: bn })}
       ${/* who serves, while both report — with A down the notice below says what to do, and the planner's pick would name A */""}
       ${fo.primary_live && bLive ? " " + T("Serving now: {v1}.", { v1: fo.serving === b ? bn : an }) : ""}</p>
     ${fo.primary_live ? null : bLive ? html`<div class="notice warn"><${Ic} i="warn"/><span>${bAddr

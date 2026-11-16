@@ -24,7 +24,7 @@ import {
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
          isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
-         subnetServerAddr, suggestSubnet, ghostIface, ghostPeers } from "./model.js";
+         subnetServerAddr, suggestSubnet, ghostIface, ghostPeers, foRoWhy } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, sheetSend, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary,
   WhoPicker, peersOn, whoCount, whoEntries, whoEntryName } from "./routing.js";
@@ -300,15 +300,19 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   turnWasBusy[k] = _busy;
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, tp.service) : [];   // online peers via THIS specific proxy → header count
-  const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} data-rid=${it ? it.rid : null}>
+  // a failover node's proxies (docs/FAILOVER-PLAN.md §12.5): its primary's copies, or its own that the Failover panel
+  // removes — nothing here edits one, and a request in flight there is the mirror's, not one to cancel
+  const roWhy = foRoWhy(node);
+  const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete" && !roWhy;   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
+  const xCancel = roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`;
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} title=${roWhy || null} data-rid=${it ? it.rid : null}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>${T("val|turn")}</span><span class="ifname">${shownTitle("t|" + node + "|" + tp.service, tp.title) || forkLabel(turnFork(tp.service))}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title=${T("Via this turn-proxy")} cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
       : pend === "delete"
-      ? html`<${StatusTag} cls="tg-busy del" label=${T("deleting…")} msg=${err || prog} title=${err ? T("Command failed on the node") : T("Working on the node")}/><button class="xbtn" title=${T("Cancel this request")} onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      ? html`<${StatusTag} cls="tg-busy del" label=${T("deleting…")} msg=${err || prog} title=${err ? T("Command failed on the node") : T("Working on the node")}/>${xCancel}`
       : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label=${pendLabel} msg=${prog} title=${T("The node is setting it up right now")}/>`
       : turnReadyNow ? html`<span class=${"tg " + ((turnUpdatedFlash[k] && Date.now() < turnUpdatedFlash[k]) ? "tg-ok" : "tg-ready")}><${Ic} i="check"/>${(turnUpdatedFlash[k] && Date.now() < turnUpdatedFlash[k]) ? T("updated") : T("turn|ready")}</span>`
-      : (pend || queued) ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${pend ? pendLabel : "creating"} msg=${err} title=${pend ? T("The node is setting it up") : T("Queued — the node creates these one at a time")}/>${pend ? html`<button class="xbtn" title=${T("Cancel this request")} onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
+      : (pend || queued) ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${pend ? pendLabel : "creating"} msg=${err} title=${pend ? T("The node is setting it up") : T("Queued — the node creates these one at a time")}/>${pend ? xCancel : null}`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label=${T("install failed")} msg=${err || T("the install failed on the node")} title=${T("Command failed on the node")}/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>${T("tag|restarted")}</span>`
       : stopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
@@ -358,10 +362,14 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   // drag-to-reorder turn-proxies + WDTT + csqtt instances together (node view only; per-interface view is a
   // filtered subset). Self-contained-kind ids are namespaced ('wdtt:'/'csqtt:'<iface>) so they never clash.
   const _turnOrder = orderById([...cards.map(tp => tp.service), ...wdttInsts.map(w => "wdtt:" + w.iface), ...csqttInsts.map(c => "csqtt:" + c.iface)], nrec.turn_order, x => x);
-  const tReorder = useReorder(iface ? [] : _turnOrder, ids => mutate({
+  // a failover node (docs/FAILOVER-PLAN.md §12.5): its proxies and servers are its primary's copies — no new one, no order
+  // of its own (the hook still runs: a hook is never skipped), no request of the mirror's to cancel
+  const roWhy = foRoWhy(node);
+  const tReorder0 = useReorder(iface ? [] : _turnOrder, ids => mutate({
     patch: s => { const nn = (s.nodes || []).find(x => x.id === node); if (nn) nn.turn_order = ids; },
     call: () => api.saveOrder({ kind: "turn", node, order: ids }),
   }));
+  const tReorder = roWhy ? null : tReorder0;
   if (iface && !cards.length && !wdttInsts.length) return null;   // interface view with nothing to show → no block
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   // arch gate: grey out "Setup proxy" ONLY when the node explicitly reports no build for its CPU arch (turn_arch_ok===false).
@@ -391,15 +399,16 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         // you then see. Facts before verbs — it sits left of the gear and the setup button.
         const _u = iface ? [] : (Store.turnUpdates || []).filter(r => r.node === node);
         return _u.length ? html`<button class="btn btn-mini updbtn" title=${T("Deployed servers on this node are behind their newest build — review and update")} onClick=${() => openTurnUpdates(node)}><${Ic} i="download"/> ${plural(_u.length, "update")}</button>` : null;
-      })()}<button class="btn btn-mini ico" title=${T("These turn proxies' live logs")} onClick=${() => openLogs({ nodes: [node], src: TURN_SOURCES })}><${Ic} i="doc"/></button><button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Setup new proxy")}</button>` : null}<//>` : null}>
+      })()}<button class="btn btn-mini ico" title=${T("These turn proxies' live logs")} onClick=${() => openLogs({ nodes: [node], src: TURN_SOURCES })}><${Ic} i="doc"/></button><button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) && !roWhy ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Setup new proxy")}</button>` : null}<//>` : null}>
     ${/* The REASON is not universal, though the symptom is. "No Docker socket was mounted" is the
           bare-metal-installer answer; on a declaratively-managed node it is simply false, and an
           operator sent looking for a socket mount they never made loses an afternoon. Key the reason
           off `platform` — T-P1 shipped it INSTEAD of the `managed_by` field the plan first named. */""}
+    ${!iface && roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>${nrec.declarative
       ? Trich("Turn-proxy management is *off* on this node — its configuration has it off (*turnManage*), so these are read-only here. Turn it on there and rebuild, or manage them on the box directly.")
       : Trich("Turn-proxy management is *off* on this node — no Docker socket was mounted at install (*TURN_MANAGE=manual*), so these are read-only here. Add, edit or restart them on the box directly.")}</span></div>` : null}
-    <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${iface
+    <div class="ifgrid" ...${iface || !tReorder ? {} : tReorder.container()}>${iface
       ? html`<${Fragment}>
           ${wdttInsts.map(w => html`<${WdttCard} key=${"wdtt:" + w.iface} node=${node} w=${w} reorder=${null}/>`)}
           ${csqttInsts.map(c => html`<${CsqttCard} key=${"csqtt:" + c.iface} node=${node} c=${c} reorder=${null}/>`)}
@@ -414,7 +423,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
           return tp ? html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${true} reorder=${tReorder}/>` : null;
         })}
     ${optTurns.map(o => optCard(o.svc, o.d))}
-    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${forkLabel(turnFork(s))}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">${T("deleting…")}</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${T("tag|pending")}</span>`}<button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
+    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${forkLabel(turnFork(s))}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">${T("deleting…")}</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${T("tag|pending")}</span>`}${roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button>`}</div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${T("adopting…")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">${T("adopting…")}</span><button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
     </div>
   <//>`;
@@ -2020,8 +2029,9 @@ export function WdttCard({ node, w, reorder }) {
   // card above and, until this, a full-brightness proxy card below — the two sections disagreed about whether
   // anything was happening. This is the interface card's `idim`, term for term.
   const wdim = deleting || adopting || converting || awaiting || restoring || !active || _wopBusy;
-  const wCanOpen = !_wopBusy && !nblocked && !deleting && !adopting;   // don't open a sheet whose every action is disabled
-  return html`<div class=${"ifcard tp" + (wCanOpen ? " clickable" : "") + (wdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} data-rid=${it ? it.rid : null} onClick=${() => { if (!wCanOpen) return; openModal(html`<${WdttManageSheet} node=${node} w=${w}/>`); }}>
+  const roWhy = foRoWhy(node);   // a failover node's copy: its page shows it, its primary edits it (§12.5)
+  const wCanOpen = !_wopBusy && !nblocked && !deleting && !adopting && !roWhy;   // don't open a sheet whose every action is disabled
+  return html`<div class=${"ifcard tp" + (wCanOpen ? " clickable" : "") + (wdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!wCanOpen) return; openModal(html`<${WdttManageSheet} node=${node} w=${w}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype wdtt">WDTT</span>
       <span class="ifname">${shownTitle("w|" + node + "|" + w.iface, (((nrec.wdtt_cfg || {})[w.iface] || {}).title || "").trim()) || w.iface}</span><span class="grow"></span>
@@ -2595,8 +2605,9 @@ export function CsqttCard({ node, c, reorder }) {
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
   const _opBusy = _op && _op.phase === "busy";
   const cdim = deleting || converting || !active || _opBusy;
-  const canOpen = !_opBusy && !nblocked && !deleting;
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (cdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} data-rid=${it ? it.rid : null} onClick=${() => { if (!canOpen) return; openModal(html`<${CsqttManageSheet} node=${node} c=${c}/>`); }}>
+  const roWhy = foRoWhy(node);   // a failover node's copy (§12.5), as the WDTT card
+  const canOpen = !_opBusy && !nblocked && !deleting && !roWhy;
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (cdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!canOpen) return; openModal(html`<${CsqttManageSheet} node=${node} c=${c}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype csqtt">CSQTT</span>
       <span class="ifname">${shownTitle("c|" + node + "|" + c.iface, (((nrec.csqtt_cfg || {})[c.iface] || {}).title || "").trim()) || c.iface}</span><span class="grow"></span>

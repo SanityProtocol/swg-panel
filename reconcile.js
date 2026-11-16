@@ -134,10 +134,21 @@ function reconcile(roster, stats, now, cfg) {
       if (t.type === "wdtt" || t.type === "csqtt") {
         const src = t.type === "csqtt" ? "csqtt" : "wdtt";
         const pass = t.type === "csqtt" ? cpass : wpass;
-        const inst = ((stats[t.node] || {})[src] || []).filter(Boolean).find(w => w.iface === t.iface) || null;
+        const instOn = n => ((stats[n] || {})[src] || []).filter(Boolean).find(w => w.iface === t.iface) || null;
+        // A FAILOVER PAIR (docs/FAILOVER-PLAN.md §12.5): as the wg/awg branch below — the member this password is online
+        // on, else a live one that runs the server, else the primary; every read here takes it, and the target says it
+        const smb = cfg.mirrors ? cfg.mirrors[t.node] : null;
+        let ssn = t.node;
+        if (smb) {
+          const pair = [t.node, smb];
+          const onl = n => { const i = nodeStatus[n] === "live" ? instOn(n) : null; return !!(i && ((i.passwords || {})[pass] || {}).online); };
+          const has = n => { const i = nodeStatus[n] === "live" ? instOn(n) : null; return !!(i && (i.active == null || i.active === "active")); };
+          ssn = pair.find(onl) || pair.find(has) || t.node;
+        }
+        const inst = instOn(ssn);
         const dev = inst ? (inst.passwords || {})[pass] : null;   // the password's read-back entry (online + server-minted IP)
         let st;
-        if (nodeStatus[t.node] !== "live") st = "unknown";
+        if (nodeStatus[ssn] !== "live") st = "unknown";
         else if (!inst) st = ((now - createdMs) <= cfg.graceMs) ? "creating" : "dangling";   // the server is gone
         else st = !dev ? (((now - createdMs) <= cfg.graceMs) ? "creating" : "ready")   // password not shipped yet
                        : (dev.online ? "online" : "ready");                            // shipped/provisioned = ready; recent traffic/handshake = online
@@ -159,7 +170,8 @@ function reconcile(roster, stats, now, cfg) {
                  // detection) and a keyless server has none of it.
                  kwXfer: dev ? { rx_speed: dev.rx_speed || 0, tx_speed: dev.tx_speed || 0,
                                  rx_bytes: dev.up_bytes || 0, tx_bytes: dev.down_bytes || 0 } : null,
-                 restorable: false, correctable: false, problemMs: 0, down: null };
+                 restorable: false, correctable: false, problemMs: 0, down: null,
+                 ...(smb ? { served: ssn } : {}) };
       }
       // A FAILOVER PAIR (docs/FAILOVER-PLAN.md §4.6): `cfg.mirrors` {primary: failover node}. The target keeps `node` (every
       // door names the primary) and gains `served`, the member every per-node read below takes: the one this device is

@@ -780,6 +780,11 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .addrrow .l{color:var(--ink-2)} .addrrow .r{white-space:nowrap}
 .ifrow-stack{display:block}
 .ifrow-stack .r{display:block;margin-top:3px}
+/* a failover row's copy: a server or a proxy behind its kind's badge, as its own card names it (FAILOVER-PLAN §12.5) */
+.fo-copy{display:inline-flex;align-items:center;gap:7px;min-width:0}
+.fo-copy .iftype{flex:none}
+.ifrow .r.fo-own{display:flex;flex-direction:column;align-items:flex-start;gap:6px;font-family:inherit}
+.fo-own-row{display:inline-flex;align-items:center;gap:10px}
 .iftype{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px}
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}

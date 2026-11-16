@@ -2747,7 +2747,26 @@ export function NodeMigrateSheet({ node }) {
    A failover node is a second server running a read-only copy of one node — the same interfaces, keys, ports and peers —
    so pointing that node's domain at it is the whole failover. Set up from the primary's page (a preview, a name, the
    install command), detached from the mirror's. The panel sends codes; the words are here. */
+// A copy's name as its own page says it (§12.5): an interface by name; a WDTT or csqtt server by its title, else its name,
+// behind its kind's tag; a turn proxy by its title, else its fork, and its port. `node` is the box that reports it — the
+// primary for a copy (its report names every proxy the mirror copies), the failover node for one of its own.
+const FO_TAG = { wdtt: ["wdtt", "WDTT"], csqtt: ["csqtt", "CSQTT"], turn: ["turn", ""] };
+export function foCopyText(node, kind, name) {
+  if (kind === "turn") {
+    const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === name) || {};
+    return (tp.title || forkLabel(turnFork(name))) + " :" + (portOf(tp.listen || "") || String(name).split("-").pop());
+  }
+  if (kind === "wdtt" || kind === "csqtt")
+    return String(((((Store.nodes || []).find(n => n.id === node) || {})[kind + "_cfg"] || {})[name] || {}).title || "").trim() || name;
+  return name;
+}
+export const FoCopy = ({ node, kind, name }) => FO_TAG[kind]
+  ? html`<span class="fo-copy"><span class=${"iftype " + FO_TAG[kind][0]}>${FO_TAG[kind][1] || T("val|turn")}</span>${foCopyText(node, kind, name)}</span>`
+  : name;
+
 export function openFailoverSetup(node) { openModal(html`<${FailoverSetupSheet} node=${node}/>`); }
+// the preview's ports, one row per family: a proxy's port is in its own name (`… :56000`)
+const FO_PORT_ROWS = [[["iface"], () => T("interfaces")], [["wdtt", "csqtt"], () => T("WDTT and csqtt servers")], [["turn"], () => T("turn proxies")]];
 function FailoverSetupSheet({ node }) {
   useStore();
   const [name, setName] = useState(""); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null);
@@ -2775,18 +2794,21 @@ function FailoverSetupSheet({ node }) {
     openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
     Store.poll().catch(() => {});
   };
-  const TURNISH = ["wdtt", "csqtt", "turn"];
   const nm = w.not_mirrored || [];
-  const turnish = nm.filter(x => TURNISH.includes(x.kind));
   const exitish = nm.filter(x => x.kind === "exit" || x.kind === "default_exit");
   const p2p = nm.filter(x => x.kind === "p2p");
   const row = (label, value) => html`<div class="ifrow ifrow-stack"><span class="l">${label}</span><span class="r">${value}</span></div>`;
+  const nmOf = x => html`<${FoCopy} node=${node.id} kind=${x.kind} name=${x.iface}/>`;   // an entry without a kind is an interface
   const warns = [
-    ...(w.ip_endpoint || []).map(x => row(x.host ? T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give the interface a domain as its endpoint first.", { v1: x.iface, v2: x.host })
-                                                 : T("Clients of {v1} have no domain to dial — give the interface a domain as its endpoint first.", { v1: x.iface }), x.iface)),
-    ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), x.iface)),
+    ...(w.ip_endpoint || []).map(x => {
+      const nm_ = foCopyText(node.id, x.kind, x.iface), iface = !x.kind || x.kind === "iface";
+      return row(x.host ? (iface ? T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give the interface a domain as its endpoint first.", { v1: x.iface, v2: x.host })
+                                 : T("Clients of {v1} dial an IP address, {v2} — a domain change can't move them. Give it a domain to listen on first.", { v1: nm_, v2: x.host }))
+                        : (iface ? T("Clients of {v1} have no domain to dial — give the interface a domain as its endpoint first.", { v1: x.iface })
+                                 : T("Clients of {v1} have no domain to dial — give it a domain to listen on first.", { v1: nm_ })), nmOf(x));
+    }),
+    ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), nmOf(x))),
     ...((w.pinned || []).length ? [row(T("Pinned to one of {v1}'s own addresses — on the failover node they leave by its default way out", { v1: node.name }), w.pinned.join(", "))] : []),
-    ...(turnish.length ? [row(T("Not copied: WDTT, csqtt and turn proxies stay on {v1} alone", { v1: node.name }), turnish.map(x => x.name || x.kind).join(", "))] : []),
     ...(exitish.length ? [row(T("The failover node has no exits: what leaves through these leaves by its own address there"),
                               exitish.map(x => x.kind === "default_exit" ? T("the node's default exit") : x.name).join(", "))] : []),
     ...(p2p.length ? [row(T("Torrents sent through an exit are blocked on the failover node"), p2p.map(x => x.name || T("the node's torrent route")).join(", "))] : []),
@@ -2794,16 +2816,19 @@ function FailoverSetupSheet({ node }) {
   return html`<${Sheet} title=${T("Add failover node · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, onAction: create, disabled: busy || !pf || refused.length > 0 || !name.trim() || nameBad,
                      action: busy ? T("creating…") : T("Create failover node") })}>
-    <div class="notice"><${Ic} i="info"/><span>${T("A failover node is a second server that keeps a live copy of {v1}: the same interfaces, keys, ports and peers. If {v1} goes down, point its domain at the failover node and clients reconnect there — nobody re-imports a config.", { v1: node.name })}</span></div>
+    <div class="notice"><${Ic} i="info"/><span>${T("A failover node is a second server that keeps a live copy of {v1}: the same interfaces, WDTT and csqtt servers, turn proxies, keys, ports and peers. If {v1} goes down, point its domain at the failover node and clients reconnect there — nobody re-imports a config.", { v1: node.name })}</span></div>
     ${pf === undefined ? html`<div class="hint">${T("Checking what this would do…")}</div>`
       : pf === null ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Couldn't check whether {v1} can have a failover node. Try again in a moment.", { v1: node.name })}</span></div>`
       : refused.length ? html`<div class="notice danger"><${Ic} i="err"/><div style="flex:1;min-width:0"><b>${T("Not possible yet")}</b>
-          <div class="ifcard-rows" style="margin-top:7px">${refused.map(x => row(T(x.why), x.iface || ""))}</div></div></div>`
+          <div class="ifcard-rows" style="margin-top:7px">${refused.map(x => row(T(x.why), x.iface ? nmOf(x) : ""))}</div></div></div>`
       : null}
     ${/* the panel cannot see the spare's firewall: these ports must be open there, or "Ready" serves nobody (rig drill
           2026-11-15). Every pair needs it, so it is its own plain notice — in the amber box it would be there every time */""}
     ${pf && (w.ports || []).length ? html`<div class="notice"><${Ic} i="info"/><div style="flex:1;min-width:0">${T("Open these UDP ports on the spare server's firewall — clients reach the copies on the same ports")}
-        <div class="ifcard-rows" style="margin-top:7px">${row(T("interfaces"), w.ports.map(x => x.iface + " " + x.port).join(", "))}${(w.mesh_ports || []).length === 2
+        <div class="ifcard-rows" style="margin-top:7px">${FO_PORT_ROWS.map(([ks, label]) => {
+          const xs = w.ports.filter(x => ks.includes(x.kind || "iface"));
+          return xs.length ? row(label(), xs.map(x => foCopyText(node.id, x.kind, x.iface) + (x.kind === "turn" ? "" : " " + x.port)).join(", ")) : null;
+        })}${(w.mesh_ports || []).length === 2
           ? row(T("mesh links"), w.mesh_ports[0] + "–" + w.mesh_ports[1]) : null}</div></div></div>` : null}
     ${pf && warns.length ? html`<div class="notice warn"><${Ic} i="warn"/><div style="flex:1;min-width:0"><b>${T("Worth knowing before you do this")}</b>
         <div class="ifcard-rows" style="margin-top:7px">${warns}</div></div></div>` : null}
@@ -2823,7 +2848,7 @@ function FailoverResyncSheet({ id }) {
   useEffect(() => { if (!b || !b.failover) closeModal(); }, [!(b && b.failover)]);
   if (!b || !b.failover) return null;
   const aname = Store.nodeName(fo.primary);
-  const ifs = (fo.rows || []).filter(r => r.resync).map(r => r.iface);
+  const ifs = (fo.rows || []).filter(r => r.resync).map(r => foCopyText(fo.primary, r.kind, r.iface));
   const go = async () => {
     if (busy) return; setBusy(true);
     try {
@@ -2840,7 +2865,7 @@ function FailoverResyncSheet({ id }) {
   };
   return html`<${Sheet} title=${T("Re-sync · {v1}", { v1: b.name })}
     foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || !ifs.length, action: T("Re-sync") })}>
-    <div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} runs {v2} with a key or subnet that isn't {v3}'s. Re-sync deletes those interfaces on {v1} and builds them again from {v3}; any client connected to them there drops until they are back.", { v1: b.name, v2: ifs.join(", ") || "—", v3: aname })}</span></div>
+    <div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} runs {v2} with a key or subnet that isn't {v3}'s. Re-sync deletes those copies on {v1} and builds them again from {v3}; any client connected to them there drops until they are back.", { v1: b.name, v2: ifs.join(", ") || "—", v3: aname })}</span></div>
   <//>`;
 }
 
@@ -2898,8 +2923,10 @@ function FailoverDetachSheet({ id }) {
     foot=${footRow({ onCancel: closeModal, onAction: go, danger: true, disabled: busy || !d || (need && txt !== b.name), action: T("Detach") })}>
     <div class="segrow" role="radiogroup" aria-label=${T("Detach")}>${seg("keep", T("Keep the peers on {v1}", { v1: aname }))}${seg("move", T("Move the peers to {v1}", { v1: b.name }))}</div>
     <div class="notice"><${Ic} i="info"/><span>${mode === "keep"
-      ? T("The copies on {v1} are removed and the peers stay on {v2}. {v1} becomes an empty, ordinary node.", { v1: b.name, v2: aname })
-      : T("For every interface {v1} runs with {v2}'s key, the peers move to {v1} and {v2}'s copy is removed. Clients that dial a domain keep their configs: point it at {v1}. Use this when {v2} is gone for good.", { v1: b.name, v2: aname })}</span></div>
+      ? T("The copies on {v1} are removed and the peers stay on {v2}. {v1} becomes an ordinary node.", { v1: b.name, v2: aname })
+      : T("For every interface and WDTT or csqtt server {v1} runs as {v2}'s, the peers move to {v1} and {v2}'s copy is removed. Clients that dial a domain keep their configs: point it at {v1}. Use this when {v2} is gone for good.", { v1: b.name, v2: aname })}
+      ${/* a turn proxy is never removed by the mirror (§12.7 R2): either way the ones on B stay, and are B's to remove */""}
+      ${((Store.stats[id] || {}).turn_proxies || []).length ? " " + T("Turn proxies on {v1} stay either way — remove the ones nothing needs on its page.", { v1: b.name }) : ""}</span></div>
     ${pv === undefined ? html`<div class="hint">${T("Checking what this would do…")}</div>`
       : pv.err ? html`<div class="notice danger"><${Ic} i="err"/><span>${pv.err}</span></div>`
       : mode === "move" ? html`
@@ -3187,7 +3214,7 @@ export function ForceRemoveNodeSheet({ node }) {
   return html`<${Sheet} title=${T("Force remove · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, danger: true, disabled: !ok || busy, onAction: del, action: T("Force remove") })}>
     <div class="notice warn"><${Ic} i="warn"/><span>${forceRemoveWarn(node.name, onlyHere)}</span></div>
-    ${foB ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface it holds a copy of, and the rest go with this node. To remove this node and its peers on purpose, remove {v1} first.", { v1: Store.nodeName(foB) })}</span></div>` : null}
+    ${foB ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface and WDTT or csqtt server it holds a copy of, and the rest go with this node. To remove this node and its peers on purpose, remove {v1} first.", { v1: Store.nodeName(foB) })}</span></div>` : null}
     <div class="field"><label>${typeToConfirm(phrase)}</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
 }
@@ -3225,7 +3252,7 @@ export function NodeRemoveSheet({ node }) {
       : html`<div class="notice"><${Ic} i="info"/><span>${declarative
           ? T("This node is managed declaratively. Remove it from the configuration that declares it and rebuild — it won't sign off on its own, so Force-remove it here afterwards. It keeps serving its {v1} until then.", { v1: plural(here.length, "peer") })
           : T("Clean removal: flag the node, then run the uninstall command on the server. The node keeps serving its {v1} until it confirms, then drops itself from the panel.", { v1: plural(here.length, "peer") })} ${note}</span></div>`}
-    ${isA ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface it holds a copy of, and the rest go with this node. To remove this node and its peers on purpose, remove {v1} first.", { v1: Store.nodeName(fo.failover) })}</span></div>` : null}
+    ${isA ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("{v1} keeps a copy of this node: when it goes, {v1} takes over the peers of every interface and WDTT or csqtt server it holds a copy of, and the rest go with this node. To remove this node and its peers on purpose, remove {v1} first.", { v1: Store.nodeName(fo.failover) })}</span></div>` : null}
     ${uninstall ? html`<div class="field" style="margin-top:14px"><label>${declarative ? T("Set in the node's configuration, then rebuild") : T("Run on the node to uninstall + sign off")}</label>
       <div class="cmdrow"><div class=${"tokenbox" + (declarative ? " block" : "")}>${uninstall}</div><button class="copyaction" onClick=${() => copy(uninstall, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
       <div class="hint">${declarative ? T("Removing the module stops swg-noded / swg-agent but does not tell the panel — Force remove clears it here.") : T("Removes swg-noded / swg-agent and tells the panel it's gone. Force remove is for when the server is unreachable.")}</div></div>` : null}
