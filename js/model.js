@@ -636,28 +636,30 @@ export const tgtXfer = t => (t && (t.observed || t.kwXfer)) || null;
 // and unknown otherwise (nothing remembers when a keyless peer was last seen).
 export const tgtSeenAge = t => (t && t.observed) ? t.observed.handshake_age : ((t && t.kwXfer && t.online) ? 0 : null);
 
-// A failover node is a read-only copy of its primary (docs/FAILOVER-PLAN.md §4.7). Every control that edits a node or its
-// interfaces reads this ONE sentence: "" for any other node, else why the control is off — its disabled state and its title.
-// The primary a failover node copies, or "" (operator, 2026-11-16: its interfaces must not read as empty). Its peers are on
-// the box too, but every target names the primary — the panel lists them there.
+// The primary a failover node copies (docs/FAILOVER-PLAN.md §4.7), or "" for any other node.
 export const foSrcOf = id => Store.isMirror(id) ? (((Store.nodes || []).find(x => x.id === id) || {}).failover_of || "") : "";
-// Is `iface` on a failover node a copy of its primary's (the primary reports one by that name: an interface, a WDTT or csqtt
-// server)? The primary's id, else "" — a mesh link of B's, or one B runs on its own, is not.
-export const foCopyOf = (id, iface) => {
-  const a = foSrcOf(id);
-  if (!a || !iface) return "";
-  const st = Store.stats[a] || {};
-  return ((Store.describe[a] || {})[iface] || (st.wdtt || []).some(w => w && w.iface === iface) || (st.csqtt || []).some(c => c && c.iface === iface)) ? a : "";
-};
-// How many peers a failover node's copy carries: the primary's, on the same interface (every one of them is on the box too).
-export const foPeersOf = (id, iface) => {
-  const a = foSrcOf(id);
-  return a ? (Store.recon.peers || []).filter(p => !p.disabled && !p.expired && (p.targets || []).some(t => t.node === a && (!iface || t.iface === iface))).length : 0;
-};
+// A failover node is a read-only copy of its primary. Every control that edits a node or its interfaces reads this ONE
+// sentence: "" for any other node, else why the control is off — its disabled state and its title.
 export const foRoWhy = id => {
-  if (!Store.isMirror(id)) return "";
-  const n = (Store.nodes || []).find(x => x.id === id) || {};
-  return T("Read-only: this node is a copy of {v1} — change {v1} instead", { v1: Store.nodeName(n.failover_of) });
+  const a = foSrcOf(id);
+  return a ? T("Read-only: this node is a copy of {v1} — change {v1} instead", { v1: Store.nodeName(a) }) : "";
+};
+// How many peers a failover node's copy of `iface` HOLDS — from the failover node's own report, the one fact behind "they
+// are on this server" (operator, 2026-11-16: its interfaces must not read as empty; verify F5/F8: never the primary's count,
+// never the primary's live report — the copy may hold none yet, and the primary may be the node that is down). Peers on a
+// wg/awg interface, passwords on a WDTT or csqtt server. null: not a copy — any other node, a mesh link, a name it does not
+// report. iface "" → the node's total. Every target names the primary, so the panel lists these peers there.
+export const foHeldOf = (id, iface) => {
+  if (!Store.isMirror(id)) return null;
+  const st = Store.stats[id] || {};
+  const one = n => {
+    if (Store.ifaceIsSystem(id, n)) return null;
+    const i = (st.interfaces || {})[n];
+    if (i) return (i.peers || []).length;
+    const sc = (st.wdtt || []).find(w => w && w.iface === n) || (st.csqtt || []).find(c => c && c.iface === n);
+    return sc ? Object.keys(sc.passwords || {}).length : null;
+  };
+  return iface ? one(iface) : Store.userIfacesOf(id).reduce((s, n) => s + (one(n) || 0), 0);
 };
 
 // An interface setting's name as the console says it — a rebuild's preview and a failover node's drift row (one map).

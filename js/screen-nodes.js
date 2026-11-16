@@ -14,7 +14,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foCopyOf, foPeersOf } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foHeldOf } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -1349,35 +1349,36 @@ function NodeMoreSheet({ id }) {
 const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg-busy", "clock", T("fo|Syncing")],
   needs_vault: ["tg-pending", "key", T("fo|Waiting for the vault")], offline: ["tg-off", "info", T("fo|Not reporting")] })[st]
   || ["tg-warn", "warn", T("fo|Needs attention")];        // "problem", and any state this build does not know
+// A failover node's copy in place of "None" (operator, 2026-11-16: an empty-looking copy read as a fault): the peers it HOLDS,
+// from its own report, "listed on <primary>" — every target names the primary. None held (or not a copy): null, and "None"
+// stays, which is then the truth (verify F5, F7).
+function foPeersCell(node, iface) {
+  const n = foHeldOf(node, iface);
+  if (!n) return null;
+  const an = Store.nodeName(foSrcOf(node));
+  return html`<span class="fo-peers" title=${T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an })}><b>${n}</b> <span class="faint">${T("listed on {v1}", { v1: an })}</span></span>`;
+}
+// the tone from foState's own tag class — one table of the pair's states (review F2); never a bare .bad (an invalid field's outline)
+const FO_TONE = { "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait" };
 // The pair mark beside a node's name on the Nodes list and the overview (operator, 2026-11-16): one glyph, two slabs — the
 // solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
 // Quiet while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention or a member
 // is not reporting. The bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
-// A failover node's copy in place of "None": the primary's peer count, "listed on <primary>" — they are on this box too, and
-// connect here once the primary's domain points here (operator, 2026-11-16: an empty-looking copy read as a fault)
-function foPeersCell(node, iface) {
-  const a = iface ? foCopyOf(node, iface) : foSrcOf(node);   // a card: only a copy of the primary's; the node row: the node
-  if (!a) return null;
-  const an = Store.nodeName(a), n = foPeersOf(node, iface);
-  return html`<span class="fo-peers" title=${T("Copies of {v1}'s peers: they are already on this server, and the panel lists them on {v1}. They connect here once {v1}'s domain points here.", { v1: an })}>${n ? html`<b>${n}</b> ` : null}<span class="faint">${T("listed on {v1}", { v1: an })}</span></span>`;
-}
-// the tone from foState's own tag class — one table of the pair's states (review F2); never a bare .bad (an invalid field's outline)
-const foTone = st => ({ "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait" })[foState(st)[0]] || "fo-bad";
 export function FoMark({ n }) {
   const fo = n && n.failover;
   if (!fo || !fo.primary || !fo.failover) return null;
   const isB = n.id === fo.failover, an = Store.nodeName(fo.primary), bn = Store.nodeName(fo.failover);
-  const [, , label] = foState(fo.state);
+  const [cls, , label] = foState(fo.state), tone = FO_TONE[cls] || "fo-bad";   // one lookup a render (F13)
   const head = isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn });   // the label and the heading, one string (F3)
   const slab = (x, me) => me ? html`<rect x=${x} y="5" width="8" height="14" rx="1.6" fill="currentColor" fill-opacity=".3"/>`
     : html`<rect x=${x} y="5" width="8" height="14" rx="1.6" stroke-dasharray="2.2 2"/>`;
   const glyph = html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">${slab(3, !isB)}${slab(13, isB)}</svg>`;
-  return html`<${Popover} cls=${"fo-mark " + foTone(fo.state)} popCls="netroute-bub fo-bub" trigger=${html`<span class="fo-mark-g" role="img"
+  return html`<${Popover} cls=${"fo-mark " + tone} popCls="netroute-bub fo-bub" trigger=${html`<span class="fo-mark-g" role="img"
       aria-label=${head}>${glyph}</span>`}>
     <div class="fo-bub-h">${head}</div>
     <div>${isB ? T("A read-only copy of {v1}. If {v1} goes down, point its domain here.", { v1: an })
       : T("{v1} keeps a live copy of this node. If this node goes down, point its domain at {v1}.", { v1: bn })}</div>
-    <div class=${"fo-bub-st " + foTone(fo.state)}>${T("Copy's state: {v1}", { v1: label })}</div>
+    <div class=${"fo-bub-st " + tone}>${T("Copy's state: {v1}", { v1: label })}</div>
   <//>`;
 }
 function FailoverTag({ fo }) {
@@ -1976,7 +1977,7 @@ export function NodeCard({ n, reorder }) {
     <span class="nc-peers nm-item">${here.length
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
-      : html`<span class="nm-l">${T("Peers")}</span>${foSrcOf(n.id) ? html`<span class="nm-v nm-peers">${foPeersCell(n.id, "")}</span>` : html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
+      : html`<span class="nm-l">${T("Peers")}</span>${foHeldOf(n.id, "") ? html`<span class="nm-v nm-peers">${foPeersCell(n.id, "")}</span>` : html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
       : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"
