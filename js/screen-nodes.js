@@ -1349,6 +1349,27 @@ function NodeMoreSheet({ id }) {
 const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg-busy", "clock", T("fo|Syncing")],
   needs_vault: ["tg-pending", "key", T("fo|Waiting for the vault")], offline: ["tg-off", "info", T("fo|Not reporting")] })[st]
   || ["tg-warn", "warn", T("fo|Needs attention")];        // "problem", and any state this build does not know
+// The pair mark beside a node's name on the Nodes list and the overview (operator, 2026-11-16): one glyph, two slabs — the
+// solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
+// Quiet while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention or a member
+// is not reporting. The bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
+const foTone = st => st === "ready" ? "fo-ok" : (st === "syncing" || st === "needs_vault") ? "fo-wait" : "fo-bad";   // never bare .bad (an invalid field's outline)
+export function FoMark({ n }) {
+  const fo = n && n.failover;
+  if (!fo || !fo.primary || !fo.failover) return null;
+  const isB = n.id === fo.failover, an = Store.nodeName(fo.primary), bn = Store.nodeName(fo.failover);
+  const [, , label] = foState(fo.state);
+  const slab = (x, me) => me ? html`<rect x=${x} y="5" width="8" height="14" rx="1.6" fill="currentColor" fill-opacity=".3"/>`
+    : html`<rect x=${x} y="5" width="8" height="14" rx="1.6" stroke-dasharray="2.2 2"/>`;
+  const glyph = html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">${slab(3, !isB)}${slab(13, isB)}</svg>`;
+  return html`<${Popover} cls=${"fo-mark " + foTone(fo.state)} popCls="netroute-bub fo-bub" trigger=${html`<span class="fo-mark-g" role="img"
+      aria-label=${isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn })}>${glyph}</span>`}>
+    <div class="fo-bub-h">${isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn })}</div>
+    <div>${isB ? T("A read-only copy of {v1}. If {v1} goes down, point its domain here.", { v1: an })
+      : T("{v1} keeps a live copy of this node. If this node goes down, point its domain at {v1}.", { v1: bn })}</div>
+    <div class=${"fo-bub-st " + foTone(fo.state)}>${T("Copy: {v1}", { v1: label })}</div>
+  <//>`;
+}
 function FailoverTag({ fo }) {
   const [cls, icon, label] = foState(fo.state);
   return html`<${StatusTag} cls=${cls} icon=${icon} label=${T("Failover · {v1}", { v1: label })}
@@ -1926,7 +1947,7 @@ export function NodeCard({ n, reorder }) {
     <div class="nc-gutter">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}</div>
     <div class="nc-name">
       ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title=${T("Update available — open the node to update")}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
-      <span class="nname">${n.name}</span>
+      <span class="nname">${n.name}</span><${FoMark} n=${n}/>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${kindLabel(n.kind, n.runtime)}</span>` : null}
       ${platformPill(n)}
       ${n.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>`

@@ -1302,6 +1302,22 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
+/* the failover pair mark beside a node's name (js/screen-nodes.js FoMark): quiet while ready, a colour only when the pair
+   needs a look. The glyph is the trigger; its bubble says who the twin is. */
+.fo-mark{display:inline-flex;align-items:center;flex:none;margin-left:6px;cursor:help;border-radius:4px;color:var(--faint)}
+.fo-mark.fo-wait{color:var(--amber)}
+.fo-mark.fo-bad{color:var(--dangling)}
+.fo-mark:hover,.fo-mark.on{color:var(--ink-2)}
+.fo-mark.fo-wait:hover,.fo-mark.fo-wait.on{color:var(--amber)}
+.fo-mark.fo-bad:hover,.fo-mark.fo-bad.on{color:var(--dangling)}
+.fo-mark-g{display:inline-flex;padding:2px}
+.fo-mark-g svg{display:block}
+.deppop.fo-bub{max-width:min(300px,calc(100vw - 16px))}
+.fo-bub .fo-bub-h{font-weight:600;color:var(--ink);margin-bottom:3px}
+.fo-bub .fo-bub-st{margin-top:7px;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2)}
+.fo-bub .fo-bub-st::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--online);flex:none}
+.fo-bub .fo-bub-st.fo-wait::before{background:var(--amber)}
+.fo-bub .fo-bub-st.fo-bad::before{background:var(--dangling)}
 .upd-dot{display:inline-flex;align-items:center;color:var(--amber);flex:none}
 .nm-ver{font-family:var(--mono);font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:8px;margin-left:12px}
 .nm-ver.out{color:var(--amber)}
@@ -3165,6 +3181,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .fnode-main{padding:13px 15px;display:flex;flex-direction:column;gap:11px;min-width:0}
 .fnode-top .fnode-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}   /* a long node name gives way, never the badges */
 .fnode-top{display:flex;align-items:center;gap:8px}
+.fnode-top .fo-mark{margin-left:-3px}   /* the row's gap already spaces it */
 .fnode-name{font-family:var(--mono);font-weight:600;font-size:14px;color:var(--ink)}
 .fnode-top .tport{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);background:var(--surface-2);padding:2px 6px;border-radius:5px}
 .fnode-top .rowarrow{color:var(--faint)}

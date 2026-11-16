@@ -13131,7 +13131,8 @@ FO_IF_FOLLOW = ("listen_port", "mtu", "dns", "keepalive", "awg_params", "awg_exa
 FO_IF_FWD = ("egress_ip", "wan_iface")       # followed only in forward mode: there they name the FAR node (§4.2)
 FO_IF_CLONE = ("public_key", "key_blob", "_lastcfg")   # once; never followed — an Adopt on A must not reach B (§4.2)
 FO_NODE_FOLLOW = ("routing_mode", "dns_upstream", "default_routing", "default_routing_exit_ips", "default_exit",
-                  "lan_share", "ip_learning", "p2p", "p2p_portok", "p2p_portok_none", "catalog_cats")
+                  "lan_share", "ip_learning", "p2p", "p2p_portok", "p2p_portok_none", "catalog_cats",
+                  "iface_order", "turn_order")   # B's cards in A's order (operator, 2026-11-16); B's own after them
 _FO_RESYNC_KEYS = ("listen_port", "mtu", "awg_params")   # a change clears that key's _synced/_drift, as /api/iface/update
 
 

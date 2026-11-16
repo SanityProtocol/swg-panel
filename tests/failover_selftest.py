@@ -116,6 +116,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      upd-door     the updates sheet's reinstall of B's proxy is refused
      upd-wide     B's carve-out widened to edit or stop a copy
      upd-wide2    …or to start, restart or re-key one
+     fo-order     B keeps its own interface and proxy order, not A's
      upd-manage   the reinstall is let through on a B that cannot manage proxies
      sc-has       a WDTT device online nowhere is read on the primary, not the live member running the server
      srv-title    B's WDTT / csqtt copy does not follow A's title
@@ -203,6 +204,7 @@ PLANTS = {   # (file, anchor, replacement)
         return "current" if bk == blessed else "stale"'''),
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
+    "fo-order": ("panel", ''',\n                  "iface_order", "turn_order")''', ''')'''),
     "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):', '        if r["cc"] != "current":'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
@@ -453,6 +455,15 @@ def sec2():
           and cr.get("listen_port") == 443, cr)
     check("[2] _synced is not cloned", "_synced" not in bo or not bo["_synced"], bo.get("_synced"))
     check("[2] steady state writes nothing", P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW) is False)
+    n["na"]["iface_order"], n["na"]["turn_order"] = ["wg1", "awg0"], ["wdtt:wdtt1", "vk-turn-proxy-cacggghp-56100"]
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    check("[2] B's cards follow A's order: interfaces, and proxies with servers (operator, 2026-11-16)",
+          b.get("iface_order") == ["wg1", "awg0"] and b.get("turn_order") == ["wdtt:wdtt1", "vk-turn-proxy-cacggghp-56100"],
+          (b.get("iface_order"), b.get("turn_order")))
+    n["na"].pop("iface_order"); n["na"].pop("turn_order")
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    check("[2] …and back to the reported order when A drops its own", "iface_order" not in b and "turn_order" not in b,
+          (b.get("iface_order"), b.get("turn_order")))
     # B now reports the interface
     snaps["nb"] = {"interfaces": {"awg0": snap_iface()}}
     b.pop("create", None)
