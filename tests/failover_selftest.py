@@ -106,6 +106,10 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      srv-reply-rid   the sync handler builds B's WDTT reply without its primary's passwords
      upd-b        the updates sheet lists B's WDTT / csqtt, whose Update is refused there
      pf-turn      the preview's "turn proxies not copied" reads only a pending request
+     r2-del       a server copy whose delete is staged reads as unmanaged
+     r2-domain    a take-over leaves a server listening on every address without A's domain
+     r2-v6        a take-over turns an IPv6 listen into an IPv4 wildcard
+     r2-nolisten  a take-over of a server with no listen raises half-way
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -244,15 +248,19 @@ PLANTS = {   # (file, anchor, replacement)
     # R1 card round 1 (review F1–F35)
     'srv-ledger': ("panel", '                if fo and t["node"] in fo:', '                if fo and t["node"] in fo and not _is_self_contained_target(t):'),
     'srv-hold-carry': ("panel", '        if add:\n            d.update(add)', '        if False:\n            d.update(add)'),
-    'srv-take-host': ("panel", '            bov["listen"] = "0.0.0.0:%d" % p', '            pass'),
+    'srv-take-host': ("panel", '                bov["listen"] = ("[::]:%d" if ":" in h else "0.0.0.0:%d") % p', '                pass'),
     'srv-rows-type': ("panel", 'if isinstance(x, dict) and isinstance(x.get("iface"), str) and x["iface"]}', 'if isinstance(x, dict) and x.get("iface")}'),
     'srv-firewall': ("panel", '            if ctx["ranges"] and not any(x <= lp <= y for x, y in ctx["ranges"]):\n                return "problem", "firewall", {"port": lp}\n        return "ready", "", {}\n\n    def absent',
                      '            if False:\n                return "problem", "firewall", {"port": lp}\n        return "ready", "", {}\n\n    def absent'),
     'srv-import': ("panel", 'for _wifn, _wsn in (_wsnap.items() if _rid == nid else ()):', 'for _wifn, _wsn in (_wsnap.items()):'),
     'srv-dial-wild': ("panel", '        return (_fp_bind_host(src.get("listen") or "") or', '        return (_hostport_split(src.get("listen") or "")[0] or'),
-    'srv-unmanaged': ("panel", '            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b)}', '            pass'),
+    'srv-unmanaged': ("panel", '            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b) and n not in (b.get(k.fam + "_delete") or {})}', '            pass'),
     'srv-own': ("panel", 'not in _fo_srcs(nodes[fo[b]], None)      # B', 'not in _fo_user_ifaces(nodes[fo[b]])      # B'),
     'srv-absent': ("panel", 'return _FoKind.absent(self, ctx) if self.identity else ("syncing", "creating", {})', 'return _FoKind.absent(self, ctx)'),
+    'r2-del': ("panel", ' and n not in (b.get(k.fam + "_delete") or {})}', '}'),
+    'r2-domain': ("panel", '            bov["listen"] = "%s:%d" % (host, p)', '            pass'),
+    'r2-v6': ("panel", '("[::]:%d" if ":" in h else "0.0.0.0:%d") % p', '"0.0.0.0:%d" % p'),
+    'r2-nolisten': ("panel", '        if not p:\n            return\n        if _fp_bind_host(bov["listen"]):', '        if _fp_bind_host(bov["listen"]):'),
     'pf-turn': ("panel", '    if snap.get("turn_proxies") or a.get("turn"):', '    if a.get("turn"):'),
     'upd-b': ("panel", '''        if kind != "turn" and nid in _fob:''', '''        if False:'''),
     'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)'),
@@ -1386,6 +1394,19 @@ def sec14():
     check("[14] …A's records go as their delete doors drop them, B's stay as B's own",
           "wdtt1" not in (nt["na"].get("wdtt") or {}) and "wdtt1" in (nt["na"].get("wdtt_delete") or {})
           and "wdtt1" in nt["nb"]["wdtt"] and "failover_of" not in nt["nb"], (nt["na"].get("wdtt"), nt["nb"].get("wdtt")))
+    for lst, want in (("0.0.0.0:56000", "a.example.com:56000"), ("[2001:db8::1]:56000", "[::]:56000"), (None, None)):
+        nx = t_fleet()
+        if lst is None:
+            del nx["na"]["wdtt"]["wdtt1"]["listen"]
+        else:
+            nx["na"]["wdtt"]["wdtt1"]["listen"] = lst
+        P.failover_mirror(DEPS, nx, "nb", snaps, seen, now=NOW)
+        try:
+            P.failover_takeover(nx, json.loads(json.dumps(r)), "na", "nb", P._fo_holds(nx, sn, "na", "nb", True), sn)
+            got = nx["nb"]["wdtt"]["wdtt1"].get("listen")
+        except Exception as e:
+            got = "raised %r" % e
+        check("[14] take-over of a server listening on %s: %s (F37, F38, F39)" % (lst, want or "nothing to move, no error"), got == want, got)
     check("[14] …a server A served on its own IP listens on every address of B's now (its links dial B, F3); a domain stays",
           nt["nb"]["wdtt"]["wdtt1"].get("listen") == "0.0.0.0:56000" and nt["nb"]["csqtt"]["csqtt1"].get("listen") == "vpn.example.com:56002",
           (nt["nb"]["wdtt"]["wdtt1"].get("listen"), nt["nb"]["csqtt"]["csqtt1"].get("listen")))
@@ -1439,6 +1460,12 @@ def sec14():
           rows.get("wdtt1", {}).get("why") == "firewall" and rows.get("csqtt1", {}).get("why") == "firewall", fv["rows"])
     check("[14] a server B runs that the panel holds no record of: listed as unmanaged (F12)",
           any(p.get("kind") == "unmanaged" and "wdtt5" in p.get("ifaces", []) for p in fv["problems"]), fv["problems"])
+    nfd = t_fleet(); P.failover_mirror(DEPS, nfd, "nb", snaps, seen, now=NOW)
+    P._FO_KINDS[1].drop(nfd["nb"], "wdtt1", NOW)          # a Re-sync's drop: B reports it until its next sync
+    fv = P.failover_view(nfd, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()]}),
+                         seen, frozenset(), now=NOW, ivk=IVK)
+    check("[14] …never one whose delete is staged — a Re-sync or a drop in flight (F36)",
+          not any("wdtt1" in p.get("ifaces", []) for p in fv["problems"]), fv["problems"])
     fv = P.failover_view(t_fleet(), roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}}),
                          seen, frozenset(), now=NOW, ivk=IVK)
     rows = {r["iface"]: r for r in fv["rows"]}

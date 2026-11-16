@@ -13759,9 +13759,16 @@ class _FoServer(_FoKind):
     def take(self, a, b, n, host, now_):
         self.drop(a, n, now_)                             # A's goes as its delete door drops it; B's record is B's now
         bov = (b.get(self.fam) or {}).get(n)
-        h, p = _hostport_split((bov or {}).get("listen") or "")
-        if isinstance(bov, dict) and _fp_bind_host(bov["listen"]) and _ip_literal(h) and p:
-            bov["listen"] = "0.0.0.0:%d" % p              # A's own address: B's links would dial A (F3); B's endpoint now
+        if not isinstance(bov, dict):
+            return
+        h, p = _hostport_split(bov.get("listen") or "")   # a record may carry none (F39): nothing to move then
+        if not p:
+            return
+        if _fp_bind_host(bov["listen"]):
+            if _ip_literal(h):                            # A's own address: B's links would dial A (F3) — every address of
+                bov["listen"] = ("[::]:%d" if ":" in h else "0.0.0.0:%d") % p   # B's, in the family it had (F38)
+        elif host and not _ip_literal(host):              # every address: its links read A's endpoint domain, which B's
+            bov["listen"] = "%s:%d" % (host, p)           # node lacks — carried as an interface's take does (F37)
 
 
 _FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False))
@@ -14073,7 +14080,7 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     extra, um = [], set(_unmanaged_ifaces(b, bsnap))
     for k in _FO_KINDS:                                  # B's own WDTT / csqtt servers, unrecorded (T-18 is off on B): §12.3
         if isinstance(k, _FoServer):                     # says they are shown, never touched (card review F12)
-            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b)}
+            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b) and n not in (b.get(k.fam + "_delete") or {})}
     if bsnap.get("cmd_errors"):
         extra.append({"kind": "cmd_errors"})
     if um:
@@ -26264,9 +26271,9 @@ class TrafficLedger:
         #                                                        publishes what roster_load makes of it (roster_view's docstring).
         #                                                        A view is normalised: users and peers are dicts.
         claims, deploys, owners, titles = {}, set(), {}, {}
-        # A FAILOVER NODE'S COUNTERS ARE ITS PRIMARY'S DEVICES (docs/FAILOVER-PLAN.md §4.6, refresh R2): each wg/awg target on a
-        # primary also claims the same interface and key on its failover node, so traffic there lands in the device's one slot
-        # (history and its volume limit). The deployment too, or every roster save would drop that baseline (`gone` below).
+        # A FAILOVER NODE'S COUNTERS ARE ITS PRIMARY'S DEVICES (docs/FAILOVER-PLAN.md §4.6, refresh R2): each target on a
+        # primary (wg/awg by key, WDTT/csqtt by password, §12) also claims the same interface and credential on its failover
+        # node, so traffic there lands in the device's one slot (history and its volume limit). The deployment too, or every roster save would drop that baseline (`gone` below).
         fo = dict(pairs)
         for pid, p in r["peers"].items():
             if not isinstance(p, dict):
