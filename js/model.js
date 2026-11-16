@@ -647,17 +647,25 @@ export const foRoWhy = id => {
 // How many peers a failover node's copy of `iface` HOLDS — from the failover node's own report, the one fact behind "they
 // are on this server" (operator, 2026-11-16: its interfaces must not read as empty; verify F5/F8: never the primary's count,
 // never the primary's live report — the copy may hold none yet, and the primary may be the node that is down). Peers on a
-// wg/awg interface, passwords on a WDTT or csqtt server. null: not a copy — any other node, a mesh link, a name it does not
-// report. iface "" → the node's total. Every target names the primary, so the panel lists these peers there.
+// wg/awg interface (less the ones the panel calls unmanaged), passwords on a WDTT or csqtt server. A copy is what the failover
+// node's own RECORD holds (verify F16/F17): a WDTT or csqtt server it has a record of, an interface that is neither a mesh
+// link nor one it runs on its own (`unmanaged_ifaces`) — a read-only node records nothing but its primary's copies. null:
+// not a copy. iface "" → the node's total. Every target names the primary, so the panel lists these peers there.
 export const foHeldOf = (id, iface) => {
   if (!Store.isMirror(id)) return null;
-  const st = Store.stats[id] || {};
+  const st = Store.stats[id] || {}, nr = (Store.nodes || []).find(x => x.id === id) || {};
+  const own = new Set(nr.unmanaged_ifaces || []);
   const one = n => {
-    if (Store.ifaceIsSystem(id, n)) return null;
+    const fam = (nr.wdtt_cfg || {})[n] ? "wdtt" : (nr.csqtt_cfg || {})[n] ? "csqtt" : "";
+    if (fam) {                                    // a recorded server: its passwords, none while it is not reported yet
+      const sc = (st[fam] || []).find(x => x && x.iface === n);
+      return sc ? Object.keys(sc.passwords || {}).length : 0;
+    }
+    if (Store.ifaceIsSystem(id, n) || own.has(n)) return null;
     const i = (st.interfaces || {})[n];
-    if (i) return (i.peers || []).length;
-    const sc = (st.wdtt || []).find(w => w && w.iface === n) || (st.csqtt || []).find(c => c && c.iface === n);
-    return sc ? Object.keys(sc.passwords || {}).length : null;
+    if (!i) return null;
+    const orph = (Store.recon.orphans || []).filter(o => o.node === id && o.iface === n).length;   // unmanaged peers (F18)
+    return Math.max(0, (i.peers || []).length - orph);
   };
   return iface ? one(iface) : Store.userIfacesOf(id).reduce((s, n) => s + (one(n) || 0), 0);
 };

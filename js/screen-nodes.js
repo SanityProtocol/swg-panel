@@ -1977,7 +1977,7 @@ export function NodeCard({ n, reorder }) {
     <span class="nc-peers nm-item">${here.length
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
-      : html`<span class="nm-l">${T("Peers")}</span>${foHeldOf(n.id, "") ? html`<span class="nm-v nm-peers">${foPeersCell(n.id, "")}</span>` : html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
+      : html`<span class="nm-l">${T("Peers")}</span>${(c => c ? html`<span class="nm-v nm-peers">${c}</span>` : html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`)(foPeersCell(n.id, ""))}`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
       : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"
