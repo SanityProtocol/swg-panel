@@ -6450,6 +6450,8 @@ export const STR = {
   "This interface is a copy of {v1}'s, listed there: {v2}. Each one is already on this server and connects here once {v1}'s domain points here.": "Этот интерфейс — копия интерфейса {v1}, на {v1} показано: {v2}. Каждый из них уже на этом сервере и подключится сюда, как только домен {v1} направят сюда.",
   "This interface is a copy of {v1}'s. Its peers are listed on {v1}; this server holds none of them yet.": "Этот интерфейс — копия интерфейса {v1}. Его пиры показаны на {v1}; на этом сервере их пока нет.",
   "Open it on {v1}": "Открыть на {v1}",
+  "its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give it a hostname on {v3}.": "его клиенты подключаются к {v1} — это IP-адрес, и смена домена не переведёт их на {v2}. Задайте ему имя хоста на {v3}.",
+  "its clients have no hostname to dial — a domain change can't move them to {v1}. Give it a hostname on {v2}.": "у его клиентов нет имени хоста для подключения — смена домена не переведёт их на {v1}. Задайте ему имя хоста на {v2}.",
   "{v1} keeps waiting, and serves nobody on those copies until the vault is unlocked here.": "{v1} продолжит ждать и не будет обслуживать никого на этих копиях, пока здесь не откроют хранилище.",
   "{v1} reports commands that failed — its page says which": "{v1} сообщает о неудавшихся командах — какие, видно на её странице",
   "{v1} runs interfaces or servers the panel doesn't manage — remove them on that server": "на {v1} есть интерфейсы или серверы, которыми панель не управляет, — удалите их на том сервере",

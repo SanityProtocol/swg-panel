@@ -14211,12 +14211,12 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     """The status both members' cards show (plan §4.6): {primary, failover, serving, state, rows, problems}. `state` rolls
     up to offline | problem | needs_vault | syncing | ready; a row appears only when a copy is not ready, with its `kind`,
     its `why` a code the SPA words (no_copy, name_taken, primary_no_key, awg, awaiting_key, creating, down, key, subnet,
-    drift + keys, firewall + port, peers + n, port, no_turn); `problems` adds cmd_errors, unmanaged + ifaces and
+    drift + keys, firewall + port, peers + n, port, no_turn, ip_dial + host); `problems` adds cmd_errors, unmanaged + ifaces and
     unmanaged_turn + services (B's own proxies, B's to remove); a row Re-sync repairs carries `resync` — the door reads that, one predicate. A
     `key` row carries it only where the vault can rebuild A's key (`ivk`); without it the SPA says the vault is what is
     missing (F140). Derived, never stored (called under the
     state memo)."""
-    b = nodes.get(bid) or {}
+    b, a_rec = nodes.get(bid) or {}, nodes.get(aid) or {}
     snaps = {aid: (snaps or {}).get(aid), bid: (snaps or {}).get(bid)}   # each member's report read ONCE: a sync may
     bsnap = snaps[bid] or {}                                             # replace it while this view is built (F4)
     held = set(bsnap.get("ifaces_awaiting_key") or ())
@@ -14240,6 +14240,10 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
             more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}
         else:
             st, why, more = r["kind"].status(r, ctx)
+        if st == "ready":                                        # running as A's, but a DNS change can't move its clients:
+            _h = r["kind"].dial_host(a_rec, r["src"], snaps[aid] or {}, n)   # they dial an IP (the preview's ip_endpoint
+            if not _h or _ip_literal(_h):                        # rule, one predicate) — not "ready" (operator, 2026-11-16)
+                st, why, more = "problem", "ip_dial", {"host": _h or ""}
         if st != "ready":
             rows.append({"iface": n, "kind": r["kind"].kind, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst

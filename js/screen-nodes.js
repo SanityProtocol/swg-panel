@@ -856,7 +856,7 @@ export function NodeDetail({ node: rawName }) {
           const href = "#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(w.iface);
           const it = ifReorder.item(w.iface);
           const badge = html`<span class="iftype wdtt">WDTT</span><span class="ifname">${w.iface}</span>`;
-          return html`<a key=${"wdtt-if:" + w.iface} class=${"ifcard" + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
+          return html`<a key=${"wdtt-if:" + w.iface} class=${"ifcard" + (idim ? " down" : "") + (edBlocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
             <div class="ifcard-top">${ro ? null : html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(w.iface)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>`}${(edBlocked || (_wop && _wop.phase === "busy")) ? badge
               : html`<button class="ifc-edit" title=${T("Edit WDTT server · {v1}", { v1: w.iface })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditWdtt(name, w.iface); }}>${badge}<span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span><${ForkTag} fork=${fork}/>${wconverting
                 ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
@@ -926,7 +926,7 @@ export function NodeDetail({ node: rawName }) {
           const href = "#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(c.iface);
           const it = ifReorder.item(c.iface);
           const badge = html`<span class="iftype csqtt">CSQTT</span><span class="ifname">${c.iface}</span>`;
-          return html`<a key=${"csqtt-if:" + c.iface} class=${"ifcard" + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
+          return html`<a key=${"csqtt-if:" + c.iface} class=${"ifcard" + (idim ? " down" : "") + (edBlocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
             <div class="ifcard-top">${ro ? null : html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(c.iface)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>`}${(edBlocked || (_cop && _cop.phase === "busy")) ? badge
               : html`<button class="ifc-edit" title=${T("Edit csqtt server · {v1}", { v1: c.iface })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditCsqtt(name, c.iface); }}>${badge}<span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span><${ForkTag} fork=${c.fork || "csqtt"} suffix=${" " + csqttRunLine(name, c.iface)}/>${cconverting
                 ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
@@ -1408,6 +1408,8 @@ function foWhy(r, bn, an) {
     case "firewall": return T("UDP {v1} is outside {v2}'s declared firewall range — clients can't reach it there", { v1: r.port, v2: bn });
     case "peers": return T("{v1} still to copy", { v1: plural(r.n || 0, "peer") });
     case "port": return T("its port is still changing");
+    case "ip_dial": return r.host ? T("its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give it a hostname on {v3}.", { v1: r.host, v2: bn, v3: an })
+      : T("its clients have no hostname to dial — a domain change can't move them to {v1}. Give it a hostname on {v2}.", { v1: bn, v2: an });
     default: return r.why;
   }
 }

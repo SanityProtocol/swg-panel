@@ -117,6 +117,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      upd-wide     B's carve-out widened to edit or stop a copy
      upd-wide2    …or to start, restart or re-key one
      fo-order     B keeps its own interface and proxy order, not A's
+     ip-dial      a copy whose clients dial A's IP reads ready
      upd-manage   the reinstall is let through on a B that cannot manage proxies
      sc-has       a WDTT device online nowhere is read on the primary, not the live member running the server
      srv-title    B's WDTT / csqtt copy does not follow A's title
@@ -204,6 +205,8 @@ PLANTS = {   # (file, anchor, replacement)
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
     "fo-order": ("panel", ''',\n                  "iface_order", "turn_order")''', ''')'''),
+    "ip-dial": ("panel", '''            if not _h or _ip_literal(_h):                        # rule, one predicate) — not "ready" (operator, 2026-11-16)''',
+                '''            if False:'''),
     "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):', '        if r["cc"] != "current":'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
@@ -1568,6 +1571,14 @@ def sec14():
           rows.get("wdtt1", {}).get("why") == "firewall" and rows.get("csqtt1", {}).get("why") == "firewall", fv["rows"])
     check("[14] a server B runs that the panel holds no record of: listed as unmanaged (F12)",
           any(p.get("kind") == "unmanaged" and "wdtt5" in p.get("ifaces", []) for p in fv["problems"]), fv["problems"])
+    fv = P.failover_view(nfw, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()},
+                                                                  "wdtt": [w_row()], "csqtt": [w_row("csqtt1", pub="")]}),
+                         seen, frozenset(), now=NOW, ivk=IVK)
+    rows = {r["iface"]: r for r in fv["rows"]}
+    check("[14] a copy running as A's whose clients dial A's IP: a problem, never ready — a DNS change can't move them "
+          "(ip_dial + the host, operator 2026-11-16); one on a name stays ready",
+          rows.get("wdtt1", {}).get("why") == "ip_dial" and rows["wdtt1"].get("host") == "203.0.113.5"
+          and rows["wdtt1"].get("state") == "problem" and "csqtt1" not in rows, fv["rows"])
     nfd = t_fleet(); P.failover_mirror(DEPS, nfd, "nb", snaps, seen, now=NOW)
     next(k for k in P._FO_KINDS if getattr(k, "fam", "") == "wdtt").drop(nfd["nb"], "wdtt1", NOW)   # a Re-sync's drop (F47: by kind)
     fv = P.failover_view(nfd, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()]}),

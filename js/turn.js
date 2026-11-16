@@ -306,7 +306,7 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   const roWhy = foRoWhy(node);
   const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
   const xCancel = roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`;
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} title=${roWhy || null} data-rid=${it ? it.rid : null}>
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked || roWhy ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} title=${roWhy || null} data-rid=${it ? it.rid : null}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>${T("val|turn")}</span><span class="ifname">${shownTitle("t|" + node + "|" + tp.service, tp.title) || forkLabel(turnFork(tp.service))}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title=${T("Via this turn-proxy")} cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
       : pend === "delete"
@@ -2039,7 +2039,7 @@ export function WdttCard({ node, w, reorder }) {
   const wdim = deleting || adopting || converting || awaiting || restoring || !active || _wopBusy;
   const roWhy = foRoWhy(node);   // a failover node's copy: its page shows it, its primary edits it (§12.5)
   const wCanOpen = !_wopBusy && !nblocked && !deleting && !adopting;   // don't open a sheet whose every action is disabled (on B it opens read-only)
-  return html`<div class=${"ifcard tp" + (wCanOpen ? " clickable" : "") + (wdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!wCanOpen) return; openModal(html`<${WdttManageSheet} node=${node} w=${w}/>`); }}>
+  return html`<div class=${"ifcard tp" + (wCanOpen ? " clickable" : "") + (wdim ? " down" : "") + (nblocked || roWhy ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!wCanOpen) return; openModal(html`<${WdttManageSheet} node=${node} w=${w}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype wdtt">WDTT</span>
       <span class="ifname">${shownTitle("w|" + node + "|" + w.iface, (((nrec.wdtt_cfg || {})[w.iface] || {}).title || "").trim()) || w.iface}</span><span class="grow"></span>
@@ -2618,7 +2618,7 @@ export function CsqttCard({ node, c, reorder }) {
   const cdim = deleting || converting || !active || _opBusy;
   const roWhy = foRoWhy(node);   // a failover node's copy (§12.5), as the WDTT card
   const canOpen = !_opBusy && !nblocked && !deleting;   // on B it opens read-only
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (cdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!canOpen) return; openModal(html`<${CsqttManageSheet} node=${node} c=${c}/>`); }}>
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (cdim ? " down" : "") + (nblocked || roWhy ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!canOpen) return; openModal(html`<${CsqttManageSheet} node=${node} c=${c}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype csqtt">CSQTT</span>
       <span class="ifname">${shownTitle("c|" + node + "|" + c.iface, (((nrec.csqtt_cfg || {})[c.iface] || {}).title || "").trim()) || c.iface}</span><span class="grow"></span>
