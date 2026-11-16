@@ -115,6 +115,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      pf-kind      the preview's ports carry no kind (the sheet cannot word a server or a proxy)
      upd-door     the updates sheet's reinstall of B's proxy is refused
      upd-wide     B's carve-out widened to edit or stop a copy
+     upd-wide2    …or to start, restart or re-key one
      upd-manage   the reinstall is let through on a B that cannot manage proxies
      sc-has       a WDTT device online nowhere is read on the primary, not the live member running the server
      srv-title    B's WDTT / csqtt copy does not follow A's title
@@ -229,11 +230,12 @@ PLANTS = {   # (file, anchor, replacement)
     "sc-online": ("recon", '''          ssn = pair.find(onl) || pair.find(has) || t.node;''', '''          ssn = pair.find(has) || t.node;'''),
     "pf-kind": ("panel", '''        warn["ports"] += [{"iface": n, "kind": k.kind, "port": _p} for _p in k.ports(src)]''',
                 '''        warn["ports"] += [{"iface": n, "port": _p} for _p in k.ports(src)]'''),
-    "upd-door": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))\n''',
-                 '''            or (path == "/api/turn/reinstall" and False\n'''),
-    "upd-wide": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))\n''',
-                 '''            or (path in ("/api/turn/reinstall", "/api/turn/manage", "/api/turn/stop") and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))\n'''),
-    "upd-manage": ("panel", '''\n                and _turn_can_manage((snaps or {}).get(b) or {}))):''', ''')):'''),
+    "upd-door": ("panel", '''in _FoTurn().b(None, (snaps or {}).get(b)))):''', '''in ())):'''),
+    "upd-wide": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn().b(''',
+                 '''            or (path in ("/api/turn/reinstall", "/api/turn/manage", "/api/turn/stop") and _fo_str(body.get("service")) in _FoTurn().b('''),
+    "upd-wide2": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn().b(''',
+                  '''            or (path in ("/api/turn/reinstall", "/api/turn/start", "/api/turn/restart", "/api/turn/rotate") and _fo_str(body.get("service")) in _FoTurn().b('''),
+    "upd-manage": ("panel", '''_FoTurn().b(None, (snaps or {}).get(b)))):''', '''_FoTurn._rows((snaps or {}).get(b)))):'''),
     "sc-has": ("recon", '''          ssn = pair.find(onl) || pair.find(has) || t.node;''', '''          ssn = pair.find(onl) || t.node;'''),
     "srv-title": ("panel", '''"web_port",\n                  "title")''', '''"web_port")'''),
     "pf-dns-kind": ("panel", '''warn["dns"].append({"iface": n, "kind": k.kind, "host": host})''', '''warn["dns"].append({"iface": n, "host": host})'''),

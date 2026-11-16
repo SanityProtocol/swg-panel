@@ -6452,6 +6452,8 @@ export const STR = {
   "turn proxies": "turn-прокси",
   "Turn proxies on {v1} stay either way — remove the ones nothing needs on its page.": "Turn-прокси на {v1} остаются в любом случае — ненужные удалите на её странице.",
   "listen address": "адрес прослушивания",
+  "forwards to": "ведёт на",
+  "server parameters": "параметры сервера",
   "{v1} can't run turn proxies — turn-proxy management is off there, or there is no build for its CPU": "{v1} не может запускать turn-прокси — управление turn-прокси там выключено или для его процессора нет сборки",
   "not running on {v1} — its logs there say why": "не работает на {v1} — причина в его логах там",
   "being brought in line with {v1}: {v2}": "приводится в соответствие с {v1}: {v2}",

@@ -1355,7 +1355,7 @@ function FailoverTag({ fo }) {
     title=${T("{v1} keeps a live copy of {v2}", { v1: Store.nodeName(fo.failover), v2: Store.nodeName(fo.primary) })}/>`;
 }
 // a turn proxy's followed fields as its sheet names them (§12.7 R2: listen, connect, params)
-const foTpField = k => ({ listen: T("listen address"), connect: T("Forwards to"), params: T("Server parameters") })[k] || k;
+const foTpField = k => ({ listen: T("listen address"), connect: T("forwards to"), params: T("server parameters") })[k] || k;
 function foWhy(r, bn, an) {
   const iface = !r.kind || r.kind === "iface";
   switch (r.why) {

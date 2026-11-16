@@ -688,7 +688,7 @@ export function TurnManageSheet({ node, tp }) {
   const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`;
   const extras = html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`;
   const mh = isMobile() ? mTurnHead("TURN", (title || "").trim() || forkLabel(turnFork(svc)), forkLabel(turnFork(svc)), installed, gear, extras) : null;
-  return html`<${Sheet} title=${mh ? mh.title : html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}${gear}`} width=${664} headExtra=${mh ? mh.headExtra : extras}
+  return html`<${Sheet} title=${mh ? mh.title : html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}${gear}`} width=${664} headExtra=${mh ? mh.headExtra : extras} noGuard=${!!roWhy}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${roDis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
@@ -1472,7 +1472,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
   // nodes running this fork + the installed version (shared per fork on a node) + the service/iface list to act on
   const running = {};
   for (const [nid, snap] of Object.entries(Store.stats || {})) {
-    if ((csqtt || wdtt) && foRoWhy(nid)) continue;   // a failover node's servers run its primary's held build (§12.4): its
+    if ((csqtt || wdtt) && Store.isMirror(nid)) continue;   // a failover node's servers run its primary's held build (§12.4): its
     //                                                  version doors refuse them, as the updates list leaves them out
     // csqtt: one binary per (node, VERSION) — a node running 2.1 and 2.5 is two rows, each with its own build and hold
     if (csqtt) { for (const c of (snap.csqtt || [])) if (c && c.iface) { const ln = c.line || CSQTT_DEFAULT_LINE, k = ln === CSQTT_DEFAULT_LINE ? nid : nid + "@" + ln;
@@ -2242,6 +2242,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     title=${mh ? mh.title : html`${T("WDTT-proxy")} · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}${gear}`}
     width=${664}
     headExtra=${mh ? mh.headExtra : extras}
+    noGuard=${!!roWhy}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" disabled=${!!roWhy} onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this WDTT server up on the node"))
@@ -2263,7 +2264,7 @@ export function WdttManageSheet({ node, w: w0 }) {
       </div>
       <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
       <${ListenNotice} st=${lst}/>
-      <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
+      <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting || !!roWhy} title=${roWhy || T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
       <${Disclosure} title=${T("Server parameters")}
@@ -2700,6 +2701,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     title=${mh ? mh.title : html`${T("csqtt-proxy")} · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}${gear}`}
     width=${664}
     headExtra=${mh ? mh.headExtra : extras}
+    noGuard=${!!roWhy}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" disabled=${!!roWhy} onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this csqtt server up on the node"))
@@ -2717,7 +2719,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     <${ListenNotice} st=${lst}/>
     <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
     <${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>
-    <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
+    <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked || !!roWhy} title=${roWhy || T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>
       <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>

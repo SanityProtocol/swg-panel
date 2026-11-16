@@ -129,7 +129,7 @@ export function limitGaps(targets) {
   for (const t of targets || []) {
     const g = gapOf(t);
     if (g === "old") old.add(t.served || t.node);
-    else if (g) unv.set(t.node + "|" + t.iface + "|" + g, t.iface + (g === "raw" ? " (RAW)" : "") + " · " + Store.nodeName(t.node));
+    else if (g) unv.set((t.served || t.node) + "|" + t.iface + "|" + g, t.iface + (g === "raw" ? " (RAW)" : "") + " · " + Store.nodeName(t.served || t.node));   // the member gapOf judged
   }
   return { old: [...old], unv: [...unv.values()] };
 }
