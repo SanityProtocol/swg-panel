@@ -104,6 +104,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      srv-own         an interface door naming B's server copy passes the read-only guard
      srv-absent      a csqtt copy not made yet says "waiting for the vault"
      srv-reply-rid   the sync handler builds B's WDTT reply without its primary's passwords
+     upd-b        the updates sheet lists B's WDTT / csqtt, whose Update is refused there
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -251,6 +252,7 @@ PLANTS = {   # (file, anchor, replacement)
     'srv-unmanaged': ("panel", '            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b)}', '            pass'),
     'srv-own': ("panel", 'not in _fo_srcs(nodes[fo[b]], None)      # B', 'not in _fo_user_ifaces(nodes[fo[b]])      # B'),
     'srv-absent': ("panel", 'return _FoKind.absent(self, ctx) if self.identity else ("syncing", "creating", {})', 'return _FoKind.absent(self, ctx)'),
+    'upd-b': ("panel", '''        if kind != "turn" and nid in _fob:''', '''        if False:'''),
     'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)'),
 }
 
@@ -1459,6 +1461,17 @@ def sec14():
         P.TURN_HOLDS_PATH = _hp
     check("[14] a take-over carries the builds A is held on to B, never over one of B's own (F2)",
           hd.get("nb|wdtt:amurcanov", {}).get("tag") == "1.0" and hd.get("nb|csqtt:2.5", {}).get("tag") == "keep", hd)
+
+    _tl, _hg = dict(P.TURN_LATEST), P._turn_hold_get
+    try:
+        P.TURN_LATEST["forks"] = {"amurcanov": "9.9"}
+        P._turn_hold_get = lambda nid_, key_: None
+        ur = {(x["node"], x["kind"]) for x in P.turn_updates_view(
+            {"node_snaps": {x: {"wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.0"}]} for x in ("na", "nb")}}, t_fleet())}
+    finally:
+        P.TURN_LATEST.clear(); P.TURN_LATEST.update(_tl); P._turn_hold_get = _hg
+    check("[14] the updates sheet lists A's WDTT, never B's — B runs A's build, and its Update is refused there (F8)",
+          ur == {("na", "wdtt")}, sorted(ur))
 
     # the sync: B is never asked to seal its own WDTT identity — its seal would overwrite the clone's blob (§12.4)
     port, d = start_panel(NEW, "turn-family", t_fleet(), r, vault={"ivk_enabled": True, "ivk_pub": IVK})

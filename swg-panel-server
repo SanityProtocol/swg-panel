@@ -2196,7 +2196,7 @@ def _turn_behind(inst, latest):
     return a < b if a != b else True
 
 
-def turn_updates_view(deps):
+def turn_updates_view(deps, nodes=None):
     """Actionable turn-family updates, ONE ROW PER (fork, node) — which is the real update unit: csqtt keeps one
     binary per node and WDTT one per (fork, node), so every instance there restarts together. Counting
     INTERFACES would promise work that does not exist (updating one csqtt server updates them all on that box).
@@ -2206,7 +2206,10 @@ def turn_updates_view(deps):
     strings are not a single scheme ("1.2.4-2" ours, "v3.2.0" upstream) and ordering them would invent meaning."""
     latest = TURN_LATEST.get("forks") or {}
     rows = {}
+    _fob = set(failover_pairs(nodes).values()) if isinstance(nodes, dict) else set()
     for fork, kind, nid, ident, inst in _turn_deployed(deps):
+        if kind != "turn" and nid in _fob:
+            continue        # a failover node's WDTT / csqtt run the build its primary is held on (§12.4): A's row moves both
         lt = latest.get(fork) or ""
         if not _turn_behind(inst, lt):
             continue
@@ -28347,7 +28350,7 @@ def api(method, path, qs, body, deps):
             # csqtt LINES this panel offers, display order (docs/CSQTT-LINES-PLAN.md). One entry = no Version control
             # anywhere in the SPA; a non-2.1 line's holds sit under "csqtt@<line>" in turn_holds above.
             "csqtt_lines": list(CSQTT_LINES),
-            "turn_updates": turn_updates_view(deps),      # deployed turn-family servers behind their newest build, one row per (fork, node) — the header badge reads this as a READY FACT, the way panel_outdated is, instead of the SPA fanning out a network check per fork on every click
+            "turn_updates": turn_updates_view(deps, nodes),      # deployed turn-family servers behind their newest build, one row per (fork, node) — the header badge reads this as a READY FACT, the way panel_outdated is, instead of the SPA fanning out a network check per fork on every click
             "catalog_gen": catalog_gen(),                 # moves whenever the held catalog index changes → the SPA refetches it exactly then
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
