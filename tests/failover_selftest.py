@@ -93,6 +93,17 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      down-has     reconcile.js counts an interface reported down as present
      keep-confirm detach-keep cuts B's clients without the typed name
      mesh-retire  a full mesh never retires a failover node's link
+     srv-ledger   the ledger leaves B's WDTT / csqtt counters unclaimed (no volume limit there)
+     srv-hold-carry  a take-over leaves A's build holds behind (B swaps the binary under the moved clients)
+     srv-take-host   a moved server keeps A's own IP as its listen (its links dial A)
+     srv-rows-type   a server row with a list for its name raises in every sync
+     srv-firewall    a server port B's declared firewall shuts reads Ready
+     srv-import      B imports a leftover store's users (the roster names B)
+     srv-dial-wild   a wildcard listen is taken as the host clients dial
+     srv-unmanaged   B's own unrecorded servers are reported nowhere
+     srv-own         an interface door naming B's server copy passes the read-only guard
+     srv-absent      a csqtt copy not made yet says "waiting for the vault"
+     srv-reply-rid   the sync handler builds B's WDTT reply without its primary's passwords
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -209,8 +220,8 @@ PLANTS = {   # (file, anchor, replacement)
                       '    for _k, p in _peers_on(roster, node_id):\n        if not isinstance(p, dict) or not p.get("wdtt_password"):'),
     'srv-rid-csqtt': ("panel", '    for pid, p in _peers_on(roster, rid):\n        if not isinstance(p, dict) or not p.get("csqtt_password"):',
                       '    for pid, p in _peers_on(roster, node_id):\n        if not isinstance(p, dict) or not p.get("csqtt_password"):'),
-    'srv-online': ("panel", '        return sum(1 for n in names for p in ((rows.get(n) or {}).get("passwords") or {}).values()',
-                      '        return 0 and sum(1 for n in names for p in ((rows.get(n) or {}).get("passwords") or {}).values()'),
+    'srv-online': ("panel", '        return sum(1 for d in pws if isinstance(d, dict)',
+                      '        return 0 and sum(1 for d in pws if isinstance(d, dict)'),
     'srv-held-await': ("panel", '                and not rep.get("await_restore") and (not self.identity or',
                       '                and (not self.identity or'),
     'srv-delete-wait': ("panel", '        return n not in (w.get(self.fam + "_delete") or {}) and self.rebuildable(src, ivk)',
@@ -223,11 +234,24 @@ PLANTS = {   # (file, anchor, replacement)
                       '            for _w in (snap.get("wdtt") or []):'),
     'srv-rebuild': ("panel", '        if not self.identity:\n            return True\n        blessed = self.bkey(src)',
                       '        if True:\n            return True\n        blessed = self.bkey(src)'),
-    'srv-ports': ("panel", '            if 0 < _p <= 65535:\n                warn["ports"].append({"iface": n, "port": _p})',
-                      '            if False:\n                warn["ports"].append({"iface": n, "port": _p})'),
+    'srv-ports': ("panel", '            if 0 < p <= 65535:\n                out.append(p)\n        return out',
+                      '            if False:\n                out.append(p)\n        return out'),
     'srv-subnet': ("panel", ' or nm.split(" (raw)")[0] in _copies:', ':'),
     'srv-stale-door': ("panel", '        _rebuild = [n for n in (cls[3] if take else ()) if n in _srcs and _srcs[n][0].rebuildable(_srcs[n][1], _ivk)]',
                       '        _rebuild = [n for n in (cls[3] if take else ()) if _fo_rebuildable((nodes[aid].get("ifaces") or {}).get(n), _ivk)]'),
+    # R1 card round 1 (review F1–F35)
+    'srv-ledger': ("panel", '                if fo and t["node"] in fo:', '                if fo and t["node"] in fo and not _is_self_contained_target(t):'),
+    'srv-hold-carry': ("panel", '        if add:\n            d.update(add)', '        if False:\n            d.update(add)'),
+    'srv-take-host': ("panel", '            bov["listen"] = "0.0.0.0:%d" % p', '            pass'),
+    'srv-rows-type': ("panel", 'if isinstance(x, dict) and isinstance(x.get("iface"), str) and x["iface"]}', 'if isinstance(x, dict) and x.get("iface")}'),
+    'srv-firewall': ("panel", '            if ctx["ranges"] and not any(x <= lp <= y for x, y in ctx["ranges"]):\n                return "problem", "firewall", {"port": lp}\n        return "ready", "", {}\n\n    def absent',
+                     '            if False:\n                return "problem", "firewall", {"port": lp}\n        return "ready", "", {}\n\n    def absent'),
+    'srv-import': ("panel", 'for _wifn, _wsn in (_wsnap.items() if _rid == nid else ()):', 'for _wifn, _wsn in (_wsnap.items()):'),
+    'srv-dial-wild': ("panel", '        return (_fp_bind_host(src.get("listen") or "") or', '        return (_hostport_split(src.get("listen") or "")[0] or'),
+    'srv-unmanaged': ("panel", '            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b)}', '            pass'),
+    'srv-own': ("panel", 'not in _fo_srcs(nodes[fo[b]], None)      # B', 'not in _fo_user_ifaces(nodes[fo[b]])      # B'),
+    'srv-absent': ("panel", 'return _FoKind.absent(self, ctx) if self.identity else ("syncing", "creating", {})', 'return _FoKind.absent(self, ctx)'),
+    'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)'),
 }
 
 TMP = tempfile.mkdtemp(prefix="swg-failover-")
@@ -1291,6 +1315,8 @@ def sec14():
     check("[14] a server B runs with A's key is held; a csqtt server B runs is held", {"wdtt1", "csqtt1"} <= set(h[0]), h)
     h = holds(([w_row(await_restore=True)], [w_row("csqtt1", pub="", stopped=True)]))
     check("[14] waiting for its key, or stopped: unsure — never moved, never deleted", {"wdtt1", "csqtt1"} <= set(h[2]), h)
+    h = holds(([w_row(await_restore=True, active="inactive", pub="")], []))   # the row noded really sends while it waits (F14)
+    check("[14] …the waiting row as noded sends it (inactive, no key): unsure", "wdtt1" in h[2] and "wdtt1" not in h[0], h)
     h = holds(([w_row(pub=KX)], []))
     check("[14] B running another WDTT key: not held", "wdtt1" not in h[0] and "wdtt1" in h[2], h)
     nst = t_fleet(); P.failover_mirror(DEPS, nst, "nb", snaps, seen, now=NOW)
@@ -1356,6 +1382,9 @@ def sec14():
     check("[14] …A's records go as their delete doors drop them, B's stay as B's own",
           "wdtt1" not in (nt["na"].get("wdtt") or {}) and "wdtt1" in (nt["na"].get("wdtt_delete") or {})
           and "wdtt1" in nt["nb"]["wdtt"] and "failover_of" not in nt["nb"], (nt["na"].get("wdtt"), nt["nb"].get("wdtt")))
+    check("[14] …a server A served on its own IP listens on every address of B's now (its links dial B, F3); a domain stays",
+          nt["nb"]["wdtt"]["wdtt1"].get("listen") == "0.0.0.0:56000" and nt["nb"]["csqtt"]["csqtt1"].get("listen") == "vpn.example.com:56002",
+          (nt["nb"]["wdtt"]["wdtt1"].get("listen"), nt["nb"]["csqtt"]["csqtt1"].get("listen")))
 
     # the fleet's subnet check: B's copy is A's subnet, not a second use — A's own servers stay editable
     ns = t_fleet(); P.failover_mirror(DEPS, ns, "nb", snaps, seen, now=NOW)
@@ -1380,8 +1409,59 @@ def sec14():
     check("[14] a WDTT whose key the vault cannot rebuild is refused, as an interface is",
           any(x.get("iface") == "wdtt1" for x in pf["refused"]), pf["refused"])
 
+    # card review round 1
+    nw = t_fleet(); nw["na"]["wdtt"]["wdtt1"]["listen"] = "0.0.0.0:56000"
+    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, nw, "na", snaps, {"na": NOW})
+    check("[14] a server listening on every address is dialled at the node's domain: no IP warning (F9)",
+          not any(x["iface"] == "wdtt1" for x in pf["warn"]["ip_endpoint"])
+          and P._FO_KINDS[1].dial_host(nw["na"], nw["na"]["wdtt"]["wdtt1"], {}, "wdtt1") == "a.example.com", pf["warn"]["ip_endpoint"])
+    try:
+        P.failover_idle(n, {"na": {"wdtt": [{"iface": ["x"]}, {"iface": "wdtt1", "passwords": ["a"]}]},
+                            "nb": {"csqtt": [{"iface": "csqtt1", "passwords": "s"}]}}, seen, now=NOW)
+        ok = True
+    except Exception as e:
+        ok = e
+    check("[14] an odd-shaped server row (a list for a name, a list for passwords) is skipped, never raised on (F4)", ok is True, ok)
+    nfw = t_fleet(); P.failover_mirror(DEPS, nfw, "nb", snaps, seen, now=NOW)
+    fv = P.failover_view(nfw, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}, "udp_ports": "443,51820-51899",
+                                                                  "wdtt": [w_row(), w_row("wdtt5")], "csqtt": [w_row("csqtt1", pub="")]}),
+                         seen, frozenset(), now=NOW, ivk=IVK)
+    rows = {r["iface"]: r for r in fv["rows"]}
+    check("[14] a server port outside B's declared firewall range: firewall, as an interface's (F6)",
+          rows.get("wdtt1", {}).get("why") == "firewall" and rows.get("csqtt1", {}).get("why") == "firewall", fv["rows"])
+    check("[14] a server B runs that the panel holds no record of: listed as unmanaged (F12)",
+          any(p.get("kind") == "unmanaged" and "wdtt5" in p.get("ifaces", []) for p in fv["problems"]), fv["problems"])
+    fv = P.failover_view(t_fleet(), roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}}),
+                         seen, frozenset(), now=NOW, ivk=IVK)
+    rows = {r["iface"]: r for r in fv["rows"]}
+    check("[14] a csqtt copy not made yet is being created, never \"waiting for the vault\"; a WDTT one waits for its key (F32)",
+          rows.get("csqtt1", {}).get("why") == "creating" and rows.get("wdtt1", {}).get("why") == "no_copy", fv["rows"])
+    check("[14] an interface door naming a server copy on B is refused (F31)",
+          (P.failover_ro_refusal("/api/iface/delete", {"node": "nb", "iface": "wdtt1"}, n) or [0])[0] == 409)
+    rl = roster()
+    rl["peers"]["pw"] = {"id": "pw", "user_id": "u1", "pubkey": "", "title": "phone-wdtt", "wdtt_password": "PW1",
+                         "targets": [{"node": "na", "iface": "wdtt1", "type": "wdtt"}]}
+    dl = os.path.join(TMP, "ledger14"); os.makedirs(dl)
+    json.dump(rl, open(os.path.join(dl, "users.json"), "w"))
+    L = P.TrafficLedger()
+    L.start({"roster_path": os.path.join(dl, "users.json"), "panel_settings": {}}, now=NOW, writer=False)
+    L.ingest("na", {"interfaces": {}}, now=NOW, mono=1.0, pairs=(("na", "nb"),))
+    check("[14] the ledger claims a WDTT password's counter on B for the device (volume limits there, F1)",
+          L.map.get(("nb", "wdtt1", "PW1")) == "pw", sorted(k for k in L.map if k[0] == "nb"))
+    hp = os.path.join(TMP, "holds14.json")
+    json.dump({"na|wdtt:amurcanov": {"tag": "1.0", "at": 1}, "nb|csqtt:2.5": {"tag": "keep", "at": 1},
+               "na|csqtt:2.5": {"tag": "2.5.1", "at": 1}}, open(hp, "w"))
+    _hp, P.TURN_HOLDS_PATH = P.TURN_HOLDS_PATH, hp
+    try:
+        P.failover_carry_settings({"panel_settings": {}}, "na", "nb")
+        hd = json.load(open(hp))
+    finally:
+        P.TURN_HOLDS_PATH = _hp
+    check("[14] a take-over carries the builds A is held on to B, never over one of B's own (F2)",
+          hd.get("nb|wdtt:amurcanov", {}).get("tag") == "1.0" and hd.get("nb|csqtt:2.5", {}).get("tag") == "keep", hd)
+
     # the sync: B is never asked to seal its own WDTT identity — its seal would overwrite the clone's blob (§12.4)
-    port, d = start_panel(NEW, "turn-family", t_fleet(), roster(), vault={"ivk_enabled": True, "ivk_pub": IVK})
+    port, d = start_panel(NEW, "turn-family", t_fleet(), r, vault={"ivk_enabled": True, "ivk_pub": IVK})
     tk = {x: req(port, "/api/nodes/rotate", {"id": x})[1]["data"]["token"] for x in ("na", "nb", "nc")}
 
     def tsync(nid, wrows):
@@ -1395,8 +1475,14 @@ def sec14():
     rb = tsync("nb", [w_row(pub=KX)])                  # B's box runs an identity of its own (a fresh install)
     check("[14] B is never asked to seal its own WDTT identity", "wdtt1" not in (rb.get("wdtt_vault_want") or []),
           rb.get("wdtt_vault_want"))
-    check("[14] …and its reply carries A's identity as the hold, with A's users",
-          ((rb.get("wdtt") or {}).get("wdtt1") or {}).get("key_blob", {}).get("pub") == KW, (rb.get("wdtt") or {}).get("wdtt1"))
+    check("[14] …and its reply carries A's identity as the hold, with A's users (F15: the handler passes rid)",
+          ((rb.get("wdtt") or {}).get("wdtt1") or {}).get("key_blob", {}).get("pub") == KW
+          and "PW1" in (((rb.get("wdtt") or {}).get("wdtt1") or {}).get("passwords") or {}), (rb.get("wdtt") or {}).get("wdtt1"))
+    tsync("nb", [w_row(adopt_users={"LEFTOVER": {"ip": "10.11.0.9"}})])   # a re-used spare's old store, offered (F7)
+    rr = json.load(open(os.path.join(d, "state", "users.json")))
+    check("[14] a failover node imports no users: the roster never names it (F7)",
+          not any((t or {}).get("node") == "nb" for p in (rr.get("peers") or {}).values() for t in (p.get("targets") or [])),
+          [p.get("targets") for p in (rr.get("peers") or {}).values()])
 
     # the detach door: a WDTT copy of another identity than A's, which the vault can rebuild, waits for a Re-sync —
     # the take-over never drops it on the interfaces' predicate (it found no interface by that name)

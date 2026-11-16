@@ -13218,6 +13218,18 @@ def failover_carry_settings(deps, aid, bid):
         if deps.get("panel_settings_path"):
             save_critical(deps["panel_settings_path"], json.dumps(ps, indent=2) + "\n")
         deps["panel_settings"] = ps
+    # the builds A is held on (a rollback of WDTT, a csqtt line, a turn fork): B ran them through `rid`; on its own it reads
+    # its own id, and would swap the binary under the clients it just took over (card review F2)
+    with _TURN_HOLDS_LOCK:
+        d = _turn_holds_load()
+        pre = str(aid) + "|"
+        add = {str(bid) + "|" + k[len(pre):]: dict(v) for k, v in d.items()
+               if isinstance(k, str) and k.startswith(pre) and isinstance(v, dict) and str(bid) + "|" + k[len(pre):] not in d}
+        if add:
+            d.update(add)
+            with contextlib.suppress(Exception):
+                atomic_write(TURN_HOLDS_PATH, json.dumps(d) + "\n", mode=0o600)
+            ch = True
     return ch
 
 
@@ -13455,6 +13467,10 @@ class _FoKind:
         """(state, why, more) for a copy past the generic classes (current, B's report read): the kind's own checks."""
         return "ready", "", {}
 
+    def absent(self, ctx):
+        """(state, why, more) for a copy B has nothing of: a record kind waits for the vault to let it clone."""
+        return "needs_vault", "no_copy", {}
+
     # the take-over
     def take(self, a, b, n, host, now_):
         """A's `n` is B's from now on: A's record of it goes (as its delete door drops it), B's takes `host` if it can."""
@@ -13613,8 +13629,10 @@ class _FoServer(_FoKind):
         return {n: ov for n, ov in ((b_rec or {}).get(self.fam) or {}).items()}
 
     def _rows(self, snap):
+        # read on every sync (failover_idle): a row the sanitiser let through with an odd shape is skipped, never raised on
         r = snap.get(self.fam) if isinstance(snap, dict) else None
-        return {x["iface"]: x for x in (r if isinstance(r, list) else ()) if isinstance(x, dict) and x.get("iface")}
+        return {x["iface"]: x for x in (r if isinstance(r, list) else ())
+                if isinstance(x, dict) and isinstance(x.get("iface"), str) and x["iface"]}
 
     def a_reports(self, asnap):
         return set(self._rows(asnap))
@@ -13654,8 +13672,8 @@ class _FoServer(_FoKind):
 
     def online(self, snap, names):
         rows = self._rows(snap)
-        return sum(1 for n in names for p in ((rows.get(n) or {}).get("passwords") or {}).values()
-                   if isinstance(p, dict) and p.get("online"))
+        pws = [(rows.get(n) or {}).get("passwords") for n in names]
+        return sum(1 for d in pws if isinstance(d, dict) for p in d.values() if isinstance(p, dict) and p.get("online"))
 
     def target(self, t):
         return (_is_wdtt_target if self.fam == "wdtt" else _is_csqtt_target)(t)
@@ -13703,8 +13721,18 @@ class _FoServer(_FoKind):
                     c.pop(k, None)
 
     def dial_host(self, a_rec, src, asnap, n):
-        host, _port = _hostport_split(src.get("listen") or "")
-        return host or ""
+        # the client link builders' rule (wdttArtInput, _fp_bind_host): the server's own bind when it is a real address,
+        # else the node's endpoint, else its reported public IP — a wildcard is never what a client dials (card review F9)
+        return (_fp_bind_host(src.get("listen") or "") or ((a_rec or {}).get("endpoint_host") or "").strip()
+                or node_public_ip(asnap or {}) or "")
+
+    def ports(self, src):
+        out = []
+        for p in (_hostport_split(src.get("listen") or "")[1], src.get("raw_port")):   # a stored port may be text: the
+            p = int(p) if isinstance(p, int) or (isinstance(p, str) and p.isdigit()) else 0   # record keeps what was typed
+            if 0 < p <= 65535:
+                out.append(p)
+        return out
 
     def status(self, r, ctx):
         rep = r["rep"]
@@ -13716,10 +13744,21 @@ class _FoServer(_FoKind):
             return "problem", "key", ({"resync": True} if self.rebuildable(r["src"], ctx["ivk"]) else {})
         if rep.get("active") != "active" and not rep.get("stopped"):
             return "problem", "down", {}
+        for lp in self.ports(r["src"]):                  # as an interface's: B's declared firewall shuts what clients dial
+            if ctx["ranges"] and not any(x <= lp <= y for x, y in ctx["ranges"]):
+                return "problem", "firewall", {"port": lp}
         return "ready", "", {}
+
+    def absent(self, ctx):
+        # a server without an identity (csqtt) needs nothing of the vault: absent is only the pass not run yet (F32)
+        return _FoKind.absent(self, ctx) if self.identity else ("syncing", "creating", {})
 
     def take(self, a, b, n, host, now_):
         self.drop(a, n, now_)                             # A's goes as its delete door drops it; B's record is B's now
+        bov = (b.get(self.fam) or {}).get(n)
+        h, p = _hostport_split((bov or {}).get("listen") or "")
+        if isinstance(bov, dict) and _fp_bind_host(bov["listen"]) and _ip_literal(h) and p:
+            bov["listen"] = "0.0.0.0:%d" % p              # A's own address: B's links would dial A (F3); B's endpoint now
 
 
 _FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False))
@@ -13965,7 +14004,7 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
         if k.identity and not k.rebuildable(src, _ivk):
             refused.append({"iface": n, "why": "its key is not in the Encryption Vault — set the vault up; the key is sealed "
                                               "on the node's next sync"})
-        host, port = _hostport_split(src.get("listen") or "")
+        host = k.dial_host(a, src, snap, n)             # the host its clients dial — the take-over's, one rule (F9, F17)
         if not host or _ip_literal(host):
             warn["ip_endpoint"].append({"iface": n, "host": host or ""})
         elif resolve and node_public_ip(snap):
@@ -13975,10 +14014,7 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
                 warn["dns"].append({"iface": n, "host": host})
         if src.get("egress_mode") != "forward" and (src.get("egress_ip") or src.get("wan_iface")):
             warn["pinned"].append(n)
-        for _p in (port, src.get("raw_port")):          # a stored port may be text: the record keeps what was typed
-            _p = int(_p) if isinstance(_p, int) or (isinstance(_p, str) and _p.isdigit()) else 0
-            if 0 < _p <= 65535:
-                warn["ports"].append({"iface": n, "port": _p})
+        warn["ports"] += [{"iface": n, "port": _p} for _p in k.ports(src)]
     if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
         _mc = mesh_cfg(deps)
         warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
@@ -14017,7 +14053,7 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
         n, cc = r["name"], r["cc"]
         st, why, more = "ready", "", {}
         if cc == "absent":
-            st, why = "needs_vault", "no_copy"
+            st, why, more = r["kind"].absent(ctx)
         elif cc == "link":
             st, why = "problem", "name_taken"                    # B's own record has the name: never copied there, and
             #                                                      never offered a Re-sync (it would tear it down, F124)
@@ -14031,7 +14067,10 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
         if st != "ready":
             rows.append({"iface": n, "kind": r["kind"].kind, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst
-    extra, um = [], _unmanaged_ifaces(b, bsnap)
+    extra, um = [], set(_unmanaged_ifaces(b, bsnap))
+    for k in _FO_KINDS:                                  # B's own WDTT / csqtt servers, unrecorded (T-18 is off on B): §12.3
+        if isinstance(k, _FoServer):                     # says they are shown, never touched (card review F12)
+            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b)}
     if bsnap.get("cmd_errors"):
         extra.append({"kind": "cmd_errors"})
     if um:
@@ -14116,7 +14155,7 @@ def failover_ro_refusal(path, body, nodes):
     if not hit:
         return None
     b = hit[0]
-    own = _fo_str(body.get("iface")) not in _fo_user_ifaces(nodes[fo[b]])      # an interface of B's own, not a copy
+    own = _fo_str(body.get("iface")) not in _fo_srcs(nodes[fo[b]], None)      # B's own, not a copy of any kind (F31)
     if ((path in _FO_RO_DOORS and not (path == "/api/iface/recreate" and body.get("fresh"))   # fresh: B's own key
          and not (path == "/api/iface/restore" and body.get("key") == "public_key"))         # a key is Re-sync's, never this
             or (path == "/api/nodes/update" and set(body) <= _FO_NODE_LOCAL)
@@ -26241,7 +26280,7 @@ class TrafficLedger:
                     continue
                 claims.setdefault((t["node"], t["iface"], cred), set()).add(pid)
                 deploys.add((t["node"], t["iface"], pid))
-                if fo and t["node"] in fo and not _is_self_contained_target(t):
+                if fo and t["node"] in fo:                     # WDTT / csqtt too: B serves their passwords (§12, R1)
                     claims.setdefault((fo[t["node"]], t["iface"], cred), set()).add(pid)
                     deploys.add((fo[t["node"]], t["iface"], pid))
         amb = [k for k, v in claims.items() if len(v) > 1]     # two peers claiming ONE counter: crediting either is a guess
@@ -37717,8 +37756,8 @@ class Handler(BaseHTTPRequestHandler):
             # skipped reconciling (the invariant held, nothing was wiped) but nothing converged either.
             _imported = 0
             try:
-                for _wifn, _wsn in _wsnap.items():
-                    _au = _wsn.get("adopt_users")
+                for _wifn, _wsn in (_wsnap.items() if _rid == nid else ()):   # a failover node imports nothing (§4.3): its
+                    _au = _wsn.get("adopt_users")                           # servers are A's, the roster never names it
                     if not isinstance(_au, dict) or not _au or _wifn not in _wstore:
                         continue
                     _known = {p.get("wdtt_password") for p in (roster.get("peers") or {}).values()
@@ -37870,7 +37909,8 @@ class Handler(BaseHTTPRequestHandler):
         # Guarded like the WDTT one: an enrichment fault must never 500 the sync the fleet depends on.
         try:
             _cstore = node.get("csqtt") or {}
-            for _cifn, _csn in {c.get("iface"): c for c in (snap.get("csqtt") or []) if isinstance(c, dict)}.items():
+            for _cifn, _csn in ({c.get("iface"): c for c in (snap.get("csqtt") or []) if isinstance(c, dict)}.items()
+                                if _rid == nid else ()):             # a failover node imports nothing, as the WDTT one
                 _cau = (_csn or {}).get("adopt_users")
                 if not isinstance(_cau, dict) or not _cau or _cifn not in _cstore:
                     continue
