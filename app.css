@@ -1318,6 +1318,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .fo-bub .fo-bub-st::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--online);flex:none}
 .fo-bub .fo-bub-st.fo-wait::before{background:var(--amber)}
 .fo-bub .fo-bub-st.fo-bad::before{background:var(--dangling)}
+/* a failover node's copy where its peers would be: they are on the box, listed on the primary (FoPeersNote, foPeersCell) */
+.notice.fo-peers-note{margin:12px 14px}
+.notice.fo-peers-note a{white-space:nowrap;color:var(--brand);font-weight:600;text-decoration:none}
+.notice.fo-peers-note a:hover{text-decoration:underline}
+.fo-peers{cursor:help}
 .upd-dot{display:inline-flex;align-items:center;color:var(--amber);flex:none}
 .nm-ver{font-family:var(--mono);font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:8px;margin-left:12px}
 .nm-ver.out{color:var(--amber)}

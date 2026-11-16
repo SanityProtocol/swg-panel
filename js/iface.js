@@ -18,7 +18,7 @@ import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
 import {
   kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnProxiesFor,
   suggestIface, suggestSubnet, suggestPort, portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr,
-  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No, foRoWhy,
+  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No, foRoWhy, foSrcOf, foCopyOf, foPeersOf,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag, meshGenLabel, meshGenColor } from "./ui.js";
@@ -579,6 +579,16 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
   <//>`;
 }
 // ═════════════════════════ SCREEN: INTERFACE DETAIL ═════════════════════════
+// A failover node's copy (operator, 2026-11-16): its peers are on this box too, but every target names the primary, so the
+// panel lists them there — say so, and link there, never an empty table that reads as a fault.
+function FoPeersNote({ node, iface }) {
+  const a = foSrcOf(node), an = Store.nodeName(a), n = foPeersOf(node, iface);
+  return html`<div class="notice fo-peers-note"><${Ic} i="info"/><span>${n
+    ? T("This interface is a copy of {v1}'s. The panel lists its {v2} on {v1}; each one is already on this server and connects here once {v1}'s domain points here.", { v1: an, v2: plural(n, "peer") })
+    : T("This interface is a copy of {v1}'s. Its peers are listed on {v1}, and each one is copied here as it is added.", { v1: an })}
+    ${" "}<a href=${"#/node/" + encodeURIComponent(a) + "/" + encodeURIComponent(iface)}>${T("Open it on {v1}", { v1: an })}</a></span></div>`;
+}
+
 export function IfaceDetail({ node: rawNode, iface: rawIface }) {
   useStore();
   const [q, setQ] = useState("");
@@ -755,11 +765,12 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${isMobile() ? T("Reachable via") : T("Reachable via turn-proxy")} iface=${iface}/>` : null}
 
-    <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length} pad=${false}
+    <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length || (foCopyOf(node, iface) ? foPeersOf(node, iface) : 0)} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
         actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
           : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> ${T("Add peer")}</button>`}>
-      <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
+      ${foCopyOf(node, iface) && !peers.length ? html`<${FoPeersNote} node=${node} iface=${iface}/>`
+        : html`<${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>`}
     <//>
 
     ${orphans.length ? html`<div id="iface-orphans"><${Panel} icon="warn" title=${T("Unmanaged on this interface")} tone="warn" pad=${false}
@@ -924,11 +935,12 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
           and nothing can be pointed at this interface. */""}
     ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${isCsq ? T("CSQTT proxy") : T("WDTT proxy")} iface=${iface}/>` : null}
 
-    <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length} pad=${false}
+    <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length || (foCopyOf(node, iface) ? foPeersOf(node, iface) : 0)} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
         actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
           : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> ${T("Add peer")}</button>`}>
-      <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
+      ${foCopyOf(node, iface) && !peers.length ? html`<${FoPeersNote} node=${node} iface=${iface}/>`
+        : html`<${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>`}
     <//>
   </div>`;
 }

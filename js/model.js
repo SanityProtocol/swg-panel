@@ -638,6 +638,22 @@ export const tgtSeenAge = t => (t && t.observed) ? t.observed.handshake_age : ((
 
 // A failover node is a read-only copy of its primary (docs/FAILOVER-PLAN.md §4.7). Every control that edits a node or its
 // interfaces reads this ONE sentence: "" for any other node, else why the control is off — its disabled state and its title.
+// The primary a failover node copies, or "" (operator, 2026-11-16: its interfaces must not read as empty). Its peers are on
+// the box too, but every target names the primary — the panel lists them there.
+export const foSrcOf = id => Store.isMirror(id) ? (((Store.nodes || []).find(x => x.id === id) || {}).failover_of || "") : "";
+// Is `iface` on a failover node a copy of its primary's (the primary reports one by that name: an interface, a WDTT or csqtt
+// server)? The primary's id, else "" — a mesh link of B's, or one B runs on its own, is not.
+export const foCopyOf = (id, iface) => {
+  const a = foSrcOf(id);
+  if (!a || !iface) return "";
+  const st = Store.stats[a] || {};
+  return ((Store.describe[a] || {})[iface] || (st.wdtt || []).some(w => w && w.iface === iface) || (st.csqtt || []).some(c => c && c.iface === iface)) ? a : "";
+};
+// How many peers a failover node's copy carries: the primary's, on the same interface (every one of them is on the box too).
+export const foPeersOf = (id, iface) => {
+  const a = foSrcOf(id);
+  return a ? (Store.recon.peers || []).filter(p => !p.disabled && !p.expired && (p.targets || []).some(t => t.node === a && (!iface || t.iface === iface))).length : 0;
+};
 export const foRoWhy = id => {
   if (!Store.isMirror(id)) return "";
   const n = (Store.nodes || []).find(x => x.id === id) || {};

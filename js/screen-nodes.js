@@ -14,7 +14,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foCopyOf, foPeersOf } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -886,7 +886,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
-                : html`<span class="faint">${T("None")}</span>`}</span></div>
+                : foPeersCell(name, w.iface) || html`<span class="faint">${T("None")}</span>`}</span></div>
             </div></a>`; };
         // csqtt in the node store (csqtt_cfg) but NOT yet reported in snap.csqtt — a just-created instance the node
         // hasn't brought up yet, or a wiped one it will re-establish (csqtt self-heals from panel state, no vault).
@@ -947,7 +947,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${c.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
-                : html`<span class="faint">${T("None")}</span>`}</span></div>
+                : foPeersCell(name, c.iface) || html`<span class="faint">${T("None")}</span>`}</span></div>
             </div></a>`; };
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.")}<br/><br/>${T("Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.")}</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>${T("reading server…")}</div>`
@@ -1018,7 +1018,7 @@ export function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>(${orph})</span>` : null}`}/>`
-                    : (orph ? html`<span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>${orph}</span>` : html`<span class="faint">${T("None")}</span>`)}</span></div>
+                    : (orph ? html`<span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>${orph}</span>` : foPeersCell(name, ifn) || html`<span class="faint">${T("None")}</span>`)}</span></div>
                 </div></a>`;
             })}${pcards}${ccards}${xcards}${dcards}${cqcards}</div>`; })()}
     <//>
@@ -1353,21 +1353,31 @@ const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg
 // solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
 // Quiet while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention or a member
 // is not reporting. The bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
-const foTone = st => st === "ready" ? "fo-ok" : (st === "syncing" || st === "needs_vault") ? "fo-wait" : "fo-bad";   // never bare .bad (an invalid field's outline)
+// A failover node's copy in place of "None": the primary's peer count, "listed on <primary>" — they are on this box too, and
+// connect here once the primary's domain points here (operator, 2026-11-16: an empty-looking copy read as a fault)
+function foPeersCell(node, iface) {
+  const a = iface ? foCopyOf(node, iface) : foSrcOf(node);   // a card: only a copy of the primary's; the node row: the node
+  if (!a) return null;
+  const an = Store.nodeName(a), n = foPeersOf(node, iface);
+  return html`<span class="fo-peers" title=${T("Copies of {v1}'s peers: they are already on this server, and the panel lists them on {v1}. They connect here once {v1}'s domain points here.", { v1: an })}>${n ? html`<b>${n}</b> ` : null}<span class="faint">${T("listed on {v1}", { v1: an })}</span></span>`;
+}
+// the tone from foState's own tag class — one table of the pair's states (review F2); never a bare .bad (an invalid field's outline)
+const foTone = st => ({ "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait" })[foState(st)[0]] || "fo-bad";
 export function FoMark({ n }) {
   const fo = n && n.failover;
   if (!fo || !fo.primary || !fo.failover) return null;
   const isB = n.id === fo.failover, an = Store.nodeName(fo.primary), bn = Store.nodeName(fo.failover);
   const [, , label] = foState(fo.state);
+  const head = isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn });   // the label and the heading, one string (F3)
   const slab = (x, me) => me ? html`<rect x=${x} y="5" width="8" height="14" rx="1.6" fill="currentColor" fill-opacity=".3"/>`
     : html`<rect x=${x} y="5" width="8" height="14" rx="1.6" stroke-dasharray="2.2 2"/>`;
   const glyph = html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">${slab(3, !isB)}${slab(13, isB)}</svg>`;
   return html`<${Popover} cls=${"fo-mark " + foTone(fo.state)} popCls="netroute-bub fo-bub" trigger=${html`<span class="fo-mark-g" role="img"
-      aria-label=${isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn })}>${glyph}</span>`}>
-    <div class="fo-bub-h">${isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn })}</div>
+      aria-label=${head}>${glyph}</span>`}>
+    <div class="fo-bub-h">${head}</div>
     <div>${isB ? T("A read-only copy of {v1}. If {v1} goes down, point its domain here.", { v1: an })
       : T("{v1} keeps a live copy of this node. If this node goes down, point its domain at {v1}.", { v1: bn })}</div>
-    <div class=${"fo-bub-st " + foTone(fo.state)}>${T("Copy: {v1}", { v1: label })}</div>
+    <div class=${"fo-bub-st " + foTone(fo.state)}>${T("Copy's state: {v1}", { v1: label })}</div>
   <//>`;
 }
 function FailoverTag({ fo }) {
@@ -1966,7 +1976,7 @@ export function NodeCard({ n, reorder }) {
     <span class="nc-peers nm-item">${here.length
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
-      : html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers faint">${T("val|none")}</span>`}</span>
+      : html`<span class="nm-l">${T("Peers")}</span>${foSrcOf(n.id) ? html`<span class="nm-v nm-peers">${foPeersCell(n.id, "")}</span>` : html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
       : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"
