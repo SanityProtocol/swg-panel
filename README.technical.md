@@ -216,12 +216,14 @@ Against a **self-signed** panel the installer **auto-pins the cert on first cont
 ## Failover nodes
 
 A **failover node** is a second server that is a live, read-only mirror of one node: the same interfaces with the same
-private keys, ports, subnets and AmneziaWG parameters, and every peer. A client config cannot tell the two apart, so the
-failover is a DNS change: point the interfaces' domain at the failover node and each device reconnects there. Nobody
-re-imports, and the panel does not have to be up.
+private keys, ports, subnets and AmneziaWG parameters, its WDTT servers with the same identity, its csqtt servers, its turn
+proxies with the wrap key their clients hold, and every peer. A client config cannot tell the two apart, so the failover
+is a DNS change: point the node's domain at the failover node and each device reconnects there — a WDTT or csqtt client
+too, since the call relay dials the address the client hands it. Nobody re-imports, and the panel does not have to be up.
 
-**Before you add one.** Every interface's key must be in the **Encryption Vault** (it is sealed on the node's next sync once
-the vault is set up), and its endpoint should be a **domain** with a short TTL (60 s). An interface whose clients dial an IP
+**Before you add one.** Every interface's key and every WDTT server's identity must be in the **Encryption Vault** (it is
+sealed on the node's next sync once the vault is set up), and what clients dial should be a **domain** with a short TTL
+(60 s): an interface's endpoint, a WDTT or csqtt server's or a turn proxy's Listen address. Anything clients reach by IP
 can only fail over after a re-import, and the preview says which.
 
 1. The node's page → the shield, **Add failover node** → read the preview: what is refused, what is only worth knowing (the
@@ -229,7 +231,8 @@ can only fail over after a re-import, and the preview says which.
    its own addresses, what is not copied). The panel cannot see a host firewall: open those ports, and the mesh band, on the
    spare yourself.
 2. Give it a name and run the install command on the spare server, as for any node.
-3. If the panel asks, **Unlock vault**: this browser re-seals each interface key to the spare; the panel never sees one.
+3. If the panel asks, **Unlock vault**: this browser re-seals each interface key and WDTT identity to the spare; the panel
+   never sees one.
    Both members then show **Failover · Ready**.
 4. Do the drill once: point a throwaway hostname at the spare, change only that on one test device, connect. "Ready" cannot
    prove the provider's firewall lets clients in.
@@ -239,21 +242,24 @@ back when the node returns; nothing else changes. To automate the repoint, the `
 
 **The failover node is read-only.** Change settings on the node it mirrors; they follow, and its speed and volume limits
 are enforced there too. Its own box stays its own: name, address, mesh, datapath, Update, Check, its connection cards.
-The **Failover** panel on both pages shows who is serving and each interface that is not ready, worded with what to do:
-*Unlock vault* when keys are waiting, *Re-sync* when the copy runs an old key or subnet (it deletes that copy and builds it
-again; it works while the primary is down, which is when an old copy matters).
+The **Failover** panel on both pages shows who is serving and each copy that is not ready — an interface, a WDTT or csqtt
+server, a turn proxy — worded with what to do: *Unlock vault* when keys are waiting, *Re-sync* when the copy runs an old key
+or subnet (it deletes that copy and builds it again; it works while the primary is down, which is when an old copy
+matters). The mirror never removes a turn proxy: one the failover node runs and the primary does not (its own, or one the
+primary dropped) is listed there with a *Remove*. Its WDTT and csqtt servers run the build the primary runs; its turn
+proxies update from the updates list, as the primary's do.
 
-**Detach** (on the failover node's page): **Keep the peers on** the primary removes the copies and leaves an ordinary,
-empty node (refused while the primary is not reporting: it would delete the only running copy); **Move the peers to** the
-failover node makes it an ordinary node holding them, for every interface it runs with the primary's key, and drops them on
-the primary. Client configs stay byte-identical. An interface it has no usable copy of stays on the primary with its
+**Detach** (on the failover node's page): **Keep the peers on** the primary removes the copies and leaves an ordinary
+node (refused while the primary is not reporting: it would delete the only running copy); **Move the peers to** the
+failover node makes it an ordinary node holding them, for every interface and WDTT or csqtt server it runs as the
+primary's, and drops them on the primary. Either way its turn proxies stay; remove the ones nothing needs on its page. Client configs stay byte-identical. An interface it has no usable copy of stays on the primary with its
 peers, and the sheet names it first. Removing the primary moves its peers the same way; to remove it with its peers on
 purpose, detach first, keeping them there.
 
 **What it does not do:** clients still reconnect (a connected tunnel keeps dialling the old address until it restarts);
-one failover node per node, no shared spare; WDTT, csqtt, turn proxies and exits are not copied (what leaves by an exit on
-the primary leaves directly from the failover node, even with a kill switch); a node others cascade *through* is not
-covered; it is a mirror, not a backup — deleting on the primary deletes on the failover node. Transfer is refused until
+one failover node per node, no shared spare; exits are not copied (what leaves by an exit on the primary leaves directly
+from the failover node, even with a kill switch); a WDTT or csqtt device can get another tunnel address there (the server
+hands it out; nothing on the device changes); a node others cascade *through* is not covered; it is a mirror, not a backup — deleting on the primary deletes on the failover node. Transfer is refused until
 detached.
 
 ## Managing peers

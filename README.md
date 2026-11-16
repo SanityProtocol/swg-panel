@@ -66,10 +66,10 @@ subscription and no one else sitting in the middle of your traffic.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
 - **A spare server that takes over.** Give a server a **failover node** (the shield on its page → *Add failover node*):
-  a second server that keeps a live, read-only copy of it — the same interfaces, keys, ports, subnets and peers, with its
-  speed and volume limits. If the first one goes down, point its domain at the spare and devices reconnect there; nobody
+  a second server that keeps a live, read-only copy of it — the same interfaces, keys, ports, subnets and peers, its WDTT
+  and csqtt servers and turn proxies, with its speed and volume limits. If the first one goes down, point its domain at the spare and devices reconnect there; nobody
   re-imports a config. Set it up once, with the Encryption Vault and a domain as the interfaces' endpoint, and do the
-  drill once on a test device. Not copied: WDTT, csqtt, turn proxies and exits. Gone for good? *Detach → Move the peers*
+  drill once on a test device. Not copied: exits. Gone for good? *Detach → Move the peers*
   makes the spare an ordinary server holding them.
 - **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
 - **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
