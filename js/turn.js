@@ -301,9 +301,10 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, tp.service) : [];   // online peers via THIS specific proxy → header count
   // a failover node's proxies (docs/FAILOVER-PLAN.md §12.5): its primary's copies, or its own that the Failover panel
-  // removes — nothing here edits one, and a request in flight there is the mirror's, not one to cancel
+  // removes — the sheet opens read-only (its diagnostics are B's own), and a request in flight there is the mirror's, not
+  // one to cancel
   const roWhy = foRoWhy(node);
-  const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete" && !roWhy;   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
+  const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
   const xCancel = roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`;
   return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} title=${roWhy || null} data-rid=${it ? it.rid : null}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>${T("val|turn")}</span><span class="ifname">${shownTitle("t|" + node + "|" + tp.service, tp.title) || forkLabel(turnFork(tp.service))}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title=${T("Via this turn-proxy")} cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
@@ -384,7 +385,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   const optSvcs = new Set(optTurns.map(o => o.svc));
   const optCard = (svc, d) => { const lp = portOf(d.connect); const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp); const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
     return html`<div class="ifcard tp down" key=${"new:" + svc}>
-      <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(svc)}>${T("val|turn")}</span><span class="ifname">${d.title || forkLabel(turnFork(svc))}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[svc]}/><${StatusTag} cls="tg-pending" icon="clock" label="pending" title=${T("Assigned — waiting for the node to pick it up and install it")}/><button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.turnNew[node + "|" + svc]; cancelTurn(node, { service: svc }); }}><${Ic} i="x"/></button></div>
+      <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(svc)}>${T("val|turn")}</span><span class="ifname">${d.title || forkLabel(turnFork(svc))}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[svc]}/><${StatusTag} cls="tg-pending" icon="clock" label="pending" title=${T("Assigned — waiting for the node to pick it up and install it")}/>${roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.turnNew[node + "|" + svc]; cancelTurn(node, { service: svc }); }}><${Ic} i="x"/></button>`}</div>
       <div class="ifcard-rows">
         <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${forkLabel(turnFork(svc))}</span></div>
         <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${d.listen || "—"}</span></div>
@@ -424,7 +425,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         })}
     ${optTurns.map(o => optCard(o.svc, o.d))}
     ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${forkLabel(turnFork(s))}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">${T("deleting…")}</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${T("tag|pending")}</span>`}${roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button>`}</div></div>`) : null}
-    ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${T("adopting…")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">${T("adopting…")}</span><button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
+    ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${T("adopting…")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">${T("adopting…")}</span>${roWhy ? null : html`<button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button>`}</div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
     </div>
   <//>`;
 }
@@ -612,6 +613,10 @@ export function TurnManageSheet({ node, tp }) {
   const [busy, setBusy] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);   // node down / mid re-install / convert / update → disable every action here, same as the node-detail buttons
   const dis = busy || blocked;
+  // a failover node's proxy (§12.5): the sheet shows it (its Turn IPs, drops and throughput are B's own); it edits nothing,
+  // but a down copy keeps Reinstall — the updates door B keeps open (R3)
+  const roWhy = foRoWhy(node);
+  const roDis = dis || !!roWhy;
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const lhost = ipPickerVal(lsel, lcustom);
@@ -685,9 +690,9 @@ export function TurnManageSheet({ node, tp }) {
   const mh = isMobile() ? mTurnHead("TURN", (title || "").trim() || forkLabel(turnFork(svc)), forkLabel(turnFork(svc)), installed, gear, extras) : null;
   return html`<${Sheet} title=${mh ? mh.title : html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}${gear}`} width=${664} headExtra=${mh ? mh.headExtra : extras}
     foot=${html`<${Fragment}>
-      <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+      <button class="btn btn-ghost danger" disabled=${roDis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${roDis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
         : installing
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${true} title=${T("Installing…")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`
         // a looping proxy keeps Stop + Restart however its state flickers between crashes — systemd is still
@@ -695,12 +700,13 @@ export function TurnManageSheet({ node, tp }) {
         // crash would blink as badly as the verdict once did
         : ((!turnDown(tp) || looping) && !failed)
         ? html`<${Fragment}>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${roDis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${roDis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button>
           <//>`
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
       <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
-      <button class="btn btn-primary" disabled=${dis || !!tperr || !turnDirty} title=${tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+      <button class="btn btn-primary" disabled=${roDis || !!tperr || !turnDirty} title=${roWhy || tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+    ${roWhy ? html`<div class="notice" style="margin-bottom:16px"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     ${looping ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${turnLoopText(tp)}</span></div>` : null}
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${T("This node is busy or offline")}${nrec.proc_status ? html` (${procLabel(nrec.proc_status)})` : ""}${T(" — turn-proxy actions are disabled until it's reporting again.")}</span></div>` : null}
     <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.turnSeries(node, turnFork(svc), r).then(x => x && x.ok ? x.data : {})}/>
@@ -1466,6 +1472,8 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
   // nodes running this fork + the installed version (shared per fork on a node) + the service/iface list to act on
   const running = {};
   for (const [nid, snap] of Object.entries(Store.stats || {})) {
+    if ((csqtt || wdtt) && foRoWhy(nid)) continue;   // a failover node's servers run its primary's held build (§12.4): its
+    //                                                  version doors refuse them, as the updates list leaves them out
     // csqtt: one binary per (node, VERSION) — a node running 2.1 and 2.5 is two rows, each with its own build and hold
     if (csqtt) { for (const c of (snap.csqtt || [])) if (c && c.iface) { const ln = c.line || CSQTT_DEFAULT_LINE, k = ln === CSQTT_DEFAULT_LINE ? nid : nid + "@" + ln;
       const m = running[k] = running[k] || { version: "", ids: [], node: nid, line: ln }; if (c.version) m.version = c.version; m.ids.push(c.iface); } }
@@ -2030,7 +2038,7 @@ export function WdttCard({ node, w, reorder }) {
   // anything was happening. This is the interface card's `idim`, term for term.
   const wdim = deleting || adopting || converting || awaiting || restoring || !active || _wopBusy;
   const roWhy = foRoWhy(node);   // a failover node's copy: its page shows it, its primary edits it (§12.5)
-  const wCanOpen = !_wopBusy && !nblocked && !deleting && !adopting && !roWhy;   // don't open a sheet whose every action is disabled
+  const wCanOpen = !_wopBusy && !nblocked && !deleting && !adopting;   // don't open a sheet whose every action is disabled (on B it opens read-only)
   return html`<div class=${"ifcard tp" + (wCanOpen ? " clickable" : "") + (wdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!wCanOpen) return; openModal(html`<${WdttManageSheet} node=${node} w=${w}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype wdtt">WDTT</span>
@@ -2132,6 +2140,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
   const recreating = (nrec.wdtt_recreating || []).includes(iface);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
+  const roWhy = foRoWhy(node);   // a failover node's copy (§12.5): shown, its diagnostics B's own; Restore identity stays
   const notup = w.active !== "active" && !awaiting;   // stopped / starting → Start; else Stop + Restart
   // Endpoint + DTLS listen port, EDITABLE — writes to the same place as the interface edit (api.wdttSet).
   const ips = ipChoices(nrec);
@@ -2225,7 +2234,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
-  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting || !!roWhy} title=${roWhy || title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`;
   const extras = w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null;
   const mh = isMobile() ? mTurnHead("WDTT", title.trim() || iface, forkLabel, w.version, gear, extras) : null;
@@ -2234,14 +2243,15 @@ export function WdttManageSheet({ node, w: w0 }) {
     width=${664}
     headExtra=${mh ? mh.headExtra : extras}
     foot=${footRow({ left: html`<${Fragment}>
-        <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+        <button class="btn btn-ghost danger" disabled=${!!roWhy} onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this WDTT server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this WDTT server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr || !!roWhy, onAction: save, action: T("Save") })}>
+    ${roWhy ? html`<div class="notice" style="margin-bottom:12px"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${Trich("This server was wiped. Its identity (server keypair + owner password) is *escrowed in your Encryption Vault*. *Restore* to bring it back with its original identity — no user re-imports.")}
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" disabled=${restoring || recreating} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>
-        <button class="btn btn-ghost" disabled=${restoring || recreating} onClick=${() => wdttRecreateFresh(node, iface)}>${recreating ? T("Recreating…") : T("Recreate fresh")}</button>
+        <button class="btn btn-ghost" disabled=${restoring || recreating || !!roWhy} onClick=${() => wdttRecreateFresh(node, iface)}>${recreating ? T("Recreating…") : T("Recreate fresh")}</button>
       </div></span></div>`
     : html`<${Fragment}>
       <${IfaceThroughput} node=${node} iface=${iface}/>
@@ -2606,7 +2616,7 @@ export function CsqttCard({ node, c, reorder }) {
   const _opBusy = _op && _op.phase === "busy";
   const cdim = deleting || converting || !active || _opBusy;
   const roWhy = foRoWhy(node);   // a failover node's copy (§12.5), as the WDTT card
-  const canOpen = !_opBusy && !nblocked && !deleting && !roWhy;
+  const canOpen = !_opBusy && !nblocked && !deleting;   // on B it opens read-only
   return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (cdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} title=${roWhy || null} data-rid=${it ? it.rid : null} onClick=${() => { if (!canOpen) return; openModal(html`<${CsqttManageSheet} node=${node} c=${c}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype csqtt">CSQTT</span>
@@ -2631,6 +2641,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const [params, setParams] = useState((cfg.params || "").trim());
   const [srvOpen, setSrvOpen] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
+  const roWhy = foRoWhy(node);   // a failover node's copy (§12.5): shown, its diagnostics B's own, edited on its primary
   const notup = c.active !== "active";
   const ips = ipChoices(nrec);
   const oldListen = cfg.listen || c.listen || "";
@@ -2681,7 +2692,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     pushOptTitle("c|" + node + "|" + iface, title.trim());
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
-  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || !!roWhy} title=${roWhy || title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`;
   const extras = c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null;
   const mh = isMobile() ? mTurnHead("CSQTT", title.trim() || iface, "csqtt", c.version, gear, extras) : null;
@@ -2690,10 +2701,11 @@ export function CsqttManageSheet({ node, c: c0 }) {
     width=${664}
     headExtra=${mh ? mh.headExtra : extras}
     foot=${footRow({ left: html`<${Fragment}>
-        <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+        <button class="btn btn-ghost danger" disabled=${!!roWhy} onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this csqtt server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this csqtt server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr || !!roWhy, onAction: save, action: T("Save") })}>
+    ${roWhy ? html`<div class="notice" style="margin-bottom:12px"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     <${IfaceThroughput} node=${node} iface=${iface}/>
     <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>

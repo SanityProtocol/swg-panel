@@ -13631,7 +13631,8 @@ class _FoIface(_FoKind):
 # markers (noded would adopt a server B does not run, and hold for ever), one-shot requests and box pins.
 FO_TURN_FOLLOW = ("fork", "listen", "dns", "max_passwords", "params", "block", "p2p", "reach", "egress_mode",
                   "egress_node", "exit_id", "routing", "routing_exit_ips", "web_port",
-                  "title")                     # the console's name for it: B's card says what A's does (a proxy's follows too)
+                  "title")                     # the console's name for it: B's card says what A's does (a proxy's title
+#                                                 follows by FO_TP_FOLLOW, its own list)
 FO_WDTT_FOLLOW = FO_TURN_FOLLOW + ("wg_addr", "wg_port", "raw_port", "raw_iface", "raw_addr")
 FO_CSQTT_FOLLOW = FO_TURN_FOLLOW + ("line", "tun_addr", "app_routing", "app_routing_except")
 
@@ -14347,7 +14348,8 @@ def failover_ro_refusal(path, body, nodes, snaps=None, seen=None):
             or (path == "/api/turn/delete" and _fo_str(body.get("service")) in _fo_turn_b_own(nodes, snaps, seen, fo[b], b))
             # a proxy's version is never followed (§12.7 R2) and the auto-update is off by default: the updates sheet
             # moves B's proxies as it moves A's — B's own binary, nothing the mirror compares
-            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b)))):
+            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))
+                and _turn_can_manage((snaps or {}).get(b) or {}))):    # a box that cannot run it fails it (R3 review F28)
         return None
     return 409, {"ok": False, **perr("{v1} is a failover node: it mirrors {v2} and is read-only — edit {v2}, or detach it first",
                                      v1=nodes[b].get("name") or b, v2=nodes[fo[b]].get("name") or fo[b]),

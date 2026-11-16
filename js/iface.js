@@ -827,7 +827,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // stays (the door takes the browser's re-seal on B), everything that edits it is its primary's
   const roWhy = foRoWhy(node);
   const blocked = !live || inProc(nrec.proc_status) || !!roWhy;
-  const offWhy = roWhy || T("Unavailable while the node is down");
+  const offWhy = roWhy || T("Unavailable while the node is down / converting");
   const cfg = (isCsq ? (nrec.csqtt_cfg || {}) : (nrec.wdtt_cfg || {}))[iface] || {};
   // The node says it holds this server and that THIS panel does not claim it (see swg-noded's _CLAIMED).
   // Older nodes never send the flag; fall back to "we hold no record", which is the same fact seen from
@@ -904,7 +904,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
           // IPv4 CIDR", which reads as a corrupt server rather than a missing record. Reclaim writes the
           // record from what the node reports, keeping the users already in its store.
           ? html`<button class="btn btn-mini btn-primary" disabled=${blocked || reclaiming} onClick=${reclaim}
-              title=${T("Take this server back under the panel, keeping the users in its store")}><${Ic} i="check"/>${
+              title=${roWhy || T("Take this server back under the panel, keeping the users in its store")}><${Ic} i="check"/>${
               reclaiming ? T("Reclaiming…") : T("Reclaim")}</button>`
           : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") || awaiting ? null : notup
           ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? offWhy : (isCsq ? T("Bring this csqtt server up on the node") : T("Bring this WDTT server up on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "start")}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`

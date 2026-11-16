@@ -114,6 +114,11 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      sc-online    …on the first member running the server, not the one it is online on
      pf-kind      the preview's ports carry no kind (the sheet cannot word a server or a proxy)
      upd-door     the updates sheet's reinstall of B's proxy is refused
+     upd-wide     B's carve-out widened to edit or stop a copy
+     upd-manage   the reinstall is let through on a B that cannot manage proxies
+     sc-has       a WDTT device online nowhere is read on the primary, not the live member running the server
+     srv-title    B's WDTT / csqtt copy does not follow A's title
+     pf-dns-kind  the preview's dns warning carries no kind
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -224,8 +229,14 @@ PLANTS = {   # (file, anchor, replacement)
     "sc-online": ("recon", '''          ssn = pair.find(onl) || pair.find(has) || t.node;''', '''          ssn = pair.find(has) || t.node;'''),
     "pf-kind": ("panel", '''        warn["ports"] += [{"iface": n, "kind": k.kind, "port": _p} for _p in k.ports(src)]''',
                 '''        warn["ports"] += [{"iface": n, "port": _p} for _p in k.ports(src)]'''),
-    "upd-door": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b)))):''',
-                 '''            ):'''),
+    "upd-door": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))\n''',
+                 '''            or (path == "/api/turn/reinstall" and False\n'''),
+    "upd-wide": ("panel", '''            or (path == "/api/turn/reinstall" and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))\n''',
+                 '''            or (path in ("/api/turn/reinstall", "/api/turn/manage", "/api/turn/stop") and _fo_str(body.get("service")) in _FoTurn._rows((snaps or {}).get(b))\n'''),
+    "upd-manage": ("panel", '''\n                and _turn_can_manage((snaps or {}).get(b) or {}))):''', ''')):'''),
+    "sc-has": ("recon", '''          ssn = pair.find(onl) || pair.find(has) || t.node;''', '''          ssn = pair.find(onl) || t.node;'''),
+    "srv-title": ("panel", '''"web_port",\n                  "title")''', '''"web_port")'''),
+    "pf-dns-kind": ("panel", '''warn["dns"].append({"iface": n, "kind": k.kind, "host": host})''', '''warn["dns"].append({"iface": n, "host": host})'''),
     "keep-confirm": ("panel", '''        cut = bid if not take else aid                 # the member whose clients this cuts off''',
                      '''        cut = aid'''),
     "mesh-retire": ("panel", '''            need = {frozenset(ab) for ab in pairs}''', '''            pass'''),
@@ -1091,6 +1102,8 @@ def sec9():
                           {"na": NOW, "nb": NOW}, {"na": "nb"}, "w"),
         "w_online_on_b": ({"na": {"generated_at": NOW, "wdtt": [wrow(False)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(True)]}},
                           {"na": NOW, "nb": NOW}, {"na": "nb"}, "w"),
+        "w_stale_b_idle": ({"na": {"generated_at": NOW - 3600, "wdtt": [wrow(False)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(False)]}},
+                           {"na": NOW - 3600, "nb": NOW}, {"na": "nb"}, "w"),
         "w_b_down": ({"na": {"generated_at": NOW - 3600, "wdtt": [wrow(False)]}, "nb": {"generated_at": NOW, "wdtt": [wrow(False, "failed")]}},
                      {"na": NOW - 3600, "nb": NOW}, {"na": "nb"}, "w"),
         "w_nomirror": ({"na": {"generated_at": NOW, "wdtt": [wrow(True)]}}, {"na": NOW}, None, "w"),
@@ -1135,6 +1148,9 @@ console.log(JSON.stringify(out));
     check("[9] WDTT: both live, online on A: served by A", w["served"] == "na" and w["status"] == "online", w)
     w = out["w_online_on_b"]
     check("[9] WDTT: both live, online on B: served by B", w["served"] == "nb" and w["status"] == "online", w)
+    w = out["w_stale_b_idle"]
+    check("[9] WDTT: A stale, B running it, the password online nowhere: served by B, ready (R3 review F6)",
+          w["served"] == "nb" and w["t"] == "ready", w)
     w = out["w_b_down"]
     check("[9] WDTT: A stale, B's server down: read on A — unknown", w["served"] == "na" and w["t"] == "unknown", w)
     w = out["w_nomirror"]
@@ -1379,6 +1395,11 @@ def sec14():
     n["na"]["wdtt"]["wdtt1"]["max_passwords"] = 40
     P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
     check("[14] a change on A follows", n["nb"]["wdtt"]["wdtt1"].get("max_passwords") == 40, n["nb"]["wdtt"]["wdtt1"])
+    n["na"]["wdtt"]["wdtt1"]["title"], n["na"]["csqtt"]["csqtt1"]["title"] = "Calls", "Office"
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    check("[14] …the title too: B's card names it as A's does (R3 review F7)",
+          n["nb"]["wdtt"]["wdtt1"].get("title") == "Calls" and n["nb"]["csqtt"]["csqtt1"].get("title") == "Office",
+          (n["nb"]["wdtt"]["wdtt1"].get("title"), n["nb"]["csqtt"]["csqtt1"].get("title")))
 
     n2 = t_fleet(); n2["na"]["wdtt"]["wdtt1"]["key_blob"]["vault"] = "an-older-vault"
     P.failover_mirror(DEPS, n2, "nb", snaps, seen, now=NOW)
@@ -1498,6 +1519,16 @@ def sec14():
           and {"iface": "csqtt1", "kind": "csqtt", "port": 56002} in pf["warn"]["ports"]
           and any(x["iface"] == "wdtt1" for x in pf["warn"]["ip_endpoint"])
           and not any(x["iface"] == "csqtt1" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
+    _res = P._fo_resolves_to
+    P._fo_resolves_to = lambda h, ips: False         # the domain resolves elsewhere (no DNS in a gate; a public node IP:
+    #                                                 a documentation range is private to ipaddress)
+    try:
+        pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, t_fleet(), "na",
+                                  {"na": dict(snaps["na"], node_ips=["93.184.216.34"])}, {"na": NOW}, resolve=True)
+    finally:
+        P._fo_resolves_to = _res
+    check("[14] …a server whose domain does not point at A: the dns warning names its kind (R3 review F8)",
+          {"iface": "csqtt1", "kind": "csqtt", "host": "vpn.example.com"} in pf["warn"]["dns"], pf["warn"]["dns"])
     nv = t_fleet(); nv["na"]["wdtt"]["wdtt1"]["key_blob"]["vault"] = "an-older-vault"
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, nv, "na", snaps, {"na": NOW})
     check("[14] a WDTT whose key the vault cannot rebuild is refused, as an interface is",
@@ -1794,6 +1825,11 @@ def sec15():
           f("/api/turn/reinstall", {"node": "nb", "service": TPS, "tag": "v2.0"}) is None)
     check("[15] …and with no report of B's naming it, refused",
           (f("/api/turn/reinstall", {"node": "nb", "service": TPS}, {"na": sa}) or [0])[0] == 409)
+    check("[15] …nor on a B that cannot manage proxies (it would fail there for ever, R3 review F28)",
+          (f("/api/turn/reinstall", {"node": "nb", "service": TPS}, {"na": sa, "nb": dict(sn["nb"], turn_manage=False)}) or [0])[0] == 409)
+    check("[15] editing, stopping or restarting a copy B reports stays refused (only the reinstall is B's, R3 review F5)",
+          all((f(p_, {"node": "nb", "service": TPS, "listen": "1.2.3.4:1", "connect": "127.0.0.1:2"}) or [0])[0] == 409
+              for p_ in ("/api/turn/manage", "/api/turn/stop", "/api/turn/start", "/api/turn/restart", "/api/turn/rotate")))
 
     # R3: the updates sheet lists B's proxies, never its WDTT / csqtt — those run the build A is held on (§12.4)
     _tl = dict(P.TURN_LATEST)

@@ -120,7 +120,7 @@ export function gapOf(t) {
   if (!t || !sn || Store.recon.nodeStatus[sn] !== "live") return null;
   if (!(((Store.stats[sn] || {}).net_deps || {}).limits)) return "old";
   if (!isSelfContainedTgt(t)) return null;
-  const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
+  const nr = (Store.nodes || []).find(x => x.id === sn) || {};   // the serving member's build vouches or not (R3 review F2)
   return (nr.reach_unvouched || []).includes(t.iface) ? "unv" : rawUnvouchedIn(nr, t.iface) ? "raw" : null;   // the one RAW rule, nr in hand (verify F15/F21)
 }
 // Every gap a level's limit meets: the nodes (once each) and the keyless interfaces (once each, however many devices sit there).

@@ -446,9 +446,9 @@ export function privateUnenforced(peer) {
     if (!nodeEnforces(en)) {
       if (!seen.has(en)) { seen.add(en); out.push({ node: en, why: "old" }); }
     } else if (ifaceLevelOf(t) === "everyone" && (!Store.user(peer.user_id) || unvouchedTarget(t))) {
-      out.push({ node: t.node, iface: t.iface, why: Store.user(peer.user_id) ? "unvouched" : "no_user" });
+      out.push({ node: en, iface: t.iface, why: Store.user(peer.user_id) ? "unvouched" : "no_user" });
     } else if (ifaceLevelOf(t) === "everyone" && rawUnvouchedAt(t)) {
-      out.push({ node: t.node, iface: t.iface, why: "raw" });   // guarded by its WG address; the RAW one is not vouched, so not guarded
+      out.push({ node: en, iface: t.iface, why: "raw" });   // guarded by its WG address; the RAW one is not vouched, so not guarded
     }
   }
   return out;
@@ -473,14 +473,15 @@ const ifaceLevelOf = t => {
 const nodeEnforces = nid => ((Store.stats[nid] || {}).net_deps || {}).reach >= 2 && Store.recon.nodeStatus[nid] === "live";
 // A7: an instance whose REPORTED build cannot prove who owns a device acts as Nobody at "user" — on every path. One that proves
 // only its WireGuard path (`reach_unvouched_raw`) is rawUnvouchedAt's, below: a per-path note, never a level.
-const unvouchedTarget = t => (((Store.nodes || []).find(x => x.id === t.node) || {}).reach_unvouched || []).includes(t.iface);
+// A failover pair: the serving member's build is the one that vouches (`served`, as nodeEnforces reads it — R3 review F2).
+const unvouchedTarget = t => (((Store.nodes || []).find(x => x.id === (t.served || t.node)) || {}).reach_unvouched || []).includes(t.iface);
 // A WDTT instance whose build vouches for the WG path but not RAW (qWDTT 1.4.3): the panel's `reach_unvouched_raw` names the
 // INSTANCE, which is what a deployment's iface is (wdttN, never its RAW TUN wdttrawN — the clause that compared raw_iface with
 // it never matched, limits-l3 F5). Which path a device dials is the client's choice, so this is a per-path note, never a level:
 // at "Same user and their groups" a device connected over RAW is reached by nobody (A7); at Everyone a Private one is guarded
 // by its WG address only.
 export const rawUnvouchedIn = (nr, iface) => ((nr || {}).reach_unvouched_raw || []).includes(iface);   // with the node record in hand
-export const rawUnvouchedAt = t => !!t && rawUnvouchedIn((Store.nodes || []).find(x => x.id === t.node), t.iface);
+export const rawUnvouchedAt = t => !!t && rawUnvouchedIn((Store.nodes || []).find(x => x.id === (t.served || t.node)), t.iface);
 // Which deployment names a device's row, of those that let the viewer in (`lv` = each one's targetOpen, computed once). The first,
 // as always (spa_scale's equivalence with the pre-K3 walk) — unless RAW narrows it: on a qWDTT 1.4.3 instance at "user" a device
 // is reached over WG only (`raw`), while the same device at Everyone on awg0 is reached whichever path it dials. Then a deployment

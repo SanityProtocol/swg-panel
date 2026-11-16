@@ -2761,7 +2761,7 @@ export function foCopyText(node, kind, name) {
   return name;
 }
 export const FoCopy = ({ node, kind, name }) => FO_TAG[kind]
-  ? html`<span class="fo-copy"><span class=${"iftype " + FO_TAG[kind][0]}>${FO_TAG[kind][1] || T("val|turn")}</span>${foCopyText(node, kind, name)}</span>`
+  ? html`<span class="fo-copy"><span class=${"iftype " + FO_TAG[kind][0] + (kind === "turn" ? " tf-" + turnFork(name) : "")}>${FO_TAG[kind][1] || T("val|turn")}</span>${foCopyText(node, kind, name)}</span>`   // a proxy's fork colour, as its card
   : name;
 
 export function openFailoverSetup(node) { openModal(html`<${FailoverSetupSheet} node=${node}/>`); }

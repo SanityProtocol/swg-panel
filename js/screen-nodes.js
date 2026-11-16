@@ -1355,18 +1355,18 @@ function FailoverTag({ fo }) {
     title=${T("{v1} keeps a live copy of {v2}", { v1: Store.nodeName(fo.failover), v2: Store.nodeName(fo.primary) })}/>`;
 }
 // a turn proxy's followed fields as its sheet names them (§12.7 R2: listen, connect, params)
-const foTpField = k => ({ listen: T("listen address"), connect: T("forward address"), params: T("server settings") })[k] || k;
+const foTpField = k => ({ listen: T("listen address"), connect: T("Forwards to"), params: T("Server parameters") })[k] || k;
 function foWhy(r, bn, an) {
   const iface = !r.kind || r.kind === "iface";
   switch (r.why) {
-    case "no_turn": return T("{v1} can't run turn proxies — turn-proxy management is off there", { v1: bn });
+    case "no_turn": return T("{v1} can't run turn proxies — turn-proxy management is off there, or there is no build for its CPU", { v1: bn });
     case "name_taken": return T("{v1} has a mesh link by this name, so it is not copied there — its clients have only {v2}", { v1: bn, v2: an });
     case "primary_no_key": return T("the panel holds no confirmed key of {v1}'s for it yet, so the copy on {v2} can't be checked", { v1: an, v2: bn });
     case "no_copy": return T("not on {v1} yet — a copy needs its key in the vault; if this stays, set up or unlock the vault", { v1: bn });
     case "awaiting_key": return T("waiting for its key — unlock the vault in this browser to hand it over");
     case "creating": return T("being created on {v1}", { v1: bn });
     case "awg": return T("needs AmneziaWG 3.1 on {v1} — update that node", { v1: bn });
-    case "down": return iface ? T("down on {v1} — it is being brought back", { v1: bn }) : T("not running on {v1} — its page says why", { v1: bn });
+    case "down": return iface ? T("down on {v1} — it is being brought back", { v1: bn }) : T("not running on {v1} — its logs there say why", { v1: bn });
     case "key": return r.resync ? T("{v1} runs it with a different key — re-sync it", { v1: bn })
       : T("{v1} runs it with a different key, and the vault the panel holds can't rebuild {v2}'s — unlock or set up the vault", { v1: bn, v2: an });
     case "subnet": return T("{v1} runs it on a different subnet — re-sync it", { v1: bn });
@@ -1402,8 +1402,8 @@ function FailoverPanel({ nrec }) {
   const waiting = (fo.rows || []).some(r => r.why === "awaiting_key");
   const unlock = async () => {
     const ok = await ensureVaultUnlocked({ always: true, title: T("Unlock to hand over the keys"),
-      reason: T("{v1} is waiting for {v2}'s interface keys. They are sealed to your vault: unlock it, and this browser re-seals each key to {v1} — the panel never sees one.", { v1: bn, v2: an }),
-      consequence: T("{v1} keeps waiting, and serves nobody on those interfaces until the vault is unlocked here.", { v1: bn }) });
+      reason: T("{v1} is waiting for {v2}'s keys. They are sealed to your vault: unlock it, and this browser re-seals each key to {v1} — the panel never sees one.", { v1: bn, v2: an }),
+      consequence: T("{v1} keeps waiting, and serves nobody on those copies until the vault is unlocked here.", { v1: bn }) });
     if (!ok) return;
     // a pass that ran while the vault was locked, or before B listed the interface, marked it tried: the press asks again
     ifaceKeyRetry(b); ifaceKeyAutoRestore(); toast(T("Handing the keys to {v1}…", { v1: bn }), "ok");
@@ -1422,7 +1422,7 @@ function FailoverPanel({ nrec }) {
           ? html`<button class="btn btn-mini danger" onClick=${() => tpDel(svc)}><${Ic} i="trash"/> ${T("Remove")}</button>` : null}</span>`)}</span></div>`
     : html`<div class="ifrow ifrow-stack"><span class="l">${p.kind === "cmd_errors"
     ? T("{v1} reports commands that failed — its page says which", { v1: bn })
-    : T("{v1} runs interfaces the panel doesn't manage — remove them on that server", { v1: bn })}</span><span class="r">${(p.ifaces || []).join(", ")}</span></div>`);
+    : T("{v1} runs interfaces or servers the panel doesn't manage — remove them on that server", { v1: bn })}</span><span class="r">${(p.ifaces || []).join(", ")}</span></div>`);
   const actions = html`<div class="panel-tools">
     ${waiting ? html`<button class="btn btn-mini" onClick=${unlock}><${Ic} i="key"/> ${T("Unlock vault")}</button>` : null}
     ${fo.resync ? html`<button class="btn btn-mini" style="margin-left:9px" onClick=${() => openFailoverResync(bRec)}><${Ic} i="refresh"/> ${T("Re-sync")}</button>` : null}
