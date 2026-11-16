@@ -192,8 +192,7 @@ PLANTS = {   # (file, anchor, replacement)
         return "current" if bk == blessed else "stale"'''),
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
-    "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown") or not r["kind"].moves:',
-                      '        if r["cc"] != "current" or not r["kind"].moves:'),
+    "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):', '        if r["cc"] != "current":'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
                     '    if left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    else:\n        _dk = "took over {v1}"'),
@@ -246,7 +245,10 @@ PLANTS = {   # (file, anchor, replacement)
     'tp-pending': ("panel", 'bool(bs) and _turn_can_manage(bs) and n not in (w.get("turn") or {})', 'bool(bs) and _turn_can_manage(bs)'),
     'tp-capable': ("panel", '    return snap.get("turn_manage") is not False and snap.get("turn_capable") is not False', '    return True'),
     'tp-retry': ("panel", '_FO_TP_TRIED.get((w.get("id"), n), 0) >= FO_TP_RETRY', '_FO_TP_TRIED.get((w.get("id"), n), 0) >= 0'),
-    'tp-installing': ("panel", 'if _TURN_SVC_RE.match(n) and not x.get("installing")', 'if _TURN_SVC_RE.match(n)'),
+    'tp-installing': ("panel", 'if _TURN_SVC_RE.match(n) and not (x.get("installing") and "params" not in x)', 'if _TURN_SVC_RE.match(n)'),
+    'tp-updating': ("panel", 'if _TURN_SVC_RE.match(n) and not (x.get("installing") and "params" not in x)',
+                    'if _TURN_SVC_RE.match(n) and not x.get("installing")'),
+    'tp-own-manage': ("panel", '    if not isinstance(bsnap, dict) or not _turn_can_manage(bsnap):\n        return set()', ''),
     'tp-flap': ("panel", ' or rep.get("running") is False or rep.get("flapping"):', ' or rep.get("running") is False:'),
     'tp-firewall': ("panel", 'for lp in self.ports(r["src"]):               # as an interface\'s: B\'s declared firewall shuts what clients dial (F7)',
                     'for lp in ():'),
@@ -1621,7 +1623,9 @@ def sec15():
     check("[15] B never reported: nothing staged", not nx["nb"].get("turn"), nx["nb"].get("turn"))
     P._FO_TP_TRIED.clear()
     nx = fleet()
-    P.failover_mirror(DEPS, nx, "nb", {"na": dict(sa, turn_proxies=[tp_row(installing=True, params="")]), "nb": sb}, seen, now=NOW)
+    _mark = {k: v for k, v in tp_row(installing=True, running=False, owner="cacggghp/vk-turn-proxy").items()
+             if k in ("service", "listen", "connect", "owner", "running", "installing")}   # noded's marker row (swg-noded:2046)
+    P.failover_mirror(DEPS, nx, "nb", {"na": dict(sa, turn_proxies=[_mark]), "nb": sb}, seen, now=NOW)
     check("[15] a proxy A is still installing (no params yet): not copied until A runs it (R2 F36)",
           not nx["nb"].get("turn"), nx["nb"].get("turn"))
     for bad in ("0.0.0.0:\u00b2", "0.0.0.0:" + "1" * 5000):
@@ -1684,6 +1688,11 @@ def sec15():
     check("[15] B runs it as A does: no row", TPS not in rows, rows.get(TPS))
     rows, _ = view(fleet(), dict(sb, turn_proxies=[tp_row(running=False)]))
     check("[15] B's proxy not running: down", rows.get(TPS, {}).get("why") == "down" and rows[TPS]["state"] == "problem", rows.get(TPS))
+    rows, _ = view(fleet(), sbr, dict(sa, turn_proxies=[tp_row(installing=True)]))
+    check("[15] A updating its proxy (installing, params kept): B's copy is still a copy, still checked (verify F52)",
+          TPS not in rows, rows.get(TPS))
+    rows, _ = view(fleet(), dict(sbr, turn_proxies=[tp_row(bind_ip="", running=False)]), dict(sa, turn_proxies=[tp_row(installing=True)]))
+    check("[15] …and a copy down on B is still said while A updates (verify F52)", rows.get(TPS, {}).get("why") == "down", rows.get(TPS))
     rows, _ = view(fleet(), dict(sb, turn_proxies=[tp_row(flapping=40)]))
     check("[15] B's proxy crash-looping (running between restarts): down (R2 F8)", rows.get(TPS, {}).get("why") == "down", rows.get(TPS))
     rows, _ = view(fleet(), dict(sbr, udp_ports="51820-51899"))
@@ -1711,6 +1720,9 @@ def sec15():
     nu = fleet(); nu["nb"]["turn"] = {"vk-turn-proxy-cacggghp-56300": {"action": "delete", "at": NOW}}
     fv = P.failover_view(nu, roster(), "na", "nb", {"na": sa, "nb": _b2}, seen, frozenset(), now=NOW, ivk=IVK)
     check("[15] …nor one whose delete is already staged (R2 F21)",
+          not any(x["kind"] == "unmanaged_turn" for x in fv["problems"]), fv["problems"])
+    fv = P.failover_view(fleet(), roster(), "na", "nb", {"na": sa, "nb": dict(_b2, turn_manage=False)}, seen, frozenset(), now=NOW, ivk=IVK)
+    check("[15] …nor on a B that cannot manage proxies (every delete would fail there, verify F49)",
           not any(x["kind"] == "unmanaged_turn" for x in fv["problems"]), fv["problems"])
 
     # the take-over and detach: a proxy has no roster target and no identity — nothing to move, nothing they remove
@@ -1755,8 +1767,8 @@ def sec15():
     check("[15] a primary with proxies alone (they forward to its interfaces) is refused (R2 F23)",
           any("no interfaces" in x["why"] for x in pf["refused"]), pf["refused"])
 
-    # the auto-updater: B's copies are B's own binaries — B's own hold holds them (R3 opens B's updates sheet; the setup
-    # carried A's holds once), A's does not (R2 F6/F12/F38: nothing would ever give B A's held build)
+    # the auto-updater: B's copies are B's own binaries — B's own hold holds them (R3 opens B's updates sheet, whose
+    # rollback sets it), A's does not (R2 F6/F12/F38: nothing would ever give B A's held build)
     def tick(holds):
         td = tempfile.mkdtemp(dir=TMP)
         json.dump({"turn_update": {"every_days": 1, "at": "04:00"}}, open(os.path.join(td, "ps.json"), "w"))

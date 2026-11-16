@@ -13225,8 +13225,9 @@ def failover_carry_settings(deps, aid, bid):
         if deps.get("panel_settings_path"):
             save_critical(deps["panel_settings_path"], json.dumps(ps, indent=2) + "\n")
         deps["panel_settings"] = ps
-    # the builds A is held on (a rollback of WDTT, a csqtt line, a turn fork): B ran them through `rid`; on its own it reads
-    # its own id, and would swap the binary under the clients it just took over (card review F2)
+    # the builds A is held on (a rollback of WDTT, a csqtt line, a turn fork): B's servers ran them through `rid`, and on its
+    # own B reads its own id, and would swap the binary under the clients it just took over (card review F2); a turn fork's
+    # hold is per node while B mirrors (B's proxies are its own binaries), and A's then says what A's clients were held on
     with _TURN_HOLDS_LOCK:
         d = _turn_holds_load()
         pre = str(aid) + "|"
@@ -13794,7 +13795,8 @@ class _FoServer(_FoKind):
 # safe, B repairs itself while A is down) and follows `listen connect params title` as each box reports them — noded
 # reports `listen` as configured (SWG_DIAL, else SWG_LISTEN: what clients dial, never the bound wildcard), so the
 # comparison settles; `params` carries A's wrap key, which A's clients hold. Never: the "Listen on" pin (B's addresses
-# are its own), stop/start, the version after the install (the panel-wide auto-update moves both; a hold on A holds B).
+# are its own), stop/start, the version after the install (the panel-wide auto-update moves both, each by its own hold; the
+# updates sheet reinstalls B's, R3).
 # Never deleted: once its install request clears nothing tells B's copy from a proxy of B's own, so one A no longer
 # reports is listed as B's own (`unmanaged_turn`) and the operator removes it — the one turn door B keeps open.
 FO_TP_FOLLOW = ("listen", "connect", "params", "title")
@@ -13828,9 +13830,10 @@ class _FoTurn(_FoKind):
 
     def a(self, a_rec, asnap):
         # what can be installed as reported: a service name the node accepts, an address pair, no control characters; not
-        # one A is still installing (its marker row has no params yet: B would run it without A's wrap key, R2 F36)
+        # one A is still setting up (its marker row has no params yet: B would run it without A's wrap key, R2 F36); one A is
+        # updating keeps its params and stays a copy (verify F52)
         return {n: x for n, x in self._rows(asnap).items()
-                if _TURN_SVC_RE.match(n) and not x.get("installing")
+                if _TURN_SVC_RE.match(n) and not (x.get("installing") and "params" not in x)
                 and isinstance(x.get("listen"), str) and valid_hostport(x["listen"].strip())
                 and isinstance(x.get("connect"), str) and valid_hostport(x["connect"].strip())
                 and no_ctrl(str(x.get("params") or "")) and no_ctrl(str(x.get("title") or ""))}
@@ -13919,10 +13922,12 @@ def _fo_turn_b_own(nodes, snaps, seen, aid, bid, now=None):
     """B's own proxies — B's to remove (§12.1: the mirror never deletes): what B reports that A's LIVE report does not name,
     nor a request of A's (a rebuilt A reports none until its re-issued installs land, R2 F4). A not reporting: none —
     a report confirms, never condemns (§12.3); the door then refuses, fail-closed."""
-    asnap = (snaps or {}).get(aid)
+    asnap, bsnap = (snaps or {}).get(aid), (snaps or {}).get(bid)
     if not _fo_live(seen, aid, now) or not isinstance(asnap, dict) or not isinstance(asnap.get("turn_proxies"), list):
         return set()
-    return set(_FoTurn._rows((snaps or {}).get(bid))) - set(_FoTurn._rows(asnap)) - set((nodes.get(aid) or {}).get("turn") or {})
+    if not isinstance(bsnap, dict) or not _turn_can_manage(bsnap):
+        return set()                                  # a box that cannot manage one fails every delete (verify F49)
+    return set(_FoTurn._rows(bsnap)) - set(_FoTurn._rows(asnap)) - set((nodes.get(aid) or {}).get("turn") or {})
 
 
 _FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False), _FoTurn())
@@ -38452,9 +38457,7 @@ class Handler(BaseHTTPRequestHandler):
                     done = svc in tps or age > 240   # generous: download can take a couple minutes
                 elif act in ("manage", "restart"):
                     done = (tp and ("listen" not in req or tp.get("listen") == req["listen"])
-                            and ("connect" not in req or tp.get("connect") == req["connect"]) and age >= 5) or age > 60
-                    # >= 5: one sync interval — a request staged inside a sync (the failover mirror's) is shipped by it, and
-                    # the next one reports it applied; `> 5` shipped it twice and restarted the proxy twice (R2 review F14)
+                            and ("connect" not in req or tp.get("connect") == req["connect"]) and age > 5) or age > 60
                 elif act == "title":                # clears once the node's record shows the new title
                     done = (tp is not None and tp.get("title", "") == req.get("title", "")) or age > 30
                 elif act == "stop":                 # clears once the node reports it stopped (or it's gone)
