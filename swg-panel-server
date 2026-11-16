@@ -13765,10 +13765,12 @@ class _FoServer(_FoKind):
         if not p:
             return
         if _fp_bind_host(bov["listen"]):
-            if _ip_literal(h):                            # A's own address: B's links would dial A (F3) — every address of
-                bov["listen"] = ("[::]:%d" if ":" in h else "0.0.0.0:%d") % p   # B's, in the family it had (F38)
-        elif host and not _ip_literal(host):              # every address: its links read A's endpoint domain, which B's
-            bov["listen"] = "%s:%d" % (host, p)           # node lacks — carried as an interface's take does (F37)
+            if _ip_literal(h):                            # A's own address: B's links would dial A (F3) — every IPv4 address
+                bov["listen"] = "0.0.0.0:%d" % p          # of B's: what the relay dials and every link builder reads (F42)
+        elif host and not _ip_literal(host) and h in ("", "0.0.0.0", "*"):
+            bov["listen"] = "%s:%d" % (host, p)           # the IPv4 wildcard: its links read A's endpoint domain, which B's
+            #                                               node lacks — carried as an interface's take does (F37); an IPv6
+            #                                               wildcard stays (a name binds IPv4 only, F44)
 
 
 _FO_KINDS = (_FoIface(), _FoServer("wdtt", FO_WDTT_FOLLOW, True), _FoServer("csqtt", FO_CSQTT_FOLLOW, False))

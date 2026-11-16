@@ -108,7 +108,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      pf-turn      the preview's "turn proxies not copied" reads only a pending request
      r2-del       a server copy whose delete is staged reads as unmanaged
      r2-domain    a take-over leaves a server listening on every address without A's domain
-     r2-v6        a take-over turns an IPv6 listen into an IPv4 wildcard
+     r3-v6wild    a take-over carries A's domain into an IPv6 wildcard (B then binds IPv4 only)
      r2-nolisten  a take-over of a server with no listen raises half-way
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
@@ -248,7 +248,7 @@ PLANTS = {   # (file, anchor, replacement)
     # R1 card round 1 (review F1–F35)
     'srv-ledger': ("panel", '                if fo and t["node"] in fo:', '                if fo and t["node"] in fo and not _is_self_contained_target(t):'),
     'srv-hold-carry': ("panel", '        if add:\n            d.update(add)', '        if False:\n            d.update(add)'),
-    'srv-take-host': ("panel", '                bov["listen"] = ("[::]:%d" if ":" in h else "0.0.0.0:%d") % p', '                pass'),
+    'srv-take-host': ("panel", '                bov["listen"] = "0.0.0.0:%d" % p          # of B', '                pass  # of B'),
     'srv-rows-type': ("panel", 'if isinstance(x, dict) and isinstance(x.get("iface"), str) and x["iface"]}', 'if isinstance(x, dict) and x.get("iface")}'),
     'srv-firewall': ("panel", '            if ctx["ranges"] and not any(x <= lp <= y for x, y in ctx["ranges"]):\n                return "problem", "firewall", {"port": lp}\n        return "ready", "", {}\n\n    def absent',
                      '            if False:\n                return "problem", "firewall", {"port": lp}\n        return "ready", "", {}\n\n    def absent'),
@@ -259,7 +259,7 @@ PLANTS = {   # (file, anchor, replacement)
     'srv-absent': ("panel", 'return _FoKind.absent(self, ctx) if self.identity else ("syncing", "creating", {})', 'return _FoKind.absent(self, ctx)'),
     'r2-del': ("panel", ' and n not in (b.get(k.fam + "_delete") or {})}', '}'),
     'r2-domain': ("panel", '            bov["listen"] = "%s:%d" % (host, p)', '            pass'),
-    'r2-v6': ("panel", '("[::]:%d" if ":" in h else "0.0.0.0:%d") % p', '"0.0.0.0:%d" % p'),
+    'r3-v6wild': ("panel", ' and h in ("", "0.0.0.0", "*"):', ':'),
     'r2-nolisten': ("panel", '        if not p:\n            return\n        if _fp_bind_host(bov["listen"]):', '        if _fp_bind_host(bov["listen"]):'),
     'pf-turn': ("panel", '    if snap.get("turn_proxies") or a.get("turn"):', '    if a.get("turn"):'),
     'upd-b': ("panel", '''        if kind != "turn" and nid in _fob:''', '''        if False:'''),
@@ -1394,19 +1394,22 @@ def sec14():
     check("[14] …A's records go as their delete doors drop them, B's stay as B's own",
           "wdtt1" not in (nt["na"].get("wdtt") or {}) and "wdtt1" in (nt["na"].get("wdtt_delete") or {})
           and "wdtt1" in nt["nb"]["wdtt"] and "failover_of" not in nt["nb"], (nt["na"].get("wdtt"), nt["nb"].get("wdtt")))
-    for lst, want in (("0.0.0.0:56000", "a.example.com:56000"), ("[2001:db8::1]:56000", "[::]:56000"), (None, None)):
-        nx = t_fleet()
-        if lst is None:
-            del nx["na"]["wdtt"]["wdtt1"]["listen"]
-        else:
-            nx["na"]["wdtt"]["wdtt1"]["listen"] = lst
-        P.failover_mirror(DEPS, nx, "nb", snaps, seen, now=NOW)
-        try:
-            P.failover_takeover(nx, json.loads(json.dumps(r)), "na", "nb", P._fo_holds(nx, sn, "na", "nb", True), sn)
-            got = nx["nb"]["wdtt"]["wdtt1"].get("listen")
-        except Exception as e:
-            got = "raised %r" % e
-        check("[14] take-over of a server listening on %s: %s (F37, F38, F39)" % (lst, want or "nothing to move, no error"), got == want, got)
+    for fam, n_ in (("wdtt", "wdtt1"), ("csqtt", "csqtt1")):                 # each kind (F48)
+        for lst, want in (("0.0.0.0:56000", "a.example.com:56000"), ("[2001:db8::1]:56000", "0.0.0.0:56000"),
+                          ("[::]:56000", "[::]:56000"), (None, None)):
+            nx = t_fleet()
+            if lst is None:
+                del nx["na"][fam][n_]["listen"]
+            else:
+                nx["na"][fam][n_]["listen"] = lst
+            P.failover_mirror(DEPS, nx, "nb", snaps, seen, now=NOW)
+            try:
+                P.failover_takeover(nx, json.loads(json.dumps(r)), "na", "nb", P._fo_holds(nx, sn, "na", "nb", True), sn)
+                got = nx["nb"][fam][n_].get("listen")
+            except Exception as e:
+                got = "raised %r" % e
+            check("[14] take-over of a %s server listening on %s: %s (F37, F39, F42, F44)" % (fam, lst, want or "nothing to move, no error"),
+                  got == want, got)
     check("[14] …a server A served on its own IP listens on every address of B's now (its links dial B, F3); a domain stays",
           nt["nb"]["wdtt"]["wdtt1"].get("listen") == "0.0.0.0:56000" and nt["nb"]["csqtt"]["csqtt1"].get("listen") == "vpn.example.com:56002",
           (nt["nb"]["wdtt"]["wdtt1"].get("listen"), nt["nb"]["csqtt"]["csqtt1"].get("listen")))
@@ -1443,7 +1446,7 @@ def sec14():
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, nw, "na", snaps, {"na": NOW})
     check("[14] a server listening on every address is dialled at the node's domain: no IP warning (F9)",
           not any(x["iface"] == "wdtt1" for x in pf["warn"]["ip_endpoint"])
-          and P._FO_KINDS[1].dial_host(nw["na"], nw["na"]["wdtt"]["wdtt1"], {}, "wdtt1") == "a.example.com", pf["warn"]["ip_endpoint"])
+          and next(k for k in P._FO_KINDS if getattr(k, "fam", "") == "wdtt").dial_host(nw["na"], nw["na"]["wdtt"]["wdtt1"], {}, "wdtt1") == "a.example.com", pf["warn"]["ip_endpoint"])
     try:
         P.failover_idle(n, {"na": {"wdtt": [{"iface": ["x"]}, {"iface": "wdtt1", "passwords": ["a"]}]},
                             "nb": {"csqtt": [{"iface": "csqtt1", "passwords": "s"}]}}, seen, now=NOW)
@@ -1461,7 +1464,7 @@ def sec14():
     check("[14] a server B runs that the panel holds no record of: listed as unmanaged (F12)",
           any(p.get("kind") == "unmanaged" and "wdtt5" in p.get("ifaces", []) for p in fv["problems"]), fv["problems"])
     nfd = t_fleet(); P.failover_mirror(DEPS, nfd, "nb", snaps, seen, now=NOW)
-    P._FO_KINDS[1].drop(nfd["nb"], "wdtt1", NOW)          # a Re-sync's drop: B reports it until its next sync
+    next(k for k in P._FO_KINDS if getattr(k, "fam", "") == "wdtt").drop(nfd["nb"], "wdtt1", NOW)   # a Re-sync's drop (F47: by kind)
     fv = P.failover_view(nfd, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()]}),
                          seen, frozenset(), now=NOW, ivk=IVK)
     check("[14] …never one whose delete is staged — a Re-sync or a drop in flight (F36)",
