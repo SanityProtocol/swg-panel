@@ -14021,7 +14021,7 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
         _mc = mesh_cfg(deps)
         warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
-    if a.get("turn"):
+    if snap.get("turn_proxies") or a.get("turn"):    # what A runs (its report), or one being set up (F11)
         warn["not_mirrored"].append({"kind": "turn", "name": ""})
     # B has no exits (§7): what the mirror's own prunes take off B's copy — run on a scratch copy of what it follows
     _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs,

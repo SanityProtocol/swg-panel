@@ -105,6 +105,7 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      srv-absent      a csqtt copy not made yet says "waiting for the vault"
      srv-reply-rid   the sync handler builds B's WDTT reply without its primary's passwords
      upd-b        the updates sheet lists B's WDTT / csqtt, whose Update is refused there
+     pf-turn      the preview's "turn proxies not copied" reads only a pending request
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error, gzip
 
@@ -252,6 +253,7 @@ PLANTS = {   # (file, anchor, replacement)
     'srv-unmanaged': ("panel", '            um |= {n for n in k.a_reports(bsnap) if n not in k.b(b)}', '            pass'),
     'srv-own': ("panel", 'not in _fo_srcs(nodes[fo[b]], None)      # B', 'not in _fo_user_ifaces(nodes[fo[b]])      # B'),
     'srv-absent': ("panel", 'return _FoKind.absent(self, ctx) if self.identity else ("syncing", "creating", {})', 'return _FoKind.absent(self, ctx)'),
+    'pf-turn': ("panel", '    if snap.get("turn_proxies") or a.get("turn"):', '    if a.get("turn"):'),
     'upd-b': ("panel", '''        if kind != "turn" and nid in _fob:''', '''        if False:'''),
     'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)'),
 }
@@ -1406,6 +1408,10 @@ def sec14():
           and {"iface": "csqtt1", "port": 56002} in pf["warn"]["ports"]
           and any(x["iface"] == "wdtt1" for x in pf["warn"]["ip_endpoint"])
           and not any(x["iface"] == "csqtt1" for x in pf["warn"]["ip_endpoint"]), pf["warn"])
+    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, t_fleet(), "na",
+                              dict(snaps, na=dict(snaps["na"], turn_proxies=[{"service": "vk-turn-proxy-x-1"}])), {"na": NOW})
+    check("[14] a turn proxy A runs, no request pending: the preview says it is not copied (F11)",
+          [x for x in pf["warn"]["not_mirrored"] if x["kind"] == "turn"], pf["warn"]["not_mirrored"])
     nv = t_fleet(); nv["na"]["wdtt"]["wdtt1"]["key_blob"]["vault"] = "an-older-vault"
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, nv, "na", snaps, {"na": NOW})
     check("[14] a WDTT whose key the vault cannot rebuild is refused, as an interface is",
