@@ -175,8 +175,7 @@ PLANTS = {   # (file, anchor, replacement)
     _fo_snaps''', '''    _fo_b = None
     _fo_snaps'''),
     "served": ("recon", '''      const mb = cfg.mirrors ? cfg.mirrors[t.node] : null;''', '''      const mb = null;'''),
-    "portok": ("panel", '''"lan_share", "ip_learning", "p2p", "p2p_portok", "p2p_portok_none", "catalog_cats")''',
-               '''"lan_share", "ip_learning", "p2p", "p2p_portok", "catalog_cats")'''),
+    "portok": ("panel", '''"p2p_portok", "p2p_portok_none", "catalog_cats",''', '''"p2p_portok", "catalog_cats",'''),
     "blob-follow": ("panel", '        if src.get("key_blob") and bov.get("public_key") == src.get("public_key") and bov.get("key_blob") != src["key_blob"]:',
                       '        if False:'),
     "walk-pos": ("panel", '''key=lambda kv: (kv[0] in idle, _pos[failover_rid(nodes, kv[0])])''', '''key=lambda kv: (kv[0] in idle, _pos[kv[0]])'''),
