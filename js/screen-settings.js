@@ -4895,7 +4895,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
     ${fill ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><span>${T("A copy of {v1}'s exit. Paste this server's own config from the provider — the same config can't run on two servers. The title and settings follow {v1}.", { v1: Store.nodeName(foSrcOf(node.id)) })}</span></div>` : null}
     <div class=${isDialin ? (isNew ? "" : "row2 dinrow") : "row2"}>
       <div class="field"><label>${T("Title")}</label>
-        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40" disabled=${!!fill} ...${NOT_A_LOGIN}
+        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40" ...${NOT_A_LOGIN} disabled=${!!fill}
           onInput=${e => set({ label: e.target.value })}/></div>
       ${isDialin && !isNew ? html`<div class="field dinport"><label>${T("Port")}</label>
         <input inputmode="numeric" value=${confIfLine(txt, "ListenPort") ?? ""} placeholder=${dinPort0}
