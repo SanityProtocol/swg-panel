@@ -1318,6 +1318,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .deppop.fo-bub{max-width:min(300px,calc(100vw - 16px))}
 .fo-bub .fo-bub-h{font-weight:600;color:var(--ink);margin-bottom:3px}
 .fo-bub .fo-bub-st{margin-top:7px;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2)}
+.fo-bub .fo-bub-sv{margin-top:6px;font-size:12px;color:var(--ink-2)}   /* the primary down: who serves its clients now */
 .fo-bub .fo-bub-st::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--online);flex:none}
 .fo-bub .fo-bub-st.fo-wait::before{background:var(--amber)}
 .fo-bub .fo-bub-st.fo-bad::before{background:var(--dangling)}

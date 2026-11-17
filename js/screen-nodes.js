@@ -14,7 +14,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foHeldOf } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foHeldOf, foServingOn } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -364,8 +364,8 @@ export function NodeDetail({ node: rawName }) {
               Transfer follows the sheet's own rule: while one is in flight the button WATCHES it rather
               than starting a second. */ null}
         ${nrec.failover ? null : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Add a failover node — a second server that keeps a live copy of this one, ready to take its clients")} onClick=${() => openFailoverSetup(nrec)}><${Ic} i="shield"/></button>`}
-        <button class="iconbtn" disabled=${edBlocked} title=${edWhy || T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(nrec)}><${Ic} i="server"/></button>
-        <button class="iconbtn" disabled=${edBlocked || !!nrec.failover} title=${edWhy || (nrec.failover ? T("Detach its failover node before a transfer") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead"))} onClick=${() => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec))}><${Ic} i="link"/></button>
+        ${ro ? null : html`<button class="iconbtn" disabled=${blocked} title=${edWhy || T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(nrec)}><${Ic} i="server"/></button>`}
+        ${ro ? null : html`<button class="iconbtn" disabled=${blocked || !!nrec.failover} title=${edWhy || (nrec.failover ? T("Detach its failover node before a transfer") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead"))} onClick=${() => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec))}><${Ic} i="link"/></button>`}
         <button class="iconbtn danger" title=${nrec.removing ? T("Force remove node") : T("Remove node")} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
         <//>`}
         ${/* §3.1: the door for a node that is NOT reporting — and it says "or migrate" because not
@@ -461,7 +461,7 @@ export function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title=${T("User interfaces")} tone="ready" count=${userKeys.length + wdttIfaces.length + Object.keys(nrec.wdtt_cfg || {}).filter(ifn => !wdttIfaces.some(w => w.iface === ifn)).length + csqttIfaces.length + Object.keys(nrec.csqtt_cfg || {}).filter(ifn => !csqttIfaces.some(c => c.iface === ifn)).length}
-        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" disabled=${ro} title=${roWhy || T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> ${mr > 1 ? T("Restore {v1}", { v1: plural(mr, "interface") }) : T("Restore interface")}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${edBlocked || nrec.turn_arch_ok === false} title=${edWhy || (nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy"))} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${isMobile() ? T("New proxy") : T("Setup turn-proxy")}</button>` : null}${isMobile() ? html`<button class="btn btn-mini ico" title=${T("These interfaces' live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: ["iface:*"] })}><${Ic} i="doc"/></button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${edBlocked} title=${edWhy} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Create new interface")}</button><//>`}>
+        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr && !ro ? html`<button class="btn btn-mini restore" title=${T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> ${mr > 1 ? T("Restore {v1}", { v1: plural(mr, "interface") }) : T("Restore interface")}</button>` : null; })()}${!ro && turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${edWhy || (nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy"))} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${isMobile() ? T("New proxy") : T("Setup turn-proxy")}</button>` : null}${isMobile() ? html`<button class="btn btn-mini ico" title=${T("These interfaces' live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: ["iface:*"] })}><${Ic} i="doc"/></button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button>${ro ? null : html`<button class="btn btn-mini" disabled=${blocked} title=${edWhy} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${isMobile() ? T("rowact|New") : T("Create new interface")}</button>`}<//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -582,7 +582,7 @@ export function NodeDetail({ node: rawName }) {
                 { iface: ifn, subnet: mi.subnet || "?" }), false, T("Its original server key can't be recovered"));
           return html`<a class="ifcard missing" key=${"missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the interface (read-only) — peers, saved config, and Restore")}>
             <div class="ifcard-top"><span class=${"iftype " + mtype + (awgDict3(mi.awg_params) ? " awg3" : "")} ...${tip3(awgDict3(mi.awg_params))}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <button class="mi-restore" disabled=${edBlocked || !mi.ripe} title=${mi.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> ${T("Restore")}</button>
+              ${ro ? null : html`<button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> ${T("Restore")}</button>`}
               <${StatusTag} cls="tg-del" icon="warn" label="missing" title=${T("This interface is gone from the node")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
         // GHOST card — a lost interface with NO recoverable key (cold: no saved config; or a keyless missing
@@ -591,7 +591,7 @@ export function NodeDetail({ node: rawName }) {
         const gcard = (ifn, g) => { const gp = ghostPeers(name, ifn);
           return html`<a class="ifcard ghost" key=${"ghost:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the interface (read-only) — recreate & rekey")}>
             <div class="ifcard-top"><span class="iftype gh">${T("tag|gone")}</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <button class="mi-restore ghost" disabled=${edBlocked || !g.ripe} title=${g.ripe ? T("Recreate this interface with a NEW key and rekey every peer on it (clients re-import)") : T("Confirming it's really gone (a couple of minutes) before Recreate is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> ${T("Recreate")}</button>
+              ${ro ? null : html`<button class="mi-restore ghost" disabled=${blocked || !g.ripe} title=${g.ripe ? T("Recreate this interface with a NEW key and rekey every peer on it (clients re-import)") : T("Confirming it's really gone (a couple of minutes) before Recreate is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> ${T("Recreate")}</button>`}
               <${StatusTag} cls="tg-del" icon="warn" label="ghost" title=${T("Gone with no recoverable key — recreate fresh + rekey")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${goneSentence(T("The node no longer reports {iface}, and {verdict} — there's nothing to restore. Recreate it with a new key; {count} get fresh configs to re-import.", { iface: ifn, count: plural(gp.length, "peer") }), false, T("its server key can't be recovered"))}</div></div></a>`; };
         // MISSING WDTT server: the panel still wants it (wdtt_cfg) but the node reports nothing for it in
@@ -627,10 +627,10 @@ export function NodeDetail({ node: rawName }) {
                 { iface: ifn, subnet: wc.wg_addr || "?" }), false, T("No escrowed identity is stored"));
           return html`<a class=${"ifcard missing" + (never ? " failed" : "")} key=${"wdtt-missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${never ? T("This server was never installed — remove it or fix the cause") : T("Open the WDTT server (read-only) — details and Restore")}>
             <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              ${never ? null : html`<button class="mi-restore" disabled=${blocked || restoring || (ro && !vaulted)} title=${ro && !vaulted ? roWhy : vaulted ? T("Bring this WDTT server back with its original identity — no user re-imports") : T("Recreate this WDTT server with a NEW identity — every user re-imports")}
+              ${never || (ro && !vaulted) ? null : html`<button class="mi-restore" disabled=${blocked || restoring} title=${vaulted ? T("Bring this WDTT server back with its original identity — no user re-imports") : T("Recreate this WDTT server with a NEW identity — every user re-imports")}
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); vaulted ? wdttRestoreIdentity(name, ifn) : wdttRecreateFresh(name, ifn); }}><${Ic} i=${vaulted ? "shield" : "refresh"}/> ${restoring ? T("Restoring…") : vaulted ? T("Restore") : T("Recreate")}</button>`}
-              <button class="mi-restore danger" disabled=${blocked || ro} title=${roWhy || T("Remove this WDTT server from the panel")}
-                onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${WdttDeleteSheet} node=${name} iface=${ifn}/>`); }}><${Ic} i="trash"/> ${T("Delete")}</button>
+              ${ro ? null : html`<button class="mi-restore danger" disabled=${blocked} title=${T("Remove this WDTT server from the panel")}
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${WdttDeleteSheet} node=${name} iface=${ifn}/>`); }}><${Ic} i="trash"/> ${T("Delete")}</button>`}
               <${StatusTag} cls="tg-del" icon="warn" label=${never ? T("not installed") : "missing"} title=${never ? nerr : T("This WDTT server is gone from the node")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
         // ADOPTING card — a take-over in flight, before the node has started the server. Same chrome as the
@@ -1334,8 +1334,8 @@ function NodeMoreSheet({ id }) {
   return html`<${Sheet} title=${Store.nodeName(id)} noGuard=${true}>
     <div class="msheet"><div class="msheet-g">
       ${row("key", T("Rotate token"), () => openNodeRotate(nrec))}
-      ${row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked || ro)}
-      ${row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked || ro || !!nrec.failover)}
+      ${ro ? null : row("server", T("Migrate"), () => openNodeMigrate(nrec), blocked)}
+      ${ro ? null : row("link", T("Transfer"), () => (nrec.transfer ? openNodeTransferWatch(nrec) : openNodeTransfer(nrec)), blocked || !!nrec.failover)}
       ${nrec.failover ? null : row("shield", T("Add failover node"), () => openFailoverSetup(nrec), blocked)}
       ${ro ? row("x", T("Detach"), () => openFailoverDetach(nrec)) : null}
       ${/* flagged for removal: the way back, which the desktop has on the Health panel (F5) */""}
@@ -1385,6 +1385,9 @@ export function FoMark({ n }) {
     <div>${isB ? T("A read-only copy of {v1}. If {v1} goes down, point its domain here.", { v1: an })
       : T("{v1} keeps a live copy of this node. If this node goes down, point its domain at {v1}.", { v1: bn })}</div>
     <div class=${"fo-bub-st " + tone}>${T("Copy's state: {v1}", { v1: label })}</div>
+    ${fo.primary_live || fo.state === "offline" ? null : (() => { const k = foServingOn(fo.primary, fo.failover);   // the primary down, the failover node up
+      return html`<div class="fo-bub-sv">${k ? T("{v1} is serving {v2}'s clients — online there now: {v3}.", { v1: bn, v2: an, v3: plural(k, "device") })
+        : T("{v1} is not reporting. Point its domain at {v2} so its clients reconnect there.", { v1: an, v2: bn })}</div>`; })()}
   <//>`;
 }
 function FailoverTag({ fo, nid }) {
@@ -1445,6 +1448,8 @@ function FailoverPanel({ nrec }) {
   const isB = nrec.id === b;
   const bRec = (Store.nodes || []).find(n => n.id === b) || {};
   const bLive = fo.state !== "offline";
+  // the primary down and the failover node up: how many of its devices are online there — the repoint took (foServingOn)
+  const serving = !fo.primary_live && bLive ? foServingOn(a, b) : 0;
   const waiting = (fo.rows || []).some(r => r.why === "awaiting_key");
   const unlock = async () => {
     const ok = await ensureVaultUnlocked({ always: true, title: T("Unlock to hand over the keys"),
@@ -1480,7 +1485,8 @@ function FailoverPanel({ nrec }) {
       : T("{v1} keeps a live copy of this node: the same interfaces, WDTT and csqtt servers, turn proxies, keys, ports and peers. If this node goes down, point its domain at {v1} and clients reconnect there.", { v1: bn })}
       ${/* who serves, while both report — with A down the notice below says what to do, and the planner's pick would name A */""}
       ${fo.primary_live && bLive ? " " + T("Serving now: {v1}.", { v1: fo.serving === b ? bn : an }) : ""}</p>
-    ${fo.primary_live ? null : bLive ? html`<div class="notice warn"><${Ic} i="warn"/><span>${bAddr
+    ${fo.primary_live ? null : bLive && serving ? html`<div class="notice ok"><${Ic} i="check"/><span>${T("{v1} is not reporting; {v2} is serving its clients — online there now: {v3}.", { v1: an, v2: bn, v3: plural(serving, "device") })}</span></div>`
+      : bLive ? html`<div class="notice warn"><${Ic} i="warn"/><span>${bAddr
       ? T("{v1} is not reporting. Point its domain at {v2} ({v3}) so its clients reconnect there.", { v1: an, v2: bn, v3: bAddr })
       : T("{v1} is not reporting. Point its domain at {v2} so its clients reconnect there.", { v1: an, v2: bn })}</span></div>`
       : html`<div class="notice danger"><${Ic} i="err"/><span>${T("Neither {v1} nor {v2} is reporting — bring one of them back before you move the domain.", { v1: an, v2: bn })}</span></div>`}

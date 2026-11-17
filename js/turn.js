@@ -616,7 +616,6 @@ export function TurnManageSheet({ node, tp }) {
   // a failover node's proxy (§12.5): the sheet shows it (its Turn IPs, drops and throughput are B's own); it edits nothing,
   // but a down copy keeps Reinstall — the updates door B keeps open (R3)
   const roWhy = foRoWhy(node);
-  const roDis = dis || !!roWhy;
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const lhost = ipPickerVal(lsel, lcustom);
@@ -690,22 +689,22 @@ export function TurnManageSheet({ node, tp }) {
   const mh = isMobile() ? mTurnHead("TURN", (title || "").trim() || forkLabel(turnFork(svc)), forkLabel(turnFork(svc)), installed, gear, extras) : null;
   return html`<${Sheet} title=${mh ? mh.title : html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}${gear}`} width=${664} headExtra=${mh ? mh.headExtra : extras} noGuard=${!!roWhy}
     foot=${html`<${Fragment}>
-      <button class="btn btn-ghost danger" disabled=${roDis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+      ${roWhy ? null : html`<button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>`}
       ${stopped
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${roDis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
+        ? roWhy ? null : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${(isMobile() ? T("rowact|Start") : T("Start service"))}</button>`
         : installing
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${true} title=${T("Installing…")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`
         // a looping proxy keeps Stop + Restart however its state flickers between crashes — systemd is still
         // retrying it, so those are the controls that act on it, and a footer that swapped to Reinstall on every
         // crash would blink as badly as the verdict once did
         : ((!turnDown(tp) || looping) && !failed)
-        ? html`<${Fragment}>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${roDis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${roDis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button>
+        ? roWhy ? null : html`<${Fragment}>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${(isMobile() ? T("rowact|Stop") : T("Stop service"))}</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${(isMobile() ? T("rowact|Restart") : T("Restart service"))}</button>
           <//>`
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
-      <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${T("Cancel")}</button>
-      <button class="btn btn-primary" disabled=${roDis || !!tperr || !turnDirty} title=${roWhy || tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost btn-dismiss" onClick=${closeModal}>${roWhy ? T("Close") : T("Cancel")}</button>
+      ${roWhy ? null : html`<button class="btn btn-primary" disabled=${dis || !!tperr || !turnDirty} title=${tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button>`}</>`}>
     ${roWhy ? html`<div class="notice" style="margin-bottom:16px"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     ${looping ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${turnLoopText(tp)}</span></div>` : null}
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${T("This node is busy or offline")}${nrec.proc_status ? html` (${procLabel(nrec.proc_status)})` : ""}${T(" — turn-proxy actions are disabled until it's reporting again.")}</span></div>` : null}
@@ -2234,7 +2233,9 @@ export function WdttManageSheet({ node, w: w0 }) {
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
-  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting || !!roWhy} title=${roWhy || title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  // a failover node's copy (§12.5): its controls are not there at all (operator, 2026-11-17: hidden reads cleaner than
+  // disabled); the notice below says why, and the sheet shows the copy read-only with a Close
+  const control = (verb, icon, label, title) => roWhy ? null : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`;
   const extras = w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null;
   const mh = isMobile() ? mTurnHead("WDTT", title.trim() || iface, forkLabel, w.version, gear, extras) : null;
@@ -2244,15 +2245,15 @@ export function WdttManageSheet({ node, w: w0 }) {
     headExtra=${mh ? mh.headExtra : extras}
     noGuard=${!!roWhy}
     foot=${footRow({ left: html`<${Fragment}>
-        <button class="btn btn-ghost danger" disabled=${!!roWhy} onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+        ${roWhy ? null : html`<button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>`}
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this WDTT server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this WDTT server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr || !!roWhy, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, ...(roWhy ? { cancelLabel: T("Close") } : { disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") }) })}>
     ${roWhy ? html`<div class="notice" style="margin-bottom:12px"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${Trich("This server was wiped. Its identity (server keypair + owner password) is *escrowed in your Encryption Vault*. *Restore* to bring it back with its original identity — no user re-imports.")}
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" disabled=${restoring || recreating} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>
-        <button class="btn btn-ghost" disabled=${restoring || recreating || !!roWhy} onClick=${() => wdttRecreateFresh(node, iface)}>${recreating ? T("Recreating…") : T("Recreate fresh")}</button>
+        ${roWhy ? null : html`<button class="btn btn-ghost" disabled=${restoring || recreating} onClick=${() => wdttRecreateFresh(node, iface)}>${recreating ? T("Recreating…") : T("Recreate fresh")}</button>`}
       </div></span></div>`
     : html`<${Fragment}>
       <${IfaceThroughput} node=${node} iface=${iface}/>
@@ -2693,7 +2694,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     pushOptTitle("c|" + node + "|" + iface, title.trim());
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
-  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || !!roWhy} title=${roWhy || title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  const control = (verb, icon, label, title) => roWhy ? null : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`;
   const extras = c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null;
   const mh = isMobile() ? mTurnHead("CSQTT", title.trim() || iface, "csqtt", c.version, gear, extras) : null;
@@ -2703,10 +2704,10 @@ export function CsqttManageSheet({ node, c: c0 }) {
     headExtra=${mh ? mh.headExtra : extras}
     noGuard=${!!roWhy}
     foot=${footRow({ left: html`<${Fragment}>
-        <button class="btn btn-ghost danger" disabled=${!!roWhy} onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+        ${roWhy ? null : html`<button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>`}
         ${notup ? control("start", "play", (isMobile() ? T("rowact|Start") : T("Start service")), T("Bring this csqtt server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", (isMobile() ? T("rowact|Stop") : T("Stop service")), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", (isMobile() ? T("rowact|Restart") : T("Restart service")), T("Bounce this csqtt server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr || !!roWhy, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, ...(roWhy ? { cancelLabel: T("Close") } : { disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") }) })}>
     ${roWhy ? html`<div class="notice" style="margin-bottom:12px"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
     <${IfaceThroughput} node=${node} iface=${iface}/>
     <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>

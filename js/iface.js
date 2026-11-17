@@ -700,6 +700,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type + (type === "awg" && awgDict3(ap) ? " awg3" : "")} ...${tip3(type === "awg" && awgDict3(ap))}>${type}</span>${meta ? awgSwitchTag(node, iface) : null}${missIf ? html`<span class="nstat down"><${Ic} i="warn"/> ${T("tag|missing")}</span>` : ghostIf ? html`<span class="nstat down"><${Ic} i="warn"/> ${T("tag|ghost")}</span>` : istopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || (T("down on the node — {v1}", { v1: idown }))} onClick=${() => openConfirm({ title: T("Interface down on the node"), log: (nrec.cmd_errors || {})[iface] || (T("down on the node — {v1}", { v1: idown })), confirmLabel: T("Close") })}><${Ic} i="warn"/> ${T("tag|down")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
+    ${roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}   ${/* a failover node's copy: its controls are not there at all (operator, 2026-11-17: hidden reads cleaner than disabled) — this says why */""}
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${ifaceDownNote((nrec.cmd_errors || {})[iface] || idown)}</span>
       ${/* The repair, on the card the operator is already looking at. A down interface whose DEVICE is gone
             used to be a dead end: it is reported, so it never reaches missing_ifaces, /api/iface/recreate
@@ -735,7 +736,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
         <//></>`
       : !meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This interface hasn't been reported in a snapshot yet.")}</span></div>`
       : html`<${Panel} icon="key" title=${T("Interface details")} tone=${type === "awg" ? "" : "online"}
-          actions=${Store.ifaceGone[node + "|" + iface]
+          actions=${roWhy ? null : Store.ifaceGone[node + "|" + iface]
             // Delete already submitted, the node has not torn it down yet. Leaving Stop/Restart/Edit live
             // invites commands against an interface that is going away; show what is happening instead.
             ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
@@ -768,7 +769,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length || foHeld || 0} pad=${false}
         lead=${foHeld != null ? null : html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
-        actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
+        actions=${roWhy || Store.ifaceGone[node + "|" + iface] ? null   // a failover node's copy, or teardown in flight → adding a peer to it is a dead end
           : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> ${T("Add peer")}</button>`}>
       ${foHeld != null ? html`<${FoPeersNote} node=${node} iface=${iface} n=${foHeld}/>`
         : html`<${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>`}
@@ -894,17 +895,18 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
       <div class="grow"></div>
     </div>
+    ${roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}   ${/* a failover node's copy: its controls are not there at all (operator, 2026-11-17: hidden reads cleaner than disabled) — this says why */""}
     ${adopting && failErr   /* the attempt failed and the node retries: say why and how it ends — never "never created" or Remove here */
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node couldn't take this server over yet: *{err}*. It keeps trying — once that server is stopped, the take-over completes; otherwise the panel stops trying 5 minutes after the take-over started.", { err: failErr })}</span></div>`
       : adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.")}</span></div>` : null}
     ${never ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node refused to install this server, so it was never created: *{err}*. Fix that and create it again, or remove it — there is no identity to restore and nothing to recreate.", { err: failErr })}
-      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary danger" disabled=${!!roWhy} title=${roWhy} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> ${T("Remove this server")}</button></div></span></div>`
+      ${roWhy ? null : html`<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary danger" onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> ${T("Remove this server")}</button></div>`}</span></div>`
     : awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${missing ? T("This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).") : T("This server was wiped.")} ${restorable
       ? Trich("Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. *Restore* to bring it back with its original identity, or *Recreate fresh* (every user re-imports).")
       : Trich("*No identity is escrowed for it*, so it can only come back with a new key — every user re-imports.")}
-      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${restorable ? html`<button class="btn btn-primary" disabled=${restoring} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>` : null}<button class=${restorable ? "btn btn-ghost" : "btn btn-primary"} disabled=${restoring || !!roWhy} title=${roWhy} onClick=${() => wdttRecreateFresh(node, iface)}>${T("Recreate fresh")}</button></div></span></div>` : null}
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${restorable ? html`<button class="btn btn-primary" disabled=${restoring} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>` : null}${roWhy ? null : html`<button class=${restorable ? "btn btn-ghost" : "btn btn-primary"} disabled=${restoring} onClick=${() => wdttRecreateFresh(node, iface)}>${T("Recreate fresh")}</button>`}</div></span></div>` : null}
     <${Panel} icon="key" title=${T("Interface details")} tone="online"
-        actions=${Store.ifaceGone[node + "|" + iface]
+        actions=${roWhy ? null : Store.ifaceGone[node + "|" + iface]
           // Delete already submitted, the node has not torn it down yet — same guard as the wg/awg page.
           ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
           : adopting
@@ -939,7 +941,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
 
     <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length || foHeld || 0} pad=${false}
         lead=${foHeld != null ? null : html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
-        actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
+        actions=${roWhy || Store.ifaceGone[node + "|" + iface] ? null   // a failover node's copy, or teardown in flight → adding a peer to it is a dead end
           : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? offWhy : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> ${T("Add peer")}</button>`}>
       ${foHeld != null ? html`<${FoPeersNote} node=${node} iface=${iface} n=${foHeld}/>`
         : html`<${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>`}

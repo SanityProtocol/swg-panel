@@ -639,10 +639,21 @@ export const tgtSeenAge = t => (t && t.observed) ? t.observed.handshake_age : ((
 // The primary a failover node copies (docs/FAILOVER-PLAN.md §4.7), or "" for any other node.
 export const foSrcOf = id => Store.isMirror(id) ? (((Store.nodes || []).find(x => x.id === id) || {}).failover_of || "") : "";
 // A failover node is a read-only copy of its primary. Every control that edits a node or its interfaces reads this ONE
-// sentence: "" for any other node, else why the control is off — its disabled state and its title.
+// sentence: "" for any other node, else why the controls are not there — on a failover node they are hidden, not
+// disabled (operator, 2026-11-17), and each screen shows this once as its notice.
 export const foRoWhy = id => {
   const a = foSrcOf(id);
   return a ? T("Read-only: this node is a copy of {v1} — change {v1} instead", { v1: Store.nodeName(a) }) : "";
+};
+// How many of the primary's devices are online on its failover node right now — the proof a domain repoint took
+// (operator, 2026-11-17: once the primary goes down, say the failover node is serving). reconcile gives each target on a
+// pair `served`, the member the device is online on (else a live one with the interface, else the primary), so a target
+// of `aid` served by `bid` AND online is a device on the failover node. Callers ask only while the primary is not
+// reporting — one pass over the peers then, nothing on a healthy fleet's poll.
+export const foServingOn = (aid, bid) => {
+  let n = 0;
+  for (const p of (Store.recon.peers || [])) if ((p.targets || []).some(t => t.node === aid && t.served === bid && t.online)) n++;
+  return n;
 };
 // How many peers a failover node's copy of `iface` HOLDS — from the failover node's own report, the one fact behind "they
 // are on this server" (operator, 2026-11-16: its interfaces must not read as empty; verify F5/F8: never the primary's count,

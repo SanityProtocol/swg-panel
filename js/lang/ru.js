@@ -6435,6 +6435,8 @@ export const STR = {
   "{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.": "{v1} не указывает на {v2} — проверьте запись. Проксируемая запись не пропускает WireGuard.",
   "{v1} is an ordinary node now": "{v1} теперь обычная нода",
   "{v1} is not reporting. Point its domain at {v2} so its clients reconnect there.": "{v1} не выходит на связь. Направьте её домен на {v2}, чтобы клиенты переподключились туда.",
+  "{v1} is not reporting; {v2} is serving its clients — online there now: {v3}.": "{v1} не выходит на связь; её клиентов обслуживает {v2} — сейчас там в сети: {v3}.",
+  "{v1} is serving {v2}'s clients — online there now: {v3}.": "Клиентов {v2} обслуживает {v1} — сейчас там в сети: {v3}.",
   "{v1} is not reporting. Point its domain at {v2} ({v3}) so its clients reconnect there.": "{v1} не выходит на связь. Направьте её домен на {v2} ({v3}), чтобы клиенты переподключились туда.",
   "{v1} is serving clients right now: they lose their connection there.": "{v1} сейчас обслуживает клиентов: там они потеряют соединение.",
   "{v1} is waiting for {v2}'s keys. They are sealed to your vault: unlock it, and this browser re-seals each key to {v1} — the panel never sees one.": "{v1} ждёт ключи {v2}. Они запечатаны в вашем хранилище: откройте его, и этот браузер перепечатает каждый ключ для {v1} — панель их не видит.",
