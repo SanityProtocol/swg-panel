@@ -676,29 +676,30 @@ export const foServingOn = (aid, bid) => {
 // not a copy. iface "" → the node's total. Every target names the primary, so the panel lists these peers there.
 // foCountsOf gives the same copies' { held, online } — online from the same report (a peer's handshake, a password's
 // session), so a failover node's cards read online / total like any node's (operator, 2026-11-17: never hide the count).
-const _foCount = (id, iface) => {
+// Online only while that node is live: a stale report keeps its last flags, and reconcile counts none there (review F1).
+export const foCountsOf = (id, iface) => {
   if (!Store.isMirror(id)) return null;
   const st = Store.stats[id] || {}, nr = (Store.nodes || []).find(x => x.id === id) || {};
+  const live = (Store.recon.nodeStatus || {})[id] === "live";
   const own = new Set(nr.unmanaged_ifaces || []);
   const one = n => {
     const fam = (nr.wdtt_cfg || {})[n] ? "wdtt" : (nr.csqtt_cfg || {})[n] ? "csqtt" : "";
     if (fam) {                                    // a recorded server: its passwords, none while it is not reported yet
       const sc = (st[fam] || []).find(x => x && x.iface === n);
       const pw = Object.values((sc && sc.passwords) || {});
-      return { held: pw.length, online: pw.filter(p => p && p.online).length };
+      return { held: pw.length, online: live ? pw.filter(p => p && p.online).length : 0 };
     }
     if (Store.ifaceIsSystem(id, n) || own.has(n)) return null;
     const i = (st.interfaces || {})[n];
     if (!i) return null;
     const orph = new Set((Store.recon.orphans || []).filter(o => o.node === id && o.iface === n).map(o => o.pubkey));   // unmanaged peers (F18)
     const mine = (i.peers || []).filter(p => p && !orph.has(p.public_key));
-    return { held: mine.length, online: mine.filter(p => p.online).length };
+    return { held: mine.length, online: live ? mine.filter(p => p.online).length : 0 };
   };
   if (iface) return one(iface);
   return Store.userIfacesOf(id).reduce((s, n) => { const c = one(n); return c ? { held: s.held + c.held, online: s.online + c.online } : s; }, { held: 0, online: 0 });
 };
-export const foHeldOf = (id, iface) => { const c = _foCount(id, iface); return c ? c.held : null; };
-export const foCountsOf = _foCount;
+export const foHeldOf = (id, iface) => { const c = foCountsOf(id, iface); return c ? c.held : null; };
 
 // An interface setting's name as the console says it — a rebuild's preview and a failover node's drift row (one map).
 export const ifFieldLabel = k => ({ mtu: T("MTU"), listen_port: T("port"), address: T("address"), awg_params: T("obfuscation") })[k] || k;

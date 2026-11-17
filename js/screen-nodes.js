@@ -1351,8 +1351,7 @@ const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg
   needs_vault: ["tg-pending", "key", T("fo|Waiting for the vault")], offline: ["tg-off", "info", T("fo|Not reporting")] })[st]
   || ["tg-warn", "warn", T("fo|Needs attention")];        // "problem", and any state this build does not know
 // A failover node's copy in place of "None" (operator, 2026-11-16: an empty-looking copy read as a fault): the peers it HOLDS,
-// from its own report, "listed on <primary>" — every target names the primary. None held (or not a copy): null, and "None"
-// stays, which is then the truth (verify F5, F7).
+// from its own report — every target names the primary. None held (or not a copy): null, and "None" stays, the truth then.
 // online / total, as any node's cell (operator, 2026-11-17: "why are we hiding it?") — the copies' own report; who lists them
 // is in the hover. `card`: the Nodes list's cell (its <small> total), else an interface card's row (its faint total).
 function foPeersCell(node, iface, card) {
