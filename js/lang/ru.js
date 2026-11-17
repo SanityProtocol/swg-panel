@@ -6448,7 +6448,6 @@ export const STR = {
   "{v1} keeps a live copy of this node. If this node goes down, point its domain at {v1}.": "{v1} держит живую копию этой ноды. Если эта нода упадёт, направьте её домен на {v1}.",
   "Copy's state: {v1}": "Состояние копии: {v1}",
   "These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.": "Эти пиры уже на этом сервере: копии пиров {v1}, которых панель показывает на {v1}. Они подключатся сюда, как только домен {v1} направят сюда.",
-  "listed on {v1}": "показаны на {v1}",
   "This interface is a copy of {v1}'s, listed there: {v2}. Each one is already on this server and connects here once {v1}'s domain points here.": "Этот интерфейс — копия интерфейса {v1}, на {v1} показано: {v2}. Каждый из них уже на этом сервере и подключится сюда, как только домен {v1} направят сюда.",
   "This interface is a copy of {v1}'s. Its peers are listed on {v1}; this server holds none of them yet.": "Этот интерфейс — копия интерфейса {v1}. Его пиры показаны на {v1}; на этом сервере их пока нет.",
   "Open it on {v1}": "Открыть на {v1}",

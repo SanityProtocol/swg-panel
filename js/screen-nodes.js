@@ -14,7 +14,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foHeldOf, foServingOn } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foCountsOf, foServingOn } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -1353,11 +1353,16 @@ const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg
 // A failover node's copy in place of "None" (operator, 2026-11-16: an empty-looking copy read as a fault): the peers it HOLDS,
 // from its own report, "listed on <primary>" — every target names the primary. None held (or not a copy): null, and "None"
 // stays, which is then the truth (verify F5, F7).
-function foPeersCell(node, iface) {
-  const n = foHeldOf(node, iface);
-  if (!n) return null;
+// online / total, as any node's cell (operator, 2026-11-17: "why are we hiding it?") — the copies' own report; who lists them
+// is in the hover. `card`: the Nodes list's cell (its <small> total), else an interface card's row (its faint total).
+function foPeersCell(node, iface, card) {
+  const c = foCountsOf(node, iface);
+  if (!c || !c.held) return null;
   const an = Store.nodeName(foSrcOf(node));
-  return html`<span class="fo-peers" title=${T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an })}><b>${n}</b> <span class="faint">${T("listed on {v1}", { v1: an })}</span></span>`;
+  const tip = T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an });
+  const on = html`<b class=${"oncount" + (c.online ? " on" : "")}>${c.online}</b>`;
+  return card ? html`<span class="nm-v nm-peers fo-peers" title=${tip}>${on}<small>/${c.held}</small></span>`
+    : html`<span class="fo-peers" title=${tip}>${on}<span class="faint">/${c.held}</span></span>`;
 }
 // The pair's state as node `nid` shows it: the failover node not reporting ("offline" — failover_view reads B's liveness
 // only) is a lost cover on the primary, so it reads as needing attention there (warn tag, red mark), and stays the stale
@@ -1998,7 +2003,7 @@ export function NodeCard({ n, reorder }) {
     <span class="nc-peers nm-item">${here.length
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
-      : html`<span class="nm-l">${T("Peers")}</span>${(c => c ? html`<span class="nm-v nm-peers">${c}</span>` : html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`)(foPeersCell(n.id, ""))}`}</span>
+      : html`<span class="nm-l">${T("Peers")}</span>${foPeersCell(n.id, "", true) || html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
       : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"
