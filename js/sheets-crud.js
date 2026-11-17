@@ -2636,7 +2636,8 @@ export function NodeEditSheet({ node }) {
              opens this door for a node silent past NODE_OFFLINE — the sheet promising a one-click rollback while
              the server arms the plan with supersede=False, so no rollback point is made and the tag never comes
              (caught in review). Two clocks would be a bug; two QUESTIONS, each answered by the side that acts. */
-          node.status === "online" && !foRoWhy(node.id) ? html`<${Fragment}>   ${/* a failover node: no Migrate / Transfer at all (operator, 2026-11-17: hidden, not disabled) */""}
+          foRoWhy(node.id) ? null   // a failover node: no Migrate / Transfer at all (operator, 2026-11-17: hidden, not disabled)
+          : node.status === "online" ? html`<${Fragment}>
           <button class="btn btn-ghost" title=${T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
           <button class="btn btn-ghost" disabled=${!!node.failover} title=${(node.failover ? T("Detach its failover node before a transfer") : T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead"))} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
           <//>` : null}

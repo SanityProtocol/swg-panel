@@ -649,11 +649,18 @@ export const foRoWhy = id => {
 // (operator, 2026-11-17: once the primary goes down, say the failover node is serving). reconcile gives each target on a
 // pair `served`, the member the device is online on (else a live one with the interface, else the primary), so a target
 // of `aid` served by `bid` AND online is a device on the failover node. Callers ask only while the primary is not
-// reporting — one pass over the peers then, nothing on a healthy fleet's poll.
+// reporting — nothing on a healthy fleet's poll. Kept per Store.recon (a new object every poll), so the Failover panel and
+// every pair mark of one render share one pass (review F3).
+let _fsv = { recon: null, m: null };
 export const foServingOn = (aid, bid) => {
-  let n = 0;
-  for (const p of (Store.recon.peers || [])) if ((p.targets || []).some(t => t.node === aid && t.served === bid && t.online)) n++;
-  return n;
+  if (_fsv.recon !== Store.recon) _fsv = { recon: Store.recon, m: new Map() };
+  const k = aid + "|" + bid;
+  if (!_fsv.m.has(k)) {
+    let n = 0;
+    for (const p of (Store.recon.peers || [])) if ((p.targets || []).some(t => t.node === aid && t.served === bid && t.online)) n++;
+    _fsv.m.set(k, n);
+  }
+  return _fsv.m.get(k);
 };
 // How many peers a failover node's copy of `iface` HOLDS — from the failover node's own report, the one fact behind "they
 // are on this server" (operator, 2026-11-16: its interfaces must not read as empty; verify F5/F8: never the primary's count,

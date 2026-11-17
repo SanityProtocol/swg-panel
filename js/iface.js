@@ -706,7 +706,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             used to be a dead end: it is reported, so it never reaches missing_ifaces, /api/iface/recreate
             refused it, and the node retried a doomed set-iface every 5s in silence (§7.5). It is the same
             repair as a missing interface and deliberately the same flow. */
-        (() => { const bi = brokenIface(node, iface); return bi ? html`<button class="btn btn-mini restore" style="margin-left:auto;flex:none" disabled=${!bi.ripe}
+        (() => { const bi = !roWhy && brokenIface(node, iface); return bi ? html`<button class="btn btn-mini restore" style="margin-left:auto;flex:none" disabled=${!bi.ripe}
           title=${bi.ripe ? T("The device is gone from the node — rebuild it from the saved config with its original server key") : T("Confirming it's really down (a couple of minutes) before Rebuild is offered")}
           onClick=${() => confirmRebuildInterface(node, iface, bi)}><${Ic} i="refresh"/> ${T("Rebuild interface")}</button>` : null; })()}
       </div>` : null}
@@ -716,7 +716,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
       ? T("Its original server key is recoverable, so Restore recreates it cleanly and every peer below reconnects with no changes.")
       : T("Its original server key can't be recovered, so Restore recreates it with a NEW key and the peers below must re-import a fresh config."))}</span></div>
         <${Panel} icon="key" title=${T("Interface details (saved)")} tone=""
-          actions=${html`<button class="btn btn-mini restore" disabled=${!missIf.ripe} title=${missIf.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${() => confirmRestoreInterface(node, iface, missIf)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`}>
+          actions=${roWhy ? null : html`<button class="btn btn-mini restore" disabled=${!missIf.ripe} title=${missIf.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${() => confirmRestoreInterface(node, iface, missIf)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`}>
           <div class="iface-grid">
             <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${((missIf.address ? missIf.address.split("/")[0] : "") + (missIf.listen_port ? ":" + missIf.listen_port : "")) || "—"}</span></div>
             <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${missIf.address || "—"}</span></div>

@@ -405,7 +405,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
           bare-metal-installer answer; on a declaratively-managed node it is simply false, and an
           operator sent looking for a socket mount they never made loses an afternoon. Key the reason
           off `platform` — T-P1 shipped it INSTEAD of the `managed_by` field the plan first named. */""}
-    ${!iface && roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}
+    ${/* a failover node's read-only sentence: the node page says it once at its top (fo-hide-serving F2) */""}
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>${nrec.declarative
       ? Trich("Turn-proxy management is *off* on this node — its configuration has it off (*turnManage*), so these are read-only here. Turn it on there and rebuild, or manage them on the box directly.")
       : Trich("Turn-proxy management is *off* on this node — no Docker socket was mounted at install (*TURN_MANAGE=manual*), so these are read-only here. Add, edit or restart them on the box directly.")}</span></div>` : null}

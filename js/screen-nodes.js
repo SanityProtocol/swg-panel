@@ -374,6 +374,7 @@ export function NodeDetail({ node: rawName }) {
           down && !ro ? html`<button class="iconbtn recover" title=${T("Rebuild this node from what the panel holds — a paste-on-the-server command that brings back its interfaces, keys and turn-proxies, on this box or a new one")} onClick=${() => openNodeRecover(nrec)}><${Ic} i="refresh"/> ${T("Restore or migrate")}</button>` : null}
       </div>
     </div>
+    ${roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}   ${/* a failover node: its controls are hidden (verify F2 of fo-hide-serving) — this says why, once */""}
 
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>${T("This node isn't sending any data right now")}</p></div>
       ${/* a failover node never installed still needs its Detach, which lives on this panel */""}
