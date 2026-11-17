@@ -1308,12 +1308,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .ncard:hover .nname{color:var(--brand)}
 /* the failover pair mark beside a node's name (js/screen-nodes.js FoMark): quiet while ready, a colour only when the pair
    needs a look. The glyph is the trigger; its bubble says who the twin is. */
-.fo-mark{display:inline-flex;align-items:center;flex:none;margin-left:6px;cursor:help;border-radius:4px;color:var(--faint)}
+.fo-mark{display:inline-flex;align-items:center;flex:none;margin-left:6px;cursor:help;border-radius:4px;color:var(--online)}   /* ready: green (operator 11-17: grey read as "inactive") */
 .fo-mark.fo-wait{color:var(--amber)}
 .fo-mark.fo-bad{color:var(--dangling)}
-.fo-mark:hover,.fo-mark.on{color:var(--ink-2)}
-.fo-mark.fo-wait:hover,.fo-mark.fo-wait.on{color:var(--amber)}
-.fo-mark.fo-bad:hover,.fo-mark.fo-bad.on{color:var(--dangling)}
+.fo-mark.fo-off{color:var(--unknown)}   /* a member not reporting: the stale grey of .tg-off */
 .fo-mark-g{display:inline-flex;padding:2px}
 .fo-mark-g svg{display:block}
 .deppop.fo-bub{max-width:min(300px,calc(100vw - 16px))}
@@ -1322,6 +1320,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .fo-bub .fo-bub-st::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--online);flex:none}
 .fo-bub .fo-bub-st.fo-wait::before{background:var(--amber)}
 .fo-bub .fo-bub-st.fo-bad::before{background:var(--dangling)}
+.fo-bub .fo-bub-st.fo-off::before{background:var(--unknown)}
 /* a failover node's copy where its peers would be: they are on the box, listed on the primary (FoPeersNote, foPeersCell) */
 .notice.fo-peers-note{margin:12px 14px}
 .notice.fo-peers-note a{white-space:nowrap;color:var(--brand);font-weight:600;text-decoration:none}

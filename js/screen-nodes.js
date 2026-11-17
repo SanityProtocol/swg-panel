@@ -1359,11 +1359,11 @@ function foPeersCell(node, iface) {
   return html`<span class="fo-peers" title=${T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an })}><b>${n}</b> <span class="faint">${T("listed on {v1}", { v1: an })}</span></span>`;
 }
 // the tone from foState's own tag class — one table of the pair's states (review F2); never a bare .bad (an invalid field's outline)
-const FO_TONE = { "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait" };
+const FO_TONE = { "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait", "tg-off": "fo-off" };
 // The pair mark beside a node's name on the Nodes list and the overview (operator, 2026-11-16): one glyph, two slabs — the
 // solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
-// Quiet while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention or a member
-// is not reporting. The bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
+// Green while the pair is ready; amber while it catches up or waits for the vault; grey while a member is not reporting
+// (its own card already says it is down); red when it needs attention (operator, 2026-11-17). The bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
 export function FoMark({ n }) {
   const fo = n && n.failover;
   if (!fo || !fo.primary || !fo.failover) return null;
