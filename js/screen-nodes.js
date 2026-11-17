@@ -315,7 +315,7 @@ export function NodeDetail({ node: rawName }) {
     <${NodeRail} active=${name}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}${nrec.failover ? html`<${FailoverTag} fo=${nrec.failover}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}${nrec.failover ? html`<${FailoverTag} fo=${nrec.failover} nid=${nrec.id}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
@@ -1358,20 +1358,23 @@ function foPeersCell(node, iface) {
   const an = Store.nodeName(foSrcOf(node));
   return html`<span class="fo-peers" title=${T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an })}><b>${n}</b> <span class="faint">${T("listed on {v1}", { v1: an })}</span></span>`;
 }
+// The pair's state as node `nid` shows it: the failover node not reporting ("offline" — failover_view reads B's liveness
+// only) is a lost cover on the primary, so it reads as needing attention there (warn tag, red mark), and stays the stale
+// grey on the failover node itself, whose card already reads stale (operator, 2026-11-17). One rule for the mark and the
+// page tag (verify F6).
+const foLook = (fo, nid) => fo.state === "offline" && nid !== fo.failover ? ["tg-warn", "warn", foState("offline")[2]] : foState(fo.state);
 // the tone from foState's own tag class — one table of the pair's states (review F2); never a bare .bad (an invalid field's outline)
 const FO_TONE = { "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait", "tg-off": "fo-off" };
 // The pair mark beside a node's name on the Nodes list and the overview (operator, 2026-11-16): one glyph, two slabs — the
 // solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
-// Green while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention. "Not
-// reporting" is the failover node down (failover_view reads B's liveness only — a dead primary keeps its copies' state):
-// red on the primary, whose cover is gone, and the console's stale grey on the failover node itself, whose card already
-// reads stale (operator, 2026-11-17). The bubble (hover, or a tap on a phone — the tap never opens the card under it)
-// says who the twin is.
+// Green while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention — on the
+// primary, that includes its failover node not reporting; grey on the failover node's own mark then (foLook). The
+// bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
 export function FoMark({ n }) {
   const fo = n && n.failover;
   if (!fo || !fo.primary || !fo.failover) return null;
   const isB = n.id === fo.failover, an = Store.nodeName(fo.primary), bn = Store.nodeName(fo.failover);
-  const [cls, , label] = foState(fo.state), tone = cls === "tg-off" && !isB ? "fo-bad" : FO_TONE[cls] || "fo-bad";   // one lookup a render (F13)
+  const [cls, , label] = foLook(fo, n.id), tone = FO_TONE[cls] || "fo-bad";   // one lookup a render (F13)
   const head = isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn });   // the label and the heading, one string (F3)
   const slab = (x, me) => me ? html`<rect x=${x} y="5" width="8" height="14" rx="1.6" fill="currentColor" fill-opacity=".3"/>`
     : html`<rect x=${x} y="5" width="8" height="14" rx="1.6" stroke-dasharray="2.2 2"/>`;
@@ -1384,8 +1387,8 @@ export function FoMark({ n }) {
     <div class=${"fo-bub-st " + tone}>${T("Copy's state: {v1}", { v1: label })}</div>
   <//>`;
 }
-function FailoverTag({ fo }) {
-  const [cls, icon, label] = foState(fo.state);
+function FailoverTag({ fo, nid }) {
+  const [cls, icon, label] = foLook(fo, nid);
   return html`<${StatusTag} cls=${cls} icon=${icon} label=${T("Failover · {v1}", { v1: label })}
     title=${T("{v1} keeps a live copy of {v2}", { v1: Store.nodeName(fo.failover), v2: Store.nodeName(fo.primary) })}/>`;
 }
