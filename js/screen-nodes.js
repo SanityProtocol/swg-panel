@@ -1362,15 +1362,16 @@ function foPeersCell(node, iface) {
 const FO_TONE = { "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait", "tg-off": "fo-off" };
 // The pair mark beside a node's name on the Nodes list and the overview (operator, 2026-11-16): one glyph, two slabs — the
 // solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
-// Green while the pair is ready; amber while it catches up or waits for the vault; grey while a member is not reporting —
-// the console's stale grey; on a live primary whose failover node is down, the mark is the only sign that cover is gone
-// (operator, 2026-11-17); red when it needs attention. The bubble (hover, or a tap on a phone — the tap never opens the
-// card under it) says who the twin is.
+// Green while the pair is ready; amber while it catches up or waits for the vault; red when it needs attention. "Not
+// reporting" is the failover node down (failover_view reads B's liveness only — a dead primary keeps its copies' state):
+// red on the primary, whose cover is gone, and the console's stale grey on the failover node itself, whose card already
+// reads stale (operator, 2026-11-17). The bubble (hover, or a tap on a phone — the tap never opens the card under it)
+// says who the twin is.
 export function FoMark({ n }) {
   const fo = n && n.failover;
   if (!fo || !fo.primary || !fo.failover) return null;
   const isB = n.id === fo.failover, an = Store.nodeName(fo.primary), bn = Store.nodeName(fo.failover);
-  const [cls, , label] = foState(fo.state), tone = FO_TONE[cls] || "fo-bad";   // one lookup a render (F13)
+  const [cls, , label] = foState(fo.state), tone = cls === "tg-off" && !isB ? "fo-bad" : FO_TONE[cls] || "fo-bad";   // one lookup a render (F13)
   const head = isB ? T("Failover node of {v1}", { v1: an }) : T("Has a failover node: {v1}", { v1: bn });   // the label and the heading, one string (F3)
   const slab = (x, me) => me ? html`<rect x=${x} y="5" width="8" height="14" rx="1.6" fill="currentColor" fill-opacity=".3"/>`
     : html`<rect x=${x} y="5" width="8" height="14" rx="1.6" stroke-dasharray="2.2 2"/>`;

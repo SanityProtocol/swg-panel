@@ -1307,11 +1307,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
 /* the failover pair mark beside a node's name (js/screen-nodes.js FoMark): its colour is the pair's state — green ready,
-   amber catching up, grey a member not reporting, red needs a look. The glyph is the trigger; its bubble says who the twin is. */
+   amber catching up or waiting for the vault, red needs a look; the failover node down is red on the primary and grey on
+   the failover node's own mark. The glyph is the trigger; its bubble says who the twin is. */
 .fo-mark{display:inline-flex;align-items:center;flex:none;margin-left:6px;cursor:help;border-radius:4px;color:var(--online)}   /* ready: green (operator 11-17: grey read as "inactive") */
 .fo-mark.fo-wait{color:var(--amber)}
 .fo-mark.fo-bad{color:var(--dangling)}
-.fo-mark.fo-off{color:var(--unknown)}   /* a member not reporting: the stale grey of .tg-off */
+.fo-mark.fo-off{color:var(--unknown)}   /* the failover node's own mark while it is not reporting: the stale grey of .tg-off */
 .fo-mark-g{display:inline-flex;padding:2px}
 .fo-mark-g svg{display:block}
 .deppop.fo-bub{max-width:min(300px,calc(100vw - 16px))}
