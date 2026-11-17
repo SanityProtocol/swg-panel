@@ -2751,7 +2751,7 @@ export function NodeMigrateSheet({ node }) {
 // A copy's name as its own page says it (§12.5): an interface by name; a WDTT or csqtt server by its title, else its name,
 // behind its kind's tag; a turn proxy by its title, else its fork, and its port. `node` is the box that reports it — the
 // primary for a copy (its report names every proxy the mirror copies), the failover node for one of its own.
-const FO_TAG = { wdtt: ["wdtt", "WDTT"], csqtt: ["csqtt", "CSQTT"], turn: ["turn", ""] };
+const FO_TAG = { wdtt: ["wdtt", "WDTT"], csqtt: ["csqtt", "CSQTT"], turn: ["turn", ""], exit: ["muted", ""] };   // exit: A's device exit, by its label (§14.3)
 export function foCopyText(node, kind, name) {
   if (kind === "turn") {
     const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === name) || {};
@@ -2762,7 +2762,7 @@ export function foCopyText(node, kind, name) {
   return name;
 }
 export const FoCopy = ({ node, kind, name }) => FO_TAG[kind]
-  ? html`<span class="fo-copy"><span class=${"iftype " + FO_TAG[kind][0] + (kind === "turn" ? " tf-" + turnFork(name) : "")}>${FO_TAG[kind][1] || T("val|turn")}</span>${foCopyText(node, kind, name)}</span>`   // a proxy's fork colour, as its card
+  ? html`<span class="fo-copy"><span class=${"iftype " + FO_TAG[kind][0] + (kind === "turn" ? " tf-" + turnFork(name) : "")}>${FO_TAG[kind][1] || (kind === "exit" ? T("val|exit") : T("val|turn"))}</span>${foCopyText(node, kind, name)}</span>`   // a proxy's fork colour, as its card
   : name;
 
 export function openFailoverSetup(node) { openModal(html`<${FailoverSetupSheet} node=${node}/>`); }

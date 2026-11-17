@@ -13264,6 +13264,48 @@ def _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped=()):
     ev_append(roster_path, "node", bid, "Detached failover node", bname, _dk.format(**_dv), detail_key=_dk, detail_vars=_dv)
 
 
+# What B's copy of one of A's device exits takes from A (FAILOVER-PLAN §14.3). Never `key_blob`/`key_restore` (A's WARP
+# account: one account on two boxes flaps), `cfg_sig` (B's own is derived), `dial_src` (A's box's address) or `profile`
+# (one key on two boxes flips at the provider; B's own, once filled, is kept).
+FO_EXIT_FOLLOW = ("label", "producer", "provider", "device", "enabled", "killswitch", "licence", "socks")
+
+
+def fo_exit_unfilled(x):
+    """A failover node's exit that cannot run until the operator fills it: a profile with no config (FAILOVER-PLAN §14.3).
+    Derived, never stored — and never sent to the node, which would build a device with an empty key."""
+    return isinstance(x, dict) and x.get("provider") == "profile" and not x.get("profile")
+
+
+def _fo_mirror_exits(a, w):
+    """B (`w`, the pass's scratch copy) holds, for every device exit A's settings use (exit_refs), an exit with the same id —
+    so B's copies resolve as A's do, and prune_exit_refs leaves them alone. A WARP copy registers its own account on B; a
+    SOCKS copy is A's proxy; a profile is B's to fill (fo_exit_unfilled until then). An imported exit B holds that A no longer
+    uses goes, unless the operator filled it (their config); an adopted device of B's own is never touched."""
+    refs = exit_refs(a)
+    cur = {str(x.get("id") or ""): x for x in (w.get("exits") or []) if isinstance(x, dict)}
+    out, used = [], set()
+    for x in (a.get("exits") or []):
+        xid = str((x or {}).get("id") or "") if isinstance(x, dict) else ""
+        if not xid or xid not in refs or (x.get("producer") or "adopted") != "imported":
+            continue
+        bx = cur.get(xid) or {}
+        nx = {"id": x.get("id"), **{k: _fo_copy(x[k]) for k in FO_EXIT_FOLLOW if k in x}}
+        if nx.get("provider") == "profile" and bx.get("provider") == "profile" and isinstance(bx.get("profile"), dict):
+            nx["profile"] = bx["profile"]                          # B's own config, filled by the operator
+        nx["cfg_sig"] = exit_cfg_sig(nx)
+        out.append(nx)
+        used.add(xid)
+    for xid, bx in cur.items():
+        if xid in used:
+            continue
+        if (bx.get("producer") or "adopted") != "imported" or (bx.get("provider") == "profile" and bx.get("profile")):
+            out.append(bx)                                         # B's own device, or a filled config nothing uses now
+    if out:
+        w["exits"] = out
+    else:
+        w.pop("exits", None)
+
+
 def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
     """One pass of B's mirror (plan §4.2, §12), in B's sync under the lock. Mutates nodes[bid] in place; True when it changed
     (the caller saves). Steady state changes nothing: the pass is built on a scratch copy, the prunes run there, and
@@ -13318,8 +13360,9 @@ def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
         for n, bov in list(kd.b(w, bsnap).items()):
             if isinstance(bov, dict) and not kd.is_link(bov):
                 kd.stage(w, n, bov, kd.rep(bsnap, n), bsnap, b, bid, ivk)
-    prune_exit_refs(w)                                     # B has no exits: a reference to one of A's is the default here,
-    prune_default_exit(w)                                  # and the record says so, so no prune elsewhere rewrites it
+    _fo_mirror_exits(a, w)                                 # B holds every exit A's copies use (same id, §14.3), so the prunes
+    prune_exit_refs(w)                                     # below keep those references; only one to an exit A itself lacks
+    prune_default_exit(w)                                  # becomes the default, as it would on A
     derive_default_exit(w)
     prune_p2p_refs({k: (w if k == bid else {}) for k in nodes})   # only B's record; the others' ids for the node test
     if json.dumps(w, sort_keys=True) == json.dumps(b, sort_keys=True):
@@ -14270,6 +14313,28 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
         if st != "ready":
             rows.append({"iface": n, "kind": r["kind"].kind, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst
+    # A's device exits its settings use (FAILOVER-PLAN §14.3): B's copy is judged by B's own report. A profile B holds
+    # without a config is the operator's to fill — on BOTH members' cards, as an `ip_dial` copy is. A disabled one routes
+    # nothing on either box: not judged.
+    _bx = {str(x.get("id")): x for x in (b.get("exits") or []) if isinstance(x, dict)}
+    _brep = {str(e.get("id")): e for e in (bsnap.get("exits") or []) if isinstance(e, dict)}
+    for ax in (a_rec.get("exits") or []):
+        xid = str((ax or {}).get("id") or "") if isinstance(ax, dict) else ""
+        if (not xid or (ax.get("producer") or "adopted") != "imported" or ax.get("enabled") is False
+                or xid not in exit_refs(a_rec)):
+            continue
+        bx, rp = _bx.get(xid), _brep.get(xid)
+        if bx is None or (not fo_exit_unfilled(bx) and rp is None):
+            st, why, more = "syncing", "creating", {}             # the next mirror pass makes it / B has not reported it yet
+        elif fo_exit_unfilled(bx):
+            st, why, more = "problem", "exit_unfilled", ({"dialin": True} if exit_is_dialin(ax) else {})
+        elif rp.get("up"):
+            continue
+        else:
+            st, why, more = "problem", "exit_down", ({"err": str(rp.get("error"))[:200]} if rp.get("error") else {})
+        rows.append({"iface": str(ax.get("label") or "").strip() or str(ax.get("device") or xid), "kind": "exit",
+                     "exit_id": xid, "provider": ax.get("provider") or "warp", "state": st, "why": why, **more})
+        worst = st if rank[st] > rank[worst] else worst
     extra, um = [], set(_unmanaged_ifaces(b, bsnap))
     for k in _FO_KINDS:                                  # B's own WDTT / csqtt servers, unrecorded (T-18 is off on B): §12.3
         if isinstance(k, _FoServer):                     # says they are shown, never touched (card review F12)
@@ -14341,6 +14406,31 @@ _FO_NODE_LOCAL = frozenset(("id", "name", "color", "endpoint_host", "endpoint_ho
 _FO_IF_LOCAL = frozenset(("node", "iface", "drops_reset", "mesh_reset"))   # the counters on B's own connection cards
 
 
+def _fo_exit_fill_only(nodes, aid, bid, new):
+    """True when a node-update's `exits` for failover node B only FILLS what is B's to fill (FAILOVER-PLAN §14.3): the same
+    ids, every followed field as stored (A's — the mirror pass rewrites them anyway), and a config (`profile_text` pasted, or
+    `dialin_gen` made in the browser) only on a profile exit B holds for A. The state view never carries `profile` or
+    `socks` (the save merges them back from the stored record), so those two are not compared."""
+    if not isinstance(new, list) or not all(isinstance(x, dict) for x in new):
+        return False
+    old = {str(x.get("id") or ""): x for x in ((nodes.get(bid) or {}).get("exits") or []) if isinstance(x, dict)}
+    newm = {str(x.get("id") or ""): x for x in new}
+    if set(old) != set(newm) or len(newm) != len(new):
+        return False
+    def _n(x, k):
+        v = x.get(k)
+        return (v is not False) if k == "enabled" else bool(v) if k == "killswitch" else (v if v not in (None, "") else None)
+    held = exit_refs(nodes.get(aid) or {})
+    for xid, o in old.items():
+        n = newm[xid]
+        if any(_n(o, k) != _n(n, k) for k in ("id", "egress_ip", "gw") + FO_EXIT_FOLLOW if k != "socks"):
+            return False
+        if (n.get("socks_text") or n.get("dial_src")
+                or ((n.get("profile_text") or n.get("dialin_gen")) and not (xid in held and o.get("provider") == "profile"))):
+            return False
+    return True
+
+
 def failover_ro_refusal(path, body, nodes, snaps=None, seen=None):
     """(status, body) refusing a POST that names a failover node where it may not, else None. Names read (strings only,
     stripped as the doors strip them): `node`, `id` (on node doors), `egress_node`, `p2p.node`, `target.node`,
@@ -14370,6 +14460,9 @@ def failover_ro_refusal(path, body, nodes, snaps=None, seen=None):
     if ((path in _FO_RO_DOORS and not (path == "/api/iface/recreate" and body.get("fresh"))   # fresh: B's own key
          and not (path == "/api/iface/restore" and body.get("key") == "public_key"))         # a key is Re-sync's, never this
             or (path == "/api/nodes/update" and set(body) <= _FO_NODE_LOCAL)
+            # B fills its own config of an exit it holds for A — nothing else in the list moves (§14.3)
+            or (path == "/api/nodes/update" and set(body) <= _FO_NODE_LOCAL | {"exits"}
+                and _fo_exit_fill_only(nodes, fo[b], b, body.get("exits")))
             or (path == "/api/iface/update" and set(body) <= _FO_IF_LOCAL)
             or (path in ("/api/iface/delete", "/api/iface/ignore", "/api/iface/unignore", "/api/iface/update",
                          "/api/iface/recreate", "/api/iface/restart") and own)
@@ -22520,9 +22613,13 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                     out["profile"] = _pr
                 elif _kept:
                     out["profile"] = _kept
+                elif c.get("failover_of"):
+                    # a failover node's copy of its primary's exit, not filled yet (FAILOVER-PLAN §14.3): kept as it is —
+                    # the list is saved whole, and filling one copy must not need all of them. Never sent (fo_exit_unfilled).
+                    pass
                 else:
                     return None, "paste a WireGuard profile for this exit"
-                _why = _dialin_refusal(out, _kept, _ds, dialin)
+                _why = _dialin_refusal(out, _kept, _ds, dialin) if out.get("profile") else ""
                 if _why:
                     return None, _why
         else:
@@ -22835,6 +22932,36 @@ def prune_node_refs(nodes):
     return hit
 
 
+def _exit_ref_sites(rec):
+    """Every place a record names a device exit, as (holder, where, kind): `egress` — an interface / WDTT / csqtt instance
+    with `egress_mode: "exit"` + `exit_id`; `rule` — a routing rule (theirs, or the node default list) with `action: "dev"`
+    + `exit_id`. ONE walk for prune_exit_refs (which rewrites a dangling one) and exit_refs (which lists them for a
+    failover node's copies, FAILOVER-PLAN §14.3) — "used" and "kept" cannot disagree."""
+    for src in ("ifaces", "wdtt", "csqtt"):
+        for name, ov in (rec.get(src) or {}).items():
+            if not isinstance(ov, dict):
+                continue
+            if ov.get("egress_mode") == "exit":
+                yield ov, name, "egress"
+            for r in (ov.get("routing") or []):
+                if isinstance(r, dict) and r.get("action") == "dev":
+                    yield r, name + "/" + str(r.get("category") or "?"), "rule"
+    for r in (rec.get("default_routing") if isinstance(rec.get("default_routing"), list) else ()):
+        if isinstance(r, dict) and r.get("action") == "dev":
+            yield r, "default/" + str(r.get("category") or "?"), "rule"
+
+
+def exit_refs(rec):
+    """The device exit ids a record's own settings use: every _exit_ref_sites reference, its `default_exit`, and the torrent
+    route's (the node's `p2p` and each record's own) — what a failover node must hold for its copies to mean what A's do."""
+    out = {str(o.get("exit_id") or "") for o, _w, _k in _exit_ref_sites(rec)}
+    out.add(str(rec.get("default_exit") or ""))
+    _ps = [rec.get("p2p")] + [(ov or {}).get("p2p") for k in ("ifaces", "wdtt", "csqtt")
+                              for ov in ((rec.get(k) or {}).values() if isinstance(rec.get(k), dict) else ()) if isinstance(ov, dict)]
+    out |= {str(p.get("exit_id") or "") for p in _ps if isinstance(p, dict) and p.get("action") == "dev"}
+    return out - {""}
+
+
 def prune_exit_refs(rec):
     """Rewrite every reference to an exit that no longer exists back to "the node's default". Mutates `rec`;
     returns the list of "<where>" strings it changed, for the caller to report. Covers interfaces, WDTT and
@@ -22856,27 +22983,18 @@ def prune_exit_refs(rec):
     """
     live = {str((x or {}).get("id") or "") for x in (rec.get("exits") or [])}
     hit = []
-    for src in ("ifaces", "wdtt", "csqtt"):
-        for name, ov in (rec.get(src) or {}).items():
-            if not isinstance(ov, dict):
-                continue
-            if ov.get("egress_mode") == "exit" and str(ov.get("exit_id") or "") not in live:
-                ov["egress_mode"] = "direct"
-                ov.pop("exit_id", None)
-                hit.append(name)
-            for r in (ov.get("routing") or []):
-                if isinstance(r, dict) and r.get("action") == "dev" and str(r.get("exit_id") or "") not in live:
-                    r["action"] = "direct"
-                    r.pop("exit_id", None)
-                    hit.append(name + "/" + str(r.get("category") or "?"))
-    # …and the node's own default list (D2), for the same reason and with the same answer: a deleted exit leaves a
-    # rule naming nothing, which renders blank. Its catch-all is what `default_exit` is derived from, so the caller
-    # re-derives after this (`derive_default_exit`) and the two can never disagree.
-    for r in (rec.get("default_routing") if isinstance(rec.get("default_routing"), list) else ()):
-        if isinstance(r, dict) and r.get("action") == "dev" and str(r.get("exit_id") or "") not in live:
-            r["action"] = "direct"
-            r.pop("exit_id", None)
-            hit.append("default/" + str(r.get("category") or "?"))
+    # …the node's own default list (D2) too, for the same reason and with the same answer: a deleted exit leaves a rule
+    # naming nothing, which renders blank. Its catch-all is what `default_exit` is derived from, so the caller re-derives
+    # after this (`derive_default_exit`) and the two can never disagree.
+    for o, where, kind in list(_exit_ref_sites(rec)):
+        if str(o.get("exit_id") or "") in live:
+            continue
+        if kind == "egress":
+            o["egress_mode"] = "direct"
+        else:
+            o["action"] = "direct"
+        o.pop("exit_id", None)
+        hit.append(where)
     return hit
 
 
@@ -38822,6 +38940,7 @@ class Handler(BaseHTTPRequestHandler):
                                               if isinstance(x.get("socks"), dict) else {})}
                                           for x in (node.get("exits") or [])
                                           if isinstance(x, dict) and x.get("producer") == "imported"
+                                          and not fo_exit_unfilled(x)    # a failover node's exit to fill (§14.3)
                                           # ⚠️ s9a F17: never a kind this node does not list — an older node
                                           # registered a WARP account for any kind that was not `profile`
                                           and not exit_kind_refusal(snap, x.get("provider") or "warp")],

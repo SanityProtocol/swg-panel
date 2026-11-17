@@ -1453,7 +1453,6 @@ function OnlineListSheet({ src }) {
 const onlTap = (cls, open, body) => html`<span class=${"onlinetag m-onltap " + (cls || "")} role="button"
   onClick=${e => { e.stopPropagation(); e.preventDefault(); open(); }}>${body}</span>`;
 
-// "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
 // A failover node's copy: online / held from its own report, with who lists the peers in the hover — ONE markup for the
 // Nodes card (`card`), an interface card's row (`row`) and a page header (`head`); null when the copy holds none, so each
 // caller keeps its own empty form ("none", "None", "0 / 0 online") and nothing claims peers that are not there (verify F6, F8).
@@ -1467,6 +1466,7 @@ export function foCountTag(node, iface, variant, counts) {   // counts: the call
     : variant === "head" ? html`<span title=${tip}>${on}${" / " + c.held + " " + T("val|online")}</span>`
     : html`<span class="fo-peers" title=${tip}>${on}<span class="faint">/${c.held}</span></span>`;
 }
+// "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
 export function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref }) {
   return html`<${OnlPop} peer title=${T("Online peers")} rows=${onlinePeerRows(nodeId, iface)} orphans=${orphans} orphHref=${orphHref} cls=${cls}
     trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${(total != null ? " / " + total : "") + " " + T("val|online")}`)}/>`;

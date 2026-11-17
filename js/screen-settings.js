@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokNone, portokRead, portokSame, portokText, foRoWhy } from "./model.js";
+import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokNone, portokRead, portokSame, portokText, foRoWhy, foSrcOf } from "./model.js";
 import {
   BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
 } from "./util.js";
@@ -2459,7 +2459,7 @@ export function PanelSettingsScreen() {
   const setNV = (nid, patch) => {
     // a failover node's draft takes only its own fields: a followed one stays its primary's value — the notice on the
     // routing and exits sections says so — and a fleet-wide edit (an unpinned list) leaves it alone
-    if (Store.isMirror(nid)) patch = Object.fromEntries(Object.entries(patch).filter(([k]) => FO_NODE_OWN.has(k)));
+    if (Store.isMirror(nid)) patch = Object.fromEntries(Object.entries(patch).filter(([k]) => FO_NODE_OWN.has(k) || k === "exits"));   // exits: the fill re-base (§14.3)
     if (Object.keys(patch).length) setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
   };
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
@@ -4638,8 +4638,9 @@ function confIfSet(txt, k, v) {
 
 /** Generate a dial-in exit: a title, the port and the protocol, the parameters under it; the keys are made on Create. The
  *  paste is one click away. */
-function DialinGenSheet({ node, onCreate, onPaste }) {
-  const [label, setLabel] = useState("");
+// `fixedLabel`: a failover node filling its copy of the primary's dial-in (FAILOVER-PLAN §14.3) — the title follows the primary
+function DialinGenSheet({ node, onCreate, onPaste, fixedLabel }) {
+  const [label, setLabel] = useState(fixedLabel || "");
   const no31 = node.awg31_no ? srvText(node.awg31_no) : "";
   const [proto, setProto] = useState("wg");
   const [port, setPort] = useState(""), [mtu, setMtu] = useState(""), [awg, setAwg] = useState({});
@@ -4662,7 +4663,7 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
     <p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}
       ${" "}${T("The panel makes both sides; you import the router's config on the router.")}</p>
     <div class="row2 dinrow"><div class="field"><label>${T("Title")}</label>
-      <input value=${label} placeholder=${T("Dial-in exit")} maxlength="40" onInput=${e => setLabel(e.target.value)}/></div>
+      <input value=${label} placeholder=${T("Dial-in exit")} maxlength="40" disabled=${!!fixedLabel} onInput=${e => setLabel(e.target.value)}/></div>
       <div class="field dinport"><label>${T("Port")}</label>
         <input inputmode="numeric" value=${port} placeholder=${T("val|Auto")} title=${DIALIN_PORT_HINT()} onInput=${e => setPort(e.target.value)}/></div>
       <div class="field dinmtu"><label>${T("MTU")}</label>
@@ -4802,7 +4803,9 @@ function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirt
   </div>`;
 }
 
-function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }) {
+// `fill`: a failover node's copy of its primary's exit (FAILOVER-PLAN §14.3) — only the config is the failover node's; the title
+// and the rest follow the primary, so they are shown, not edited.
+function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, fill }) {
   const [v, setV] = useState(() => ({ ...ex, profile_text: "" }));
   const [txt, setTxt] = useState(() => profileText(ex));
   // What this sheet OPENED with, so "did anything change" is a comparison rather than a guess. Captured
@@ -4889,9 +4892,10 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     ${/* DECISION 7 — which of the node's own addresses dials the exit. Imported only: an adopted device
           dials on its own and there is nothing for us to pin. */""}
     ${isDialin ? html`<p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}</p>` : null}
+    ${fill ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><span>${T("A copy of {v1}'s exit. Paste this server's own config from the provider — the same config can't run on two servers. The title and settings follow {v1}.", { v1: Store.nodeName(foSrcOf(node.id)) })}</span></div>` : null}
     <div class=${isDialin ? (isNew ? "" : "row2 dinrow") : "row2"}>
       <div class="field"><label>${T("Title")}</label>
-        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40" ...${NOT_A_LOGIN}
+        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40" disabled=${!!fill} ...${NOT_A_LOGIN}
           onInput=${e => set({ label: e.target.value })}/></div>
       ${isDialin && !isNew ? html`<div class="field dinport"><label>${T("Port")}</label>
         <input inputmode="numeric" value=${confIfLine(txt, "ListenPort") ?? ""} placeholder=${dinPort0}
@@ -4899,7 +4903,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
         <div class="field dinmtu"><label>${T("MTU")}</label>
           <input inputmode="numeric" value=${confIfLine(txt, "MTU") ?? ""} placeholder="1280"
             onInput=${e => dinLine("MTU", e.target.value)}/></div>` : null}
-      ${isDialin || isSocks ? null : html`<div class="field"><label>${T("Connect from")}</label>
+      ${isDialin || isSocks || fill ? null : html`<div class="field"><label>${T("Connect from")}</label>
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
     ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet} mtu=${confIfLine(txt, "MTU") || ""}
@@ -4949,6 +4953,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   // the operator had configured over there.
   const all = (vals || {}).exits || node.exits || [];
   const isW = x => (x.producer || "adopted") === "imported";
+  // A failover node (FAILOVER-PLAN §14.3): its exits are copies of the primary's — no add, edit, remove or switch here; the
+  // one thing that is its own is a profile's config, which a copy cannot carry (one key, one server): "fill in for failover".
+  const ro = !!foRoWhy(node.id);
+  const aEx = id => ((((Store.nodes || []).find(n => n.id === foSrcOf(node.id)) || {}).exits) || []).find(x => String(x.id) === String(id)) || null;
+  const unfilled = ex => ro && exitProv(ex) === "profile" && !ex.profile;
   const exits = all.filter(isW);
   const stored = id => (node.exits || []).find(o => String(o.id) === String(id)) || {};
   const write = xs => (saveExits ? saveExits([...xs, ...all.filter(x => !isW(x))]) : Promise.resolve(false));
@@ -5035,7 +5044,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} onRegen=${() => regen(st)} changed=${changed}
       conf=${routerConf(nodeDialHost(node), st.profile, r.k, r.n, st.profile.psk)}/>`);
   };
-  const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew}
+  // on a failover node only a profile copy opens, and only to fill its config: a dial-in by making this server's keys, any
+  // other by pasting a config (its title fixed — the save may move nothing but the config)
+  const fillEx = ex => (exitIsDialin(aEx(ex.id)) && !ex.profile ? openDialin({ ...ex }, true) : openEdit(ex, false));
+  const openRow = ex => (!ro ? openEdit(ex) : exitProv(ex) === "profile" ? fillEx(ex) : null);
+  const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew} fill=${ro}
     escrowOn=${escrowOn} goSection=${goSection}
     onSave=${async body => {
       const next = isNew ? [...exits, { ...ex, ...body }]
@@ -5055,11 +5068,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       }
       return r === true ? true : T("Couldn't save");
     }}/>`);
-  const openDialin = rec => openModal(html`<${DialinGenSheet} node=${node}
-    onCreate=${async (label, proto, typed) => { const r = await generate({ ...rec, label }, proto, typed);
+  const openDialin = (rec, keepLabel) => openModal(html`<${DialinGenSheet} node=${node} fixedLabel=${keepLabel ? (rec.label || "") : ""}
+    onCreate=${async (label, proto, typed) => { const r = await generate(keepLabel ? { ...rec } : { ...rec, label }, proto, typed);
       if (r && r.info) { closeModal(); toast(r.info); return true; }    // created: said as what it is, not as an error (s9c F51)
       return r; }}
-    onPaste=${label => { closeModal(); openEdit({ ...rec, label }, true); }}/>`);
+    onPaste=${label => { closeModal(); keepLabel ? openEdit({ ...rec }, false) : openEdit({ ...rec, label }, true); }}/>`);
   const add = p2 => {
     const rec = { id: newExitId(), label: "", enabled: true, killswitch: false, device: "", ...p2 };
     // ⚠️ A CUSTOM CONFIG IS WRITTEN ONLY ONCE IT EXISTS. Creating the record first and opening the editor
@@ -5106,7 +5119,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           config. Said here, where the operator decides, rather than nowhere. */""}
     ${/* The node's name is in the section header two lines up, and where devices live is a fact about a
           different screen. What is left is the one thing the screen has to say. */""}
-    ${isMobile() ? html`<button class="btn btn-primary m-addtop" onClick=${() => openModal(html`<${ExitKindSheet} kinds=${exitKinds} onPick=${add}/>`)}><${Ic} i="plus"/> ${T("Add an exit")}</button>` : null}
+    ${isMobile() && !ro ? html`<button class="btn btn-primary m-addtop" onClick=${() => openModal(html`<${ExitKindSheet} kinds=${exitKinds} onPick=${add}/>`)}><${Ic} i="plus"/> ${T("Add an exit")}</button>` : null}
     <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts, WireGuard profiles from anywhere else, SOCKS5 proxies, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.")}</p>
     ${exits.length ? html`<div class="exgrid g8">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
@@ -5124,17 +5137,19 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         // reaching it — a switch that also opened a modal would be unusable.
         const stop = e => e.stopPropagation();
         return html`<div class="exg-r" key=${ex.id}>
-          <div class=${"exg-c clk" + (off ? " dim" : "")} onClick=${() => openEdit(ex)}>
+          <div class=${"exg-c clk" + (off ? " dim" : "")} onClick=${() => openRow(ex)}>
             ${ex.label || exitDefaultTitle(ex)}</div>
-          <div class=${"exg-c clk" + (off ? " dim" : "")} onClick=${() => openEdit(ex)}>
+          <div class=${"exg-c clk" + (off ? " dim" : "")} onClick=${() => openRow(ex)}>
             ${dot(ex)}<span class="mono exg-dev">${ex.device || "—"}</span></div>
-          <div class="exg-c clk" onClick=${() => openEdit(ex)}>
+          <div class="exg-c clk" onClick=${() => openRow(ex)}>
             ${(() => { const [bc, bl, bk] = exitBadge(ex, l); return html`<span class=${"exg-t " + bc} title=${bk || ""}>${bl}</span>`; })()}</div>
-          <div class="exg-c clk mono" onClick=${() => openEdit(ex)}
+          <div class="exg-c clk mono" onClick=${() => openRow(ex)}
             title=${exitProv(ex) === "socks5" ? (l.udp_ok === true ? T("UDP is carried — calls and games work through this exit.")
               : l.udp_ok === false ? T("UDP is not carried — calls and games won't work through this exit. Other traffic is fine: QUIC falls back to TCP at once.")
               : T("UDP: not checked yet")) : ""}>
-            ${(l.trace || {}).ip || html`<span class="faint">—</span>`}${exitProv(ex) === "socks5" && (l.trace || {}).loc
+            ${/* a failover node's copy with no config of its own (§14.3): said where its address would be — the one empty cell */""}
+            ${unfilled(ex) ? html`<span class="tg tg-warn" title=${T("This server needs its own config for this exit before it can take over")}><${Ic} i="warn"/>${T("fill in for failover")}</span>`
+              : (l.trace || {}).ip || html`<span class="faint">—</span>`}${exitProv(ex) === "socks5" && (l.trace || {}).loc
               ? html` <span class="faint">${l.trace.loc}</span>` : null}</div>
           ${/* ⚠️ THE HOP TO THE EXIT'S OWN SERVER, not a request made through it. This first showed the time
                 of a full HTTPS request to cloudflare.com via the tunnel, which for a Moscow exit one hop
@@ -5143,7 +5158,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 varies is not a latency column. The through-tunnel figure is still measured and lives in the
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
-          <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}>
+          <div class="exg-c c clk mono" onClick=${() => openRow(ex)}>
             ${/* The hover is the panel's own bubble, not a native title (operator, 10-23). An up exit whose ping came back
                      null: no reply reached this node — most often a firewalled VPS that drops ICMP, and the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
                      sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows.
@@ -5171,15 +5186,16 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
               ? T("~{v1} ms", { v1: Math.round(l.trace.tcp_ms * 10) / 10 })
               : html`<span class="faint">—</span>`;
               return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`; })()}</div>
-          <div class="exg-c c" data-lbl=${T("Kill-switch")} onClick=${stop}><${Switch} on=${!!ex.killswitch} title=${KS_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Kill-switch")} onClick=${stop}><${Switch} on=${!!ex.killswitch} disabled=${ro} title=${KS_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, killswitch: x } : y)))}/></div>
-          <div class="exg-c c" data-lbl=${T("Active")} onClick=${stop}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Active")} onClick=${stop}><${Switch} on=${!off} disabled=${ro} title=${ACTIVE_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, enabled: x } : y)))}/></div>
           <div class="exg-c exg-act" onClick=${stop}>
             ${exitIsDialin(stored(ex.id)) ? html`<button class=${"exg-qr" + (DIALIN_NOTE[ex.id] ? " chg" : "")} onClick=${() => showRouter(ex)}
               title=${DIALIN_NOTE[ex.id] ? T("The router config changed — {v1}. Import it on the router again.", { v1: DIALIN_NOTE[ex.id] }) : T("Router config")}><${Ic} i="qr"/></button>` : null}
-            <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button>
-            <button class="exg-rm" title=${T("Remove")} onClick=${() => del(ex)}><${Ic} i="trash"/></button></div>
+            ${ro ? (exitProv(ex) === "profile" ? html`<button class="exg-ed" title=${T("Fill in for failover")} onClick=${() => fillEx(ex)}><${Ic} i="pencil"/></button>` : null)
+              : html`<button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button>
+            <button class="exg-rm" title=${T("Remove")} onClick=${() => del(ex)}><${Ic} i="trash"/></button>`}</div>
         </div>`;
       })}
     </div>`
@@ -5189,7 +5205,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the
           choice is what the operator is actually deciding, and "Register" has to be one click for the path
           that needs no input at all. wgcf is never named — it is plumbing. */""}
-    ${isMobile() ? null : html`<div class="exadd" style="margin-top:14px">
+    ${isMobile() || ro ? null : html`<div class="exadd" style="margin-top:14px">
       ${exitKinds.map(([label, rec]) => html`<button class="btn btn-ghost btn-mini" onClick=${() => add(rec)}>
         <${Ic} i="plus"/> ${label}</button>`)}
     </div>`}

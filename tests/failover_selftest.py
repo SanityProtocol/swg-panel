@@ -146,6 +146,14 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {   # (file, anchor, replacement)
+    "ex-blob": ("panel", 'FO_EXIT_FOLLOW = ("label", ', 'FO_EXIT_FOLLOW = ("key_blob", "dial_src", "label", '),
+    "ex-none": ("panel", "    _fo_mirror_exits(a, w)  ", "    pass                    "),
+    "ex-keep": ("panel", '            nx["profile"] = bx["profile"]', '            pass'),
+    "ex-p2p": ("panel", '    out |= {str(p.get("exit_id") or "") for p in _ps', '    out |= {"" for p in _ps'),
+    "ex-row": ("panel", '            st, why, more = "problem", "exit_unfilled",', '            continue; st, why, more = "problem", "exit_unfilled",'),
+    "ex-door": ("panel", "    if set(old) != set(newm) or len(newm) != len(new):\n        return False", "    return True"),
+    "ex-tolerate": ("panel", '                elif c.get("failover_of"):\n                    # a failover node', '                elif False:\n                    # a failover node'),
+    "ex-wire": ("panel", "and not fo_exit_unfilled(x)    # a failover node's exit to fill", "and True    # a failover node's exit to fill"),
     "follow-key": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("public_key", "listen_port", '''),
     "endpoint": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("endpoint_host", "listen_port", '''),
     "nokeysrc": ("panel", '                or _iface_key_source(bov, None, ivk) != "vault"):\n            return\n        # A device B reports DOWN',
@@ -1960,10 +1968,123 @@ def sec15():
     check("[15] …and B reporting the proxy clears it, with nothing new staged", not (rb.get("turn") or {}).get(TPS), rb.get("turn"))
 
 
+
+def x_fleet():
+    """A primary whose settings use four device exits (and hold a fifth it does not use), and its failover node."""
+    n = fleet()
+    a = n["na"]
+    a["exits"] = [
+        {"id": "aaaa0001", "label": "WARP", "producer": "imported", "provider": "warp", "device": "wgx-aaaa0001", "enabled": True,
+         "killswitch": False, "licence": "L1", "cfg_sig": "a-sig", "key_blob": {"eph": "E", "ct": "C"}, "dial_src": "198.51.100.7"},
+        {"id": "aaaa0002", "label": "Proxy", "producer": "imported", "provider": "socks5", "device": "wgx-aaaa0002", "enabled": True,
+         "killswitch": True, "socks": {"host": "px.example.com", "port": 1080, "user": "u", "pass": "p", "salt": "x"}},
+        {"id": "aaaa0003", "label": "Provider", "producer": "imported", "provider": "profile", "device": "wgx-aaaa0003", "enabled": True,
+         "killswitch": False, "profile": {"private_key": "A-PRIV", "address": "10.9.9.2", "peer_key": "PK", "endpoint": "vpn.example.com:51820"}},
+        {"id": "aaaa0004", "label": "Home Router", "producer": "imported", "provider": "profile", "device": "wgx-aaaa0004", "enabled": True,
+         "killswitch": False, "profile": {"private_key": "A-DPRIV", "address": "10.254.0.0", "peer_key": "RK", "endpoint": "", "listen_port": 51830}},
+        {"id": "aaaa0005", "label": "Unused", "producer": "imported", "provider": "profile", "device": "wgx-aaaa0005", "enabled": True,
+         "profile": {"private_key": "A-UPRIV", "address": "10.9.8.2", "peer_key": "UK", "endpoint": "u.example.com:51820"}}]
+    a["ifaces"]["awg0"]["egress_mode"] = "smart"
+    a["ifaces"]["awg0"]["routing"] = [{"enabled": True, "category": "google", "action": "dev", "exit_id": "aaaa0001"}]
+    a["default_routing"] = [{"enabled": True, "category": "discord", "action": "dev", "exit_id": "aaaa0002"},
+                            {"enabled": True, "category": "github", "action": "dev", "exit_id": "aaaa0004"}]
+    a["p2p"] = {"action": "dev", "exit_id": "aaaa0003"}
+    return n
+
+
+def sec16():
+    print("[16] the mirror's exits (FAILOVER-PLAN §14.3)")
+    n = x_fleet()
+    check("[16] exit_refs: interface rules, the default list and the torrent route — never an exit nothing uses",
+          P.exit_refs(n["na"]) == {"aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004"}, sorted(P.exit_refs(n["na"])))
+    snaps = {"na": {"interfaces": {"awg0": snap_iface()}}}
+    seen = {"na": NOW, "nb": NOW}
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    bx = {x["id"]: x for x in (n["nb"].get("exits") or [])}
+    check("[16] B holds every exit A's settings use, by A's id, in A's order — and not the one A does not use",
+          [x["id"] for x in n["nb"].get("exits") or []] == ["aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004"], list(bx))
+    w = bx.get("aaaa0001") or {}
+    check("[16] a WARP copy is the kind and licence — never A's account, signature or source address",
+          w.get("provider") == "warp" and w.get("licence") == "L1" and w.get("label") == "WARP"
+          and not any(k in w for k in ("key_blob", "key_restore", "dial_src")) and w.get("cfg_sig") == P.exit_cfg_sig(w), w)
+    check("[16] a SOCKS copy carries the proxy, its killswitch with it",
+          (bx.get("aaaa0002") or {}).get("socks", {}).get("host") == "px.example.com" and (bx.get("aaaa0002") or {}).get("killswitch") is True, bx.get("aaaa0002"))
+    check("[16] a provider profile and a dial-in are placeholders: same id and name, no config (A's key never copied)",
+          all(P.fo_exit_unfilled(bx.get(k)) and (bx.get(k) or {}).get("label") == lab for k, lab in (("aaaa0003", "Provider"), ("aaaa0004", "Home Router")))
+          and "A-PRIV" not in json.dumps(n["nb"]), [bx.get("aaaa0003"), bx.get("aaaa0004")])
+    b = n["nb"]
+    check("[16] B's copies keep naming the exits — the prune no longer turns them into direct",
+          (b.get("ifaces") or {}).get("awg0", {}).get("routing", [{}])[0].get("exit_id") == "aaaa0001"
+          and [r.get("exit_id") for r in b.get("default_routing") or []] == ["aaaa0002", "aaaa0004"]
+          and (b.get("p2p") or {}).get("exit_id") == "aaaa0003", [b.get("ifaces", {}).get("awg0", {}).get("routing"), b.get("default_routing"), b.get("p2p")])
+    v = P.failover_view(n, None, "na", "nb", snaps, seen, frozenset(), now=NOW)
+    xr = {r["exit_id"]: r for r in v["rows"] if r.get("kind") == "exit"}
+    check("[16] status: the placeholders need attention (the dial-in says so), the others wait for B's report",
+          xr.get("aaaa0003", {}).get("why") == "exit_unfilled" and not xr["aaaa0003"].get("dialin")
+          and xr.get("aaaa0004", {}).get("why") == "exit_unfilled" and xr["aaaa0004"].get("dialin") is True
+          and xr.get("aaaa0001", {}).get("state") == "syncing" and v["state"] == "problem", xr)
+    snaps["nb"] = {"interfaces": {}, "exits": [{"id": "aaaa0001", "up": True}, {"id": "aaaa0002", "up": False, "error": "proxy refused"}]}
+    v = P.failover_view(n, None, "na", "nb", snaps, seen, frozenset(), now=NOW)
+    xr = {r["exit_id"]: r for r in v["rows"] if r.get("kind") == "exit"}
+    check("[16] …an exit up on B has no row; one B reports down says why",
+          "aaaa0001" not in xr and xr.get("aaaa0002", {}).get("why") == "exit_down" and xr["aaaa0002"].get("err") == "proxy refused", xr)
+    for x in n["nb"]["exits"]:
+        if x["id"] == "aaaa0003":
+            x["profile"] = {"private_key": "B-PRIV", "address": "10.9.9.3", "peer_key": "PK", "endpoint": "vpn.example.com:51820"}
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    aaaa0003 = next((x for x in n["nb"]["exits"] if x["id"] == "aaaa0003"), {})
+    check("[16] a config the operator filled on B survives the next pass, and B's signature follows it",
+          (aaaa0003.get("profile") or {}).get("private_key") == "B-PRIV" and aaaa0003.get("cfg_sig") == P.exit_cfg_sig(aaaa0003), aaaa0003)
+    n["na"]["p2p"] = {"action": "block"}
+    n["na"]["default_routing"] = [{"enabled": True, "category": "discord", "action": "dev", "exit_id": "aaaa0002"}]
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    ids = [x["id"] for x in n["nb"].get("exits") or []]
+    check("[16] no longer used: an unfilled placeholder goes, a filled config stays (the operator's)",
+          "aaaa0004" not in ids and "aaaa0003" in ids, ids)
+    # the door: B fills its own config of an exit it holds for A, and nothing else
+    n = x_fleet(); P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    view = [dict({k: v for k, v in x.items() if k not in ("profile", "socks")}) for x in n["nb"]["exits"]]
+    def put(edit):
+        xs = [dict(x) for x in view]
+        edit(xs)
+        return P.failover_ro_refusal("/api/nodes/update", {"id": "nb", "exits": xs}, n, snaps, seen)
+    check("[16] the door: a pasted config for a profile B holds for A is allowed",
+          put(lambda xs: xs[2].update(profile_text="[Interface]\nPrivateKey = x")) is None)
+    check("[16] …a dial-in made in the browser too",
+          put(lambda xs: xs[3].update(dialin_gen={"proto": "wg"})) is None)
+    check("[16] …a renamed exit, a config on a WARP copy, a dropped or an added exit are refused",
+          all((put(f) or (0,))[0] == 409 for f in (lambda xs: xs[2].update(label="mine"),
+                                                    lambda xs: xs[0].update(profile_text="x"),
+                                                    lambda xs: xs.pop(),
+                                                    lambda xs: xs.append({"id": "z9", "producer": "imported", "provider": "warp"}))))
+    # the wire: a placeholder never reaches the node
+    n = x_fleet()
+    port, _d = start_panel(NEW, "exits", n, roster())
+    tk = {x: req(port, "/api/nodes/rotate", {"id": x})[1]["data"]["token"] for x in ("na", "nb")}
+    for nid in ("na", "nb", "nb"):
+        snap = {"hostname": nid, "generated_at": int(time.time()), "noded_version": "t", "interfaces": {"awg0": snap_iface()},
+                "net_deps": {"limits": True, "reach": 2}, "exit_kinds": ["warp", "profile", "socks5"]}
+        code, r = req(port, "/api/node/sync", {"snapshot": snap}, tk[nid])
+    sent = [x.get("id") for x in ((r.get("data") or r).get("exits") or [])]
+    check("[16] B's sync sends the WARP and SOCKS copies and never a placeholder",
+          code == 200 and sent == ["aaaa0001", "aaaa0002"], (code, sent))
+    st = req(port, "/api/state")[1]
+    xs = [dict(x) for x in next(x for x in (st.get("data") or st)["nodes"] if x["id"] == "nb")["exits"]]
+    conf = ("[Interface]\nPrivateKey = kB3vZ1y7m2oD0w5qX8rT9uYcE4fH6jL1nP3sV5xZ7aA=\nAddress = 10.9.9.3/32\n\n[Peer]\n"
+            "PublicKey = gA8AMiyqS34LJSP6skn0yUcmM+PHh0tTlLf3gMnLvV4=\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0\n")
+    fill = [dict(x, profile_text=conf) if x["id"] == "aaaa0003" else x for x in xs]
+    code2, r2 = req(port, "/api/nodes/update", {"id": "nb", "exits": fill})
+    code3, _r3 = req(port, "/api/nodes/update", {"id": "nb", "exits": [dict(x, label="mine") if x["id"] == "aaaa0003" else x for x in xs]})
+    st = req(port, "/api/state")[1]
+    bx = {x["id"]: x for x in next(x for x in (st.get("data") or st)["nodes"] if x["id"] == "nb")["exits"]}
+    check("[16] a real save on B fills its copy, the other placeholder still empty (the list is saved whole)",
+          code2 == 200 and "profile" in bx.get("aaaa0003", {}) and "profile" not in bx.get("aaaa0004", {}), (code2, r2, sorted(bx)))
+    check("[16] …and a rename through the same save is refused (read-only)", code3 == 409, code3)
+
 def main():
     for name, fn in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7),
                      ("[8]", sec8), ("[9]", sec9), ("[10]", sec10), ("[11]", sec11), ("[12]", sec12), ("[13]", sec13), ("[14]", sec14),
-                     ("[15]", sec15)):
+                     ("[15]", sec15), ("[16]", sec16)):
         guarded(name, fn)
     for p in PROCS:
         p.terminate()

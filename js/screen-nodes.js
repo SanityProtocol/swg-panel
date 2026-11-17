@@ -887,7 +887,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
-                : foPeersCell(name, w.iface) || html`<span class="faint">${T("None")}</span>`}</span></div>
+                : foCountTag(name, w.iface, "row") || html`<span class="faint">${T("None")}</span>`}</span></div>
             </div></a>`; };
         // csqtt in the node store (csqtt_cfg) but NOT yet reported in snap.csqtt — a just-created instance the node
         // hasn't brought up yet, or a wiped one it will re-establish (csqtt self-heals from panel state, no vault).
@@ -948,7 +948,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${c.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
-                : foPeersCell(name, c.iface) || html`<span class="faint">${T("None")}</span>`}</span></div>
+                : foCountTag(name, c.iface, "row") || html`<span class="faint">${T("None")}</span>`}</span></div>
             </div></a>`; };
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.")}<br/><br/>${T("Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.")}</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>${T("reading server…")}</div>`
@@ -1019,7 +1019,7 @@ export function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>(${orph})</span>` : null}`}/>`
-                    : (orph ? html`<span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>${orph}</span>` : foPeersCell(name, ifn) || html`<span class="faint">${T("None")}</span>`)}</span></div>
+                    : (orph ? html`<span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>${orph}</span>` : foCountTag(name, ifn, "row") || html`<span class="faint">${T("None")}</span>`)}</span></div>
                 </div></a>`;
             })}${pcards}${ccards}${xcards}${dcards}${cqcards}</div>`; })()}
     <//>
@@ -1352,9 +1352,6 @@ const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg
   || ["tg-warn", "warn", T("fo|Needs attention")];        // "problem", and any state this build does not know
 // A failover node's copy in place of "None" (operator, 2026-11-16: an empty-looking copy read as a fault): the peers it HOLDS,
 // from its own report — every target names the primary. None held (or not a copy): null, and "None" stays, the truth then.
-// online / total, as any node's cell (operator, 2026-11-17: "why are we hiding it?") — views.js foCountTag, shared with the
-// interface pages' header. `card`: the Nodes list's cell, else an interface card's row.
-const foPeersCell = (node, iface, card) => foCountTag(node, iface, card ? "card" : "row");
 // The pair's state as node `nid` shows it: the failover node not reporting ("offline" — failover_view reads B's liveness
 // only) is a lost cover on the primary, so it reads as needing attention there (warn tag, red mark), and stays the stale
 // grey on the failover node itself, whose card already reads stale (operator, 2026-11-17). One rule for the mark and the
@@ -1403,6 +1400,12 @@ function foWhy(r, bn, an) {
     case "no_copy": return T("not on {v1} yet — a copy needs its key in the vault; if this stays, set up or unlock the vault", { v1: bn });
     case "awaiting_key": return T("waiting for its key — unlock the vault in this browser to hand it over");
     case "creating": return T("being created on {v1}", { v1: bn });
+    // A's device exit on the failover node (FAILOVER-PLAN §14.3): one B cannot run until it has its own config — a provider's
+    // key works on one box only; a dial-in needs the router to dial B as well. Said on both members' cards, as ip_dial is.
+    case "exit_unfilled": return r.dialin
+      ? T("{v1} needs its own dial-in for this exit — create it in {v1}'s exits, and add the router-side peer it shows to the router", { v1: bn })
+      : T("{v1} needs its own config for this exit — a provider's key works on one server only: add a second config from the provider in {v1}'s exits", { v1: bn });
+    case "exit_down": return r.err ? T("down on {v1}: {v2}", { v1: bn, v2: r.err }) : T("down on {v1}", { v1: bn });
     case "awg": return T("needs AmneziaWG 3.1 on {v1} — update that node", { v1: bn });
     case "down": return iface ? T("down on {v1} — it is being brought back", { v1: bn }) : T("not running on {v1} — its logs there say why", { v1: bn });
     case "key": return r.resync ? T("{v1} runs it with a different key — re-sync it", { v1: bn })
@@ -1994,7 +1997,7 @@ export function NodeCard({ n, reorder }) {
     <span class="nc-peers nm-item">${here.length
       ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
           trigger=${() => html`<span class="nm-l">${T("Peers")}</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
-      : html`<span class="nm-l">${T("Peers")}</span>${foPeersCell(n.id, "", true) || html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
+      : html`<span class="nm-l">${T("Peers")}</span>${foCountTag(n.id, "", "card") || html`<span class="nm-v nm-peers faint">${T("val|none")}</span>`}`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">${T("Interfaces")}</span><span class="tags">${isMobile() ? ifaceSummary(n.id, turnEnabled() ? tps.length : 0)
       : ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">${T("Throughput")}</span>${st === "online"

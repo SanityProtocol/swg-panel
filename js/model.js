@@ -699,7 +699,6 @@ export const foCountsOf = (id, iface) => {
   if (iface) return one(iface);
   return Store.userIfacesOf(id).reduce((s, n) => { const c = one(n); return c ? { held: s.held + c.held, online: s.online + c.online } : s; }, { held: 0, online: 0 });
 };
-export const foHeldOf = (id, iface) => { const c = foCountsOf(id, iface); return c ? c.held : null; };
 
 // An interface setting's name as the console says it — a rebuild's preview and a failover node's drift row (one map).
 export const ifFieldLabel = k => ({ mtu: T("MTU"), listen_port: T("port"), address: T("address"), awg_params: T("obfuscation") })[k] || k;

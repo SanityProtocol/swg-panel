@@ -581,7 +581,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
 // ═════════════════════════ SCREEN: INTERFACE DETAIL ═════════════════════════
 // A failover node's copy (operator, 2026-11-16): its peers are on this box too, but every target names the primary, so the
 // panel lists them there — say so, and link there, never an empty table that reads as a fault.
-function FoPeersNote({ node, iface, n }) {   // n: the peers this copy holds, from the failover node's own report (foHeldOf)
+function FoPeersNote({ node, iface, n }) {   // n: the peers this copy holds, from the failover node's own report (foCountsOf(...).held)
   const a = foSrcOf(node), an = Store.nodeName(a);
   return html`<div class="notice fo-peers-note"><${Ic} i="info"/><span>${n
     ? T("This interface is a copy of {v1}'s, listed there: {v2}. Each one is already on this server and connects here once {v1}'s domain points here.", { v1: an, v2: plural(n, "peer") })
