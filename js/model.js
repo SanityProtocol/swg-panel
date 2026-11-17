@@ -649,18 +649,23 @@ export const foRoWhy = id => {
 // (operator, 2026-11-17: once the primary goes down, say the failover node is serving). reconcile gives each target on a
 // pair `served`, the member the device is online on (else a live one with the interface, else the primary), so a target
 // of `aid` served by `bid` AND online is a device on the failover node. Callers ask only while the primary is not
-// reporting — nothing on a healthy fleet's poll. Kept per Store.recon (a new object every poll), so the Failover panel and
-// every pair mark of one render share one pass (review F3).
-let _fsv = { recon: null, m: null };
+// reporting — nothing on a healthy fleet's poll. ONE pass per poll counts every pair at once (a device once per pair), kept
+// in a WeakMap on that poll's Store.recon (a new object every poll), so the Failover panel and every pair mark share it and
+// a past poll's recon is freed with it (review F3, verify F7/F8).
+const _fsv = new WeakMap();
 export const foServingOn = (aid, bid) => {
-  if (_fsv.recon !== Store.recon) _fsv = { recon: Store.recon, m: new Map() };
-  const k = aid + "|" + bid;
-  if (!_fsv.m.has(k)) {
-    let n = 0;
-    for (const p of (Store.recon.peers || [])) if ((p.targets || []).some(t => t.node === aid && t.served === bid && t.online)) n++;
-    _fsv.m.set(k, n);
+  const r = Store.recon || {};
+  let m = _fsv.get(r);
+  if (!m) {
+    m = new Map();
+    for (const p of (r.peers || [])) {
+      const seen = new Set();
+      for (const t of (p.targets || [])) if (t.served && t.served !== t.node && t.online) seen.add(t.node + "|" + t.served);
+      for (const k of seen) m.set(k, (m.get(k) || 0) + 1);
+    }
+    _fsv.set(r, m);
   }
-  return _fsv.m.get(k);
+  return m.get(aid + "|" + bid) || 0;
 };
 // How many peers a failover node's copy of `iface` HOLDS — from the failover node's own report, the one fact behind "they
 // are on this server" (operator, 2026-11-16: its interfaces must not read as empty; verify F5/F8: never the primary's count,
