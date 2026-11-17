@@ -1362,8 +1362,10 @@ function foPeersCell(node, iface) {
 const FO_TONE = { "tg-ok": "fo-ok", "tg-busy": "fo-wait", "tg-pending": "fo-wait", "tg-off": "fo-off" };
 // The pair mark beside a node's name on the Nodes list and the overview (operator, 2026-11-16): one glyph, two slabs — the
 // solid one is THIS node, the dashed one its twin, so a primary's is solid on the left and a failover node's on the right.
-// Green while the pair is ready; amber while it catches up or waits for the vault; grey while a member is not reporting
-// (its own card already says it is down); red when it needs attention (operator, 2026-11-17). The bubble (hover, or a tap on a phone — the tap never opens the card under it) says who the twin is.
+// Green while the pair is ready; amber while it catches up or waits for the vault; grey while a member is not reporting —
+// the console's stale grey; on a live primary whose failover node is down, the mark is the only sign that cover is gone
+// (operator, 2026-11-17); red when it needs attention. The bubble (hover, or a tap on a phone — the tap never opens the
+// card under it) says who the twin is.
 export function FoMark({ n }) {
   const fo = n && n.failover;
   if (!fo || !fo.primary || !fo.failover) return null;

@@ -1306,8 +1306,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
-/* the failover pair mark beside a node's name (js/screen-nodes.js FoMark): quiet while ready, a colour only when the pair
-   needs a look. The glyph is the trigger; its bubble says who the twin is. */
+/* the failover pair mark beside a node's name (js/screen-nodes.js FoMark): its colour is the pair's state — green ready,
+   amber catching up, grey a member not reporting, red needs a look. The glyph is the trigger; its bubble says who the twin is. */
 .fo-mark{display:inline-flex;align-items:center;flex:none;margin-left:6px;cursor:help;border-radius:4px;color:var(--online)}   /* ready: green (operator 11-17: grey read as "inactive") */
 .fo-mark.fo-wait{color:var(--amber)}
 .fo-mark.fo-bad{color:var(--dangling)}
