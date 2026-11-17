@@ -1049,7 +1049,10 @@ textarea.ta::-webkit-scrollbar-thumb:hover{background:var(--dim)}
 .detail-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:22px}
 .detail-head:has(+ .noderibbon){margin-bottom:14px}   /* node detail: space between the title and the tags/sync ribbon */
 .detail-head .title{display:flex;align-items:center;gap:12px}
-.dh-ver{display:flex;align-items:center;gap:8px;align-self:center;margin-right:-4px}   /* version + check/update + node controls, level with the title */
+.dh-ver{display:flex;flex-wrap:wrap;align-items:center;gap:8px;align-self:center;margin-right:-4px}   /* version + check/update + node controls, level with the title */
+/* flex-wrap: on a window narrower than the row (the desktop UI at 390 px: a down node's controls + "Restore or migrate" ran
+   32 px past the edge in English, 75 in Russian, once the failover button joined them) the controls wrap instead of
+   scrolling the page sideways; wherever the row fits, nothing moves. The phone UI lays this row out as a grid (m/m.css). */
 .dh-sep{width:1px;height:18px;background:var(--line-solid);margin:0 3px}
 .dh-ver .nm-ver{margin-left:0}
 .upd-busy{pointer-events:none;cursor:default;color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,var(--line-solid))}
