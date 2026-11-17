@@ -14,7 +14,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foSrcOf, foCountsOf, foServingOn } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3, foRoWhy, ifFieldLabel, foServingOn } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -31,7 +31,7 @@ import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, Rank
          RANGE_CAP, axisCap, lossColorMesh } from "./charts.js";
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, DropsFigure, dropsEnough, LossPop, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
-         promotedAt, promotedBy } from "./views.js";
+         promotedAt, promotedBy, foCountTag } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet, csqttRunLine, DeleteTurnSheet } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
@@ -1352,17 +1352,9 @@ const foState = st => ({ ready: ["tg-ok", "check", T("fo|Ready")], syncing: ["tg
   || ["tg-warn", "warn", T("fo|Needs attention")];        // "problem", and any state this build does not know
 // A failover node's copy in place of "None" (operator, 2026-11-16: an empty-looking copy read as a fault): the peers it HOLDS,
 // from its own report — every target names the primary. None held (or not a copy): null, and "None" stays, the truth then.
-// online / total, as any node's cell (operator, 2026-11-17: "why are we hiding it?") — the copies' own report; who lists them
-// is in the hover. `card`: the Nodes list's cell (its <small> total), else an interface card's row (its faint total).
-function foPeersCell(node, iface, card) {
-  const c = foCountsOf(node, iface);
-  if (!c || !c.held) return null;
-  const an = Store.nodeName(foSrcOf(node));
-  const tip = T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an });
-  const on = html`<b class=${"oncount" + (c.online ? " on" : "")}>${c.online}</b>`;
-  return card ? html`<span class="nm-v nm-peers fo-peers" title=${tip}>${on}<small>/${c.held}</small></span>`
-    : html`<span class="fo-peers" title=${tip}>${on}<span class="faint">/${c.held}</span></span>`;
-}
+// online / total, as any node's cell (operator, 2026-11-17: "why are we hiding it?") — views.js foCountTag, shared with the
+// interface pages' header. `card`: the Nodes list's cell, else an interface card's row.
+const foPeersCell = (node, iface, card) => foCountTag(node, iface, card ? "card" : "row");
 // The pair's state as node `nid` shows it: the failover node not reporting ("offline" — failover_view reads B's liveness
 // only) is a lost cover on the primary, so it reads as needing attention there (warn tag, red mark), and stays the stale
 // grey on the failover node itself, whose card already reads stale (operator, 2026-11-17). One rule for the mark and the

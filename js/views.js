@@ -19,7 +19,7 @@ import { tkey, seen, fmtBytes, isMobile } from "./util.js";
 import { lossColor, lossColorMesh } from "./charts.js";
 import { Store, api, bus, isCustomKey, customKeyWindow, useStore } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
-         isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
+         isWdttName, isCsqttName, isSelfContainedName, foCountsOf, foSrcOf } from "./model.js";
 import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection, Sheet, closeModal, openChildOrRoot } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
@@ -1454,6 +1454,19 @@ const onlTap = (cls, open, body) => html`<span class=${"onlinetag m-onltap " + (
   onClick=${e => { e.stopPropagation(); e.preventDefault(); open(); }}>${body}</span>`;
 
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
+// A failover node's copy: online / held from its own report, with who lists the peers in the hover — ONE markup for the
+// Nodes card (`card`), an interface card's row (`row`) and a page header (`head`); null when the copy holds none, so each
+// caller keeps its own empty form ("none", "None", "0 / 0 online") and nothing claims peers that are not there (verify F6, F8).
+export function foCountTag(node, iface, variant, counts) {   // counts: the caller's own foCountsOf, if it has one (F9)
+  const c = counts !== undefined ? counts : foCountsOf(node, iface);
+  if (!c || !c.held) return null;
+  const an = Store.nodeName(foSrcOf(node));
+  const tip = T("These peers are on this server: copies of {v1}'s, which the panel lists on {v1}. They connect here once {v1}'s domain points here.", { v1: an });
+  const on = html`<b class=${"oncount" + (c.online ? " on" : "")}>${c.online}</b>`;
+  return variant === "card" ? html`<span class="nm-v nm-peers fo-peers" title=${tip}>${on}<small>/${c.held}</small></span>`
+    : variant === "head" ? html`<span title=${tip}>${on}${" / " + c.held + " " + T("val|online")}</span>`
+    : html`<span class="fo-peers" title=${tip}>${on}<span class="faint">/${c.held}</span></span>`;
+}
 export function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref }) {
   return html`<${OnlPop} peer title=${T("Online peers")} rows=${onlinePeerRows(nodeId, iface)} orphans=${orphans} orphHref=${orphHref} cls=${cls}
     trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${(total != null ? " / " + total : "") + " " + T("val|online")}`)}/>`;

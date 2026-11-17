@@ -680,7 +680,7 @@ export const foServingOn = (aid, bid) => {
 export const foCountsOf = (id, iface) => {
   if (!Store.isMirror(id)) return null;
   const st = Store.stats[id] || {}, nr = (Store.nodes || []).find(x => x.id === id) || {};
-  const live = (Store.recon.nodeStatus || {})[id] === "live";
+  const live = !nodeStale(id);
   const own = new Set(nr.unmanaged_ifaces || []);
   const one = n => {
     const fam = (nr.wdtt_cfg || {})[n] ? "wdtt" : (nr.csqtt_cfg || {})[n] ? "csqtt" : "";
