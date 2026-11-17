@@ -1409,7 +1409,9 @@ function foWhy(r, bn, an) {
     case "peers": return T("{v1} still to copy", { v1: plural(r.n || 0, "peer") });
     case "port": return T("its port is still changing");
     // the fix differs by kind (review F1): an interface's clients dial its endpoint; a server's or proxy's dial its listen address
-    case "ip_dial": return r.host
+    case "ip_dial": return r.via   // a proxy on every address, dialled at the interface it forwards to: that endpoint (F8)
+      ? T("its clients dial {v1}, the endpoint of {v2} — an IP address, so a domain change can't move them to {v3}. Give {v2} a domain as its endpoint on {v4}.", { v1: r.host, v2: r.via, v3: bn, v4: an })
+      : r.host
       ? (iface ? T("its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give the interface a domain as its endpoint on {v3}.", { v1: r.host, v2: bn, v3: an })
                : T("its clients dial {v1}, an IP address — a domain change can't move them to {v2}. Give it a domain to listen on, on {v3}.", { v1: r.host, v2: bn, v3: an }))
       : (iface ? T("its clients have no domain to dial — a domain change can't move them to {v1}. Give the interface a domain as its endpoint on {v2}.", { v1: bn, v2: an })

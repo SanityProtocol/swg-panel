@@ -13489,6 +13489,10 @@ class _FoKind:
         """The host A's clients dial for `n` ("" for none known): the take-over gives it to B, the preview warns on an IP."""
         return ""
 
+    def dial_via(self, a_rec, src, asnap):
+        """The interface whose endpoint `dial_host` took for `src` ("" when it is the copy's own) — where the fix is."""
+        return ""
+
     def status(self, r, ctx):
         """(state, why, more) for a copy past the generic classes (current, B's report read): the kind's own checks."""
         return "ready", "", {}
@@ -13895,12 +13899,19 @@ class _FoTurn(_FoKind):
         host = _fp_bind_host(src.get("listen") or "")
         if host:
             return host
+        i = self.dial_via(a_rec, src, asnap)
+        return _fo_effective_host(a_rec, _fo_user_ifaces(a_rec)[i], asnap, i) if i else ""
+
+    def dial_via(self, a_rec, src, asnap):
+        # a wildcard listen: the interface it forwards to (connect's port is that interface's listen port)
+        if _fp_bind_host(src.get("listen") or ""):
+            return ""
         cp = _port_of(str(src.get("connect") or ""))
         reps = (asnap or {}).get("interfaces") if isinstance((asnap or {}).get("interfaces"), dict) else {}
         for i, ov in sorted(_fo_user_ifaces(a_rec).items()):
             lp = ov.get("listen_port") or (((reps.get(i) or {}).get("meta") or {}) if isinstance(reps.get(i), dict) else {}).get("listen_port")
             if cp and str(lp or "") == cp:
-                return _fo_effective_host(a_rec, ov, asnap, i)
+                return i
         return ""
 
     def ports(self, src):
@@ -14217,7 +14228,7 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     """The status both members' cards show (plan §4.6): {primary, failover, serving, state, rows, problems}. `state` rolls
     up to offline | problem | needs_vault | syncing | ready; a row appears only when a copy is not ready, with its `kind`,
     its `why` a code the SPA words (no_copy, name_taken, primary_no_key, awg, awaiting_key, creating, down, key, subnet,
-    drift + keys, firewall + port, peers + n, port, no_turn, ip_dial + host); `problems` adds cmd_errors, unmanaged + ifaces and
+    drift + keys, firewall + port, peers + n, port, no_turn, ip_dial + host [+ via]); `problems` adds cmd_errors, unmanaged + ifaces and
     unmanaged_turn + services (B's own proxies, B's to remove); a row Re-sync repairs carries `resync` — the door reads that, one predicate. A
     `key` row carries it only where the vault can rebuild A's key (`ivk`); without it the SPA says the vault is what is
     missing (F140). Derived, never stored (called under the
@@ -14246,10 +14257,16 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
             more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}
         else:
             st, why, more = r["kind"].status(r, ctx)
-        if st == "ready" and isinstance(snaps[aid], dict):     # running as A's, but a DNS change can't move its clients:
-            _h = r["kind"].dial_host(a_rec, r["src"], snaps[aid], n)   # they dial an IP (_fo_dials_ip, the preview's rule)
-            if _fo_dials_ip(_h):                                 # — not "ready" (operator, 2026-11-16). No report of A's:
-                st, why, more = "problem", "ip_dial", {"host": _h or ""}   # not judged — a report confirms (review F2)
+        if st == "ready":                                        # running as A's, but a DNS change can't move its clients:
+            _h = r["kind"].dial_host(a_rec, r["src"], snaps[aid] or {}, n)   # they dial an IP (_fo_dials_ip, the preview's
+            #                                                      rule) — not "ready" (operator, 2026-11-16). An IP is judged
+            #                                                      from the record alone (verify F7); NO host only on a report
+            #                                                      of A's, where the host would come from (review F2)
+            if _fo_dials_ip(_h) and (_h or isinstance(snaps[aid], dict)):
+                st, why, more = "problem", "ip_dial", {"host": _h or ""}
+                _via = r["kind"].dial_via(a_rec, r["src"], snaps[aid] or {})
+                if _via:                                         # the host is that interface's: its endpoint is the fix (F8)
+                    more["via"] = _via
         if st != "ready":
             rows.append({"iface": n, "kind": r["kind"].kind, "state": st, "why": why, **more})
             worst = st if rank[st] > rank[worst] else worst
@@ -32508,7 +32525,7 @@ def api(method, path, qs, body, deps):
                                                   "removed": sorted(_fo_b_copies(nodes[bid])), "confirm": _need}}
             _mv, _lf, _rm, _hs = _fo_takeover_plan(nodes, aid, bid, cls, snaps)
             return 200, {"ok": True, "data": {"id": bid, "preview": True, "moved": _mv, "left": _lf, "removed": _rm, "confirm": _need,
-                                              "ip_dial": [n for n in _mv if not _hs[n] or _ip_literal(_hs[n])]}}
+                                              "ip_dial": [n for n in _mv if _fo_dials_ip(_hs[n])]}}
         if _need and (body.get("confirm") or "") != bname:
             return 409, {"ok": False, **perr("{v1} is serving clients: type {v2} to go on", v1=nodes[cut].get("name") or cut,
                                              v2=bname), "code": "confirm_required"}

@@ -119,6 +119,8 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      fo-order     B keeps its own interface and proxy order, not A's
      ip-dial      a copy whose clients dial A's IP reads ready
      ip-dial-noreport  …or with no report of A's, every copy is condemned as having no host
+     ip-dial-literal   …or with no report of A's, an IP the record proves reads ready
+     ip-dial-via       a wildcard proxy's IP row does not name the interface it is dialled at
      upd-manage   the reinstall is let through on a B that cannot manage proxies
      sc-has       a WDTT device online nowhere is read on the primary, not the live member running the server
      srv-title    B's WDTT / csqtt copy does not follow A's title
@@ -206,9 +208,11 @@ PLANTS = {   # (file, anchor, replacement)
     "resync-unbuildable": ("panel", '            more = {"resync": True} if r["kind"].rebuildable(r["src"], ivk) else {}',
                       '            more = {"resync": True}'),
     "fo-order": ("panel", ''',\n                  "iface_order", "turn_order")''', ''')'''),
-    "ip-dial": ("panel", '''            if _fo_dials_ip(_h):                                 # — not "ready" (operator, 2026-11-16). No report of A's:''',
-                '''            if False:'''),
-    "ip-dial-noreport": ("panel", '''        if st == "ready" and isinstance(snaps[aid], dict):''', '''        if st == "ready":'''),
+    "ip-dial": ("panel", '''if _fo_dials_ip(_h) and (_h or isinstance(snaps[aid], dict)):''', '''if False:'''),
+    "ip-dial-noreport": ("panel", '''if _fo_dials_ip(_h) and (_h or isinstance(snaps[aid], dict)):''', '''if _fo_dials_ip(_h):'''),
+    "ip-dial-literal": ("panel", '''if _fo_dials_ip(_h) and (_h or isinstance(snaps[aid], dict)):''', '''if _fo_dials_ip(_h) and isinstance(snaps[aid], dict):'''),
+    "ip-dial-via": ("panel", '''                if _via:                                         # the host is that interface's: its endpoint is the fix (F8)''',
+                    '''                if False:'''),
     "keep-unknown": ("panel", '        if r["cc"] not in ("current", "unknown"):', '        if r["cc"] != "current":'),
     "view-link": ("panel", '''        elif cc == "link":''', '''        elif False:'''),
     "log-dropped": ("panel", '    if left and dropped:\n        _dk = "took over {v1}; left on {v2}: {v3}; old copies removed: {v4}"\n    elif left:\n        _dk = "took over {v1}; left on {v2}: {v3}"\n    elif dropped:\n        _dk = "took over {v1}; old copies removed: {v4}"\n    else:\n        _dk = "took over {v1}"',
@@ -297,7 +301,7 @@ PLANTS = {   # (file, anchor, replacement)
                 '(path == "/api/turn/delete")'),
     'tp-unmanaged': ("panel", ' or not isinstance(asnap, dict) or not isinstance(asnap.get("turn_proxies"), list):\n        return set()',
                      ' or not isinstance(asnap, dict):\n        return set()'),
-    'tp-dial': ("panel", '        if host:\n            return host\n        cp = _port_of(', '        if True:\n            return host\n        cp = _port_of('),
+    'tp-dial': ("panel", '        if host:\n            return host\n        i = self.dial_via(', '        if True:\n            return host\n        i = self.dial_via('),
     'tp-absent': ("panel", '            return "problem", "no_turn", {}', '            return "syncing", "creating", {}'),
     'tp-hold': ("panel", '            if _turn_hold_get(nid, "fork:" + fork):      # operator rolled',
                 '            if _turn_hold_get(failover_rid(nodes, nid), "fork:" + fork):      # operator rolled'),
@@ -1581,11 +1585,23 @@ def sec14():
           "(ip_dial + the host, operator 2026-11-16); one on a name stays ready",
           rows.get("wdtt1", {}).get("why") == "ip_dial" and rows["wdtt1"].get("host") == "203.0.113.5"
           and rows["wdtt1"].get("state") == "problem" and "csqtt1" not in rows, fv["rows"])
-    fv = P.failover_view(nfw, roster(), "na", "nb", {"nb": {"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()],
-                                                            "csqtt": [w_row("csqtt1", pub="")]}},
-                         seen, frozenset(), now=NOW, ivk=IVK)
-    check("[14] …with no report of A's, nothing is judged ip_dial — a report confirms, never condemns (ip_dial review F2)",
-          not any(r.get("why") == "ip_dial" for r in fv["rows"]), fv["rows"])
+    _bs = {"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()], "csqtt": [w_row("csqtt1", pub="")]}
+    fv = P.failover_view(nfw, roster(), "na", "nb", {"nb": _bs}, seen, frozenset(), now=NOW, ivk=IVK)
+    rows = {r["iface"]: r for r in fv["rows"]}
+    check("[14] …with no report of A's, an IP the record proves is still judged (ip_dial verify F7)",
+          rows.get("wdtt1", {}).get("why") == "ip_dial" and rows["wdtt1"].get("host") == "203.0.113.5", fv["rows"])
+    _wk = next(k for k in P._FO_KINDS if getattr(k, "fam", "") == "wdtt")
+    _dh = _wk.dial_host
+    _wk.dial_host = lambda *a, **k: ""              # a host known only from A's report
+    try:
+        fv0 = P.failover_view(nfw, roster(), "na", "nb", {"nb": _bs}, seen, frozenset(), now=NOW, ivk=IVK)
+        fv1 = P.failover_view(nfw, roster(), "na", "nb", dict(snaps, nb=_bs), seen, frozenset(), now=NOW, ivk=IVK)
+    finally:
+        _wk.dial_host = _dh
+    check("[14] …while NO host is judged only on a report of A's — a report confirms, never condemns (ip_dial review F2)",
+          not any(r.get("why") == "ip_dial" for r in fv0["rows"])
+          and any(r.get("why") == "ip_dial" and r["iface"] == "wdtt1" and r.get("host") == "" for r in fv1["rows"]),
+          (fv0["rows"], fv1["rows"]))
     nfd = t_fleet(); P.failover_mirror(DEPS, nfd, "nb", snaps, seen, now=NOW)
     next(k for k in P._FO_KINDS if getattr(k, "fam", "") == "wdtt").drop(nfd["nb"], "wdtt1", NOW)   # a Re-sync's drop (F47: by kind)
     fv = P.failover_view(nfd, roster(), "na", "nb", dict(snaps, nb={"interfaces": {"awg0": snap_iface()}, "wdtt": [w_row()]}),
@@ -1795,7 +1811,14 @@ def sec15():
     rows, _ = view(fleet(), dict(sbr, turn_proxies=[tp_row(bind_ip="", listen="198.51.100.7:56100")]),
                    dict(sa, turn_proxies=[tp_row(listen="198.51.100.7:56100")]))
     check("[15] a proxy copy whose clients dial A's IP: ip_dial with the host (ip_dial review F5)",
-          rows.get(TPS, {}).get("why") == "ip_dial" and rows[TPS].get("host") == "198.51.100.7" and rows[TPS].get("kind") == "turn", rows.get(TPS))
+          rows.get(TPS, {}).get("why") == "ip_dial" and rows[TPS].get("host") == "198.51.100.7" and rows[TPS].get("kind") == "turn"
+          and "via" not in rows[TPS], rows.get(TPS))
+    nv = fleet(); nv["na"]["ifaces"]["awg0"]["endpoint_host"] = "198.51.100.9"; nv["na"].pop("endpoint_host", None)
+    fv = P.failover_view(nv, roster(), "na", "nb", {"na": sa, "nb": dict(sbr, turn_proxies=[tp_row(bind_ip="")])},
+                         seen, frozenset(), now=NOW, ivk=IVK)
+    rv = {r["iface"]: r for r in fv["rows"]}
+    check("[15] a proxy on every address, dialled at awg0's IP endpoint: the row names awg0, where the fix is (ip_dial verify F8)",
+          rv.get(TPS, {}).get("why") == "ip_dial" and rv[TPS].get("via") == "awg0" and rv[TPS].get("host") == "198.51.100.9", fv["rows"])
     rows, _ = view(fleet(), dict(sb, turn_proxies=[tp_row(flapping=40)]))
     check("[15] B's proxy crash-looping (running between restarts): down (R2 F8)", rows.get(TPS, {}).get("why") == "down", rows.get(TPS))
     rows, _ = view(fleet(), dict(sbr, udp_ports="51820-51899"))
