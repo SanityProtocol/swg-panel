@@ -2817,7 +2817,7 @@ function FailoverSetupSheet({ node }) {
     ...((w.pinned || []).length ? [row(T("Pinned to one of {v1}'s own addresses — on the failover node they leave by its default way out", { v1: node.name }), w.pinned.join(", "))] : []),
     ...(exitish.length ? [row(T("A device of {v1}'s own can't be copied: what leaves through these leaves by the failover node's own address", { v1: node.name }),
                               exitish.map(x => x.kind === "default_exit" ? T("the node's default exit") : x.name).join(", "))] : []),
-    ...((w.exit_fill || []).length ? [row(T("Until you give the failover node its own config for these — a provider's key works on one server only — what leaves through them leaves by its own address"),
+    ...((w.exit_fill || []).length ? [row(T("Until you give the failover node its own config for these — a provider's key works on one server only — their traffic there takes its default way out, and torrents through them are blocked"),
                                           w.exit_fill.map(id => foCopyText(node.id, "exit", id)).join(", "))] : []),
     ...(p2p.length ? [row(T("Torrents sent through a device of {v1}'s own are blocked on the failover node", { v1: node.name }), p2p.map(x => x.name || T("the node's torrent route")).join(", "))] : []),
   ];

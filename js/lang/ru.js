@@ -6395,7 +6395,7 @@ export const STR = {
   "Neither {v1} nor {v2} is reporting — bring one of them back before you move the domain.": "Ни {v1}, ни {v2} не выходят на связь — верните одну из них, прежде чем переносить домен.",
   "Nothing to re-sync: {v1} already runs {v2}'s copies": "Пересинхронизировать нечего: {v1} уже запускает копии {v2}",
   "Put back": "Вернуть",
-  "Until you give the failover node its own config for these — a provider's key works on one server only — what leaves through them leaves by its own address": "Пока у зеркала нет своего конфига для этих выходов — ключ провайдера работает только на одном сервере, — трафик через них уходит с собственного адреса зеркала",
+  "Until you give the failover node its own config for these — a provider's key works on one server only — their traffic there takes its default way out, and torrents through them are blocked": "Пока у зеркала нет своего конфига для этих выходов — ключ провайдера работает только на одном сервере, — их трафик идёт там по маршруту зеркала по умолчанию, а торренты через них блокируются",
   "Torrents sent through a device of {v1}'s own are blocked on the failover node": "Торренты, идущие через собственное устройство {v1}, на зеркале блокируются",
   "changed by hand on {v1}'s server: {v2} — put {v3}'s back": "изменено вручную на сервере {v1}: {v2} — верните значение {v3}",
   "not on {v1} yet — a copy needs its key in the vault; if this stays, set up or unlock the vault": "на {v1} ещё нет — для копии нужен её ключ в хранилище; если так и остаётся, настройте или откройте хранилище",
