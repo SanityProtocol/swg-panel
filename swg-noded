@@ -25227,7 +25227,10 @@ def _csqtt_save(insts):
     return os.path.isfile(CSQTT_RECORD)
 
 def _gen_csqtt_password():
-    return base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+    # Letters and digits only (the panel's alphabet): it was URL-safe base64, which leads with `-` about 1 in 64, and the
+    # owner password is on the server's command line (`--password ${SWG_PASSWORD}`, _csqtt_argv) — clap then reads it as
+    # a flag, the server exits 2, and Restart=on-failure repeats it for ever (1.8.12 item 15, hit live 2026-11-16).
+    return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(24))
 
 def _csqtt_webport(listen):
     # deterministic per-instance HTTPS admin port derived from the DTLS listen port (won't clash with it)
@@ -26606,7 +26609,12 @@ def reconcile_csqtt(want, remove=None):
                 # or the operator's Restart (the panel's `restart` stamp — "try again", with no new field for it).
                 inst["line_failed"] = _lf
             # owner --password + --web-pass are NODE-OWNED (the panel is blind): reuse the stored ones, else mint.
-            inst["password"] = (prev.get("password") or inst.get("password") or "").strip() or _gen_csqtt_password()
+            # One minted by an older build that leads with `-` never ran (see _gen_csqtt_password): it is minted anew,
+            # and the csqtt.env check below rewrites the env and restarts the server once. No client uses the owner
+            # password — every user has their own.
+            inst["password"] = (prev.get("password") or inst.get("password") or "").strip()
+            if not inst["password"] or inst["password"].startswith("-"):
+                inst["password"] = _gen_csqtt_password()
             inst["web_pass"] = (prev.get("web_pass") or _gen_csqtt_password() + _gen_csqtt_password())
             inst["web_port"] = prev.get("web_port") or _csqtt_webport(inst.get("listen") or "")
             # pw_seen safety net: an EMPTY desired set must not reap users the panel has never owned (a create
@@ -26813,6 +26821,9 @@ def reconcile_csqtt(want, remove=None):
                 # so it must not fire on every sync.
                 if (_csqtt_unit_drifted(iface, inst) or _csqtt_params_changed(prev, inst)
                         or (not inst.get("stopped") and _csqtt_env_drifted(iface, inst))
+                        # an owner password leading with `-` in the env the unit reads: re-minted above (item 15).
+                        # _csqtt_env_drifted reads CSQTT_DNS only, so this heal is its own check.
+                        or (not inst.get("stopped") and (_env_line(_csqtt_dir(iface) + "/csqtt.env", "SWG_PASSWORD") or "").startswith("-"))
                         or (not inst.get("stopped") and bind_heal_due("csqtt:" + iface, _csqtt_dir(iface) + "/csqtt.env", inst.get("listen") or "", names=False))):
                     err = _csqtt_reconfigure(inst)
                     if err:
