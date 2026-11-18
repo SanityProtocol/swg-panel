@@ -237,6 +237,11 @@ can only fail over after a re-import, and the preview says which.
 4. Do the drill once: point a throwaway hostname at the spare, change only that on one test device, connect. "Ready" cannot
    prove the provider's firewall lets clients in.
 
+**Both serve at once.** A client gets the primary's routing on either box at any moment, so the hours a DNS change takes
+to settle — both ways — never matter. A server the pair routes through sends each reply back the way its connection came
+(it needs this version; an older one keeps routing through the member that is serving). A connection that starts outside —
+a forwarded torrent port, another node reaching a device — reaches the member that is serving.
+
 **When the node goes down**, its page and the failover node's say *"Point its domain at …"*, with the address. Point it
 back when the node returns; nothing else changes. To automate the repoint, the `node.offline` webhook carries the node id.
 

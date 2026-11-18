@@ -24,6 +24,7 @@ systemctl, rmrf) — nothing on this machine is touched.
 Run: python3 tests/uninstall_residue_selftest.py      (0 = pass)
      --perturb          re-plants all seven shipped behaviours at once → RED (at least one FAIL per item)
      --perturb-record   ufw_forget keeps its record again → [3] RED
+     --perturb-rbl      the sweep leaves return by link's rule (6995) and table (7101..7355) → [1] RED
 """
 import os, re, subprocess, sys, tempfile
 
@@ -31,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_RECORD = "--perturb-record" in sys.argv
+PERTURB_RBL = "--perturb-rbl" in sys.argv
 U = open(os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
 H = open(os.path.join(ROOT, "install-host.sh"), encoding="utf-8").read()
 
@@ -54,6 +56,9 @@ if PERTURB:
     U = plant(U, "|| { ! $DPANEL && _has_docker_netctl; }", "|| { [ ! -d /opt/swg-panel ] && _has_docker_netctl; }")  # [5]
     U = plant(U, "  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard /var/www; do\n", "  for _d in; do\n")  # [6]
     U = plant(U, '  if [ "${KEPT_DATAPATH:-false}" = true ]; then\n', '  if [ "${#DID_KEEP[@]}" -gt 0 ]; then\n')  # [7]
+if PERTURB_RBL:
+    U = plant(U, "awk '$1>=7101 && $1<=7355'", "awk '$1>=1 && $1<=0'")
+    U = plant(U, "awk '$1==6995'", "awk '$1>=1 && $1<=0'")
 if PERTURB_RECORD:
     U = plant(U, """    if ! $DRYRUN; then
       if [ -n "$left" ]; then printf '%s' "$left" > "$f" 2>/dev/null || true; else rm -f "$f" 2>/dev/null || true; fi
@@ -95,9 +100,12 @@ print("[1] the datapath sweep takes the upstream-mark band too — rules only, n
 rules = ("0:\tfrom all lookup local\n5000:\tfrom all lookup main\n6880:\tfrom all fwmark 0x40000000 lookup main\n"
          "6890:\tfrom all fwmark 0x1aea lookup 7000\n"
          "6891:\tfrom 10.18.0.1 fwmark 0x1aeb lookup 7001\n6990:\tfrom all fwmark 0x9c40 lookup 6990\n"
+         "6995:\tfrom all fwmark 0x60000/0xff0000 lookup 7106\n"
          "7000:\tfrom 10.8.0.0/24 lookup 7000\n32766:\tfrom all lookup main")
 out, calls, _ = bash(PRE + "rmrf(){ :; }\n" + fn(U, "rm_node_netobjects") + "rm_node_netobjects\n",
-                     {"ip": 'case "$1 $2" in "rule show") printf "%s\\n" "' + rules.replace("\t", "\\t") + '";; esac; exit 0',
+                     {"ip": 'case "$1 $2" in "rule show") printf "%s\\n" "' + rules.replace("\t", "\\t") + '";; '
+                            '"-4 route") printf "default dev swg_a table 7106 scope link\\n10.8.0.0/24 dev ac table 7001\\n'
+                            'default via 1.2.3.4 dev eth0 table 100\\n";; esac; exit 0',
                       "iptables": "exit 0", "nft": "exit 0", "ipset": "exit 0"})
 dels = re.findall(r"^ip rule del pref (\d+)$", calls, re.M)
 flush = re.findall(r"^ip route flush table (\d+)$", calls, re.M)
@@ -106,6 +114,8 @@ check("…and 6880, the torrent policy's rule under Direct (1.8.9 qualification 
       "6880" in dels and "main" not in flush and "6880" not in flush, (dels, flush))
 check("…and no `table 6890`/`6891` is flushed — those priorities name no table of ours", "6890" not in flush and "6891" not in flush, flush)
 check("the table band is still swept as before (7000: rule + table)", "7000" in dels and "7000" in flush, calls)
+check("…and return by link's rule at 6995 and its table 7106 (FAILOVER-PLAN §14.7) — never another table (100)",
+      "6995" in dels and "7106" in flush and "100" not in flush and "6995" not in flush, (dels, flush))
 check("nobody else's rule is touched (0, 5000, 32766), nor the relay's 6990 (rm_node owns it)",
       not ({"0", "5000", "32766", "6990"} & set(dels)), dels)
 
@@ -231,5 +241,5 @@ print()
 if FAILS:
     print("FAIL (%d): %s" % (len(FAILS), "; ".join(FAILS)))
     sys.exit(1)
-print("ALL PASS" + (" — but the perturbation was planted and should have gone RED" if (PERTURB or PERTURB_RECORD) else ""))
-sys.exit(2 if (PERTURB or PERTURB_RECORD) else 0)
+print("ALL PASS" + (" — but the perturbation was planted and should have gone RED" if (PERTURB or PERTURB_RECORD or PERTURB_RBL) else ""))
+sys.exit(2 if (PERTURB or PERTURB_RECORD or PERTURB_RBL) else 0)

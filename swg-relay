@@ -17,7 +17,7 @@ refused outright once fs.pipe-user-pages-soft is exhausted); TCP_CONGESTION sile
 default if the module is absent. A build that only catches OSError cannot tell a working tunable from an
 ignored one — which is exactly how the pipe fix went two rounds without ever being validly tested.
 """
-import argparse, array, contextlib, errno, fcntl, json, os, resource, selectors, socket, stat, struct, sys, time
+import argparse, array, contextlib, errno, fcntl, json, os, random, resource, selectors, socket, stat, struct, sys, time
 
 # ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
 # Each line carries a syslog priority: under journald the `<N>` prefix, in docker one letter. The level is swg-noded's,
@@ -210,12 +210,44 @@ class Conn:
         self.dead = False
 
 
+def sport_half(half, path="/proc/sys/net/ipv4/ip_local_port_range"):
+    """(lo, hi) — this member's half of the ephemeral range — or None. RELAY_SPORT (1 or 2) is set by the node only on a
+    member of a failover pair (docs/FAILOVER-PLAN.md §14.7): both members relay a shared subnet from the SAME gateway
+    address to one far node, and a source port both happened to pick for one destination folds the second connection into
+    the first's conntrack entry there — it hangs. Disjoint halves make that impossible. Unset: the kernel picks, as ever."""
+    if half not in (1, 2):
+        return None
+    try:
+        lo, hi = (int(x) for x in open(path).read().split()[:2])
+    except (OSError, ValueError):
+        lo, hi = 32768, 60999
+    mid = (lo + hi + 1) // 2
+    return (lo, mid - 1) if half == 1 else (mid, hi)
+
+
 class Relay:
-    def __init__(self, mark, cc, pipe_cap=PIPE_CAP, cc_cli="", bind="", mss=0):
+    def __init__(self, mark, cc, pipe_cap=PIPE_CAP, cc_cli="", bind="", mss=0, sport=None):
         self.sel = selectors.DefaultSelector()
         self.mark, self.cc, self.pipe_cap, self.cc_cli, self.bind = mark, cc, pipe_cap, cc_cli, bind
         self.mss = mss
+        self.sport = sport
         self.conns = {}
+
+    def _bind_up(self, up):
+        """Bind the upstream to the gateway — on a port from this member's half when it has one (see sport_half). No
+        SO_REUSEADDR there: a port in use, TIME_WAIT included, fails the bind and the next is tried, so the kernel's own
+        four-tuple check never has to. After 16 misses the kernel picks, as it does without a half."""
+        if self.sport:
+            for _ in range(16):
+                try:
+                    up.bind((self.bind, random.randint(*self.sport)))
+                    return
+                except OSError as e:
+                    if e.errno != errno.EADDRINUSE:
+                        raise
+            ST["sport_miss"] = ST.get("sport_miss", 0) + 1
+        up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        up.bind((self.bind, 0))
 
     # ── plumbing ──
     def _want(self, sock, events, conn):
@@ -314,8 +346,7 @@ class Relay:
                 # the connection simply never comes back. Binding to the accelerated interface's own gateway
                 # address puts the relay inside the subnet the exit already routes and SNATs for, and the
                 # existing `from <subnet> lookup <table>` rule then picks the mesh leg with no mark at all.
-                up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                up.bind((self.bind, 0))
+                self._bind_up(up)
             if self.mss:
                 # ⚠️ THE EXIT CANNOT CLAMP THIS CONNECTION, SO WE MUST SIZE IT OURSELVES. A forwarded client's
                 # SYN crosses the exit's `-o <mesh> ... TCPMSS --clamp-mss-to-pmtu` rule and comes back sized
@@ -518,10 +549,11 @@ def main():
     log(LOG_DEBUG, "relay: fd limit %s", resource.getrlimit(resource.RLIMIT_NOFILE)[0])
     srv.bind((a.host, a.port)); srv.listen(1024); srv.setblocking(False)
 
-    R = Relay(a.mark, a.cc, a.pipe_size, a.cc_cli, a.bind, a.mss)
+    _half = os.environ.get("RELAY_SPORT", "")
+    R = Relay(a.mark, a.cc, a.pipe_size, a.cc_cli, a.bind, a.mss, sport=sport_half(int(_half) if _half.isdigit() else 0))
     R.sel.register(srv, selectors.EVENT_READ, None)
     cfg = {"port": a.port, "mark": a.mark, "bind": a.bind, "cc_up": a.cc, "cc_cli": a.cc_cli,
-           "pipe_granted": granted, "dst": a.dst, "mss": a.mss}
+           "pipe_granted": granted, "dst": a.dst, "mss": a.mss, **({"sport": list(R.sport)} if R.sport else {})}
     started = time.time()
     stsock = None
     if a.status_sock:

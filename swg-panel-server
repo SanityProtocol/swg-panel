@@ -13159,6 +13159,11 @@ def failover_members(nodes):
     return {b for b in (nodes or {}) if failover_rid(nodes, b) != b}
 
 
+def _fo_pair_ids(nodes):
+    """Every node that is a member of a failover pair (primary or failover node) — a set, empty without failover."""
+    return {x for ab in failover_pairs(nodes).items() for x in ab}
+
+
 def failover_pairs(nodes):
     """{primary: its failover node} — {} in a fleet with none (one walk of the records)."""
     out = {}
@@ -14289,8 +14294,8 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
                    **{k: a[k] for k in ("wdtt", "csqtt") if isinstance(a.get(k), dict)}})
     _fo_mirror_exits(a, _s)
     # …and a provider profile or a dial-in it copies empty (one key, one server): until the operator fills it on B it carries
-    # nothing there (resolve_exit gives it no route) — what it would carry leaves another way, which way depends on B's
-    # default; a torrent route through it is blocked. Said before setup; after it, the Failover panel flags it (§14.3)
+    # nothing there (resolve_exit gives it no route) — what it would carry leaves another way: the next rule that matches,
+    # else B's default; a torrent route through it is blocked. Said before setup; after it, the Failover panel flags it (§14.3)
     warn["exit_fill"] = [str(x.get("id")) for x in (_s.get("exits") or []) if fo_exit_unfilled(x) and x.get("enabled") is not False]
     warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_s)]
     if a.get("default_exit") and (prune_default_exit(_s) or not _s.get("default_exit")):
@@ -24120,6 +24125,27 @@ def resolve_exit(nodes, snaps, nid, xid):
             str(_x.get("gw") or "").strip())
 
 
+def _rbl_label_raw(lr):
+    """A link's return-by-link label (docs/FAILOVER-PLAN.md §14.7): 1..255 from its /31, or 0. The /31 is fixed for the
+    link's life and handed out first-free, so the label needs no allocator and no stored field — and it is the LINK's,
+    never the table's: a failover pair's two members give the far node the same table number for one subnet."""
+    try:
+        net = ipaddress.ip_network(str((lr or {}).get("subnet") or ""), strict=False)
+    except (ValueError, TypeError):
+        return 0
+    return ((int(net.network_address) >> 1) % 255) + 1 if net.version == 4 else 0
+
+
+def rbl_label(nodes, P, n):
+    """The label of P's link to n, at P — 0 when that link has none or another of P's links shares it (more than 255
+    links in one pool, or two pools): such a pair is not both-planned at P, which then keeps §4.4 for it."""
+    links = (nodes.get(P) or {}).get("links") or {}
+    L = _rbl_label_raw(links.get(n))
+    if not L or any(o != n and _rbl_label_raw(lo) == L for o, lo in links.items()):
+        return 0
+    return L
+
+
 def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
     """Fleet-wide egress plan covering BOTH Phase-2 whole-interface forward (egress_mode=forward) AND
     Phase-3 per-destination smart routing (egress_mode=smart). Both route a user interface's traffic into
@@ -24134,8 +24160,26 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
     only an explicit forward/smart toggle produces any entry — inert otherwise.
     `idle` (docs/FAILOVER-PLAN.md §4.4): the member of each failover pair not serving. Walked LAST, so the serving member
     plans first and the T37 guard (one subnet into one far node) leaves the idle one's cascades out; its local rules
-    stay. Its clash is not noted: steady state, not a fault. Empty without failover — the walk is today's."""
+    stay. Its clash is not noted: steady state, not a fault. Empty without failover — the walk is today's.
+    …EXCEPT at a far node that returns by link (§14.2/§14.7, `rbl` in its smart status): there both members are planned,
+    each exit record carries its link's label (`ret`), and the idle member's also `to: false` — the serving member's
+    keeps the one `to S` route a connection that starts outside takes (§14.4)."""
     plans = {}
+    _fo_part = {}                                             # a failover pair, both ways — {} in a fleet without one
+    for _a, _b in failover_pairs(nodes).items():
+        _fo_part[_a], _fo_part[_b] = _b, _a
+    _rbl_memo = {}
+
+    def _rbl_both(nid, o, s, e_net, P):
+        """May `nid` send S to P beside `o`, which already does? Only its own pair partner, with the very same subnet, at a
+        far node that says it returns by link, over two links that each have a label there (§14.7)."""
+        if _fo_part.get(nid) != o or e_net != s:
+            return False
+        if (P, nid, o) not in _rbl_memo:
+            _sr = ((snaps or {}).get(P) or {}).get("smartroute")
+            _rbl_memo[(P, nid, o)] = bool(isinstance(_sr, dict) and _sr.get("rbl") and rbl_label(nodes, P, nid)
+                                          and rbl_label(nodes, P, o))
+        return _rbl_memo[(P, nid, o)]
 
     def _nlist(nid):
         """The node's default list (D2), or None when its default is not a list — the presence of the list IS the switch.
@@ -24224,7 +24268,8 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
         s, own = _clash_memo[(S, P)]
         if own or not s:
             return own
-        dup = next((e for e in _into.get(P) or () if e[1] != nid and e[0].version == s.version and e[0].overlaps(s)), None)
+        dup = next((e for e in _into.get(P) or () if e[1] != nid and e[0].version == s.version and e[0].overlaps(s)
+                    and not _rbl_both(nid, e[1], s, e[0], P)), None)
         return {"their": dup[2], "their_subnet": str(dup[0]), "via": dup[1]} if dup else None
 
     def _note_clash(nid, name, S, P, kind, why):
@@ -24243,8 +24288,10 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
             _into.setdefault(P, []).append((ipaddress.ip_network(S, strict=False), nid, name or S))
         return False
 
-    def add_exit(P, S, dev_p, T, X, W, base_p):        # exit record + exit-side AllowedIPs (shared by forward + smart)
+    def add_exit(P, S, dev_p, T, X, W, base_p, o=None):   # exit record + exit-side AllowedIPs (shared by forward + smart)
         sp = slot(P)
+        if o in _fo_part:                                  # a pair member's record: whose it is, for return by link (below)
+            sp.setdefault("_xo", {})[(S, dev_p, T)] = o
         if (S, dev_p, T) not in sp["_exit_seen"]:
             sp["_exit_seen"].add((S, dev_p, T))
             sp["exit"].append({"subnet": S, "via_iface": dev_p, "table": T, "egress_ip": X, "wan_iface": W})
@@ -24724,7 +24771,7 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
             sn["_leg_seen"].add((S, P, "forward"))
             sn["_legs"].append({"subnet": S, "peer": P, "mark": T, "mode": "forward"})
         sn["allowed"][dev_n] = "0.0.0.0/0"
-        add_exit(P, S, dev_p, T, X, W, base_p)
+        add_exit(P, S, dev_p, T, X, W, base_p, nid)
         slot(P).setdefault("_from", {}).setdefault(S, nid)      # whose subnet this is — the "whom it affects" line (§7.3)
         arrival_default(P, S, X, W, whole=True)
 
@@ -24757,7 +24804,7 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
             # gets byte-identical exit records; a pinned one becomes `swg-fwd-snat:S --to-source X` at P,
             # which every node already runs (1.8.6 included) — §6.4.
             pin = _ip4((exit_ips_of.get((nid, S)) or {}).get(P))   # the ONE address for (S, P) — read, never carried
-            add_exit(P, S, dev_p, T, pin, "", base_p)
+            add_exit(P, S, dev_p, T, pin, "", base_p, nid)
             slot(P).setdefault("_from", {}).setdefault(S, nid)
             arrival_default(P, S, pin, "")                   # D5 — a smart arrival takes P's default as a forward one does
             # ⚠️ THE ONE PLACE THAT KNOWS "THIS SUBNET ROUTES SOME OF ITS TRAFFIC OVER A PEER NODE'S LEG,
@@ -24874,7 +24921,7 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
             sn["allowed"][dev_n] = "0.0.0.0/0"
             for S in subs:
                 pin = _ip4((exit_ips_of.get((nid, S)) or {}).get(key))
-                add_exit(key, S, dev_p, T, pin, "", base_p)
+                add_exit(key, S, dev_p, T, pin, "", base_p, nid)
                 slot(key).setdefault("_from", {}).setdefault(S, nid)
                 arrival_default(key, S, pin, "")
                 if (S, key, "smart") not in sn["_leg_seen"]:
@@ -25002,6 +25049,29 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
             # A PUBLIC KEY ONLY WHEN IT CARRIES SOMETHING — so a plan with no arrivals is byte-identical to one built before
             # this pass existed (§5.3), and the sync reply sends `smart.arrivals` only to a node that has some.
             sp["arrivals"] = {"subnets": subs, "entries": ents}
+
+    # RETURN BY LINK (§14.2, §14.7): where both members of a pair send S to one far node — which `_clash_of` allows only
+    # where that node returns by link — every record of S there carries its link's label, and the idle member's returns by
+    # link only (`to: false`), so one `to S` route stays for a connection that starts outside (§14.4). Only such records
+    # change: every other plan is byte-identical.
+    for P, sp in plans.items():
+        _xo = sp.pop("_xo", None)
+        if not _xo:
+            continue
+        _by = {}
+        for e in sp["exit"]:
+            o = _xo.get((e["subnet"], e["via_iface"], e["table"]))
+            if o:
+                _by.setdefault(e["subnet"], []).append((e, o))
+        for S, rs in _by.items():
+            _os = {o for _, o in rs}
+            if len(_os) < 2:
+                continue                                       # one member sends it here: today's record
+            _quiet = next((o for o in _os if o in idle), None) or next(o for o in _os if failover_rid(nodes, o) != o)
+            for e, o in rs:
+                e["ret"] = rbl_label(nodes, P, o)
+                if o == _quiet:
+                    e["to"] = False
 
     for sn in plans.values():
         for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_leg_seen", "_targets", "_from", "_auto", "_hop2", "_dx_seen"):
@@ -25221,6 +25291,7 @@ def relay_plan(nodes, plans, nid, snaps):
         return {}
     want = {}
     _legs = ((plans or {}).get(nid) or {}).get("_legs") or ()
+    _half = ({"half": 2 if failover_rid(nodes, nid) != nid else 1} if nid in _fo_pair_ids(nodes) else {})   # §14.7
     for iid, e in sorted(relay_eligibility(node, snaps, nid, _legs).items()):
         r = on.get(e["via"])
         if r is None:
@@ -25250,7 +25321,11 @@ def relay_plan(nodes, plans, nid, snaps):
         legs.append({"iface": e["iface"], "peer": e["peer"], "subnet": e["subnet"],
                      "mark": e["mark"], "up_table": e.get("up_table") or 0, "port": ports[iid],
                      "cc_cli": (r.get("cc_cli") or "").strip(),
-                     "cc_up": (r.get("cc_up") or "").strip()})
+                     "cc_up": (r.get("cc_up") or "").strip(),
+                     # a failover pair member's half of the relay's source ports (FAILOVER-PLAN §14.7): both relay a shared
+                     # subnet from one gateway address, and a port both picked would hang the second connection at the far
+                     # node. Absent on every other node, so its plan is byte-identical.
+                     **_half})
     if not legs:
         return {"legs": [], "ifaces": {}}      # an empty plan, which is what makes the node tear down
     q = int(((node.get("relay") or {}).get("quota_pct")) or RELAY_QUOTA_DEFAULT)
@@ -32690,18 +32765,17 @@ def api(method, path, qs, body, deps):
             _gone = sorted(_gone)
             nodes[bid].pop("failover_of", None)
             _fo_release_exits(nodes, bid)
-            _p2p_pr = prune_p2p_refs(nodes)            # a torrent route that named an unfilled copy: Block, and said
-            nodes_save(deps["nodes_path"], nodes)
-            _report_p2p_pruned(deps, _p2p_pr)
+        else:
+            roster = roster_load(roster_path)
+            moved, left, dropped = failover_takeover(nodes, roster, aid, bid, cls, snaps)
+        _p2p_pr = prune_p2p_refs(nodes)                # either branch: a torrent route that named an unfilled copy — Block,
+        nodes_save(deps["nodes_path"], nodes)          # and said (one tail for both, fo-exits-f1b F18)
+        _report_p2p_pruned(deps, _p2p_pr)
+        if not take:
             ev_append(roster_path, "node", bid, "Detached failover node", bname,
                       "peers kept on %s; copies removed: %s" % (aname, ", ".join(_gone) or "—"),
                       detail_key="peers kept on {v1}; copies removed: {v2}", detail_vars={"v1": aname, "v2": ", ".join(_gone) or "—"})
             return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": [], "removed": _gone}}
-        roster = roster_load(roster_path)
-        moved, left, dropped = failover_takeover(nodes, roster, aid, bid, cls, snaps)
-        _p2p_pr = prune_p2p_refs(nodes)
-        nodes_save(deps["nodes_path"], nodes)
-        _report_p2p_pruned(deps, _p2p_pr)
         if moved:
             roster_save(roster_path, roster)
             failover_carry_settings(deps, aid, bid)

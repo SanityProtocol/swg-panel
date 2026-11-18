@@ -1379,6 +1379,14 @@ rm_node_netobjects(){
     for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989)'); do
       run ip rule del pref "$n"
     done
+    # …And return by link (FAILOVER-PLAN §14.7, a far node of a failover pair): its rules at 6995 (RBL_PRI) look up tables
+    # 7101..7355 (RBL_RT_BASE + label), outside the band flushed above — the rules, then each such table that has a route.
+    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6995'); do
+      run ip rule del pref "$n"
+    done
+    for t in $(ip -4 route show table all 2>/dev/null | sed -n 's/.* table \([0-9]\+\).*/\1/p' | sort -u | awk '$1>=7101 && $1<=7355'); do
+      run ip route flush table "$t"
+    done
   fi
   # Orphaned wg-quick PostUp rules for a node<->node MESH link (swg-agent writes the FORWARD accept pair; `swg_` is
   # noded's reserved mesh link-name prefix). They carry no swg- comment and sit in no SWG* chain, so neither loop
