@@ -422,7 +422,8 @@ def sec6():
         q = _free_window(4)
         sa = socket.socket(); sa.bind(("127.0.0.1", 0)); sa.listen(64)
         sb = socket.socket(); sb.bind(("127.0.0.1", 0)); sb.listen(64)
-        rl = RL.Relay(0, "", bind="127.0.0.1", sport=q); held, got, ports = [], [], set()
+        sc = socket.socket(); sc.bind(("127.0.0.1", 0)); sc.listen(64)   # a listener per probe: the second may reuse
+        rl = RL.Relay(0, "", bind="127.0.0.1", sport=q); held, got, ports = [], [], set()  # the first's port (verify F50)
         try:
             for _ in range(400):
                 if len({u.getsockname()[1] for u in held}) == 4:
@@ -433,18 +434,18 @@ def sec6():
                 except OSError:
                     u.close()
             ports = {u.getsockname()[1] for u in held}
-            for mode in ("live", "timewait"):
+            for mode, to in (("live", sb), ("timewait", sc)):
                 if mode == "timewait":
                     for u in held:
                         u.close()                               # the relay side closes first: TIME_WAIT
                 u = socket.socket()
                 try:
-                    rl._bind_up(u); u.connect(sb.getsockname()); got.append((mode, u.getsockname()[1]))
+                    rl._bind_up(u); u.connect(to.getsockname()); got.append((mode, u.getsockname()[1]))
                 except OSError as ex:
                     got.append((mode, ex))
                 u.close()
         finally:
-            for x in held + [sa, sb]:
+            for x in held + [sa, sb, sc]:
                 x.close()
         check("[6] an older kernel, every port of the half held by live and then TIME_WAIT upstreams: the next shares one",
               ports == set(range(q[0], q[1] + 1))
