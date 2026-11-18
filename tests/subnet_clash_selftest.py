@@ -70,7 +70,8 @@ PLANTS = {   # name: (marker of the check it must redden, anchor, replacement)
     "card": ("[12]", "    for e in clash or ():\n        why = (", "    for e in ():\n        why = ("),
     "seam": ("[12]", '        Handler.deps["cas_clash"] = {_n: _p["_clash"] for _n, _p in cas_plans.items() if _p.get("_clash")}',
              '        Handler.deps["cas_clash"] = {}'),
-    "dup": ("[13]", "        dup = next((e for e in _into.get(P) or () if e[1] != nid and e[0].version == s.version and e[0].overlaps(s)), None)",
+    "dup": ("[13]", "        dup = next((e for e in _into.get(P) or () if e[1] != nid and e[0].version == s.version and e[0].overlaps(s)\n"
+                    "                    and not _rbl_both(nid, e[1], s, e[0], P)), None)",
             "        dup = None"),
     "metasys": ("[15]", 'if (ifn in _mesh or str(ifn).startswith("swg_") or meta.get("system")',
                 'if (ifn in _mesh or str(ifn).startswith("swg_")'),

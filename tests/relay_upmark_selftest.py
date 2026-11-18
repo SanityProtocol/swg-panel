@@ -78,7 +78,7 @@ if P_GUARD:     # the shape it was first written in: refuse on the rule's ABSENC
     nsrc = cut(nsrc, "            if _falls_to == _want_tbl:\n                continue",
                "            if False:\n                continue", "guard falls-to")
 if P_SOMARK:
-    nsrc = cut(nsrc, 'int(e.get("up") or 0)))', 'int(e.get("mark") or 0)))', "env so_mark")
+    nsrc = cut(nsrc, '               int(e.get("up") or 0))\n', '               int(e.get("mark") or 0))\n', "env so_mark")
 if P_DIVERT:
     nsrc = cut(nsrc, '"mark": want[iface]["mark"], "iid": iface})', '"mark": want[iface]["up"], "iid": iface})', "divert scope")
 if P_FLUSH:

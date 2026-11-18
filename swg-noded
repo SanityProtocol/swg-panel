@@ -2571,24 +2571,37 @@ RBL_F = 0x00ff0000                # the link label's field: bits 16-23 (the band
 RBL_KEEP = 0xffffffff & ~RBL_F    # everything but the label: a restore copies only this to the packet mark
 RBL_RT_BASE = 7100                # table RBL_RT_BASE + L holds `default dev <link>` (7101-7355, outside the band's flush)
 RBL_PRI = SWG_RT_BASE - 5         # 6995: above every band rule, below the relay's own 6990 (exact marks: never overlap)
-RBL_TABLE = "swg_rbl"             # our own inet table: the label (postrouting) and the reply restore (prerouting, output)
-_RBL = {"on": False, "nft": None, "rsig": None, "swept": False, "live": False}   # on: this pass lowers it — read by every ct-mark writer
+RBL_TABLE = "swg_rbl"             # our own ip table (IPv4 only): the label and the reply restore (prerouting), output's restore
+# on: this pass lowers it. mask: every ct-mark writer and restore keeps the label out — set with `on` and kept for the
+# process's life, because a label outlives its lowering in conntrack (a turn-off leaves live labelled connections, whose
+# restores must still not carry it into the packet mark — review F8). A process that never lowered it renders the old text.
+_RBL = {"on": False, "mask": False, "nft": None, "rsig": None, "swept": False, "live": ()}
 
 
 def _rbl_restore():
     """A ct-mark restore's right-hand side: the whole mark, or all of it but the link label on a node that lowers one."""
-    return ["ct", "mark", "and", "%#010x" % RBL_KEEP] if _RBL["on"] else ["ct", "mark"]
+    return ["ct", "mark", "and", "%#010x" % RBL_KEEP] if _RBL["mask"] else ["ct", "mark"]
 
 
 def _rbl_ct_set(x):
     """`ct mark set X`, keeping the link label on a node that lowers one (a writer on a LATER packet would clear it)."""
-    return ("ct mark set ct mark and %#010x or %#x" % (RBL_F, x)) if _RBL["on"] else ("ct mark set %#x" % x)
+    return ("ct mark set ct mark and %#010x or %#x" % (RBL_F, x)) if _RBL["mask"] else ("ct mark set %#x" % x)
 
 
 def _rbl_connmark(T):
     """Kernel SNI's CONNMARK target: `--set-mark T`, or on a node that lowers return by link the same mark with the link
     label kept (`--set-xmark T/~F`) — it fires on the ClientHello, a later packet than the label's."""
-    return ["CONNMARK", "--set-xmark", "%s/%#010x" % (T, RBL_KEEP)] if _RBL["on"] else ["CONNMARK", "--set-mark", T]
+    return ["CONNMARK", "--set-xmark", "%s/%#010x" % (T, RBL_KEEP)] if _RBL["mask"] else ["CONNMARK", "--set-mark", T]
+
+
+def _rbl_savemask():
+    """Kernel SNI's `--save-mark` options: none, or masks that leave the link label in the ct mark as it is."""
+    return ["--nfmask", "%#010x" % RBL_KEEP, "--ctmask", "%#010x" % RBL_KEEP] if _RBL["mask"] else []
+
+
+def _rbl_uncat():
+    """The uncategorised counters' ct-mark test: the whole mark, or all of it but the link label — a label is no category."""
+    return ["and", "%#010x" % RBL_KEEP] if _RBL["mask"] else []
 
 
 SMART_NFT_TABLE = "swg_smart"   # Phase 3: inet nft table holding the per-category dest sets + marking chain
@@ -5525,19 +5538,25 @@ def _rbl_labels(exit_):
 
 
 def _rbl_nft(labels):
-    """The `swg_rbl` table: ONE prerouting chain, after every writer of a connection's first packet (the smart pins and the
-    arrivals' marks at mangle, P2P's cls at mangle + 5, the relay at mangle + 10 — none later: an exit tunnel is written
-    `Table = off`, so wg-quick adds no rule), that labels a new connection with the link it arrived on — forwarded or ending
-    here, both pass prerouting — and puts the label on every REPLY's packet mark before its route lookup; and a `route`
-    output chain for a reply this node sends itself (a client of the other member reaching this node's own address).
-    One hook on the forwarded path, not two: measured, a second base chain cost more than the rules in it (rblcost.sh).
-    One rule per labelled link, read by a new connection's first packet only; no map (nft 1.0.6, DATAPATH-PLAN)."""
-    lab = ["    iifname \"%s\" ct mark set ct mark or %#010x" % (d, L << 16) for d, L in sorted(labels.items())]
+    """The `swg_rbl` table (ip: everything it lowers is IPv4, so IPv6 never walks it): ONE prerouting chain, after every
+    writer of a connection's first packet (the smart pins and the arrivals' marks at mangle, P2P's cls at mangle + 5, the
+    relay at mangle + 10 — none later: an exit tunnel is written `Table = off`, so wg-quick adds no rule), that labels a
+    connection with the link its latest original-direction packet came in on — forwarded or ending here, both pass
+    prerouting — and puts the label on every REPLY's packet mark before its route lookup; and a `route` output chain for a
+    reply this node sends itself (a client of the other member reaching this node's own address).
+    PER PACKET, not on the first one only (review F4, F9): a connection that moves to the other member — its member died,
+    or the client followed the domain — is answered by the member it now comes through, and one that began before the
+    table was loaded is labelled on its next packet. Only packets from a labelled link enter `lab` (one set match for all
+    else); `lab` holds one rule per labelled link — two per pair — and each returns. A label that does not change is not
+    written again by the kernel. No map (nft 1.0.6, DATAPATH-PLAN)."""
+    lab = ["    iifname \"%s\" ct mark set ct mark and %#010x or %#010x return" % (d, RBL_KEEP, L << 16)
+           for d, L in sorted(labels.items())]
     rst = "    ct direction reply ct mark and %#010x != 0x0 meta mark set ct mark and %#010x" % (RBL_F, RBL_F)
-    return "\n".join(["table inet %s {}" % RBL_TABLE, "delete table inet %s" % RBL_TABLE, "table inet %s {" % RBL_TABLE,
+    devs = ", ".join("\"%s\"" % d for d in sorted(labels))
+    return "\n".join(["table ip %s {}" % RBL_TABLE, "delete table ip %s" % RBL_TABLE, "table ip %s {" % RBL_TABLE,
                       "  chain lab {", *lab, "  }",
                       "  chain pre {", "    type filter hook prerouting priority mangle + 20; policy accept;",
-                      "    ct state new jump lab", rst, "  }",
+                      "    iifname { %s } ct direction original jump lab" % devs, rst, "  }",
                       "  chain out {", "    type route hook output priority mangle - 10; policy accept;", rst, "  }",
                       "}"]) + "\n"
 
@@ -5546,16 +5565,20 @@ def _rbl_apply(labels, seen, res):
     """Lower return by link for `labels` ({link: L}): per L the rule `fwmark L<<16/F lookup RBL_RT_BASE+L` at RBL_PRI and
     that table's `default dev <link>`, then the nft table. Nothing labelled: remove all of it — but on a node that never
     had any, nothing is run at all: a process restarted out of it is told by its rule at RBL_PRI, which this pass's
-    `_live_band_prios` already read (`_RBL["live"]`). Rules go in before the nft table and come out after it, so a leftover
-    table always leaves its rule behind.
-    `seen(dev)` is the pass's own judgement of a device, (state, ifindex): the route goes in only while the link is up,
-    and a recreated device (a new index) gets it again. Routes first, rules next, nft last; the reverse to remove."""
+    `_live_band_prios` already read (`_RBL["live"]`, the rule lines — no fork of its own). Rules go in before the nft table
+    and come out after it, so a leftover table always leaves its rule behind; a table whose removal failed keeps them too.
+    `seen(dev)` is the pass's own judgement of a device, (state, ifindex): the route is there only while the link is up.
+    Each label's table is READ BACK every pass (one fork per label, only on such a node): the kernel drops the route when
+    the link goes down, and a bounce between two passes leaves state and index as they were (review F10)."""
     want_rules = {(L << 16, RBL_RT_BASE + L) for L in labels.values()}
     rsig = sorted((d, L, seen(d)) for d, L in labels.items())
     if not labels:
-        _left = not _RBL["swept"] and _RBL["live"]             # a restart out of it: its rule is still there
+        _left = not _RBL["swept"] and bool(_RBL["live"])       # a restart out of it: its rule is still there
         if _RBL["nft"] is not None or _left:
-            run(["nft", "delete", "table", "inet", RBL_TABLE])
+            r = run(["nft", "delete", "table", "ip", RBL_TABLE])
+            if r.returncode != 0 and not _nft_absent(r):       # still there: keep its rules, so this or a later process
+                res["errors"].append("return by link: " + (r.stderr or "nft failed").strip()[:200])   # finds it (F13)
+                return
             _RBL["nft"] = None
         if _RBL["rsig"] or _left:
             for _ in range(256):
@@ -5574,19 +5597,25 @@ def _rbl_apply(labels, seen, res):
         _RBL["swept"] = True
         return
     _RBL["swept"] = True
-    if rsig != _RBL["rsig"]:
-        for _d, L, _s in (_RBL["rsig"] or ()):
-            if L not in labels.values():
-                run(["ip", "route", "flush", "table", str(RBL_RT_BASE + L)])
-        for d, L, (st, _ix) in rsig:
-            if st == "up":
-                run(["ip", "route", "replace", "default", "dev", d, "table", str(RBL_RT_BASE + L)])
-            else:                                              # no route through a link that is down: the reply falls through
-                run(["ip", "route", "flush", "table", str(RBL_RT_BASE + L)])   # to the `to S` rule, as it does today
-        _RBL["rsig"] = rsig
-        res["changed"] += 1
-    live = set()                                               # the rules, read back every pass (one fork, only on such a node)
-    for line in (run(["ip", "rule", "show", "pref", str(RBL_PRI)]).stdout or "").splitlines():
+    for _d, L, _s in (_RBL["rsig"] or ()):
+        if L not in labels.values():
+            run(["ip", "route", "flush", "table", str(RBL_RT_BASE + L)])
+            res["changed"] += 1
+    for d, L, (st, _ix) in rsig:
+        T = str(RBL_RT_BASE + L)
+        live = [ln.split() for ln in (run(["ip", "-4", "route", "show", "table", T]).stdout or "").splitlines() if ln.strip()]
+        if st == "up":
+            if not (len(live) == 1 and live[0][:3] == ["default", "dev", d]):   # iproute2 adds `scope link`
+                if len(live) > 1:
+                    run(["ip", "route", "flush", "table", T])
+                run(["ip", "route", "replace", "default", "dev", d, "table", T])
+                res["changed"] += 1
+        elif live:                                             # no route through a link that is down: the reply falls
+            run(["ip", "route", "flush", "table", T])          # through to the `to S` rule, as it does today
+            res["changed"] += 1
+    _RBL["rsig"] = rsig
+    live = set()                                               # the rules, as this pass's `ip rule show` read them
+    for line in _RBL["live"] or ():
         m = re.search(r"fwmark (0x[0-9a-fA-F]+|\d+)/0xff0000 lookup (\d+)", line)
         live.add((int(m.group(1), 0), int(m.group(2))) if m else (None, line))
     if live != want_rules:
@@ -5597,14 +5626,20 @@ def _rbl_apply(labels, seen, res):
             run(["ip", "rule", "add", "fwmark", "%#x/%#x" % (mk, RBL_F), "lookup", str(T), "priority", str(RBL_PRI)])
         res["changed"] += 1
     text = _rbl_nft(labels)
-    if text != _RBL["nft"] or run(["nft", "list", "chain", "inet", RBL_TABLE, "lab"]).returncode != 0:
+    if text != _RBL["nft"] or not _rbl_nft_whole():
         r = run(["nft", "-f", "-"], input_text=text)
         if r.returncode != 0:
-            _RBL["nft"] = None
+            _RBL["nft"] = ""                                   # not None: what is loaded is unknown, and a turn-off removes it
             res["errors"].append("return by link: " + (r.stderr or "nft failed").strip()[:200])
         else:
             _RBL["nft"] = text
             res["changed"] += 1
+
+
+def _rbl_nft_whole():
+    """Is the table there with all three chains? Read through `_nft_kept`: no fork while the ruleset's generation holds."""
+    r = _nft_kept(["nft", "list", "table", "ip", RBL_TABLE])
+    return r.returncode == 0 and all(("chain %s {" % c) in (r.stdout or "") for c in ("lab", "pre", "out"))
 
 
 def _rbl_ok():
@@ -5683,7 +5718,7 @@ def _live_band_prios():
     rules too. ⚠️ A priority in the upstream band is NOT a table id (its rule looks up a table 110 higher),
     so the caller must not flush a table by that number — see `_band_tables`."""
     out = []
-    _RBL["live"] = False                      # …and whether return by link's rule is there: `_rbl_apply`'s evidence (no fork)
+    _rbl_live = []                            # …and return by link's rules: `_rbl_apply`'s evidence and read-back (no fork)
     with contextlib.suppress(Exception):
         for line in run(["ip", "rule", "show"]).stdout.splitlines():
             mp = re.match(r"^\s*(\d+):", line)
@@ -5691,9 +5726,10 @@ def _live_band_prios():
                 continue
             pri = int(mp.group(1))
             if pri == RBL_PRI:
-                _RBL["live"] = True
+                _rbl_live.append(line)
             if SWG_RT_BASE <= pri <= SWG_RT_MAX or SWG_RT_UP_BASE <= pri <= SWG_RT_UP_MAX:
                 out.append(pri)
+    _RBL["live"] = tuple(_rbl_live)
     return sorted(set(out))
 
 
@@ -5775,7 +5811,13 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", dev
             run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
             res["changed"] += 1
     want_snat = set()
+    _snat_by = {}                             # ONE record per subnet: a failover pair sends S here twice (§14.7) and both would
+    for e in exit_:                           # reconcile one tag against one listing — a duplicate, or a flip every pass (F14).
+        if _snat_by.get(e["subnet"]) is None or _snat_by[e["subnet"]].get("to") is False:   # the serving member's wins
+            _snat_by[e["subnet"]] = e
     for e in exit_:
+        if _snat_by[e["subnet"]] is not e:
+            continue
         S = e["subnet"]; tag = "swg-fwd-snat:" + S; want_snat.add(tag)
         W = _safe_wan(e.get("wan_iface"), default_wan)     # reject shell metachars before it enters an iptables rule
         X = (e.get("egress_ip") or "").strip() or default_egress_ip
@@ -6708,7 +6750,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             return _bsets(c)
         return [(_smart_setname(c), [])] + ([(_smart_learnsetname(c), [])] if queue else [])
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
-    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9" + ("|rbl" if _RBL["on"] else "")).encode()).hexdigest()[:16]   # rbl: the restores mask the link label (§14.7); q2: the queue hands swg-sni only the ClientHello (_sni_queue) — so only a node whose engine is swg-sni rebuilds, once (every caller has queue ⇒ pin: queue=(engine == sni_user), pin=is_sni); s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
+    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9" + ("|rbl" if _RBL["mask"] else "")).encode()).hexdigest()[:16]   # rbl: the restores mask the link label (§14.7); q2: the queue hands swg-sni only the ClientHello (_sni_queue) — so only a node whose engine is swg-sni rebuilds, once (every caller has queue ⇒ pin: queue=(engine == sni_user), pin=is_sni); s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
     if pt_of:                                                   # B.4 — only a plan with a port rule signs its ports
         sig = hashlib.sha1((sig + "|pt:" + json.dumps(sorted(pt_of.items()))).encode()).hexdigest()[:16]
     if shw:                                                     # only then — a plan with no shadow signs exactly as before
@@ -7037,7 +7079,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, "c_uncat_" + d])
         # lttl: an ip_learning TTL flip flushes both chains in this same batch (the `catl_` swap above, which must free its
         # sets first) — with the sig unmoved they stayed empty and the bars blank until the 30-minute reverify
-        csig = hashlib.sha1((json.dumps(catw) + "|d5|q" + str(int(bool(queue))) + ("|lttl:" + str(learn_ttl) if queue else "") + ("|g" if gate else "")).encode()).hexdigest()[:16]   # d5: one subnet set + the sampling gate (g: numgen taken); d4: + ct-mark uncat exclusion (Kernel-SNI double-count); catl_ learned counting; q: engine gate
+        csig = hashlib.sha1((json.dumps(catw) + "|d5|q" + str(int(bool(queue))) + ("|lttl:" + str(learn_ttl) if queue else "") + ("|g" if gate else "") + ("|rbl" if _RBL["mask"] else "")).encode()).hexdigest()[:16]   # rbl: the link label is not a category (§14.7); d5: one subnet set + the sampling gate (g: numgen taken); d4: + ct-mark uncat exclusion (Kernel-SNI double-count); catl_ learned counting; q: engine gate
         _csigf = os.path.join(GEO_DIR, ".catcount-sig")
         try:
             cstored = open(_csigf).read().strip()
@@ -7078,14 +7120,14 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + _smart_learnsetname(c), "return")
             # Kernel-SNI categorises into swgk_<c> IPSETS (invisible to nft) but CONNMARKs the routed flow — so an
             # exit-marked byte IS categorised even when no nft set matched it; exclude it from uncat (else double count).
-            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ct", "mark", "!=", "0x0", "return")
+            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ct", "mark", *_rbl_uncat(), "!=", "0x0", "return")
             bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "counter", "name", "c_uncat_up", "return")
             for c in count_cats:
                 snm = _smart_setname(c)
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + snm, "return")
                 if queue:
                     bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + _smart_learnsetname(c), "return")
-            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ct", "mark", "!=", "0x0", "return")
+            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ct", "mark", *_rbl_uncat(), "!=", "0x0", "return")
             bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "counter", "name", "c_uncat_dn", "return")
             stamps.append((_csigf, csig))
         elif not catw and cc_present:                           # no smart categories left → drop the count chains (counters can linger, harmless)
@@ -13390,6 +13432,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # RETURN BY LINK (§14.7): decided FIRST, because every ct-mark writer and restore this pass renders reads it.
     _rbl_lab = _rbl_labels(exit_)
     _RBL["on"] = bool(_rbl_lab)
+    _RBL["mask"] = _RBL["mask"] or _RBL["on"]                 # kept once set: labels outlive a turn-off in conntrack (F8)
     # P2 DEVICE EXITS. A device exit is a forward whose far end is a LOCAL device, so at the policy-routing
     # layer it IS a forward: `ip rule from S lookup T` + `default dev <D> table T`, the same two tokens.
     # Folded into the forward list rather than given a parallel path, because everything downstream of that
@@ -13710,8 +13753,6 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             if _u:
                 run(["ip", "rule", "add", "fwmark", str(_u), "lookup", str(_t), "priority", str(_u)])
                 res["changed"] += 1
-    # RETURN BY LINK (§14.7) — outside the band (its own priority and tables), so the band's flush never touches it.
-    _rbl_apply(_rbl_lab, lambda d: _lst.get(d) or _dev_seen(d), res)
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
     _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip, devexit=devexit)
     _s5x_rules(devexit, nets, res)        # a SOCKS5 exit's DNS redirect, UDP refusal and rule-DNS unmark (§6.6)
@@ -13919,6 +13960,10 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 portok=(smart or {}).get("p2p_portok"),           # the operator's never-cut ports (S11c); absent → built-in
                 fwd=(smart or {}).get("p2p_fwd"))                 # devices' incoming ports (Part C), kept where P2P leaves Direct
     _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)
+    # RETURN BY LINK (§14.7) — outside the band (its own priority and tables), so the band's flush never touches it. LAST:
+    # every writer and restore above has just been rendered with the label masked, so no labelled connection meets an
+    # unmasked one (review F7); a turn-off needs no order, the masks stay.
+    _rbl_apply(_rbl_lab, lambda d: _lst.get(d) or _dev_seen(d), res)
     return res
 
 
@@ -14508,8 +14553,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
             # running both is idempotent. `--save-mark` copies the packet mark the learn chain set; the ct mark ends up
             # `reset_mark`, so the restore, the nft reject and its counter are all unchanged.
             rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
-                          "-j", "CONNMARK", "--save-mark", *(["--nfmask", "%#010x" % RBL_KEEP, "--ctmask", "%#010x" % RBL_KEEP]
-                                                             if _RBL["on"] else [])])   # keep the link label (§14.7)
+                          "-j", "CONNMARK", "--save-mark", *_rbl_savemask()])   # keep the link label (§14.7)
     rules, subs = _xts_split(rules, CHAIN)                     # one chain per source — see _xts_split
     rules += lrules + xrules                                   # …and the chains they jump to, declared beside them
     subs += [lchain[c] for c in want_cats] + xchains
@@ -16003,7 +16047,7 @@ def _relay_env_text(iface, e):
                int(e.get("up") or 0))
             # a failover pair member's half of the source ports (FAILOVER-PLAN §14.7) — the relay reads it from its env,
             # so the unit is unchanged; absent everywhere else, so every other env file is byte-identical
-            + ("RELAY_SPORT=%d\n" % e["half"] if e.get("half") else ""))
+            + ("RELAY_HALF=%d\n" % e["half"] if e.get("half") else ""))
 
 
 def _relay_write(path, text, dry=False):
@@ -16049,7 +16093,7 @@ def _relay_docker_spec(iface, e, cpus):
     return json.dumps({"img": SWG_TURN_IMAGE, "cpus": cpus, "port": e["port"], "bind": e["gw"],
                        "mark": int(e.get("mark") or 0), "up": int(e.get("up") or 0),
                        "mss": e.get("mss") or 0, "cc": e.get("cc_up", ""), "cli": e.get("cc_cli", ""),
-                       **({"sport": e["half"]} if e.get("half") else {})},   # only a pair member's spec changes (§14.7)
+                       **({"half": e["half"]} if e.get("half") else {})},   # only a pair member's spec changes (§14.7)
                       sort_keys=True)
 
 
@@ -16092,7 +16136,7 @@ def _relay_supervise_docker(want, quota_pct, res):
                  "--security-opt", "no-new-privileges", "--label", "swg.relay.spec=" + spec,
                  *docker_log_opts(),
                  "-v", host_dir + ":" + RELAY_DIR_LOCAL,
-                 *(["-e", "RELAY_SPORT=%d" % e["half"]] if e.get("half") else []),   # a pair member's port half (§14.7)
+                 *(["-e", "RELAY_HALF=%d" % e["half"]] if e.get("half") else []),   # a pair member's port half (§14.7)
                  "--entrypoint", "python3", SWG_TURN_IMAGE, staged,
                  # ⚠️ THE UPSTREAM MARK (derived from the plan's `up_table`), exactly as the systemd unit
                  # passes it. These two run-models implement ONE contract, and the first thing that happened

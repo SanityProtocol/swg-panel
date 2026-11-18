@@ -452,6 +452,13 @@ sudo systemctl stop 'swg-s5x-*'; sudo nft delete table inet swg_s5x 2>/dev/null
 while sudo ip rule del pref 6870 2>/dev/null; do :; done                                # traffic cascaded in: its DNS
 sudo iptables -t nat -S PREROUTING | grep -- '--comment "\?swg-s5x-dns' | sed 's/^-A/-D/' | xargs -rL1 sudo iptables -t nat
 ```
+From 1.8.12, a server that both members of a failover pair route through keeps its return-by-link rules — the older
+version can't see them, and they send replies back by the wrong link. Remove them once the older version runs (a reboot
+clears them too):
+```bash
+sudo nft delete table ip swg_rbl 2>/dev/null; while sudo ip rule del pref 6995 2>/dev/null; do :; done
+for t in $(seq 7101 7355); do sudo ip route flush table $t 2>/dev/null; done
+```
 A **Docker** server keeps the guard too (the same `nft` / `ip rule` line), and one started on an image older than 1.8.7
 keeps two more firewall tables that version can't manage, which go on refusing connections the panel has since allowed.
 Remove them on that server (a reboot clears them too):

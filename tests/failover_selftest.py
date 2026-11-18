@@ -130,6 +130,10 @@ Run: python3 tests/failover_selftest.py   (0 = pass)
      rbl-label-table  the label is the table's (a pair's two records share it: one label for both links)
      rbl-cap      both members are planned at a far node that never said it returns by link
      rbl-unique   two of the far node's links with one label still both-planned
+     rbl-aware    both members are planned while one runs a noded that never said it knows return by link (its relay
+                  would pick over the whole range)
+     rbl-arr      the arrivals pass counts the pair's two links as two origins (a T15 duplicate: the far node's default
+                  list stops applying to the pair's subnet)
      rbl-half     every node's relay legs carry a port half, not only a pair member's
      ex-p2p-report  the detach door's shared tail reports no pruned torrent route (F14, F17)
 """
@@ -172,11 +176,14 @@ PLANTS = {   # (file, anchor, replacement)
     "ex-fill-warn": ("panel", '    warn["exit_fill"] = [str(x.get("id"))', '    warn["exit_fill"] = [] and [str(x.get("id"))'),
     "rbl-clash": ("panel", "                    and not _rbl_both(nid, e[1], s, e[0], P)), None)", "), None)"),
     "rbl-to": ("panel", "                if o == _quiet:\n                    e[\"to\"] = False", "                if False:\n                    e[\"to\"] = False"),
-    "rbl-label-table": ("panel", '                e["ret"] = rbl_label(nodes, P, o)', '                e["ret"] = e["table"] - 6999'),
-    "rbl-cap": ("panel", '            _rbl_memo[(P, nid, o)] = bool(isinstance(_sr, dict) and _sr.get("rbl") and rbl_label(nodes, P, nid)',
-                '            _rbl_memo[(P, nid, o)] = bool(isinstance(_sr, dict) and rbl_label(nodes, P, nid)'),
-    "rbl-unique": ("panel", "    if not L or any(o != n and _rbl_label_raw(lo) == L for o, lo in links.items()):", "    if not L:"),
-    "rbl-half": ("panel", '    _half = ({"half": 2 if failover_rid(nodes, nid) != nid else 1} if nid in _fo_pair_ids(nodes) else {})',
+    "rbl-label-table": ("panel", '                e["ret"] = _rbl_lab(P, o)', '                e["ret"] = e["table"] - 6999'),
+    "rbl-cap": ("panel", '            _rbl_memo[(P, nid, o)] = bool(isinstance(_sr, dict) and _sr.get("rbl") and _rbl_lab(P, nid) and _rbl_lab(P, o)',
+                '            _rbl_memo[(P, nid, o)] = bool(isinstance(_sr, dict) and _rbl_lab(P, nid) and _rbl_lab(P, o)'),
+    "rbl-aware": ("panel", "                                          and _rbl_aware(nid) and _rbl_aware(o))", ")"),
+    "rbl-arr": ("panel", '''            _via.setdefault(e["subnet"], set()).add(("n", failover_rid(nodes, _o)) if _o else ("i", e["via_iface"]))''',
+                '''            _via.setdefault(e["subnet"], set()).add(("i", e["via_iface"]))'''),
+    "rbl-unique": ("panel", "    return {n: L for n, L in raw.items() if L and seen[L] == 1}", "    return {n: L for n, L in raw.items() if L}"),
+    "rbl-half": ("panel", '    _half = ({"half": 2 if failover_rid(nodes, nid) != nid else 1} if nid in failover_partners(nodes) else {})',
                  '    _half = {"half": 2 if failover_rid(nodes, nid) != nid else 1}'),
     "ex-p2p-report": ("panel", "        _report_p2p_pruned(deps, _p2p_pr)\n        if not take:\n", "        if not take:\n"),
     "ex-rowid": ("panel", '        rows.append({"iface": xid, "kind": "exit",', '        rows.append({"iface": str(ax.get("label") or xid), "kind": "exit",'),
@@ -193,7 +200,8 @@ PLANTS = {   # (file, anchor, replacement)
     "memo": ("panel", '''    slot = node_id if slot is None else slot
     hit = _P2P_FWD.get(slot)''', '''    slot = node_id
     hit = _P2P_FWD.get(slot)'''),
-    "arrivals": ("panel", '''    return [(S, failover_rid(nodes, o)) for S, o in out] if nodes else out''', '''    return out'''),
+    "arrivals": ("panel", "            os_ = {failover_rid(nodes, by_dev[v]) if nodes else by_dev[v] for v in vs}",
+                 "            os_ = {by_dev[v] for v in vs}"),
     "idle-first": ("panel", '''key=lambda kv: (kv[0] in idle, _pos[failover_rid(nodes, kv[0])])''',
                    '''key=lambda kv: (kv[0] not in idle, _pos[failover_rid(nodes, kv[0])])'''),
     "clash": ("panel", '''        if nid in idle:
@@ -399,28 +407,22 @@ PK = ["%s" % (chr(ord("a") + i) * 43 + "=") for i in range(8)]
 NOW = 1_800_000_000
 
 
-_REFP = []
 
 
-def REFP():
-    """The reference build as a module (loaded once, on first use)."""
-    if not _REFP:
-        rp = os.path.join(TMP, "ref-mod-swg-panel-server")
-        open(rp, "wb").write(subprocess.run(["git", "-C", ROOT, "show", REF + ":swg-panel-server"], capture_output=True, check=True).stdout)
-        _REFP.append(load(rp, "swgpanel_failover_ref"))
-    return _REFP[0]
+_REFS = {}
 
 
-_REFF2 = []
+def _ref(rev, tag):
+    """A reference build's panel as a module (loaded once per revision, on first use)."""
+    if rev not in _REFS:
+        rp = os.path.join(TMP, "ref-%s-swg-panel-server" % tag)
+        open(rp, "wb").write(subprocess.run(["git", "-C", ROOT, "show", rev + ":swg-panel-server"], capture_output=True, check=True).stdout)
+        _REFS[rev] = load(rp, "swgpanel_failover_ref_" + tag)
+    return _REFS[rev]
 
 
-def REFF2():
-    """The build before F2 as a module (loaded once, on first use)."""
-    if not _REFF2:
-        rp = os.path.join(TMP, "ref-f2-swg-panel-server")
-        open(rp, "wb").write(subprocess.run(["git", "-C", ROOT, "show", REF_F2 + ":swg-panel-server"], capture_output=True, check=True).stdout)
-        _REFF2.append(load(rp, "swgpanel_failover_ref_f2"))
-    return _REFF2[0]
+REFP = lambda: _ref(REF, "p")                       # the reference build
+REFF2 = lambda: _ref(REF_F2, "f2")                  # the build before F2
 
 
 def guarded(name, fn):
@@ -2205,6 +2207,8 @@ def sec17():
     n["nc"]["links"]["nb"].update(subnet="10.255.0.2/31", address="10.255.0.3", peer_address="10.255.0.2")
     s0 = plan_snaps(2, 0)
     s0["nb"]["interfaces"]["swg_nbnc"]["meta"]["subnet"] = s0["nc"]["interfaces"]["swg_ncnb"]["meta"]["subnet"] = "10.255.0.2/31"
+    for _m in ("na", "nb"):                             # both members run a noded that knows return by link (`rbl` reported)
+        s0[_m]["smartroute"] = dict(s0[_m].get("smartroute") or {}, rbl=0)
     s0["nc"]["smartroute"] = {"rbl": 0}                 # a node that reports, and says it cannot (rp_filter, §14.7)
     ref_off = json.dumps(REFF2().cascade_plan(n, s0, idle=frozenset({"nb"})), sort_keys=True, default=str)
     cur_off = json.dumps(P.cascade_plan(n, s0, idle=frozenset({"nb"})), sort_keys=True, default=str)
@@ -2227,6 +2231,25 @@ def sec17():
     ex1 = sorted((pl1.get("nc") or {}).get("exit") or [], key=lambda e: e["via_iface"])
     check("[17] B serving: A's record is the one without `to S`", len(ex1) == 2 and ex1[0].get("to") is False and "to" not in ex1[1], ex1)
     check("[17] the origin map never reaches the wire", "_xo" not in json.dumps(pl, default=str))
+    # a member whose noded never said `rbl` (an older one, mid-rollout): its relay would pick over the whole range (F15)
+    s_old = json.loads(json.dumps(s0)); s_old["nb"]["smartroute"].pop("rbl")
+    check("[17] a member that never reported `rbl`: the plan is the build before F2's (§4.4 for it)",
+          json.dumps(P.cascade_plan(n, s_old, idle=frozenset({"nb"})), sort_keys=True, default=str)
+          == json.dumps(REFF2().cascade_plan(n, s_old, idle=frozenset({"nb"})), sort_keys=True, default=str))
+    # the far node's default list still applies to the pair's subnet: one origin, not a T15 duplicate (F1)
+    nl = json.loads(json.dumps(n)); nl["nc"]["default_routing"] = []
+    for _m in ("na", "nb"):                             # unpinned: a pinned arrival is exempt from the list (§3.4)
+        nl[_m]["ifaces"]["awg0"].pop("egress_ip", None)
+    sl = json.loads(json.dumps(s0)); sl["nc"]["smartroute"]["arr"] = 1
+    _rc = (P.cascade_plan(nl, sl, idle=frozenset({"nb"})).get("nc") or {}).get("_reach") or {}
+    check("[17] the far node's arrivals keep the pair's subnet — one origin over two links, no duplicate",
+          _rc.get("dup") == [] and ["na", "10.8.0.0/24"] in (_rc.get("arr") or []), _rc)
+    # …and so do its P2P arrivals: a router peer behind the pair keeps its never-flag entry there (F5)
+    _ncn = {"links": {"nb": {"iface": "swg_ncnb"}, "na": {"iface": "swg_ncna"}}}
+    _pl2 = {"exit": [{"subnet": "10.8.0.0/24", "via_iface": "swg_ncna"}, {"subnet": "10.8.0.0/24", "via_iface": "swg_ncnb"}]}
+    check("[17] P2P arrivals: the pair's two links are one origin, named as the primary",
+          P.p2p_arrivals(_ncn, _pl2, n) == [("10.8.0.0/24", "na")], P.p2p_arrivals(_ncn, _pl2, n))
+    check("[17] …and two links of two unpaired nodes are still left out (T15)", P.p2p_arrivals(_ncn, _pl2) == [])
     # a third node's overlapping subnet into the same exit is still the clash it was
     n3 = json.loads(json.dumps(n))
     n3["nd"] = {"id": "nd", "name": "d", "ifaces": {"awg0": dict(n["na"]["ifaces"]["awg0"])},

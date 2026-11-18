@@ -58,7 +58,7 @@ if PERTURB:
     U = plant(U, '  if [ "${KEPT_DATAPATH:-false}" = true ]; then\n', '  if [ "${#DID_KEEP[@]}" -gt 0 ]; then\n')  # [7]
 if PERTURB_RBL:
     U = plant(U, "awk '$1>=7101 && $1<=7355'", "awk '$1>=1 && $1<=0'")
-    U = plant(U, "awk '$1==6995'", "awk '$1>=1 && $1<=0'")
+    U = plant(U, " || $1==6995'", "'")
 if PERTURB_RECORD:
     U = plant(U, """    if ! $DRYRUN; then
       if [ -n "$left" ]; then printf '%s' "$left" > "$f" 2>/dev/null || true; else rm -f "$f" 2>/dev/null || true; fi

@@ -1376,14 +1376,11 @@ rm_node_netobjects(){
     # read swg-noded; derived there as BASE − (MAX − BASE) − 11, so a change to the table band moves it. …And 6880, the torrent
     # policy's rule (P2P_RULE_PRI: `fwmark 0x40000000 lookup main` under Direct) — a rule only, too (1.8.9 qualification NR-6).
     # …And 6870, a SOCKS5 exit's partial arrivals' DNS bypass (S5X_ARR_DNS_PRI: `from S ipproto udp dport 53 lookup main`).
-    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989)'); do
+    # …And 6995, return by link's rules (RBL_PRI, FAILOVER-PLAN §14.7, a far node of a failover pair).
+    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989) || $1==6995'); do
       run ip rule del pref "$n"
     done
-    # …And return by link (FAILOVER-PLAN §14.7, a far node of a failover pair): its rules at 6995 (RBL_PRI) look up tables
-    # 7101..7355 (RBL_RT_BASE + label), outside the band flushed above — the rules, then each such table that has a route.
-    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6995'); do
-      run ip rule del pref "$n"
-    done
+    # Return by link's tables, 7101..7355 (RBL_RT_BASE + label), outside the band flushed above: each one with a route.
     for t in $(ip -4 route show table all 2>/dev/null | sed -n 's/.* table \([0-9]\+\).*/\1/p' | sort -u | awk '$1>=7101 && $1<=7355'); do
       run ip route flush table "$t"
     done

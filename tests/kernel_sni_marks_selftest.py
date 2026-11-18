@@ -61,8 +61,7 @@ _P2 = '''            lrules.append(["-A", lchain[c], "-j", "MARK", "--set-mark",
 # The ct-mark save sits OUTSIDE the operand loop, so reverting the reset half means putting the per-operand
 # CONNMARK back AND taking this away — otherwise the perturbed tree is neither shape.
 _SAVE = '''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
-                          "-j", "CONNMARK", "--save-mark", *(["--nfmask", "%#010x" % RBL_KEEP, "--ctmask", "%#010x" % RBL_KEEP]
-                                                             if _RBL["on"] else [])])   # keep the link label (§14.7)
+                          "-j", "CONNMARK", "--save-mark", *_rbl_savemask()])   # keep the link label (§14.7)
 '''
 _SHIPPED = '''            lrules.append(["-A", lchain[c], "-j", "CONNMARK", "--set-mark", hex(reset_mark)])
 '''

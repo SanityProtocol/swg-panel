@@ -88,14 +88,14 @@ PLANTS = {
     "a": ('''    learn = list(dict.fromkeys([(e["subnet"], e["category"]) for e in rents]''',      # `rents`: the routed rows (498e465)
           '''    learn = (([(e["subnet"], e["category"]) for e in rents]'''),
     "b": ('''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
-                          "-j", "CONNMARK", "--save-mark"])''',
+                          "-j", "CONNMARK", "--save-mark", *_rbl_savemask()])   # keep the link label (§14.7)''',
           '''            if (S, c) == next(p for p in learn if p[0] == S):
                 rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark), "-j", "CONNMARK", "--save-mark"])'''),
     "c": [('''                rules.append(["-A", CHAIN, *_xts_scan(S, S is None), *pat, "-j", lchain[c]])''',
            '''                rules.append(["-A", CHAIN, *_xts_scan(S, S is None), *pat, "-j", "MARK", "--set-mark", hex(reset_mark)])
             setn = _xts_setname(c)'''),
           ('''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
-                          "-j", "CONNMARK", "--save-mark"])''',
+                          "-j", "CONNMARK", "--save-mark", *_rbl_savemask()])   # keep the link label (§14.7)''',
            '''            rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark), "-j", "SET", "--add-set", setn, "dst"])
             rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])''')],

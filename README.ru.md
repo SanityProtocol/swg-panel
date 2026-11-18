@@ -474,6 +474,13 @@ sudo systemctl stop 'swg-s5x-*'; sudo nft delete table inet swg_s5x 2>/dev/null
 while sudo ip rule del pref 6870 2>/dev/null; do :; done                                # DNS трафика с других нод
 sudo iptables -t nat -S PREROUTING | grep -- '--comment "\?swg-s5x-dns' | sed 's/^-A/-D/' | xargs -rL1 sudo iptables -t nat
 ```
+С 1.8.12 на сервере, через который маршрутизируют обе ноды пары с резервной нодой, остаются правила возврата по каналу —
+старая версия их не видит, а они отправляют ответы не тем каналом. Уберите их, когда старая версия запущена (перезагрузка
+тоже их снимает):
+```bash
+sudo nft delete table ip swg_rbl 2>/dev/null; while sudo ip rule del pref 6995 2>/dev/null; do :; done
+for t in $(seq 7101 7355); do sudo ip route flush table $t 2>/dev/null; done
+```
 **Docker**-сервер тоже сохраняет защиту (та же строка `nft` / `ip rule`), а запущенный на образе старше 1.8.7 — ещё две
 таблицы файрвола, которыми та версия управлять не умеет; они продолжают отклонять соединения, которые панель с тех пор
 разрешила. Удалите их на этом сервере (перезагрузка тоже их убирает):

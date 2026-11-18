@@ -17,7 +17,7 @@ refused outright once fs.pipe-user-pages-soft is exhausted); TCP_CONGESTION sile
 default if the module is absent. A build that only catches OSError cannot tell a working tunable from an
 ignored one — which is exactly how the pipe fix went two rounds without ever being validly tested.
 """
-import argparse, array, contextlib, errno, fcntl, json, os, random, resource, selectors, socket, stat, struct, sys, time
+import argparse, array, contextlib, errno, fcntl, json, os, resource, selectors, socket, stat, struct, sys, time
 
 # ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
 # Each line carries a syslog priority: under journald the `<N>` prefix, in docker one letter. The level is swg-noded's,
@@ -211,18 +211,22 @@ class Conn:
 
 
 def sport_half(half, path="/proc/sys/net/ipv4/ip_local_port_range"):
-    """(lo, hi) — this member's half of the ephemeral range — or None. RELAY_SPORT (1 or 2) is set by the node only on a
+    """(lo, hi) — this member's half of the ephemeral range — or None. RELAY_HALF (1 or 2) is set by the node only on a
     member of a failover pair (docs/FAILOVER-PLAN.md §14.7): both members relay a shared subnet from the SAME gateway
     address to one far node, and a source port both happened to pick for one destination folds the second connection into
     the first's conntrack entry there — it hangs. Disjoint halves make that impossible. Unset: the kernel picks, as ever."""
     if half not in (1, 2):
         return None
     try:
-        lo, hi = (int(x) for x in open(path).read().split()[:2])
-    except (OSError, ValueError):
+        lo, hi = (int(x) for x in _read(path).split()[:2])
+    except ValueError:
         lo, hi = 32768, 60999
     mid = (lo + hi + 1) // 2
     return (lo, mid - 1) if half == 1 else (mid, hi)
+
+
+IP_BIND_ADDRESS_NO_PORT, IP_LOCAL_PORT_RANGE = 24, 51   # <linux/in.h>; Python names neither
+_PRANGE = [True]                                        # does this kernel take IP_LOCAL_PORT_RANGE (6.3+)? False once refused
 
 
 class Relay:
@@ -232,20 +236,40 @@ class Relay:
         self.mss = mss
         self.sport = sport
         self.conns = {}
+        if sport:                                          # only a pair member's relay loads `random`
+            import random
+            self._pick = lambda: random.randint(*sport)
 
     def _bind_up(self, up):
-        """Bind the upstream to the gateway — on a port from this member's half when it has one (see sport_half). No
-        SO_REUSEADDR there: a port in use, TIME_WAIT included, fails the bind and the next is tried, so the kernel's own
-        four-tuple check never has to. After 16 misses the kernel picks, as it does without a half."""
+        """Bind the upstream to the gateway — on a port from this member's half when it has one (see sport_half).
+        Linux 6.3+: the kernel picks inside the half at connect (IP_LOCAL_PORT_RANGE with IP_BIND_ADDRESS_NO_PORT), sharing
+        a port between destinations and skipping reserved ports, as it does over the whole range without a half. Older:
+        a random port of the half, without SO_REUSEADDR first — one in use, TIME_WAIT included, fails and the next is
+        tried — and after 16 misses one WITH it, still in the half: the port is shared, and connect refuses only an exact
+        four-tuple duplicate (review F12). Never outside the half: the other member's ports are the whole point."""
         if self.sport:
+            lo, hi = self.sport
+            if _PRANGE[0]:
+                try:
+                    up.setsockopt(socket.IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, 1)
+                    up.setsockopt(socket.IPPROTO_IP, IP_LOCAL_PORT_RANGE, struct.pack("I", (hi << 16) | lo))
+                except OSError:
+                    _PRANGE[0] = False                     # an older kernel: asked once per process
+                else:
+                    up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    up.bind((self.bind, 0))
+                    return
             for _ in range(16):
                 try:
-                    up.bind((self.bind, random.randint(*self.sport)))
+                    up.bind((self.bind, self._pick()))
                     return
                 except OSError as e:
                     if e.errno != errno.EADDRINUSE:
                         raise
             ST["sport_miss"] = ST.get("sport_miss", 0) + 1
+            up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            up.bind((self.bind, self._pick()))
+            return
         up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         up.bind((self.bind, 0))
 
@@ -549,7 +573,7 @@ def main():
     log(LOG_DEBUG, "relay: fd limit %s", resource.getrlimit(resource.RLIMIT_NOFILE)[0])
     srv.bind((a.host, a.port)); srv.listen(1024); srv.setblocking(False)
 
-    _half = os.environ.get("RELAY_SPORT", "")
+    _half = os.environ.get("RELAY_HALF", "")
     R = Relay(a.mark, a.cc, a.pipe_size, a.cc_cli, a.bind, a.mss, sport=sport_half(int(_half) if _half.isdigit() else 0))
     R.sel.register(srv, selectors.EVENT_READ, None)
     cfg = {"port": a.port, "mark": a.mark, "bind": a.bind, "cc_up": a.cc, "cc_cli": a.cc_cli,
