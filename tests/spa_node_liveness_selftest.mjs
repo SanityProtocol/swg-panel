@@ -45,7 +45,7 @@ const PLANTS = {   // name: [file, anchor, replacement]
   ago: ["js/util.js", 'export const ago = sec => sec == null ? "—" : agoAge(panelNowS() - sec);',
     'export const ago = sec => sec == null ? "—" : agoAge(Math.floor(Date.now() / 1000) - sec);'],
   row: ["js/screen-nodes.js", `  const st = nodeStatusOf(n);`, `  const st = n.status || "dangling";`],
-  door: ["js/sheets-crud.js", `          node.status === "online" ? html`, `          nodeStatusOf(node) === "online" ? html`],
+  door: ["js/sheets-crud.js", `          : node.status === "online" ? html`, `          : nodeStatusOf(node) === "online" ? html`],
   label: ["js/model.js", `  return Number.isFinite(ls) ? ls : ((snap || {}).generated_at || null);`,
     `  return ls != null ? ls : ((snap || {}).generated_at || null);`],
   hs: ["js/iface.js", `\${p.handshake_age != null ? agoAge(p.handshake_age)`, `\${p.last_handshake ? ago(p.last_handshake)`],
