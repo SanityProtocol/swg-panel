@@ -160,6 +160,9 @@ PLANTS = {   # (file, anchor, replacement)
     "ex-release": ("panel", "    xs = [x for x in (b.get(\"exits\") or []) if not fo_exit_unfilled(x)]", "    xs = list(b.get(\"exits\") or [])"),
     "ex-resolve": ("panel", 'or _x.get("enabled") is False or fo_exit_unfilled(_x):', 'or _x.get("enabled") is False:'),
     "ex-preflight": ("panel", "    _fo_mirror_exits(a, _s)\n", ""),
+    "ex-escrow-kind": ("panel", 'if nx.get("provider", "warp") == "warp" and bx.get("provider", "warp") == "warp":', 'if True:'),
+    "ex-fill-warn": ("panel", '    warn["exit_fill"] = [str(x.get("id"))', '    warn["exit_fill"] = [] and [str(x.get("id"))'),
+    "ex-p2p-report": ("panel", "            _report_p2p_pruned(deps, _p2p_pr)\n            ev_append(", "            ev_append("),
     "ex-rowid": ("panel", '        rows.append({"iface": xid, "kind": "exit",', '        rows.append({"iface": str(ax.get("label") or xid), "kind": "exit",'),
     "follow-key": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("public_key", "listen_port", '''),
     "endpoint": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("endpoint_host", "listen_port", '''),
@@ -2070,6 +2073,13 @@ def sec16():
     w = next((x for x in n["nb"]["exits"] if x["id"] == "aaaa0001"), {})
     check("[16] B's own WARP key escrow stays on its copy, and the pass is steady (no save every sync) (F1)",
           (w.get("key_blob") or {}).get("pub") == "BPUB" and w.get("key_restore") == {"ct": "R"} and ch is False, (ch, w))
+    n["na"]["exits"][0] = dict(n["na"]["exits"][0], provider="socks5", socks={"host": "px2.example.com", "port": 1080})
+    n["na"]["exits"][0].pop("key_blob", None)
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    w = next((x for x in n["nb"]["exits"] if x["id"] == "aaaa0001"), {})
+    check("[16] …but A switching that exit off WARP ends B's account too: no escrow rides onto the new kind (F12)",
+          w.get("provider") == "socks5" and not any(k in w for k in P._EXIT_ESCROW_KEYS), w)
+    n = x_fleet(); P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
     check("[16] an unfilled copy routes nothing on B — the traffic takes the default, as a deleted exit's does (F5)",
           P.resolve_exit(n, snaps, "nb", "aaaa0003") is None and P.resolve_exit(n, snaps, "nb", "aaaa0001") is not None)
     v = P.failover_view(n, None, "na", "nb", snaps, seen, frozenset(), now=NOW)
@@ -2079,6 +2089,8 @@ def sec16():
     pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, x_fleet(), "na", snaps, {"na": NOW})
     check("[16] the setup preview files none of the copied exits as not copied (F3)",
           not [x for x in pf["warn"]["not_mirrored"] if x["kind"] in ("exit", "default_exit", "p2p")], pf["warn"]["not_mirrored"])
+    check("[16] …and says which copies leave by B's own address until filled there — the profile and the dial-in (F13)",
+          pf["warn"].get("exit_fill") == ["aaaa0003", "aaaa0004"], pf["warn"].get("exit_fill"))
     # the door: B fills its own config of an exit it holds for A, and nothing else
     n = x_fleet(); P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
     view = [dict({k: v for k, v in x.items() if k not in ("profile", "socks")}) for x in n["nb"]["exits"]]
@@ -2097,6 +2109,8 @@ def sec16():
                                                     lambda xs: xs.append({"id": "z9", "producer": "imported", "provider": "warp"}))))
     # the wire: a placeholder never reaches the node
     n = x_fleet()
+    n["na"]["p2p"] = {"action": "dev", "exit_id": "aaaa0004"}      # the torrent route through the dial-in B never fills
+    n["na"]["default_routing"].append({"enabled": True, "category": "youtube", "action": "dev", "exit_id": "aaaa0003"})
     port, _d = start_panel(NEW, "exits", n, roster())
     tk = {x: req(port, "/api/nodes/rotate", {"id": x})[1]["data"]["token"] for x in ("na", "nb")}
     for nid in ("na", "nb", "nb"):
@@ -2126,6 +2140,10 @@ def sec16():
           c == 200 and sorted(x["id"] for x in xs) == ["aaaa0001", "aaaa0002", "aaaa0003"], (c, o, [x["id"] for x in xs]))
     c4, o4 = req(port, "/api/nodes/update", {"id": "nb", "exits": [dict(x, label="mine") if x["id"] == "aaaa0003" else x for x in xs]})
     check("[16] …so its exits list saves again as any node's (F2)", c4 == 200, (c4, o4))
+    import glob
+    evs = "".join(open(x).read() for x in glob.glob(os.path.join(_d, "**", "*event*"), recursive=True))
+    check("[16] …and its torrent route through the dropped copy turns Block with an event, as a deleted exit's does (F14)",
+          (nb.get("p2p") or {}).get("action") == "block" and "Torrent route removed" in evs, (nb.get("p2p"), evs[-300:]))
 
 def main():
     for name, fn in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7),

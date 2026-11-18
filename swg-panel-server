@@ -13295,7 +13295,8 @@ def _fo_mirror_exits(a, w):
         nx = {"id": x.get("id"), **{k: _fo_copy(x[k]) for k in FO_EXIT_FOLLOW if k in x}}
         if nx.get("provider") == "profile" and bx.get("provider") == "profile" and isinstance(bx.get("profile"), dict):
             nx["profile"] = bx["profile"]                          # B's own config, filled by the operator
-        nx.update({k: bx[k] for k in _EXIT_ESCROW_KEYS if k in bx})   # B's own key escrow, written by B's sync
+        if nx.get("provider", "warp") == "warp" and bx.get("provider", "warp") == "warp":   # B's own WARP key escrow, written
+            nx.update({k: bx[k] for k in _EXIT_ESCROW_KEYS if k in bx})                     # by B's sync (a switch ends it)
         nx["cfg_sig"] = exit_cfg_sig(nx)
         out.append(nx)
         used.add(xid)
@@ -13317,7 +13318,8 @@ def _fo_mirror_exits(a, w):
 def _fo_release_exits(nodes, bid):
     """B leaves the pair (detach, take-over): a copy with no config (fo_exit_unfilled) is a failover node's placeholder only —
     an ordinary node's exits validator refuses it, so the list could not be saved again. It goes, and what still names it
-    takes the default, as a deleted exit's users do."""
+    takes the default, as a deleted exit's users do. A torrent route naming it is the caller's prune_p2p_refs, which reports it
+    (_report_p2p_pruned) — node_remove's after the take-over, the detach door's after either branch."""
     b = nodes[bid]
     xs = [x for x in (b.get("exits") or []) if not fo_exit_unfilled(x)]
     if len(xs) == len(b.get("exits") or []):
@@ -13329,7 +13331,6 @@ def _fo_release_exits(nodes, bid):
     prune_exit_refs(b)
     prune_default_exit(b)
     derive_default_exit(b)
-    prune_p2p_refs(nodes)
 
 
 def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
@@ -14287,6 +14288,9 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs,
                    **{k: a[k] for k in ("wdtt", "csqtt") if isinstance(a.get(k), dict)}})
     _fo_mirror_exits(a, _s)
+    # …and a provider profile or a dial-in it copies empty (one key, one server): until the operator fills it on B, what
+    # leaves through it leaves by B's own address — said before setup, as the Failover panel says it after (§14.3)
+    warn["exit_fill"] = [str(x.get("id")) for x in (_s.get("exits") or []) if fo_exit_unfilled(x) and x.get("enabled") is not False]
     warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_s)]
     if a.get("default_exit") and (prune_default_exit(_s) or not _s.get("default_exit")):
         warn["not_mirrored"].append({"kind": "default_exit", "name": str(a["default_exit"])})
@@ -32685,14 +32689,18 @@ def api(method, path, qs, body, deps):
             _gone = sorted(_gone)
             nodes[bid].pop("failover_of", None)
             _fo_release_exits(nodes, bid)
+            _p2p_pr = prune_p2p_refs(nodes)            # a torrent route that named an unfilled copy: Block, and said
             nodes_save(deps["nodes_path"], nodes)
+            _report_p2p_pruned(deps, _p2p_pr)
             ev_append(roster_path, "node", bid, "Detached failover node", bname,
                       "peers kept on %s; copies removed: %s" % (aname, ", ".join(_gone) or "—"),
                       detail_key="peers kept on {v1}; copies removed: {v2}", detail_vars={"v1": aname, "v2": ", ".join(_gone) or "—"})
             return 200, {"ok": True, "data": {"id": bid, "moved": [], "left": [], "removed": _gone}}
         roster = roster_load(roster_path)
         moved, left, dropped = failover_takeover(nodes, roster, aid, bid, cls, snaps)
+        _p2p_pr = prune_p2p_refs(nodes)
         nodes_save(deps["nodes_path"], nodes)
+        _report_p2p_pruned(deps, _p2p_pr)
         if moved:
             roster_save(roster_path, roster)
             failover_carry_settings(deps, aid, bid)
