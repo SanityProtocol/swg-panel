@@ -5525,23 +5525,19 @@ def _rbl_labels(exit_):
 
 
 def _rbl_nft(labels):
-    """The `swg_rbl` table: label a connection's FIRST packet with the link it arrived on — in POSTROUTING, after every
-    writer of the first packet (the smart pin and arrivals marks are all `ct state new` in prerouting), or at INPUT for one
-    addressed to this node — and put the label
-    on every REPLY's packet mark before its route lookup: prerouting for a forwarded reply, a `route` output chain for one
-    this node sends itself (a client of the other member reaching this node's own address). One rule per labelled link,
-    and only on a new connection's first packet; one rule per reply packet. No map (nft 1.0.6, DATAPATH-PLAN)."""
+    """The `swg_rbl` table: ONE prerouting chain, after every writer of a connection's first packet (the smart pins and the
+    arrivals' marks at mangle, P2P's cls at mangle + 5, the relay at mangle + 10 — none later: an exit tunnel is written
+    `Table = off`, so wg-quick adds no rule), that labels a new connection with the link it arrived on — forwarded or ending
+    here, both pass prerouting — and puts the label on every REPLY's packet mark before its route lookup; and a `route`
+    output chain for a reply this node sends itself (a client of the other member reaching this node's own address).
+    One hook on the forwarded path, not two: measured, a second base chain cost more than the rules in it (rblcost.sh).
+    One rule per labelled link, read by a new connection's first packet only; no map (nft 1.0.6, DATAPATH-PLAN)."""
     lab = ["    iifname \"%s\" ct mark set ct mark or %#010x" % (d, L << 16) for d, L in sorted(labels.items())]
     rst = "    ct direction reply ct mark and %#010x != 0x0 meta mark set ct mark and %#010x" % (RBL_F, RBL_F)
     return "\n".join(["table inet %s {}" % RBL_TABLE, "delete table inet %s" % RBL_TABLE, "table inet %s {" % RBL_TABLE,
                       "  chain lab {", *lab, "  }",
-                      "  chain post {", "    type filter hook postrouting priority mangle + 10; policy accept;",
-                      "    ct state new jump lab", "  }",
-                      # …and a connection that ENDS here (the node's own address) never reaches postrouting: label it at
-                      # input, or the output restore below finds nothing to restore (measured on the rig)
-                      "  chain inp {", "    type filter hook input priority mangle + 10; policy accept;",
-                      "    ct state new jump lab", "  }",
-                      "  chain pre {", "    type filter hook prerouting priority mangle - 10; policy accept;", rst, "  }",
+                      "  chain pre {", "    type filter hook prerouting priority mangle + 20; policy accept;",
+                      "    ct state new jump lab", rst, "  }",
                       "  chain out {", "    type route hook output priority mangle - 10; policy accept;", rst, "  }",
                       "}"]) + "\n"
 

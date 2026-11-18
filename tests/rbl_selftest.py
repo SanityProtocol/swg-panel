@@ -154,9 +154,10 @@ def sec3():
            {"via_iface": "swg_x", "ret": "6"}, {"via_iface": 'a" accept; x', "ret": 6}, {"via_iface": "", "ret": 6}]
     check("[3] a bool, 0, 256, a string, a device name that is not one: no label", N._rbl_labels(bad) == {}, N._rbl_labels(bad))
     t = N._rbl_nft({"swg_a": 6, "swg_b": 7})
-    check("[3] the first packet is labelled in postrouting — at input when it ends here — one rule per link",
+    check("[3] the first packet is labelled in prerouting after every writer (mangle + 20), one rule per link — one hook",
           '    iifname "swg_a" ct mark set ct mark or 0x00060000' in t and '    iifname "swg_b" ct mark set ct mark or 0x00070000' in t
-          and "hook postrouting" in t and t.count("ct state new jump lab") == 2 and "type filter hook input" in t, t)
+          and "hook prerouting priority mangle + 20" in t and t.count("ct state new jump lab") == 1
+          and "hook postrouting" not in t and "hook input" not in t, t)
     check("[3] the reply restore runs in prerouting AND in a route output chain", t.count(
         "ct direction reply ct mark and 0x00ff0000 != 0x0 meta mark set ct mark and 0x00ff0000") == 2
           and "type route hook output" in t and "hook prerouting" in t, t)
