@@ -12,12 +12,14 @@ swg-noded is loaded as a module with its csqtt roots in a temp dir; nothing reac
                 server is restarted exactly once; the next pass restarts nothing
   [3] normal    a normal record: the password kept, the env untouched, no restart
   [4] docker    the docker shape heals too: one respawn, and its argv (_csqtt_argv) carries the new password
-  [5] stopped   a stopped server is not started by the heal; its record is re-minted all the same, and the env is
-                rewritten when it is started again
+  [5] stopped   a stopped server is not started by the heal; its record and env are re-minted all the same, so it
+                starts on the new password, by its own start only (no second restart)
+  [6] order     review F1/F2: the env is healed BEFORE anything else in the pass can restart the server — a build
+                update in the same pass starts it from the healed file
 
 Run: python3 tests/csqtt_owner_password_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
-                       mint [1] · heal [2] [4] · envcheck [2] [4]
+                       mint [1] · heal [2] [4] [5] [6] · earlyenv [5] [6] · restart [2] [4]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile
 
@@ -28,10 +30,10 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PLANTS = {   # name: (sections, anchor, replacement)
     "mint": ("[1]", '    return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(24))\n',
              '    return base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")\n'),
-    "heal": (("[2]", "[4]", "[5]"), '            if not inst["password"] or inst["password"].startswith("-"):\n',
-             '            if not inst["password"]:\n'),
-    "envcheck": (("[2]", "[4]"), '                        or (not inst.get("stopped") and (_env_line(_csqtt_dir(iface) + "/csqtt.env", "SWG_PASSWORD") or "").startswith("-"))\n',
-                 ""),
+    "heal": (("[2]", "[4]", "[5]", "[6]"), '            if not inst["password"] or _pw_heal:\n', '            if not inst["password"]:\n'),
+    "earlyenv": (("[5]", "[6]"), '            if _pw_heal and os.path.isfile(_csqtt_dir(iface) + "/csqtt.env"):\n',
+                 '            if False:\n'),
+    "restart": (("[2]", "[4]"), '                        or (_pw_heal and not inst.get("stopped") and not _switched)\n', ""),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
 SECTION = [""]
@@ -104,8 +106,9 @@ def lay(iface, password, stopped=False):
     rec = N._csqtt_load() if os.path.exists(N.CSQTT_RECORD) else {}
     rec[iface] = inst; json.dump(rec, open(N.CSQTT_RECORD, "w"))
     return inst
-def want(stopped=False):
+def want(stopped=False, **kw):
     w = {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "passwords": {"pw1": {}}, "line": "2.1"}
+    w.update(kw)
     if stopped:
         w["stopped"] = True
     return w
@@ -174,12 +177,29 @@ try:
     del SH[:]
     N.reconcile_csqtt({"csqtt4": want(stopped=True)})
     npw = rec_pw("csqtt4")
-    check("a stopped server is not restarted", restarts("csqtt4") == [], restarts("csqtt4"))
+    check("a stopped server is not restarted", restarts("csqtt4") == [] and not [c for c in SH if "enable" in c], SH)
     check("…its record is re-minted all the same", bool(npw) and not npw.startswith("-"))
+    check("…and its csqtt.env carries it already", env_pw("csqtt4") == npw, (env_pw("csqtt4") or "")[:1])
     del SH[:]
     N.reconcile_csqtt({"csqtt4": want()})
-    check("started again: csqtt.env carries the new password", env_pw("csqtt4") == npw, (env_pw("csqtt4") or "")[:1])
-    check("…restarted once by the heal", len(restarts("csqtt4")) == 1, restarts("csqtt4"))
+    check("started again: csqtt.env still carries the new password", env_pw("csqtt4") == npw, (env_pw("csqtt4") or "")[:1])
+    check("…started by its own start only, no heal restart", restarts("csqtt4") == [] and [c for c in SH if "enable" in c], SH)
+
+    section("[6] order — the env is healed before a build update restarts the server")
+    os.remove(N.CSQTT_RECORD)
+    lay("csqtt5", BAD)
+    SEEN = []
+    real_upd, real_iv = N._csqtt_update_binary, N._csqtt_installed_ver
+    N._csqtt_installed_ver = lambda line: "old"
+    N._csqtt_update_binary = lambda inst, ver, ifaces, line="2.1": SEEN.append(env_pw(inst["iface"])) or ""
+    try:
+        N.reconcile_csqtt({"csqtt5": want(ver="new")})
+    finally:
+        N._csqtt_update_binary, N._csqtt_installed_ver = real_upd, real_iv
+    npw = rec_pw("csqtt5")
+    check("the build update ran", len(SEEN) == 1, len(SEEN))
+    check("…and saw the healed csqtt.env, not the `-` one", bool(SEEN) and SEEN[0] == npw and not (SEEN[0] or "-").startswith("-"),
+          [(x or "")[:1] for x in SEEN])
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
