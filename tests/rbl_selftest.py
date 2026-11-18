@@ -37,6 +37,7 @@ Run: python3 tests/rbl_selftest.py (0 = pass)
        early        the labels are lowered before the pass renders the masked writers
        half         the two halves overlap
        fallback     after 16 misses the relay binds outside its half
+       share        a half bind leaves its socket without SO_REUSEADDR, so the fallback cannot share its port (verify F46)
 """
 import errno, importlib.machinery, importlib.util, json, os, socket, subprocess, sys, tempfile
 
@@ -74,6 +75,8 @@ PLANTS = {
     "half": ("relay", "    return (lo, mid - 1) if half == 1 else (mid, hi)", "    return (lo, mid) if half == 1 else (mid, hi)"),
     "fallback": ("relay", "            up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n            up.bind((self.bind, self._pick()))\n",
                  "            up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n            up.bind((self.bind, 0))\n"),
+    "share": ("relay", "                    up.bind((self.bind, self._pick()))\n                    up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n",
+              "                    up.bind((self.bind, self._pick()))\n"),
 }
 FAILS = []
 for _v in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
@@ -375,6 +378,22 @@ class FakeSock:
         self.bound = addr
 
 
+def _free_window(n):
+    """n consecutive ports free on 127.0.0.1, below the ephemeral range."""
+    for base in range(20000, 30000, n):
+        ss = []
+        try:
+            for q in range(base, base + n):
+                x = socket.socket(); ss.append(x); x.bind(("127.0.0.1", q))
+            return base, base + n - 1
+        except OSError:
+            pass
+        finally:
+            for x in ss:
+                x.close()
+    raise RuntimeError("no free port window")
+
+
 def sec6():
     print("[6] swg-relay's port halves")
     p = os.path.join(TMP, "range")
@@ -397,6 +416,39 @@ def sec6():
         fs = FakeSock(); rl._bind_up(fs)
         check("[6] an older kernel, and every port of the half in use: still bound inside the half (shared, never the other's)",
               fs.bound and fs.bound[0] == "10.8.0.1" and b[0] <= fs.bound[1] <= b[1] and RL._PRANGE[0] is False, fs.bound)
+        # The real kernel (verify F46): Linux shares a port only when its holder has SO_REUSEADDR too. Every port of a
+        # 4-port half held by the relay's own upstreams, live and then in TIME_WAIT: the next one still binds inside it.
+        RL._PRANGE[0] = False
+        q = _free_window(4)
+        sa = socket.socket(); sa.bind(("127.0.0.1", 0)); sa.listen(64)
+        sb = socket.socket(); sb.bind(("127.0.0.1", 0)); sb.listen(64)
+        rl = RL.Relay(0, "", bind="127.0.0.1", sport=q); held, got, ports = [], [], set()
+        try:
+            for _ in range(400):
+                if len({u.getsockname()[1] for u in held}) == 4:
+                    break
+                u = socket.socket()
+                try:
+                    rl._bind_up(u); u.connect(sa.getsockname()); held.append(u)
+                except OSError:
+                    u.close()
+            ports = {u.getsockname()[1] for u in held}
+            for mode in ("live", "timewait"):
+                if mode == "timewait":
+                    for u in held:
+                        u.close()                               # the relay side closes first: TIME_WAIT
+                u = socket.socket()
+                try:
+                    rl._bind_up(u); u.connect(sb.getsockname()); got.append((mode, u.getsockname()[1]))
+                except OSError as ex:
+                    got.append((mode, ex))
+                u.close()
+        finally:
+            for x in held + [sa, sb]:
+                x.close()
+        check("[6] an older kernel, every port of the half held by live and then TIME_WAIT upstreams: the next shares one",
+              ports == set(range(q[0], q[1] + 1))
+              and [m for m, x in got if isinstance(x, int) and q[0] <= x <= q[1]] == ["live", "timewait"], got)
         RL._PRANGE[0] = True
         srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(64)
         rl = RL.Relay(0, "", bind="127.0.0.1", sport=b); got = []

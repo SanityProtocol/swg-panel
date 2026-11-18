@@ -246,7 +246,9 @@ class Relay:
         a port between destinations and skipping reserved ports, as it does over the whole range without a half. Older:
         a random port of the half, without SO_REUSEADDR first — one in use, TIME_WAIT included, fails and the next is
         tried — and after 16 misses one WITH it, still in the half: the port is shared, and connect refuses only an exact
-        four-tuple duplicate (review F12). Never outside the half: the other member's ports are the whole point."""
+        four-tuple duplicate (review F12). Linux shares a port only when its holder ALSO has SO_REUSEADDR, so every socket
+        bound here gets it right after its bind (verify F46): the bind itself still prefers a free port, and the holder,
+        its TIME_WAIT included, lets the fallback share. Never outside the half: the other member's ports are the point."""
         if self.sport:
             lo, hi = self.sport
             if _PRANGE[0]:
@@ -262,6 +264,7 @@ class Relay:
             for _ in range(16):
                 try:
                     up.bind((self.bind, self._pick()))
+                    up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     return
                 except OSError as e:
                     if e.errno != errno.EADDRINUSE:
