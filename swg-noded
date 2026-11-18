@@ -26033,6 +26033,16 @@ def _csqtt_read_store(cfgdir, line=""):
     return {"passwords": pwds, "devices": devs}
 
 
+CSQTT_MAIN_COMMENT = "Owner (from the old server)"
+
+def _csqtt_main_user(pw):
+    """{password: entry} for a store's MAIN password, else {}. csqtt serves it as a tunnel credential beside the
+    `passwords` rows, and the csqtt app's deploy saves it as the deploying profile's connection password — but our
+    server starts with its own --password, which replaces it. So a take-over hands it up as one more user (1.8.12
+    item 16). `main` marks it: a store of OURS holds our node-made owner password there, never handed up."""
+    pw = str(pw or "").strip()
+    return {pw: {"vk_hash": "", "expires_at": 0, "is_deactivated": False, "comment": CSQTT_MAIN_COMMENT, "main": True}} if pw else {}
+
 def _csqtt_users_from_text(raw):
     """Parse a csqtt passwords.json body → {password: {vk_hash, expires_at, is_deactivated, comment}}. Same fields
     as the WDTT stores, so the panel's importer treats them identically. csqtt used to keep ONE store shape; from
@@ -26051,6 +26061,8 @@ def _csqtt_users_from_text(raw):
                                 # the JSON stores call it `name`; whichever it is, it is what the operator typed —
                                 # without it every imported peer is titled "adopted" and they cannot tell them apart
                                 "comment": str(e.get("name") or e.get("comment") or "").strip()[:80]}
+            if src is not data and str(data.get("main_password") or "").strip() not in out:   # <=2.0.1: the store's top level
+                out.update(_csqtt_main_user(data.get("main_password")))
     return out
 
 
@@ -26113,6 +26125,10 @@ def _csqtt_db_users(stage):
                     continue
                 out[str(pw)] = {"vk_hash": str(vkh or "").strip(), "expires_at": int(exp or 0),
                                 "is_deactivated": bool(deact), "comment": str(name or "").strip()[:80]}
+            with contextlib.suppress(Exception):      # 2.1.5+ and 2.5 both keep it in `meta` (saved at every start)
+                _m = c.execute("SELECT value FROM meta WHERE key = 'main_password'").fetchone()
+                if _m and str(_m[0] or "").strip() not in out:
+                    out.update(_csqtt_main_user(_m[0]))
             return out, True
         finally:
             c.close()
@@ -26620,9 +26636,13 @@ def reconcile_csqtt(want, remove=None):
             inst["web_pass"] = (prev.get("web_pass") or _gen_csqtt_password() + _gen_csqtt_password())
             inst["web_port"] = prev.get("web_port") or _csqtt_webport(inst.get("listen") or "")
             if _pw_heal and os.path.isfile(_csqtt_dir(iface) + "/csqtt.env"):
-                # Before anything below can restart this server (a line switch, a build update, the reconfigure): each
-                # starts the unit from this file. A stopped server starts from it later; no install yet → the install writes it.
-                with open(_csqtt_dir(iface) + "/csqtt.env", "w") as f: f.write(_csqtt_env_text(inst))
+                # Before anything below can restart this server: a bare-metal line switch, build update or reconfigure
+                # starts the unit from this file, and a stopped server starts from it later (no install yet → the
+                # install writes it). A docker build update relaunches from the saved record, healed at the end of
+                # this pass — that server comes back on the next one. Rendered FIRST: it reads this file's bind.
+                _envp = _csqtt_dir(iface) + "/csqtt.env"; _txt = _csqtt_env_text(inst)
+                with open(_envp + ".tmp", "w") as f: f.write(_txt)
+                os.replace(_envp + ".tmp", _envp)
             # pw_seen safety net: an EMPTY desired set must not reap users the panel has never owned (a create
             # landing on an earlier install's dir, a lost node record). Until the panel has held a password here,
             # skip writing an empty desired (which our --desired reconcile would use to delete every password).
@@ -26637,14 +26657,16 @@ def reconcile_csqtt(want, remove=None):
             # first panel-created user flips pw_seen and reaps every original one. Same rule as the twin: a wipe
             # needs positive intent, and a user the panel cannot see is a user it cannot intend to keep.
             if not _pw_seen and not inst.get("adopt_users"):
-                _pre = _csqtt_adopted_users(_csqtt_dir(iface))
+                # our own store: its main password is our node-made owner password, not a user
+                _pre = {k: v for k, v in _csqtt_adopted_users(_csqtt_dir(iface)).items() if not (v or {}).get("main")}
                 if _pre:
                     inst["adopt_users"] = _pre
                     inst["adopt_users_at"] = int(time.time())
                     _au = _pre
             # ADOPT a foreign csqtt: take its users, stop it, and run ours in its place. There is no server key
-            # to preserve (csqtt has none) — the password store IS the server's identity to a client, so copying
-            # it and serving it through the hand-off is the whole of a take-over.
+            # to preserve (csqtt has none) — the password store IS the server's identity to a client: its `passwords`
+            # rows AND its main password, which the csqtt app's own deploy connects with (ours starts with its own
+            # --password, replacing it). Both are handed up and served through the hand-off; that is the take-over.
             # The hand-off closes ITSELF: once the panel's desired set already holds every recovered password the
             # import has landed, and a 15-minute ceiling covers an import that never does. Same rule as WDTT, so
             # nothing keeps re-offering peers the operator has since deleted.
