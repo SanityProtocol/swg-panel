@@ -14,14 +14,14 @@
   },
   "freeturn": {
    "hackdiaz-dev/free-turn-proxy@master:docs/flags.md": {
-    "date": "2026-09-22T19:33:56Z",
-    "sha": "6f84a18b43da17a03fb5fdab2c0d235569a50f9e",
-    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
+    "date": "2026-11-17T14:00:03Z",
+    "sha": "7a76b3328b45b2af6003562191a0f7d5ee26ef9a",
+    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/7a76b3328b45b2af6003562191a0f7d5ee26ef9a"
    },
    "hackdiaz-dev/free-turn-proxy@master:docs/uri.md": {
-    "date": "2026-09-22T19:33:56Z",
-    "sha": "6f84a18b43da17a03fb5fdab2c0d235569a50f9e",
-    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
+    "date": "2026-11-17T17:20:06Z",
+    "sha": "85446dc3fffbd6bb8f5fb94126cc1d557f560cfe",
+    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/85446dc3fffbd6bb8f5fb94126cc1d557f560cfe"
    }
   },
   "mysorez": {
@@ -76,9 +76,9 @@
   },
   "sidecar": {
    "hackdiaz-dev/free-turn-proxy@master:internal/config/cliflags.go": {
-    "date": "2026-09-22T19:33:56Z",
-    "sha": "6f84a18b43da17a03fb5fdab2c0d235569a50f9e",
-    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
+    "date": "2026-11-17T17:20:06Z",
+    "sha": "85446dc3fffbd6bb8f5fb94126cc1d557f560cfe",
+    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/85446dc3fffbd6bb8f5fb94126cc1d557f560cfe"
    }
   },
   "vkturnproxy": {
@@ -103,6 +103,6 @@
    }
   }
  },
- "generated_at": 1794921381,
+ "generated_at": 1795006758,
  "schema": 1
 }
