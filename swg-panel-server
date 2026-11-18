@@ -14288,8 +14288,9 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs,
                    **{k: a[k] for k in ("wdtt", "csqtt") if isinstance(a.get(k), dict)}})
     _fo_mirror_exits(a, _s)
-    # …and a provider profile or a dial-in it copies empty (one key, one server): until the operator fills it on B, what
-    # leaves through it leaves by B's own address — said before setup, as the Failover panel says it after (§14.3)
+    # …and a provider profile or a dial-in it copies empty (one key, one server): until the operator fills it on B it carries
+    # nothing there (resolve_exit gives it no route) — what it would carry leaves another way, which way depends on B's
+    # default; a torrent route through it is blocked. Said before setup; after it, the Failover panel flags it (§14.3)
     warn["exit_fill"] = [str(x.get("id")) for x in (_s.get("exits") or []) if fo_exit_unfilled(x) and x.get("enabled") is not False]
     warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_s)]
     if a.get("default_exit") and (prune_default_exit(_s) or not _s.get("default_exit")):
