@@ -17,6 +17,7 @@ import { targetType, routerCapable, iTypeOf, kindOf, turnSeats, nodeStale, wdttO
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised, ifFieldLabel, foRoWhy } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
+import { exitDefaultTitle } from "./routing.js";
 import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, clientConf, QR, qrDataURL,
@@ -2751,7 +2752,7 @@ export function NodeMigrateSheet({ node }) {
 // A copy's name as its own page says it (§12.5): an interface by name; a WDTT or csqtt server by its title, else its name,
 // behind its kind's tag; a turn proxy by its title, else its fork, and its port. `node` is the box that reports it — the
 // primary for a copy (its report names every proxy the mirror copies), the failover node for one of its own.
-const FO_TAG = { wdtt: ["wdtt", "WDTT"], csqtt: ["csqtt", "CSQTT"], turn: ["turn", ""], exit: ["muted", ""] };   // exit: A's device exit, by its label (§14.3)
+const FO_TAG = { wdtt: ["wdtt", "WDTT"], csqtt: ["csqtt", "CSQTT"], turn: ["turn", ""], exit: ["muted", ""] };   // exit: A's device exit, by its id (§14.3)
 export function foCopyText(node, kind, name) {
   if (kind === "turn") {
     const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === name) || {};
@@ -2759,6 +2760,10 @@ export function foCopyText(node, kind, name) {
   }
   if (kind === "wdtt" || kind === "csqtt")
     return String(((((Store.nodes || []).find(n => n.id === node) || {})[kind + "_cfg"] || {})[name] || {}).title || "").trim() || name;
+  if (kind === "exit") {                               // `name` is the exit's id (§14.3): named as the exits grid names it
+    const x = ((((Store.nodes || []).find(n => n.id === node) || {}).exits) || []).find(e => String(e.id) === String(name));
+    return x ? (String(x.label || "").trim() || exitDefaultTitle(x)) : name;
+  }
   return name;
 }
 export const FoCopy = ({ node, kind, name }) => FO_TAG[kind]
@@ -2810,9 +2815,9 @@ function FailoverSetupSheet({ node }) {
     }),
     ...(w.dns || []).map(x => row(T("{v1} does not point at {v2} — check the record. A proxied record cannot carry WireGuard.", { v1: x.host, v2: node.name }), nmOf(x))),
     ...((w.pinned || []).length ? [row(T("Pinned to one of {v1}'s own addresses — on the failover node they leave by its default way out", { v1: node.name }), w.pinned.join(", "))] : []),
-    ...(exitish.length ? [row(T("The failover node has no exits: what leaves through these leaves by its own address there"),
+    ...(exitish.length ? [row(T("A device of {v1}'s own can't be copied: what leaves through these leaves by the failover node's own address", { v1: node.name }),
                               exitish.map(x => x.kind === "default_exit" ? T("the node's default exit") : x.name).join(", "))] : []),
-    ...(p2p.length ? [row(T("Torrents sent through an exit are blocked on the failover node"), p2p.map(x => x.name || T("the node's torrent route")).join(", "))] : []),
+    ...(p2p.length ? [row(T("Torrents sent through a device of {v1}'s own are blocked on the failover node", { v1: node.name }), p2p.map(x => x.name || T("the node's torrent route")).join(", "))] : []),
   ];
   return html`<${Sheet} title=${T("Add failover node · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, onAction: create, disabled: busy || !pf || refused.length > 0 || !name.trim() || nameBad,

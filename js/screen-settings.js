@@ -45,7 +45,7 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitDefaultTitle, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
   p2pVal, p2pRec, p2pTarget, p2pLabel, p2pTargetOpts, p2pTargetHints,
@@ -4376,11 +4376,6 @@ function profileText(ex) {
 const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).address)
   || (((ex || {}).profile || {}).address) || "").split("/")[0].trim();
 
-// A dial-in exit with no title is named by its port, so two untitled ones never read alike in a sheet or a note.
-const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex)
-    ? (exitIsDialin(ex) ? T("Dial-in exit :{v1}", { v1: ex.profile.listen_port }) : T("Dial-in exit")) : T("Custom exit"))
-  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex) === "socks5" ? T("SOCKS5 exit") : exitProv(ex);
-
 /** The badge for an imported exit: [class, label]. A WARP account with a licence on it is WARP+ — the
  *  operator paid for it and the whole point of the row is knowing which ones did. Taken from the LICENCE
  *  (what was asked for) or from the account Cloudflare reports (what was granted), because those arrive at
@@ -4639,6 +4634,7 @@ function confIfSet(txt, k, v) {
 /** Generate a dial-in exit: a title, the port and the protocol, the parameters under it; the keys are made on Create. The
  *  paste is one click away. */
 // `fixedLabel`: a failover node filling its copy of the primary's dial-in (FAILOVER-PLAN §14.3) — the title follows the primary
+// (null when not filling: "" is an untitled primary's — still fixed)
 function DialinGenSheet({ node, onCreate, onPaste, fixedLabel }) {
   const [label, setLabel] = useState(fixedLabel || "");
   const no31 = node.awg31_no ? srvText(node.awg31_no) : "";
@@ -4663,7 +4659,7 @@ function DialinGenSheet({ node, onCreate, onPaste, fixedLabel }) {
     <p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}
       ${" "}${T("The panel makes both sides; you import the router's config on the router.")}</p>
     <div class="row2 dinrow"><div class="field"><label>${T("Title")}</label>
-      <input value=${label} placeholder=${T("Dial-in exit")} maxlength="40" disabled=${!!fixedLabel} onInput=${e => setLabel(e.target.value)}/></div>
+      <input value=${label} placeholder=${T("Dial-in exit")} maxlength="40" disabled=${fixedLabel != null} onInput=${e => setLabel(e.target.value)}/></div>
       <div class="field dinport"><label>${T("Port")}</label>
         <input inputmode="numeric" value=${port} placeholder=${T("val|Auto")} title=${DIALIN_PORT_HINT()} onInput=${e => setPort(e.target.value)}/></div>
       <div class="field dinmtu"><label>${T("MTU")}</label>
@@ -5068,7 +5064,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       }
       return r === true ? true : T("Couldn't save");
     }}/>`);
-  const openDialin = (rec, keepLabel) => openModal(html`<${DialinGenSheet} node=${node} fixedLabel=${keepLabel ? (rec.label || "") : ""}
+  const openDialin = (rec, keepLabel) => openModal(html`<${DialinGenSheet} node=${node} fixedLabel=${keepLabel ? (rec.label || "") : null}
     onCreate=${async (label, proto, typed) => { const r = await generate(keepLabel ? { ...rec } : { ...rec, label }, proto, typed);
       if (r && r.info) { closeModal(); toast(r.info); return true; }    // created: said as what it is, not as an error (s9c F51)
       return r; }}

@@ -154,6 +154,13 @@ PLANTS = {   # (file, anchor, replacement)
     "ex-door": ("panel", "    if set(old) != set(newm) or len(newm) != len(new):\n        return False", "    return True"),
     "ex-tolerate": ("panel", '                elif c.get("failover_of"):\n                    # a failover node', '                elif False:\n                    # a failover node'),
     "ex-wire": ("panel", "and not fo_exit_unfilled(x)    # a failover node's exit to fill", "and True    # a failover node's exit to fill"),
+    "ex-escrow": ("panel", "        nx.update({k: bx[k] for k in _EXIT_ESCROW_KEYS if k in bx})", "        pass"),
+    "ex-park": ("panel", '            px = {**bx, "enabled": False}', '            px = dict(bx)'),
+    "ex-orphan": ("panel", 'and bx.get("profile") and xid in a_ids:', 'and bx.get("profile"):'),
+    "ex-release": ("panel", "    xs = [x for x in (b.get(\"exits\") or []) if not fo_exit_unfilled(x)]", "    xs = list(b.get(\"exits\") or [])"),
+    "ex-resolve": ("panel", 'or _x.get("enabled") is False or fo_exit_unfilled(_x):', 'or _x.get("enabled") is False:'),
+    "ex-preflight": ("panel", "    _fo_mirror_exits(a, _s)\n", ""),
+    "ex-rowid": ("panel", '        rows.append({"iface": xid, "kind": "exit",', '        rows.append({"iface": str(ax.get("label") or xid), "kind": "exit",'),
     "follow-key": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("public_key", "listen_port", '''),
     "endpoint": ("panel", '''FO_IF_FOLLOW = ("listen_port", ''', '''FO_IF_FOLLOW = ("endpoint_host", "listen_port", '''),
     "nokeysrc": ("panel", '                or _iface_key_source(bov, None, ivk) != "vault"):\n            return\n        # A device B reports DOWN',
@@ -2039,8 +2046,39 @@ def sec16():
     n["na"]["default_routing"] = [{"enabled": True, "category": "discord", "action": "dev", "exit_id": "aaaa0002"}]
     P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
     ids = [x["id"] for x in n["nb"].get("exits") or []]
-    check("[16] no longer used: an unfilled placeholder goes, a filled config stays (the operator's)",
-          "aaaa0004" not in ids and "aaaa0003" in ids, ids)
+    x3 = next((x for x in n["nb"].get("exits") or [] if x["id"] == "aaaa0003"), {})
+    check("[16] no longer used: an unfilled placeholder goes, a filled config A still has is parked — disabled, no tunnel (F4)",
+          "aaaa0004" not in ids and x3.get("enabled") is False and (x3.get("profile") or {}).get("private_key") == "B-PRIV"
+          and x3.get("cfg_sig") == P.exit_cfg_sig(x3), (ids, x3))
+    n["na"]["p2p"] = {"action": "dev", "exit_id": "aaaa0003"}
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    x3 = next((x for x in n["nb"].get("exits") or [] if x["id"] == "aaaa0003"), {})
+    check("[16] …A using it again brings it back, the config with it",
+          x3.get("enabled") is True and (x3.get("profile") or {}).get("private_key") == "B-PRIV", x3)
+    n["na"]["p2p"] = {"action": "block"}
+    n["na"]["exits"] = [x for x in n["na"]["exits"] if x["id"] != "aaaa0003"]
+    P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    check("[16] …A deleting the exit takes B's copy, filled or not (F4)",
+          "aaaa0003" not in [x["id"] for x in n["nb"].get("exits") or []], [x["id"] for x in n["nb"].get("exits") or []])
+    # B's own key escrow on a WARP copy (written by B's sync) survives the pass, which then changes nothing (F1)
+    n = x_fleet(); P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    for x in n["nb"]["exits"]:
+        if x["id"] == "aaaa0001":
+            x["key_blob"] = {"eph": "BE", "ct": "BC", "pub": "BPUB"}
+            x["key_restore"] = {"ct": "R"}
+    ch = P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
+    w = next((x for x in n["nb"]["exits"] if x["id"] == "aaaa0001"), {})
+    check("[16] B's own WARP key escrow stays on its copy, and the pass is steady (no save every sync) (F1)",
+          (w.get("key_blob") or {}).get("pub") == "BPUB" and w.get("key_restore") == {"ct": "R"} and ch is False, (ch, w))
+    check("[16] an unfilled copy routes nothing on B — the traffic takes the default, as a deleted exit's does (F5)",
+          P.resolve_exit(n, snaps, "nb", "aaaa0003") is None and P.resolve_exit(n, snaps, "nb", "aaaa0001") is not None)
+    v = P.failover_view(n, None, "na", "nb", snaps, seen, frozenset(), now=NOW)
+    check("[16] an exit row is keyed by the exit's id — the console names it as the exits grid does (F9)",
+          all(r["iface"] == r["exit_id"] for r in v["rows"] if r.get("kind") == "exit")
+          and any(r.get("kind") == "exit" for r in v["rows"]), v["rows"])
+    pf = P.failover_preflight({"nodes_path": "", "roster_path": ""}, x_fleet(), "na", snaps, {"na": NOW})
+    check("[16] the setup preview files none of the copied exits as not copied (F3)",
+          not [x for x in pf["warn"]["not_mirrored"] if x["kind"] in ("exit", "default_exit", "p2p")], pf["warn"]["not_mirrored"])
     # the door: B fills its own config of an exit it holds for A, and nothing else
     n = x_fleet(); P.failover_mirror(DEPS, n, "nb", snaps, seen, now=NOW)
     view = [dict({k: v for k, v in x.items() if k not in ("profile", "socks")}) for x in n["nb"]["exits"]]
@@ -2080,6 +2118,14 @@ def sec16():
     check("[16] a real save on B fills its copy, the other placeholder still empty (the list is saved whole)",
           code2 == 200 and "profile" in bx.get("aaaa0003", {}) and "profile" not in bx.get("aaaa0004", {}), (code2, r2, sorted(bx)))
     check("[16] …and a rename through the same save is refused (read-only)", code3 == 409, code3)
+    c, o = req(port, "/api/nodes/failover/detach", {"id": "nb", "take_over": False, "confirm": "hel-2"})
+    st = req(port, "/api/state")[1]
+    nb = next(x for x in (st.get("data") or st)["nodes"] if x["id"] == "nb")
+    xs = [dict(x) for x in nb.get("exits") or []]
+    check("[16] detached, B drops the copy it never filled and keeps the one it did (F2)",
+          c == 200 and sorted(x["id"] for x in xs) == ["aaaa0001", "aaaa0002", "aaaa0003"], (c, o, [x["id"] for x in xs]))
+    c4, o4 = req(port, "/api/nodes/update", {"id": "nb", "exits": [dict(x, label="mine") if x["id"] == "aaaa0003" else x for x in xs]})
+    check("[16] …so its exits list saves again as any node's (F2)", c4 == 200, (c4, o4))
 
 def main():
     for name, fn in (("[1]", sec1), ("[2]", sec2), ("[3]", sec3), ("[4]", sec4), ("[5]", sec5), ("[6]", sec6), ("[7]", sec7),

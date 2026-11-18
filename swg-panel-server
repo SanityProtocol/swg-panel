@@ -13279,9 +13279,12 @@ def fo_exit_unfilled(x):
 def _fo_mirror_exits(a, w):
     """B (`w`, the pass's scratch copy) holds, for every device exit A's settings use (exit_refs), an exit with the same id —
     so B's copies resolve as A's do, and prune_exit_refs leaves them alone. A WARP copy registers its own account on B; a
-    SOCKS copy is A's proxy; a profile is B's to fill (fo_exit_unfilled until then). An imported exit B holds that A no longer
-    uses goes, unless the operator filled it (their config); an adopted device of B's own is never touched."""
+    SOCKS copy is A's proxy; a profile is B's to fill (fo_exit_unfilled until then). What B's own sync writes on a copy — its
+    WARP key's escrow (_EXIT_ESCROW_KEYS) — is B's and stays. An imported exit B holds that A no longer uses goes, unless the
+    operator filled it and A still has it: that config is parked (disabled — no tunnel holds its key) until A uses it again;
+    A deleting the exit takes it. An adopted device of B's own is never touched."""
     refs = exit_refs(a)
+    a_ids = {str(x.get("id") or "") for x in (a.get("exits") or []) if isinstance(x, dict)}
     cur = {str(x.get("id") or ""): x for x in (w.get("exits") or []) if isinstance(x, dict)}
     out, used = [], set()
     for x in (a.get("exits") or []):
@@ -13292,18 +13295,41 @@ def _fo_mirror_exits(a, w):
         nx = {"id": x.get("id"), **{k: _fo_copy(x[k]) for k in FO_EXIT_FOLLOW if k in x}}
         if nx.get("provider") == "profile" and bx.get("provider") == "profile" and isinstance(bx.get("profile"), dict):
             nx["profile"] = bx["profile"]                          # B's own config, filled by the operator
+        nx.update({k: bx[k] for k in _EXIT_ESCROW_KEYS if k in bx})   # B's own key escrow, written by B's sync
         nx["cfg_sig"] = exit_cfg_sig(nx)
         out.append(nx)
         used.add(xid)
     for xid, bx in cur.items():
         if xid in used:
             continue
-        if (bx.get("producer") or "adopted") != "imported" or (bx.get("provider") == "profile" and bx.get("profile")):
-            out.append(bx)                                         # B's own device, or a filled config nothing uses now
+        if (bx.get("producer") or "adopted") != "imported":
+            out.append(bx)                                         # B's own device
+        elif bx.get("provider") == "profile" and bx.get("profile") and xid in a_ids:
+            px = {**bx, "enabled": False}                          # a filled config A has but uses nowhere now: parked
+            px["cfg_sig"] = exit_cfg_sig(px)
+            out.append(px)
     if out:
         w["exits"] = out
     else:
         w.pop("exits", None)
+
+
+def _fo_release_exits(nodes, bid):
+    """B leaves the pair (detach, take-over): a copy with no config (fo_exit_unfilled) is a failover node's placeholder only —
+    an ordinary node's exits validator refuses it, so the list could not be saved again. It goes, and what still names it
+    takes the default, as a deleted exit's users do."""
+    b = nodes[bid]
+    xs = [x for x in (b.get("exits") or []) if not fo_exit_unfilled(x)]
+    if len(xs) == len(b.get("exits") or []):
+        return
+    if xs:
+        b["exits"] = xs
+    else:
+        b.pop("exits", None)
+    prune_exit_refs(b)
+    prune_default_exit(b)
+    derive_default_exit(b)
+    prune_p2p_refs(nodes)
 
 
 def failover_mirror(deps, nodes, bid, snaps, seen, now=None):
@@ -14174,6 +14200,7 @@ def failover_takeover(nodes, roster, aid, bid, cls, snaps):
                                                     for t in p.get("targets") or []) else set())
             p["p2p_yield"] = sorted(ys)
     b.pop("failover_of", None)
+    _fo_release_exits(nodes, bid)
     return held, left, old
 
 
@@ -14255,9 +14282,11 @@ def failover_preflight(deps, nodes, aid, snaps, seen, resolve=False):
     if warn["ports"]:                                  # its mesh links need their band open too (card review F3)
         _mc = mesh_cfg(deps)
         warn["mesh_ports"] = [_mc["port_base"], _mc["port_base"] + _mc.get("port_span", 100) - 1]
-    # B has no exits (§7): what the mirror's own prunes take off B's copy — run on a scratch copy of what it follows
+    # B copies the device exits A's settings use (§14.3), never a device of A's own (adopted): what the mirror's prunes take
+    # off B's copy — run on a scratch copy of what it follows, its exits made as the mirror makes them
     _s = _fo_copy({**{k: a[k] for k in FO_NODE_FOLLOW if k in a}, "ifaces": ifs,
                    **{k: a[k] for k in ("wdtt", "csqtt") if isinstance(a.get(k), dict)}})
+    _fo_mirror_exits(a, _s)
     warn["not_mirrored"] += [{"kind": "exit", "name": h} for h in prune_exit_refs(_s)]
     if a.get("default_exit") and (prune_default_exit(_s) or not _s.get("default_exit")):
         warn["not_mirrored"].append({"kind": "default_exit", "name": str(a["default_exit"])})
@@ -14318,10 +14347,11 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
     # nothing on either box: not judged.
     _bx = {str(x.get("id")): x for x in (b.get("exits") or []) if isinstance(x, dict)}
     _brep = {str(e.get("id")): e for e in (bsnap.get("exits") or []) if isinstance(e, dict)}
+    _arefs = exit_refs(a_rec)
     for ax in (a_rec.get("exits") or []):
         xid = str((ax or {}).get("id") or "") if isinstance(ax, dict) else ""
         if (not xid or (ax.get("producer") or "adopted") != "imported" or ax.get("enabled") is False
-                or xid not in exit_refs(a_rec)):
+                or xid not in _arefs):
             continue
         bx, rp = _bx.get(xid), _brep.get(xid)
         if bx is None or (not fo_exit_unfilled(bx) and rp is None):
@@ -14332,7 +14362,7 @@ def failover_view(nodes, roster, aid, bid, snaps, seen, idle, now=None, ivk=""):
             continue
         else:
             st, why, more = "problem", "exit_down", ({"err": str(rp.get("error"))[:200]} if rp.get("error") else {})
-        rows.append({"iface": str(ax.get("label") or "").strip() or str(ax.get("device") or xid), "kind": "exit",
+        rows.append({"iface": xid, "kind": "exit",                # the SPA names it from A's exit, as the exits grid does
                      "exit_id": xid, "provider": ax.get("provider") or "warp", "state": st, "why": why, **more})
         worst = st if rank[st] > rank[worst] else worst
     extra, um = [], set(_unmanaged_ifaces(b, bsnap))
@@ -14409,8 +14439,9 @@ _FO_IF_LOCAL = frozenset(("node", "iface", "drops_reset", "mesh_reset"))   # the
 def _fo_exit_fill_only(nodes, aid, bid, new):
     """True when a node-update's `exits` for failover node B only FILLS what is B's to fill (FAILOVER-PLAN §14.3): the same
     ids, every followed field as stored (A's — the mirror pass rewrites them anyway), and a config (`profile_text` pasted, or
-    `dialin_gen` made in the browser) only on a profile exit B holds for A. The state view never carries `profile` or
-    `socks` (the save merges them back from the stored record), so those two are not compared."""
+    `dialin_gen` made in the browser) only on a profile exit B holds for A. The state view carries `profile` without its
+    private key and `socks` without its password (the save merges both back from the stored record), so those two are not
+    compared."""
     if not isinstance(new, list) or not all(isinstance(x, dict) for x in new):
         return False
     old = {str(x.get("id") or ""): x for x in ((nodes.get(bid) or {}).get("exits") or []) if isinstance(x, dict)}
@@ -24046,8 +24077,8 @@ def resolve_exit(nodes, snaps, nid, xid):
     _nd = nodes.get(nid) or {}
     _x = next((x for x in (_nd.get("exits") or [])
                if isinstance(x, dict) and str(x.get("id")) == str(xid or "")), None)
-    if not _x or _x.get("enabled") is False:
-        return None
+    if not _x or _x.get("enabled") is False or fo_exit_unfilled(_x):   # a failover node's copy with no config (§14.3)
+        return None                                                      # is never sent: its device does not exist
     _dev = str(_x.get("device") or "").strip()
     if not _dev:
         return None
@@ -32577,7 +32608,7 @@ def api(method, path, qs, body, deps):
                            ivk=_current_ivk_pub(deps))
         bad = [r["iface"] for r in fv["rows"] if r.get("resync")]
         _kinds = {k.kind: k for k in _FO_KINDS}
-        _kind_of = {r["iface"]: _kinds.get(r.get("kind"), _FO_KINDS[0]) for r in fv["rows"]}
+        _kind_of = {r["iface"]: _kinds.get(r.get("kind"), _FO_KINDS[0]) for r in fv["rows"] if r.get("kind") != "exit"}
         # a key row it cannot repair is said — whether or not other rows were (F149): the vault is what is missing there
         _nv = [r["iface"] for r in fv["rows"] if r.get("why") == "key" and not r.get("resync")]
         if not bad and _nv:
@@ -32653,6 +32684,7 @@ def api(method, path, qs, body, deps):
                 k.drop(nodes[bid], n, now())
             _gone = sorted(_gone)
             nodes[bid].pop("failover_of", None)
+            _fo_release_exits(nodes, bid)
             nodes_save(deps["nodes_path"], nodes)
             ev_append(roster_path, "node", bid, "Detached failover node", bname,
                       "peers kept on %s; copies removed: %s" % (aname, ", ".join(_gone) or "—"),

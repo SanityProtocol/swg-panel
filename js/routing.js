@@ -3587,6 +3587,11 @@ export const EXIT_KINDS = ["warp", "profile", "socks5"];
  *  router behind NAT) dials. Derived from the stored profile, as the panel and the node derive it; nothing else marks it. */
 export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profile || {}).listen_port
   && !((x || {}).profile || {}).endpoint;
+/** An untitled exit's name, by its kind — the exits grid's and the failover card's one wording. A dial-in exit is named by its
+ *  port, so two untitled ones never read alike in a sheet or a note. */
+export const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex)
+    ? (exitIsDialin(ex) ? T("Dial-in exit :{v1}", { v1: ex.profile.listen_port }) : T("Dial-in exit")) : T("Custom exit"))
+  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex) === "socks5" ? T("SOCKS5 exit") : exitProv(ex);
 
 /** Where the traffic of an exit the NODE is routing around goes meanwhile, by its kill-switch — and the plain stalled
  *  sentence — shared by the imported and the adopted arm, so both say it in one set of words (and one set of RU keys). */
