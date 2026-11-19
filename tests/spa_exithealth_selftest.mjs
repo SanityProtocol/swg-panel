@@ -48,19 +48,32 @@ const PRECSTALE = process.argv.includes("--perturb-recstale");
 const PADOPTED = process.argv.includes("--perturb-adopted");
 // `--perturb-adstale`: a stale node's last `back_in` is believed for an adopted device — [9] goes red.
 const PADSTALE = process.argv.includes("--perturb-adstale");
-const PERTURB = PSTALE || PWARP || PSTALLED || PRECOVER || PRECSTALE || PADOPTED || PADSTALE || process.argv.includes("--perturb");
+// 1.8.12 item 11 — the family the tunnel dials. `--perturb-ul`: the row ignores `underlay` (how it read before) — [10] goes red.
+// `--perturb-ul-dpi`: a WARP exit still on its silent IPv6 is blamed on a network blocking WARP — [10] goes red.
+// `--perturb-ul-ok`: the OK row's hover never says it was moved off IPv6 — [10] goes red.
+const PUL = process.argv.includes("--perturb-ul");
+const PULDPI = process.argv.includes("--perturb-ul-dpi");
+const PULOK = process.argv.includes("--perturb-ul-ok");
+const PERTURB = PSTALE || PWARP || PSTALLED || PRECOVER || PRECSTALE || PADOPTED || PADSTALE || PUL || PULDPI || PULOK
+  || process.argv.includes("--perturb");
 const SRC = path.join(ROOT, "js", "routing.js");
 let mod = SRC;
 
 if (PERTURB) {
   let s = fs.readFileSync(SRC, "utf8");
-  const guards = PADSTALE ? [
+  const guards = PUL ? [
+    ['const ul = l.underlay && typeof l.underlay === "object" ? l.underlay : null;', "const ul = null;"],
+  ] : PULDPI ? [
+    ["warpV6 = warp && !!ul && !ulBoth && (ulOff6 || ul.via === \"v6\");", "warpV6 = false;"],
+  ] : PULOK ? [
+    [": ulSay ? T(\"Up on the node.\") + \" \" + ulSay : T(\"Up on the node.\") };", ": T(\"Up on the node.\") };"],
+  ] : PADSTALE ? [
     ["    const fresh = !nodeStale((node || {}).id);", "    const fresh = true;"],
   ] : PADOPTED ? [
     ["    const nt = l.no_traffic;\n", "    const nt = null;\n"],
   ] : PWARP ? [
     // the shipped shape: no provider arm at all, so a WARP exit gets the pasted-profile instruction
-    ['said((ex.provider || "warp") === "warp"', "said((false)"],
+    ['const warp = (ex.provider || "warp") === "warp"', "const warp = false"],
   ] : PSTALE ? [
     ["&& !nodeStale((node || {}).id))", ")"],
   ] : PRECSTALE ? [
@@ -239,6 +252,45 @@ check("[9] a healthy adopted device (or a node too old to judge it) reads ok as 
 check("[9] a device that is not up still reads `down` first",
       exitHealth({ producer: "adopted", device: "tun9", live: adGone }, { id: "n1", exit_candidates: [{ name: "tun9", up: false }] }).state === "down");
 
-done(PERTURB, PADSTALE ? "a stale node's back_in believed for an adopted device" : PADOPTED ? "an adopted device's verdict ignored" : PRECSTALE ? "a stale node's back_in believed" : PRECOVER ? "the recovering state ignored" : PWARP ? "the WARP arm of the never-answered advice removed"
+// ── [10] (1.8.12 item 11) the family the tunnel dials — a box whose IPv6 goes nowhere is not a network blocking WARP ──────
+// The node sends `underlay` only while the peer has never answered, or once it moved the tunnel off a silent IPv6.
+console.log("\n[10] the family the tunnel dials");
+const W = { provider: "warp" };
+const onV6 = { ...dead, underlay: { via: "v6" } };
+const bothSilent = { ...dead, underlay: { via: "v4", failed: ["v6", "v4"] } };
+const tryingV4 = { ...dead, underlay: { via: "v4", failed: ["v6"] } };   // moved this pass: v4 not tried yet
+const movedOk = { handshake: 30, underlay: { via: "v4", failed: ["v6"] } };
+const w6 = why(W, onV6), wBoth = why(W, bothSilent);
+check("[10] WARP silent over IPv6, not moved yet: says IPv6 and that the node tries IPv4 next — no blame on the network",
+      /over IPv6/.test(w6) && /tries IPv4/.test(w6) && !/block WARP/.test(w6), w6);
+check("[10] …still the same `nohandshake` verdict (only the sentence differs)", st(W, onV6) === "nohandshake", st(W, onV6));
+const wTry = why(W, tryingV4);
+check("[10] just moved to IPv4 and not answered yet: still the IPv6 sentence — never \"neither\" before IPv4 was tried",
+      /over IPv6/.test(wTry) && /tries IPv4/.test(wTry) && !/neither/.test(wTry) && !/block WARP/.test(wTry), wTry);
+check("[10] moved to IPv4 and silent there too: says neither family answered, and only now the blocking-network advice",
+      /neither IPv6 nor IPv4/.test(wBoth) && /block WARP/.test(wBoth) && /pasted profile/.test(wBoth), wBoth);
+check("[10] …the family is said once, not twice", (wBoth.match(/IPv6/g) || []).length === 1, wBoth);
+check("[10] …and the node's own words still ride along",
+      /timed out/.test(why(W, { ...bothSilent, trace: { err: "TimeoutError: timed out" } })),
+      why(W, { ...bothSilent, trace: { err: "TimeoutError: timed out" } }));
+const okMoved = exitHealth(ex(W, movedOk), NODE);
+check("[10] moved to IPv4 and handshaking: OK, and its hover says it dials over IPv4 because IPv6 got no answer",
+      okMoved.state === "ok" && /over IPv4 now/.test(okMoved.why) && /IPv6 got no answer/.test(okMoved.why), okMoved);
+check("[10] …with no fault marker (it works)", exitHealthMark(okMoved) === null);
+const pv6 = why({ provider: "profile" }, onV6), pBoth = why({ provider: "profile" }, bothSilent);
+check("[10] a pasted profile keeps its endpoint/keys advice and gains the family fact",
+      /Check the endpoint and the keys/.test(pv6) && /dials over IPv6/.test(pv6)
+      && /Check the endpoint and the keys/.test(pBoth) && /no answer over IPv6, nor over IPv4/.test(pBoth), [pv6, pBoth]);
+const stalledBoth = why({ ...W, killswitch: false }, { ...bothSilent, ...gone });
+check("[10] the stalled row (the node failed it over) names both families too",
+      /node's own IP/.test(stalledBoth) && /no answer over IPv6, nor over IPv4/.test(stalledBoth), stalledBoth);
+// ⚠️ BYTE-IDENTICAL without it: an older node, a healthy exit, and a tunnel that dials IPv4 from the start.
+check("[10] no `underlay` (an older node, or IPv4 from the start): the WARP sentence is exactly today's",
+      why(W, dead) === why(W, { ...dead, underlay: { via: "v4" } }) && /Cloudflare never answered/.test(why(W, dead)),
+      [why(W, dead), why(W, { ...dead, underlay: { via: "v4" } })]);
+check("[10] …and a healthy row's hover is exactly \"Up on the node.\"", why(W, {}) === "Up on the node.", why(W, {}));
+
+done(PERTURB, PUL ? "the row ignores `underlay`" : PULDPI ? "a WARP exit on its silent IPv6 blamed on the network"
+                    : PULOK ? "the OK row never says it was moved off IPv6" : PADSTALE ? "a stale node's back_in believed for an adopted device" : PADOPTED ? "an adopted device's verdict ignored" : PRECSTALE ? "a stale node's back_in believed" : PRECOVER ? "the recovering state ignored" : PWARP ? "the WARP arm of the never-answered advice removed"
                     : PSTALE ? "the staleness half of `configuring` removed"
                     : PSTALLED ? "the node's dead-tunnel verdict ignored" : "both freshness guards removed");

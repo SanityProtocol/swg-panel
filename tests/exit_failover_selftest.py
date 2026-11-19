@@ -38,6 +38,11 @@ carry traffic asks `_devexit_state`, which reads `dead` for an up device whose t
       `no_traffic` per devexit entry and the panel joins it by device. Reach needs a completed TLS handshake (T1): a
       userspace stack answers the connect itself, so a connect through a dead proxy proves nothing — run for real on
       `lo` against a local accept-and-close server and a local TLS server.
+  [10] (1.8.12 item 11) a v6 underlay that gets no answer moves to v4: `wg` resolves a name once and takes the AAAA on
+      any box with a v6 route, whether or not that v6 goes anywhere (a user's node, 2026-11-09; msk-main since 2026-11-01).
+      A tunnel dialling v6 with no session (never handshaken, or not for 180 s) in a pass that carried nothing is moved to
+      the name's v4 once — never back, so nothing alternates; one with a live session is never touched; the row carries
+      `underlay` only while it matters, and says v4 failed too only once v4 has had a pass of its own.
 
 Hermetic: `run()` is stubbed and argv inspected; the probes are injected; nothing touches the network.
 
@@ -59,6 +64,14 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-late        the lookup's answer is not parked for the caller (a late one is lost) — RED in [8]
      --perturb-rebuild     a rebuilt tunnel inherits the old one's lookup history — RED in [5]
      --perturb-backin      a dead tunnel carrying again reports no `back_in` (the row keeps blaming it) — RED in [5]
+     --perturb-off6        a v6 tunnel with no session is never moved to v4 — the shipped behaviour — RED in [10]
+     --perturb-off6-any    a v4 tunnel with no session is "moved" too (re-set, the never-back rule gone) — RED in [10]
+     --perturb-stale       only a NEVER-handshaken tunnel moves (msk-main's 17-day-dead exit stays dead) — RED in [10]
+     --perturb-stale-live  a tunnel with a live session is moved as well (a working v6 exit touched) — RED in [10]
+     --perturb-ul-always   every exit row carries `underlay` (a healthy row no longer byte-identical) — RED in [10]
+     --perturb-ul-early    v4 called silent in the move's own pass (the row says "neither" before v4 was tried) — RED in [10]
+     --perturb-ul-slack    no rounding slack: a v4 handshake just after the move reads as v4 silent — RED in [10]
+     --perturb-ul-rebuild  a rebuilt tunnel keeps the old one's "moved off v6" note — RED in [10]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile, threading
 
@@ -83,7 +96,7 @@ PLANTS = {
     "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
     "--perturb-redial": ("            _exit_resolve(dev, rec)              # nothing crossed", "            pass  #"),
     "--perturb-backin": ('if st.get("ok_since") is not None else {}))', 'if False else {}))'),
-    "--perturb-redial-rr": ("    if live_ip in ips:", "    if live_ip in ips[:1]:"),
+    "--perturb-redial-rr": ("    elif live_ip in ips:", "    elif live_ip in ips[:1]:"),
     "--perturb-ghost": ("    if live is None:\n        return None", "    if live is None:\n        live = \"\""),
     "--perturb-thread": ("            _exit_resolve(dev, rec)              # nothing crossed",
                          "            _exit_redial(dev, rec, _exit_resolve(dev, rec))  #"),
@@ -92,6 +105,15 @@ PLANTS = {
                        "    for c in _exit_clis(rec, dev)[:1]:\n        r = run(c + [\"show\", dev, \"endpoints\"])"),
     "--perturb-late": ("    _EXIT_RESOLVED[dev] = (time.time(), (host, port, ips))\n", ""),
     "--perturb-rebuild": ("                _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)\n", ""),
+    # [10] — 1.8.12 item 11
+    "--perturb-off6": ("    off6 = bool(stale) and fam is True", "    off6 = False"),
+    "--perturb-off6-any": ("    off6 = bool(stale) and fam is True", "    off6 = bool(stale) and fam is not None"),
+    "--perturb-stale": ("stale=_hs is not None and (_hs == 0 or _hs > EXIT_SESSION_DEAD_S))", "stale=_hs == 0)"),
+    "--perturb-stale-live": ("stale=_hs is not None and (_hs == 0 or _hs > EXIT_SESSION_DEAD_S))", "stale=True)"),
+    "--perturb-ul-always": ("    if hs != 0:\n        return None\n", ""),
+    "--perturb-ul-early": ("    v4dead = _LOOP[\"n\"] > moved[2] and ", "    v4dead = "),
+    "--perturb-ul-slack": ("(hs == 0 or hs > time.time() - moved[1] + 2)", "(hs == 0 or hs > time.time() - moved[1])"),
+    "--perturb-ul-rebuild": ("                _EXIT_OFF_V6.pop(dev, None)            # what", "                pass  #"),
     # [9] — Part A
     "--perturb-adopted-nic": ("        if _dev_is_ether(dev):\n            continue\n", ""),
     "--perturb-adopted-mesh": ('or dev in mine or dev in managed or dev.startswith("swg_"):', 'or dev in mine:'),
@@ -160,8 +182,9 @@ FOUND = ("h", "1", ["192.0.2.1"])
 def _resolve_stub(dev, rec, *a, **k):          # the real one's contract: the answer is parked for the caller
     _redialled.append(dev); N._EXIT_RESOLVED[dev] = (__import__("time").time(), FOUND); return FOUND
 N._exit_resolve = _resolve_stub
-N._exit_redial = lambda dev, rec, found, *a, **k: _redial_main.append(
-    (dev, found, threading.current_thread() is threading.main_thread()))
+_redial_stale = []                                                # the `stale` the caller asked with ([10])
+N._exit_redial = lambda dev, rec, found, *a, **k: (_redial_stale.append(k.get("stale")), _redial_main.append(
+    (dev, found, threading.current_thread() is threading.main_thread())))[1]
 
 class _R:
     def __init__(s, out="", rc=0): s.stdout, s.stderr, s.returncode = out, "", rc
@@ -533,6 +556,105 @@ try:
           if N._HAVE_WG else _f12 == "198.51.100.42:51820", _runs8)
 finally:
     N.socket, N.run, N._link_kind = _real_sock_mod, _real_run8, _real_kind8
+
+# ── 10. a v6 underlay that gets no answer moves to v4 (1.8.12 item 11) ───────────────────────────────────────
+V6, V4 = "2606:4700:d0::a29f:c001", "162.159.192.1"
+_recW = {"peer_key": KP, "endpoint": "engage.cloudflareclient.com:2408"}
+N.socket = types.SimpleNamespace(getaddrinfo=_gai, AF_INET=2, SOCK_DGRAM=2)
+N.run, N._link_kind = _run8, (lambda d: "wg")
+_live8["key"] = KP
+_WGC = N._wgcmd(["wg"])[0]
+try:
+    for _m in (N._EXIT_REDIAL_AT, N._EXIT_OFF_V6):
+        _m.clear()
+    _dns["ips"] = [V4, V6]
+    _g10 = _REAL_RESOLVE("wgx-v6ok", _recW, now=7000)
+    _runs8.clear(); _live8["ep"] = "[%s]:2408" % V6
+    _a10 = _REAL_REDIAL("wgx-v6ok", _recW, _g10, stale=False)
+    check("[10] a v6 tunnel with a live session whose name lists both families is never moved (a working v6 exit is untouched)",
+          _a10 is None and not _sets() and "wgx-v6ok" not in N._EXIT_OFF_V6, _runs8)
+    _runs8.clear()
+    _b10 = _REAL_REDIAL("wgx-v6dead", _recW, _g10, stale=True)
+    check("[10] a v6 tunnel with no session: re-pointed to the name's v4 address on the live device (`wg set`, no bounce)",
+          _b10 == V4 + ":2408" and _sets() == ["%s set wgx-v6dead peer %s endpoint %s:2408" % (_WGC, KP, V4)]
+          and not any((" up " in x or " down " in x) for x in _runs8), (_b10, _runs8))
+    check("[10] …noted as moved off v6 (with the v6 endpoint it left), and the latency column asks that v4 address",
+          (N._EXIT_OFF_V6.get("wgx-v6dead") or ("",))[0] == "[%s]:2408" % V6
+          and (N._EXIT_EP_IP.get("engage.cloudflareclient.com") or (0, ""))[1] == V4, (N._EXIT_OFF_V6, N._EXIT_EP_IP))
+    _runs8.clear()
+    _c10 = _REAL_REDIAL("wgx-v6dead", _recW, _g10, stale=True)
+    check("[10] …and silent on v4 too: it stays on v4 — never back into v6, nothing alternates",
+          _c10 is None and not _sets(), (_c10, _runs8))
+    _runs8.clear(); _live8["ep"] = "[%s]:2408" % V6
+    _d10 = _REAL_REDIAL("wgx-v6only", _recW, ("engage.cloudflareclient.com", "2408", [V6]), stale=True)
+    check("[10] a v6 tunnel whose name has no v4 address keeps what it has (nothing to move to)",
+          _d10 is None and not _sets() and "wgx-v6only" not in N._EXIT_OFF_V6, (_d10, _runs8))
+finally:
+    N.socket, N.run, N._link_kind = _real_sock_mod, _real_run8, _real_kind8
+
+# the caller: which handshake readings ask for the move (the pass carried nothing, the name's answer is in)
+N.EXIT_DIR = tempfile.mkdtemp(); _calls.clear()
+N._dev_link_state = lambda d: "up" if any((" up " in x and d in x) for x in _calls) else "absent"
+N._exit_trace = lambda d: dict(BAD)
+N._exit_reach = lambda d, *a, **k: False
+N._exit_ping = lambda ep, *a, **k: None
+_w10 = [{"id": "c0ffee10", "device": "wgx-c0ffee10", "provider": "warp"}]
+N._EXIT_OFF_V6["wgx-c0ffee10"] = ("[%s]:2408" % V6, 0, 0)   # left over from the device this pass rebuilds
+_stale10, _real_hs10 = {}, N._exit_handshake
+for _hv in (0, 100, N.EXIT_SESSION_DEAD_S + 1, None):
+    N._exit_handshake = lambda rec, dev, _h=_hv: _h
+    _redial_stale.clear()
+    N.reconcile_exits(_w10, {"changed": 0, "errors": []})
+    _stale10[_hv] = list(_redial_stale)
+    if _hv == 0:
+        check("[10] a rebuilt tunnel starts with no \"moved off v6\" note (what `wg` dials is picked afresh at `up`)",
+              "wgx-c0ffee10" not in N._EXIT_OFF_V6, N._EXIT_OFF_V6)
+N._exit_handshake = _real_hs10
+check("[10] the caller asks for the move when the peer never answered or its session is gone (> 180 s) — not for a live"
+      " session, nor when the handshake cannot be read", _stale10 == {0: [True], 100: [False], N.EXIT_SESSION_DEAD_S + 1: [True],
+                                                                   None: [False]}, _stale10)
+
+# the row: `underlay` only while it matters, so a healthy row is byte-identical
+N._EXIT_OFF_V6.clear()
+_ep10 = {"ep": "[%s]:2408" % V6}
+_real_lep10 = N._exit_learned_ep
+N._exit_learned_ep = lambda rec, dev: _ep10["ep"]
+check("[10] never answered, dialling v6: the row says so ({via: v6}, from the pass's dump)",
+      N._exit_underlay(_recW, "wgx-u", 0) == {"via": "v6"}, N._exit_underlay(_recW, "wgx-u", 0))
+_asked10 = []
+N._exit_learned_ep = lambda rec, dev: (_asked10.append(dev), _ep10["ep"])[1]
+check("[10] a peer that has answered and was never moved: no `underlay`, and the dump is not even read",
+      N._exit_underlay(_recW, "wgx-u", 42) is None and not _asked10, _asked10)
+_ep10["ep"] = ""
+check("[10] an endpoint the dump did not give: nothing said", N._exit_underlay(_recW, "wgx-u", 0) is None)
+_now10 = __import__("time").time()
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"])
+check("[10] moved off v6 THIS pass: {via: v4, failed: [v6]} — v4 has not had its turn, so it is not called silent yet",
+      N._exit_underlay(_recW, "wgx-u", 0) == {"via": "v4", "failed": ["v6"]}, N._exit_underlay(_recW, "wgx-u", 0))
+N._LOOP["n"] += 1
+check("[10] a pass later, handshaken since the move: still only v6 failed",
+      N._exit_underlay(_recW, "wgx-u", 12) == {"via": "v4", "failed": ["v6"]}, N._exit_underlay(_recW, "wgx-u", 12))
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, __import__("time").time() - 0.8, N._LOOP["n"] - 1)
+check("[10] …even 0.8 s after the move, when the floored age (1 s) reads older than the move (rig 2026-11-19)",
+      N._exit_underlay(_recW, "wgx-u", 1) == {"via": "v4", "failed": ["v6"]}, N._exit_underlay(_recW, "wgx-u", 1))
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"] - 1)
+check("[10] a pass later and never answered — or its last handshake older than the move: v4 failed too",
+      N._exit_underlay(_recW, "wgx-u", 0) == N._exit_underlay(_recW, "wgx-u", 400) == {"via": "v4", "failed": ["v6", "v4"]},
+      (N._exit_underlay(_recW, "wgx-u", 0), N._exit_underlay(_recW, "wgx-u", 400)))
+N._EXIT_OFF_V6.clear()
+N._exit_learned_ep = lambda rec, dev: "[%s]:2408" % V6
+N._exit_trace = lambda d: dict(OK)
+N._exit_handshake = lambda rec, dev: 42
+N.reconcile_exits(_w10, {"changed": 0, "errors": []})
+_row10 = next(x for x in N._EXITS["list"] if x["id"] == "c0ffee10")
+check("[10] a healthy exit's row carries no `underlay` (byte-identical to before)", "underlay" not in _row10, _row10)
+N._exit_trace = lambda d: dict(BAD)
+N._exit_handshake = lambda rec, dev: 0
+N.reconcile_exits(_w10, {"changed": 0, "errors": []})
+_row10 = next(x for x in N._EXITS["list"] if x["id"] == "c0ffee10")
+check("[10] a never-answered one dialling v6 carries {via: v6}, read from the pass's dump",
+      _row10.get("underlay") == {"via": "v6"}, _row10)
+N._exit_learned_ep, N._exit_handshake = _real_lep10, _real_hs10
 
 # ── 6. the panel ──────────────────────────────────────────────────────────────────────────────────
 def issues(ks):

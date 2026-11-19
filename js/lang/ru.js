@@ -3538,6 +3538,14 @@ export const STR = {
   // the panel cannot prove it is the network, only that it looks like one.
   "The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.":
     "Туннель поднят, но Cloudflare ни разу не ответил. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: попробуйте вставить свой профиль или перенести этот выход на другую ноду.",
+  // 1.8.12 item 11: the family the tunnel dials — before the node moves it off a silent IPv6, and after
+  "The tunnel is up, but Cloudflare has not answered it over IPv6. Nothing here is yours to correct — the node tries IPv4 by itself.":
+    "Туннель поднят, но Cloudflare не ответил по IPv6. Здесь нечего исправлять — нода сама пробует IPv4.",
+  "The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.":
+    "Туннель поднят, но Cloudflare не ответил ни по IPv6, ни по IPv4. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: попробуйте вставить свой профиль или перенести этот выход на другую ноду.",
+  "It dials over IPv6.": "Подключается по IPv6.",
+  "It got no answer over IPv6, nor over IPv4 since.": "По IPv6 ответа не было, и по IPv4 с тех пор тоже.",
+  "It dials over IPv4 now: IPv6 got no answer.": "Теперь подключается по IPv4: по IPv6 ответа не было.",
   "This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.":
     "Этот выход перестал пропускать трафик, поэтому kill-switch удерживает всё, что через него идёт. Трафик возобновится сам, как только выход снова заработает.",
   "This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.":

@@ -2712,6 +2712,7 @@ EXIT_PROBE_BOUND_S = 40         # a pass waits this long at most for all exit pr
 # Failing, dead, or not judged yet, it is probed every pass, so a failover is not slowed past this first minute.
 EXIT_PROBE_IDLE_S = 60
 EXIT_REDIAL_EVERY_S = 30        # a tunnel carrying nothing re-resolves its endpoint's NAME at most this often (_exit_redial)
+EXIT_SESSION_DEAD_S = 180       # WireGuard's REJECT_AFTER_TIME: a handshake older than this has left no session (_exit_redial)
 
 
 def _dev_link_state(dev):
@@ -12354,6 +12355,7 @@ def _exit_ping(endpoint, timeout=1.5):
 
 _EXIT_REDIAL_AT = {}   # exit DEVICE -> when its endpoint name was last looked up (each probe thread writes only its own)
 _EXIT_RESOLVED = {}    # exit DEVICE -> (when, (host, port, [ip, …])): a probe's answer, waiting for the caller (_exit_redial)
+_EXIT_OFF_V6 = {}      # exit DEVICE -> (the v6 endpoint that got no answer, when, pass) once _exit_redial moved it to v4 (item 11)
 
 
 def _exit_resolve(dev, rec, now=None):
@@ -12387,7 +12389,7 @@ def _exit_resolve(dev, rec, now=None):
     return (host, port, ips)
 
 
-def _exit_redial(dev, rec, found):
+def _exit_redial(dev, rec, found, stale=False):
     """Re-point a tunnel that carries nothing at the address its endpoint NAME has now (`found`, from `_exit_resolve`).
     Returns the new endpoint it was pointed at, or None.
 
@@ -12405,7 +12407,16 @@ def _exit_redial(dev, rec, found):
 
     ⚠️ IN THE CALLER'S THREAD, NOT THE PROBE'S, and only for a peer the device HAS. A probe thread can outlive its pass,
     and `wg set <dev> peer <key> endpoint …` ADDS a peer it does not find — a probe finishing after the next pass
-    rebuilt the device with another profile would have planted the old peer on the new tunnel."""
+    rebuilt the device with another profile would have planted the old peer on the new tunnel.
+
+    ⚠️ A v6 UNDERLAY THAT GETS NO ANSWER MOVES TO v4 (`stale`: the peer has never handshaken, or not for
+    EXIT_SESSION_DEAD_S — 1.8.12 item 11). `wg` resolves the name once and takes the AAAA wherever the box has a v6
+    address and route, whether or not that v6 goes anywhere: a user's node (2026-11-09) dialled every WARP exit over a v6
+    that dropped everything, and msk-main lost its v6 on 2026-11-01 with a WARP exit still dialling it 17 days later. The
+    name still lists the dialled address, so the move above never fires; this one does, to the name's v4 address, once —
+    the never-into-v6 rule means it never moves back, so nothing alternates. Asked in the pass that carried nothing, after
+    the trace and the reach probe both queued packets into the tunnel for ~16 s: a v6 path that works has answered by
+    then, so a fresh exit on such a box handshakes the next pass, before the judge's 30 s ever fail it over."""
     if not found or not rec.get("peer_key"):
         return None
     host, port, ips = found
@@ -12423,18 +12434,22 @@ def _exit_redial(dev, rec, found):
     if live is None:
         return None                                  # no CLI answered, or not this device's peer: `set` would ADD it
     live_ip = live.rpartition(":")[0].strip("[]")
-    if live_ip in ips:
-        return None                                  # it already dials what the name says: the far side is just down
-    # ⚠️ THE FAMILY IT WAS DIALLING, OR v4 — NEVER INTO v6. A DDNS name caught mid-update may answer AAAA alone; a v4
-    # tunnel moved onto it on a node without a v6 underlay stays dead, and then reads as "current" for ever. v4 is the
-    # one family every node has, so a v6 tunnel whose name lost its AAAA may fall back to it; nothing else changes family.
     _v6 = lambda a: ":" in a
     try:
         fam = _v6(str(ipaddress.ip_address(live_ip)))
     except ValueError:
         fam = None                                   # "(none)": no endpoint at all — any v4 will do
-    ip = (next((a for a in ips if _v6(a) == fam), None) if fam is not None else None) \
-        or next((a for a in ips if not _v6(a)), None)
+    off6 = bool(stale) and fam is True               # a v6 underlay with no session: to the name's v4 (docstring)
+    if off6:
+        ip = next((a for a in ips if not _v6(a)), None)
+    elif live_ip in ips:
+        return None                                  # it already dials what the name says: the far side is just down
+    else:
+        # ⚠️ THE FAMILY IT WAS DIALLING, OR v4 — NEVER INTO v6. A DDNS name caught mid-update may answer AAAA alone; a v4
+        # tunnel moved onto it on a node without a v6 underlay stays dead, and then reads as "current" for ever. v4 is the
+        # one family every node has, so a v6 tunnel whose name lost its AAAA may fall back to it; nothing else changes family.
+        ip = (next((a for a in ips if _v6(a) == fam), None) if fam is not None else None) \
+            or next((a for a in ips if not _v6(a)), None)
     if ip is None:
         return None
     fresh = ("[%s]:%s" if _v6(ip) else "%s:%s") % (ip, port)
@@ -12449,8 +12464,12 @@ def _exit_redial(dev, rec, found):
         _EXIT_EP_IP[host] = (time.time(), _v4)
     else:
         _EXIT_EP_IP.pop(host, None)
-    log(LOG_INFO, "exit device %s: %s now resolves to %s (the tunnel was dialling %s) — re-pointed",
-        dev, host, fresh, live)
+    if off6:
+        _EXIT_OFF_V6[dev] = (live, time.time(), _LOOP["n"])
+        log(LOG_WARNING, "exit device %s: no answer over IPv6 from %s — re-pointed to %s over IPv4", dev, live, fresh)
+    else:
+        log(LOG_INFO, "exit device %s: %s now resolves to %s (the tunnel was dialling %s) — re-pointed",
+            dev, host, fresh, live)
     return fresh
 
 
@@ -12505,7 +12524,8 @@ def _exit_handshake(rec, dev):
 
 def _exit_learned_ep(rec, dev):
     """The endpoint WireGuard learned for a dial-in exit's peer — the router's NAT address, from its last valid packet —
-    or "" before it has dialled. Read from the pass's dump (`_dump_of`, cached), asked the way `_exit_handshake` asks."""
+    or "" before it has dialled. Read from the pass's dump (`_dump_of`, cached), asked the way `_exit_handshake` asks.
+    For an exit this node DIALS, the same field is the address it dials now (_exit_underlay, item 11)."""
     for cmd in _exit_clis(rec, dev):
         r = _dump_of(cmd, dev)
         if getattr(r, "returncode", 1) != 0:
@@ -12515,6 +12535,28 @@ def _exit_learned_ep(rec, dev):
                 return f[2]
         return ""
     return ""
+
+
+def _exit_underlay(rec, dev, hs):
+    """The row's `underlay` (1.8.12 item 11): {"via": "v4"|"v6"[, "failed": ["v6"[, "v4"]]]} — the family the tunnel dials,
+    and the ones that got no answer — only while its peer has never answered (`hs` 0) or once _exit_redial moved it off v6,
+    so a healthy exit's row is what it always was. None otherwise. Any transport that dials an address can report through it.
+    v4 counts as failed only once a pass AFTER the move went by with no handshake since it: in the move's own pass v4 has
+    not been tried, and the row would have said "neither family answered" about a tunnel that handshook seconds later.
+    A moved tunnel dials v4 (it never moves back); an unmoved one is read from the pass's dump — no fork, and nothing at all
+    for a peer that has answered."""
+    moved = _EXIT_OFF_V6.get(dev)
+    if moved:
+        # "no handshake since the move": its age is whole seconds and floored at 1, so 2 s of slack — the one before the
+        # move was at least EXIT_SESSION_DEAD_S old (rig 2026-11-19: a v4 handshake 0.8 s after the move read as before it)
+        v4dead = _LOOP["n"] > moved[2] and hs is not None and (hs == 0 or hs > time.time() - moved[1] + 2)
+        return {"via": "v4", "failed": ["v6", "v4"] if v4dead else ["v6"]}
+    if hs != 0:
+        return None
+    try:
+        return {"via": "v%d" % ipaddress.ip_address(_exit_learned_ep(rec, dev).rpartition(":")[0].strip("[]")).version}
+    except ValueError:
+        return None
 
 
 _EXIT_TLS = {"ctx": None, "at": 0.0}    # the exit traces' TLS context and when it was built — see _exit_tls
@@ -12915,6 +12957,8 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
     _slots = []                                  # live devices awaiting their probe: (slot in out, xid, dev, prov, rec, err, blob_err)
     def _exit_row(xid, dev, prov, rec, err, _blob_err, _live, tr, _hl, ping):
         # ONE shape for every exit that reached its health step, judged now or after the loop (4b).
+        _hs = _exit_handshake(rec, dev) if _live and prov != "socks5" else None
+        _ul = _exit_underlay(rec, dev, _hs) if _live and prov != "socks5" and not _exit_dialin(rec) else None
         return {"id": xid, "device": dev, "provider": prov, "up": _live,
                     # Present only while the node is routing around this tunnel, so its presence alone is the
                     # fact the panel shows; an older node never sends it and the row reads as it always did.
@@ -12938,7 +12982,9 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     # nothing; see _exit_handshake. Reported unconditionally so the panel can tell "never"
                     # (0) from "a while ago" from "this node is too old to say" (absent).
                     # (a SOCKS exit is a TUN with no peer to handshake with: never asked — and never forks for it, §12.2 item 5)
-                    "handshake": (_exit_handshake(rec, dev) if _live and prov != "socks5" else None),
+                    "handshake": _hs,
+                    # the family the tunnel dials, while its peer never answered or after the node moved it off v6 (item 11)
+                    **({"underlay": _ul} if _ul else {}),
                     # How far away the exit's own server is — the hop the tunnel rides on. See _exit_ping
                     # for why this, and not the through-tunnel request time beside it in `trace`.
                     "ping_ms": (ping if _live else None),
@@ -13228,6 +13274,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 # scratch rather than inheriting the verdict of the one it replaces.
                 _EXIT_HEALTH.pop(dev, None)
                 _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)
+                _EXIT_OFF_V6.pop(dev, None)            # what `wg` dials is picked afresh at `up`
                 # An AmneziaWG 3.1 profile on a datapath or tools older than 3.1 is never brought up: the 3.x keys are
                 # refused at `up` or ignored, and an ignored HeaderProtectionKey is a green device the far side never
                 # answers. The panel refuses such a paste; this is the floor for a node that changed after it.
@@ -13274,7 +13321,8 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 tr, _rch, _png = _pr.get(dev) or ({}, None, None)
                 _got = _EXIT_RESOLVED.pop(dev, None)   # a lookup's answer, from this pass's probe or a late one
                 if _got and not (tr or {}).get("ip") and _rch is not True and time.time() - _got[0] < 2 * EXIT_REDIAL_EVERY_S:
-                    _exit_redial(dev, rec, _got[1])
+                    _hs = _exit_handshake(rec, dev)    # the same dump: never, or no session left → a v6 underlay goes v4
+                    _exit_redial(dev, rec, _got[1], stale=_hs is not None and (_hs == 0 or _hs > EXIT_SESSION_DEAD_S))
                 _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
             else:
                 _sv = _s5x_take(dev, res, sig=rec.get("started"))
@@ -13358,7 +13406,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             if od and (_dev_link_state(od) != "absent" or old.get("provider") == "socks5"):
                 _exit_down(od, dict(old, id=_stem))   # a SOCKS unit mid-back-off has no device, and is stopped all the same
             if od and od not in _held:                # T9: its verdict and lookup history go with it (a name reused later
-                for _m in (_EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT):   # starts from scratch)
+                for _m in (_EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT, _EXIT_OFF_V6):   # starts from scratch)
                     _m.pop(od, None)
             for p2 in (os.path.join(EXIT_DIR, fn), os.path.join(EXIT_DIR, od + ".conf") if od else ""):
                 if p2:

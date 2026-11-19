@@ -3692,7 +3692,16 @@ export function exitHealth(x, node) {
   // one means the exit could not be built, this one means it was built and carried nothing.
   // …and while the node routes around it, the reason it gave for that (a SOCKS exit's is the proxy's own words — review F14)
   const probe = String(((l.no_traffic || {}).why) || (l.trace || {}).err || "").trim();
-  const said = t => probe ? t + " " + T("The node reports: {v1}", { v1: probe }) : t;
+  // The family the tunnel dials (1.8.12 item 11), sent only while its peer has never answered or once the node moved it
+  // off an IPv6 that got no answer — so a healthy row, and every row from an older node, reads exactly as before.
+  const ul = l.underlay && typeof l.underlay === "object" ? l.underlay : null;
+  // `failed` gains "v4" only once IPv4 has had its turn since the move, so "neither answered" is never said too early.
+  const ulOff6 = !!ul && Array.isArray(ul.failed) && ul.failed.includes("v6");
+  const ulBoth = ulOff6 && ul.failed.includes("v4");
+  const ulSay = !ul ? "" : ulBoth ? T("It got no answer over IPv6, nor over IPv4 since.")
+    : ulOff6 ? T("It dials over IPv4 now: IPv6 got no answer.")
+    : ul.via === "v6" && l.handshake === 0 ? T("It dials over IPv6.") : "";
+  const said = (t, fam) => [t, fam ? "" : ulSay, probe ? T("The node reports: {v1}", { v1: probe }) : ""].filter(Boolean).join(" ");
   if (!l.up) return { state: "down", tone: "warn", dot: "down",
                       why: said(T("The node reports this device is not up.")) };
   // ⚠️ A DIAL-IN EXIT WAITS FOR THE ROUTER, and the sentences below are written for a server we dial — "check the
@@ -3745,12 +3754,19 @@ export function exitHealth(x, node) {
   // and 0 In, while ICMP to the same address answered in 13 ms and the WARP API answered over HTTPS —
   // a network that drops WARP's datapath and nothing else. The same code on msk-main handshakes fine
   // (over IPv6). Nothing on that node was misconfigured and nothing on that screen could have fixed it.
+  // …and blaming the network for blocking WARP fits only once there is no other family to try: a box whose IPv6 goes
+  // nowhere looked exactly like this too (item 11), and the node now moves such a tunnel to IPv4 by itself.
+  const warp = (ex.provider || "warp") === "warp", warpV6 = warp && !!ul && !ulBoth && (ulOff6 || ul.via === "v6");
   if (l.handshake === 0 && !(l.trace || {}).ip) return { state: "nohandshake", tone: "warn", icon: "warn", dot: "down",
-    why: said((ex.provider || "warp") === "warp"
+    why: said(warpV6
+      ? T("The tunnel is up, but Cloudflare has not answered it over IPv6. Nothing here is yours to correct — the node tries IPv4 by itself.")
+      : warp && ulBoth
+      ? T("The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.")
+      : warp
       ? T("The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.")
       : l.awg
       ? T("The device is up, but this peer has never answered. Check the endpoint, the keys, and that the server really is AmneziaWG with these exact obfuscation values.")
-      : T("The device is up, but this peer has never answered. Check the endpoint and the keys — and if the server is AmneziaWG, its profile must be pasted with its obfuscation lines intact.")) };
+      : T("The device is up, but this peer has never answered. Check the endpoint and the keys — and if the server is AmneziaWG, its profile must be pasted with its obfuscation lines intact."), warp && !!ul) };
   // ⚠️ NO `unproven` STATE HERE, and the reason is worth keeping. The first fix for "green with no IP and no
   // latency" warned whenever an imported exit had no trace — but the trace is a request to cloudflare.com,
   // so a node whose egress is firewalled to specific destinations would have a perfectly good tunnel and a
@@ -3759,7 +3775,7 @@ export function exitHealth(x, node) {
   // It now asks by what the device IS and falls back to the other tool, so `handshake` is answerable for any
   // device that exists, and the `=== 0` test above catches the reported case without inventing a second one.
   return { state: "ok", tone: "", dot: "up", why: exitIsDialin(ex) && l.endpoint
-    ? T("Up on the node. The router connects from {v1}.", { v1: l.endpoint }) : T("Up on the node.") };
+    ? T("Up on the node. The router connects from {v1}.", { v1: l.endpoint }) : ulSay ? T("Up on the node.") + " " + ulSay : T("Up on the node.") };
 }
 
 /** The one marker for an exit's health. Three screens rendered this by hand and all three hardcoded the
