@@ -13385,7 +13385,15 @@ def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
     node sent it back and it bounced until its TTL ran out (DEVICE-ACCESS P0 K5; the exit node refuses it since
     e3b0d65). Every other interface reaches its neighbours through `main`; this gives forward ones the same.
     Only a subnet `main` routes on that device now: a route to a device that is gone cannot be installed, and one
-    that fails every pass would read as drift for ever. Read from /proc, no fork."""
+    that fails every pass would read as drift for ever. Read from /proc, no fork.
+
+    ⚠️ …AND THE BOX'S OWN DOCKER NETWORKS ARE "THE INTERNET" TOO (1.8.12 item 6, a user's report 2026-11-08). A published
+    container — a Docker master's panel, swg-sub, a site — is reached at the node's public IP, and Docker DNATs that to its
+    172.x before routing, so the client's packet asked T and left by the exit: the panel stopped loading for every client of
+    an interface with an exit. Every connected route `main` holds on a Docker bridge (`docker*`, `br-*`: the names
+    `_NODE_ADDR_SKIP` keeps out of the LAN list) goes in beside the client subnets, so it reaches the bridge as it does from
+    `main` (reproduced and proven on .campaign/rigs/docker-exit-hairpin.sh). A route, not a rule: nothing new on the rule
+    walk every routed packet does."""
     want = []
     for ifn in sorted((node_cfg or {}).get("interfaces") or {}):
         s = _iface_subnet(node_cfg, ifn)
@@ -13405,16 +13413,18 @@ def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
             rows = f.read().splitlines()[1:]
     except OSError:
         return []
-    live = set()
+    live, dock = set(), set()
     for line in rows:
         t = line.split()
         if len(t) < 8:
             continue
         with contextlib.suppress(ValueError):
             d, m = int(t[1], 16), int(t[7], 16)
-            live.add((t[0], "%d.%d.%d.%d/%d" % (d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF,
-                                                bin(m).count("1"))))
-    return sorted({(s, dev) for s, dev in want if s and (dev, s) in live})
+            p = "%d.%d.%d.%d/%d" % (d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF, bin(m).count("1"))
+            live.add((t[0], p))
+            if t[0].startswith(("docker", "br-")) and m and not int(t[2], 16) and not int(t[3], 16) & 0x2:
+                dock.add((p, t[0]))                    # connected (no gateway, not RTF_GATEWAY), never a default
+    return sorted({(s, dev) for s, dev in want if s and (dev, s) in live} | dock)
 
 
 def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_conn=None, panel_cfg=None, nets=()):
@@ -13633,7 +13643,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # goes into every table that serves a client subnet, more specific than that table's default. A kill-switch
     # table too: a dead exit should fail the INTERNET closed, not the office LAN. Not `exit_` tables — those carry
     # other nodes' clients, and a network is reached from its own node (D12). Empty when there are none (D1).
-    # The node's own client subnets go in beside them, for the same reason (`_cascade_local_routes`) — except one
+    # The node's own client subnets and Docker networks go in beside them, for the same reason (`_cascade_local_routes`) — except one
     # spelled like another node's exit subnet: an exit table can share a number with a smart one, and `replace`
     # would take that route over.
     _tbls = sorted({str(e["table"]) for e in fwd + smart_exit} | {str(e["table"]) for e in _dxguard})

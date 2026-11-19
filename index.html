@@ -179,15 +179,33 @@
       if (href) names.push(href.split("?")[0]);
     }
     if (!names.length) return;
-    var missing = [], done = 0;
+    var missing = [], silent = 0, done = 0;
     for (var j = 0; j < names.length; j++) (function (n) {
       var r = new XMLHttpRequest();
       // GET, not HEAD: the panel is a stdlib BaseHTTPRequestHandler and answers HEAD with 501, which would
       // make every module look missing. Small files, and we are already in the failed state.
       r.open("GET", n, true);
+      /* No answer at all is not a missing file. Status 0 — a timeout, a refused or dropped connection — means the
+         request never reached the panel or its answer never came back: a route, a VPN, a firewall. 1.8.12 item 6: an
+         exit on the VPN interface this device used sent its packets for the panel away, and this screen told the user to
+         re-run an update that was never broken. 15 s, so a slow link that does answer is still counted as answering. */
+      r.timeout = 15000;
       r.onloadend = function () {
-        if (r.status !== 200) missing.push(n);
+        if (r.status !== 200) { missing.push(n); if (!r.status) silent++; }
         if (++done !== names.length) return;
+        if (missing.length && silent === missing.length) {
+          var hd = document.getElementById("swg-boot-head"), fx = document.getElementById("swg-boot-fix");
+          if (hd) hd.innerHTML = "<b>The panel's files didn't arrive.</b>";
+          if (fx) fx.innerHTML = "";
+          el.innerHTML = (missing.length === names.length ? "None of the " + names.length + " files"
+                            : missing.length + " of the " + names.length + " files") +
+            " the interface is built from answered when asked again (each waited 15 seconds). Nothing says the " +
+            "install is damaged: the connection between this device and the panel is failing — a route, a VPN " +
+            "tunnel or a firewall on the way. If this device reaches the panel through one of the panel's own VPN " +
+            "interfaces, an exit or a routing rule on that interface may be sending it elsewhere: try another " +
+            "connection.";
+          return;
+        }
         if (missing.length) {
           el.innerHTML = "Of the " + names.length + " files the interface is built from, <b>" +
             missing.length + "</b> did not load:<br><code>" +
@@ -230,11 +248,11 @@
         "install is fine — open the panel in a newer browser.<br><br>" +
         "<i>Your subscription page is unaffected; clients on older devices keep working.</i>"
       : "<span id='swg-boot-head'><b>The panel's files didn't load.</b></span><br>" +
-        "<span id='swg-boot-which'>The interface is served from ~22 module files; one is missing or " +
-        "damaged, which usually means an interrupted update.</span><br><br>" +
-        "Re-run the update on the panel host:<br>" +
+        "<span id='swg-boot-which'>The interface is served from ~22 module files, and at least one did " +
+        "not arrive. Checking which…</span><br><br>" +
+        "<span id='swg-boot-fix'>If files are missing, re-run the update on the panel host:<br>" +
         "<code>sudo swg-update</code> &nbsp;or&nbsp; <code>cd /root/swg-panel &amp;&amp; sudo ./update.sh</code>" +
-        "<br><br><button type='button' id='swg-boot-retry'>Reload</button>";
+        "<br><br></span><button type='button' id='swg-boot-retry'>Reload</button>";
     view.innerHTML = "";        // drop the "connecting…" placeholder — it is all that is in here
     view.appendChild(h);
     var b = document.getElementById("swg-boot-retry");

@@ -79,6 +79,9 @@ if INTENT:
     PANEL = _tmp
 
 N, P = _load(NODED, "swgnoded"), _load(PANEL, "swgpanel")
+# Hermetic: the host's own /proc/net/route is not this test's subject. A host running Docker hands `_cascade_local_routes` its
+# bridges (1.8.12 item 6), which the fake kernel below cannot install, and the settle checks then read drift that is the host's.
+N._cascade_local_routes = lambda cfg, _proc=None: []
 if INTENT:
     os.unlink(PANEL)
 

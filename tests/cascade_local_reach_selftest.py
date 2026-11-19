@@ -13,11 +13,15 @@ The fix puts each client subnet `main` routes into every table serving a client 
   [3] ⚠️ every route installed into a band table is SIGNED. `_cascade_live_sig` reads every route in those tables; one
       the want-set lacks is drift for ever — the whole band flushed and rebuilt on every sync.
   [4] a node with no forward/smart/kill-switch table does not read them at all.
+  [5] the box's own Docker networks go in too (1.8.12 item 6): every connected route `main` holds on a `docker*` / `br-*`
+      bridge — a published container (a Docker master's panel) is DNATed to its 172.x before routing, and T's default
+      sent it into the exit. Not a gatewayed route on one, not a default, not a bridge Docker did not name (a LAN).
 
 Hermetic: `run()` is a recorder, /proc/net/route is a temp file, the WDTT/csqtt stores are stubs.
 
 Run: python3 tests/cascade_local_reach_selftest.py            (0 = pass)
      --perturb   the want signature leaves the local routes out (installed but unsigned) and expects RED on [3].
+     --perturb-docker   the Docker bridges' routes are not collected and expects RED on [5].
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -25,6 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PERTURB_DOCKER = "--perturb-docker" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -32,6 +37,12 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
+if PERTURB_DOCKER:
+    _src = open(NODED).read()
+    _a = "                dock.add((p, t[0]))"
+    assert _src.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    NODED = os.path.join(tempfile.mkdtemp(prefix="cascade-local-p-"), "swg-noded")
+    open(NODED, "w").write(_src.replace(_a, "                pass"))
 _l = importlib.machinery.SourceFileLoader("swgnoded", NODED)
 N = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgnoded", _l))
 try:
@@ -52,7 +63,8 @@ def hexle(dotted):
     a = [int(x) for x in dotted.split(".")]
     return "%02X%02X%02X%02X" % (a[3], a[2], a[1], a[0])
 def row(dev, dst, mask, gw="0.0.0.0"):
-    return "%s\t%s\t%s\t0001\t0\t0\t0\t%s\t0\t0\t0" % (dev, hexle(dst), hexle(gw), hexle(mask))
+    return "%s\t%s\t%s\t%s\t0\t0\t0\t%s\t0\t0\t0" % (dev, hexle(dst), hexle(gw), "0003" if gw != "0.0.0.0" else "0001",
+                                                         hexle(mask))
 
 print("\n[1] _cascade_local_routes lists every kind of client tunnel, and nothing else")
 CFG = {"interfaces": {"wg0": {"conf": conf("wg0", "10.8.0.1/24")},
@@ -78,7 +90,8 @@ with open(proc, "w") as f:
 got = N._cascade_local_routes(CFG, _proc=proc)
 want = [("10.10.0.0/24", "csqtt1"), ("10.11.0.0/24", "wdtt1"), ("10.12.0.0/24", "wdttraw1"),
         ("10.28.0.0/24", "wg9"), ("10.8.0.0/24", "wg0")]
-check("exactly wg0, wg9 (its IPv4 entry), wdtt1, its RAW TUN and csqtt1", got == want, got)
+if not PERTURB_DOCKER:
+    check("exactly wg0, wg9 (its IPv4 entry), wdtt1, its RAW TUN and csqtt1", got == want, got)
 check("an unreadable table lists nothing (never raises)", N._cascade_local_routes(CFG, _proc=os.path.join(TMP, "nope")) == [])
 
 print("\n[2] the rebuild installs them into forward, smart and kill-switch tables — never an exit table")
@@ -147,6 +160,33 @@ print("\n[4] a node with no forward/smart/kill-switch table does not read them")
 routes = lowered({"forward": [], "exit": EXIT, "devexit": []}, None)
 check("not consulted", LOOKUPS == [], LOOKUPS)
 check("no local route issued", not any(c[3] in ("10.8.0.0/24", "10.28.0.0/24") for c in routes), routes)
+
+print("\n[5] the box's own Docker networks go in beside them (1.8.12 item 6)")
+proc5 = os.path.join(TMP, "route5")
+with open(proc5, "w") as f:
+    f.write("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n" + "\n".join([
+        row("eth0", "0.0.0.0", "0.0.0.0", "192.0.2.1"),
+        row("wg0", "10.8.0.0", "255.255.255.0"),
+        row("docker0", "172.17.0.0", "255.255.0.0"),
+        row("br-0a1b2c3d4e5f", "172.18.0.0", "255.255.0.0"),
+        row("br-0a1b2c3d4e5f", "10.99.0.0", "255.255.255.0", "172.18.0.9"),   # gatewayed: not the bridge's own network
+        row("docker0", "0.0.0.0", "0.0.0.0"),                                # a default on a bridge: never
+        row("br0", "192.168.7.0", "255.255.255.0"),                          # a bridge Docker did not name: a LAN, §4.2's
+    ]) + "\n")
+_l5 = importlib.machinery.SourceFileLoader("swgnoded5", NODED)
+N2 = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgnoded5", _l5))
+try:
+    _l5.exec_module(N2)
+except SystemExit:
+    pass
+N2._wdtt_load = lambda: {}
+N2._csqtt_load = lambda: {}
+got5 = N2._cascade_local_routes({"interfaces": {"wg0": {"conf": conf("wg0b", "10.8.0.1/24")}}}, _proc=proc5)
+check("docker0's and the compose bridge's networks, beside wg0 — and nothing else of theirs",
+      got5 == [("10.8.0.0/24", "wg0"), ("172.17.0.0/16", "docker0"), ("172.18.0.0/16", "br-0a1b2c3d4e5f")], got5)
+check("…and none on a box without Docker (byte-identical)",
+      N2._cascade_local_routes({"interfaces": {"wg0": {"conf": conf("wg0c", "10.8.0.1/24")}}}, _proc=proc) ==
+      [("10.8.0.0/24", "wg0")])
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

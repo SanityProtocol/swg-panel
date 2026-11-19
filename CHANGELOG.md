@@ -126,6 +126,12 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **An exit no longer cuts a VPN interface's clients off the panel and other containers on a Docker node.** Docker
+  hands a published container's traffic to its own internal network before routing, and an interface with an exit sent
+  that traffic out of the exit, so a Docker master's panel (and the subscription page, or any other published container
+  on the box) stopped loading for that interface's clients. The node now routes its Docker networks directly, beside its
+  own client subnets. And when the panel's files get no answer at all, its loading screen now says the connection is
+  failing instead of blaming an interrupted update.
 - **WARP and WireGuard exits come up on Ubuntu 25.04 and later.** From 25.04, Ubuntu limits `wg-quick` to configs in
   /etc/wireguard, and a node keeps its exits' configs elsewhere (they survive a Docker container being recreated), so
   every such exit failed with "wg-quick: … exits/….conf: Permission denied". Install and Update now add a read-only rule
