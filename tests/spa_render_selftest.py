@@ -152,8 +152,8 @@ PERTURBATIONS = {
     "csqclick": ("js/turn.js", " || clickNow !== clickKey.current || !!lineDirty;", ";"),
     "arxnoop": ("js/turn.js", "const key = JSON.stringify(arxEntry(sel, own, ar));", "const key = JSON.stringify([sel, own, own ? arBody(ar) : null]);"),
     # [B18]: the dial-in sheet offers "Connect from" (a source for an exit that dials nothing), as a dial-out one does
-    "dialsrc": ("js/screen-settings.js", '      ${isDialin || isSocks ? null : html`<div class="field"><label>${T("Connect from")}</label>',
-                '      ${false ? null : html`<div class="field"><label>${T("Connect from")}</label>'),
+    "dialsrc": ("js/screen-settings.js", '      ${isDialin || isSocks || fill ? null : html`<div class="field"><label>${T("Connect from")}</label>',
+                '      ${fill ? null : html`<div class="field"><label>${T("Connect from")}</label>'),
     # [B18]: the edit box prints a dial-in profile as a dial-out one (`Endpoint = `), as it did before 1.8.11
     "dinbox": ("js/screen-settings.js", '  const din = !!p.listen_port && !p.endpoint;', '  const din = false;'),
     # [B18] (S9c): the dial-in row has no QR button; Generate keeps nothing

@@ -57,7 +57,7 @@ PLANTS = {   # name: (file, old text, planted text) — each re-introduces a def
     "wire-allnodes": ("panel", 'if a.version == 4 and (t.get("node") == node_id or any(', 'if a.version == 4 and (True or any('),
     "arr-any-origin": ("panel", 'any(o == t.get("node") and a in n for n, o in arr)', 'any(a in n for n, o in arr)'),
     "arr-ignored":  ("panel", 'any(o == t.get("node") and a in n for n, o in arr)', 'False'),
-    "arr-dup":      ("panel", 'for S, vs in vias.items() if len(vs) == 1 and next(iter(vs)) in by_dev)', 'for S, vs in vias.items() if next(iter(vs)) in by_dev)'),
+    "arr-dup":      ("panel", '            if len(os_) == 1:\n                out.append((S, next(iter(os_))))', '            if os_:\n                out.append((S, next(iter(os_))))'),
     "arr-unwired":  ("panel", 'p2p_routers_cached(_rmark, roster, _rid, lambda: p2p_arrivals(node, my_plan, nodes if _fo_pairs else None), slot=nid)', 'p2p_routers_cached(_rmark, roster, _rid, slot=nid)'),
     "arr-always":   ("panel", '        if not anyr[1]:\n            return []\n        arrivals = arrivals()', '        arrivals = arrivals()'),
     "cache-noarr":  ("panel", '    key = (mark, node_id, tuple(arrivals))', '    key = (mark, node_id)'),

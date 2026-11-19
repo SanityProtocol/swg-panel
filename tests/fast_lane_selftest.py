@@ -125,7 +125,8 @@ PLANTS = {
     "bareone": ("[1]", NODED, """(?:\\{([^}]*)\\}|"([^"]+)")""", """\\{([^}]*)\\}()"""),
     "hotplug": ("[2]", NODED, "(cur[1] - prev[1]) if cur and prev and cur[1] > prev[1] else None",   # round 1's reading
                 "max(1, cur[1] - prev[1]) if cur and prev else None"),
-    "flagopen": ("[1] [5]", NODED, "        if r.returncode != 0 and not _nft_absent(r):", "        if False:"),
+    "flagopen": ("[1] [5]", NODED, '        r = run(["nft", "list"] + what)\n        if r.returncode != 0 and not _nft_absent(r):',
+                 '        r = run(["nft", "list"] + what)\n        if False:'),
     "snapcpu": ("[2]", NODED, '        cpu = 100.0 * (cur[0] - prev[0]) / (cur[1] - prev[1]) if cur and prev and cur[1] > prev[1] else None',
                 '        cpu = ((snap or {}).get("health") or {}).get("cpu_pct")'),
     "panelpub": ("[8]", PANEL, '                        "fast_lane": c.get("fast_lane", FAST_LANE_DEFAULT),   # the fast lane\'s start (D3): published, as log_mb\n', ""),
