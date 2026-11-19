@@ -30,6 +30,7 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/arrival_nft_selftest.py   (
      t2   the TTL swap forgets `sa` (the whole batch is refused on an IP-learning change)
      reap `sa` is left behind when the arrivals go
      t34  Kernel SNI: no closing RETURN for arrivals (every guarded-out connection is reset for ever)
+     dock `cln` takes this node's Docker networks too (another node's client to a container's 172.x stops being marked)
      kog  Kernel SNI: no origin guard
      ash  arrival rules ignore their shadow sets (a local rule's narrower name takes the arrival rule's hosts, T36)
      rf   an arrival set emptied from outside is never refilled (review #7)
@@ -76,6 +77,8 @@ PLANTS = {
     "rf": ("""            if sn not in have_sets or _ARR_SETS.get(sn) != msig or (mem and not _t["counts"].get(sn, 0)):""",
            """            if sn not in have_sets or _ARR_SETS.get(sn) != msig:"""),
     "ash": ("""                for c2 in [c] + ash_of.get(i, []):""", """                for c2 in [c]:"""),
+    "dock": ('''             "cln": _collapse4([p for p, _d in _cascade_local_routes(node_cfg) if not _d.startswith(_DOCKER_BRIDGES)]''',
+             '''             "cln": _collapse4([p for p, _d in _cascade_local_routes(node_cfg)]'''),
     "dd": ('''               "@arr" if (e.get("subnet") or "") in _arr_raw else (e.get("subnet") or ""))''',
            '''               e.get("subnet") or "")'''),
 }
@@ -320,7 +323,7 @@ for fn in ("_ensure_fwd_iptables", "_ensure_sni_router", "_ensure_smart_xtstring
            "_smart_load_cidrs", "_panel_list_refresh", "_apply_routing_reset", "_smart_domain_refresh"):
     setattr(N, fn, (lambda *a, **k: ({}, {})) if fn == "_smart_domain_refresh" else (lambda *a, **k: None))
 N.run = lambda a, input_text=None, timeout=20: __import__("subprocess").CompletedProcess(a, 0, "", "")
-N._cascade_local_routes = lambda cfg, _proc=None: [("10.9.0.0/24", "wg0")]
+N._cascade_local_routes = lambda cfg, _proc=None: [("10.9.0.0/24", "wg0"), ("172.17.0.0/16", "docker0")]
 subs = ["10.%d.0.0/24" % i for i in range(40, 70)]
 dxl = [{"subnet": s_, "dev": "wgx0", "table": 7000, "killswitch": True, "scope": "rule", "egress_ip": "", "gw": ""} for s_ in subs]
 dxl += [{"subnet": "10.9.0.0/24", "dev": "wgx0", "table": 7000, "killswitch": True, "scope": "rule", "egress_ip": "", "gw": ""}]
@@ -337,12 +340,14 @@ check("the legs handed to the chain are this node's mesh links as the NODE judge
       sorted((cap.get("arrivals") or {}).get("legs") or []) == ["lnk7", "swg_n"], cap.get("arrivals"))
 check("…and `cln` holds its client subnets and the exit subnets it holds for other nodes",
       {"10.9.0.0/24", "10.40.0.0/24"} <= set((cap.get("arrivals") or {}).get("cln") or []), (cap.get("arrivals") or {}).get("cln"))
+check("…but not its Docker networks: an arrival to a container's own 172.x is marked as before (1.8.12 item 6, review F2)",
+      "172.17.0.0/16" not in ((cap.get("arrivals") or {}).get("cln") or []), (cap.get("arrivals") or {}).get("cln"))
 
 if PLANT:
     want = {"cln": "OWN client is never marked", "cc": "counted at their origin", "og": "origin guard (T28)",
             "lg": "as the NODE judges them", "t35": "ESTABLISHED arrival packet", "t2": "IP-learning change with arrivals",
             "reap": "`sa` and its sets are gone", "t34": "UNGUARDED RETURN", "kog": "`! -i <leg>`",
-            "dd": "ONE entry, flagged", "rf": "review #7", "ash": "via the shadow"}[PLANT]
+            "dd": "ONE entry, flagged", "dock": "not its Docker networks", "rf": "review #7", "ash": "via the shadow"}[PLANT]
     hit = [f for f in FAILS if want in f]
     print("\nPLANT %s: %s" % (PLANT, "CAUGHT — " + " · ".join(hit[:2]) if hit else "NOT CAUGHT (the check passed with the defect in)"))
     sys.exit(0 if hit else 1)

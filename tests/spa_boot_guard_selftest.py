@@ -10,6 +10,8 @@ problem; only an HTTP error is a missing file.
       the browser's cache — one of those that hangs blocks the parser before the guard, and the page stays blank; backlog):
       after the 10 s backstop and the probes' 15 s timeout the screen says the files did not arrive, names the connection (and a VPN interface's exit or rule), and no longer tells the
       user to re-run the update.
+  [1b] only one module hangs, the rest answer: it says that ONE file of the set got no answer (review F1: it said the
+      failed files were the ones that "answered").
   [2] the control — one module answers 404 (the interrupted-update case): the screen names that file and keeps the update
       advice.
 
@@ -73,7 +75,7 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(HTML)
             return
-        if MODE["m"] == "hang" and path.lstrip("/") in MODULES:
+        if (MODE["m"] == "hang" and path.lstrip("/") in MODULES) or (MODE["m"] == "part" and path == "/js/util.js"):
             STOP.wait(90)                              # never answers while the test looks: the route case
             return
         if path == "/js/util.js":
@@ -130,6 +132,11 @@ try:
           and "an exit or a routing rule" in t, t)
     check("it no longer tells the user to re-run the update", "re-run the update" not in t.lower()
           and "interrupted" not in t, t)
+
+    print("\n[1b] one module never answers, the rest do: that one is named as getting no answer")
+    t = screen("part", 45)
+    check("it says 1 of the files got no answer — not that it answered", "files didn't arrive" in t
+          and re.search(r"\b1 of the \d+ files the interface is built from got no answer", t) is not None, t)
 
     print("\n[2] the control: one module answers 404 — that is a missing file, and the update advice stays")
     t = screen("404", 30)

@@ -13375,10 +13375,13 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                        if isinstance(x, dict) and x.get("provider") == "socks5" and not x.get("paused")}
 
 
+_DOCKER_BRIDGES = ("docker", "br-")   # the bridge names Docker gives its networks (also in _NODE_ADDR_SKIP)
+
+
 def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
     """[(subnet, dev)] — this node's OWN client subnets as `main` routes them right now: each client interface, each
-    WDTT instance and its RAW TUN, each csqtt instance. `reconcile_cascade` puts them beside the networks (§4.2) in
-    every table serving a client subnet.
+    WDTT instance and its RAW TUN, each csqtt instance — and its Docker bridges' networks (below). `reconcile_cascade`
+    puts them beside the networks (§4.2) in every table serving a client subnet.
 
     ⚠️ WITHOUT THEM A NEIGHBOUR ON THE SAME NODE IS "THE INTERNET". `from S lookup T` holds `default dev <leg>` and
     nothing else, so a forward-mode client's packet to another client of its own node went out the leg — the exit
@@ -13422,8 +13425,8 @@ def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
             d, m = int(t[1], 16), int(t[7], 16)
             p = "%d.%d.%d.%d/%d" % (d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF, bin(m).count("1"))
             live.add((t[0], p))
-            if t[0].startswith(("docker", "br-")) and m and not int(t[2], 16) and not int(t[3], 16) & 0x2:
-                dock.add((p, t[0]))                    # connected (no gateway, not RTF_GATEWAY), never a default
+            if t[0].startswith(_DOCKER_BRIDGES) and m and not int(t[2], 16):
+                dock.add((p, t[0]))                    # connected (no gateway), never a default
     return sorted({(s, dev) for s, dev in want if s and (dev, s) in live} | dock)
 
 
@@ -13851,7 +13854,10 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _arr = ({"subnets": arr_subs, "entries": arr_e, "legs": list(_relay_links(node_cfg)),
              # every destination an arrival must never be marked away from (§3.7, T6): this node's own client subnets, the
              # exit subnets it holds for other nodes, and the networks it routes
-             "cln": _collapse4([p for p, _d in _cascade_local_routes(node_cfg)] + [e["subnet"] for e in exit_]
+             # — not its Docker networks: another node's client has no published port to reach there (the DNAT happens
+             # after this mark, on the public address), so an arrival to a container's own 172.x stays as it was (item 6)
+             "cln": _collapse4([p for p, _d in _cascade_local_routes(node_cfg) if not _d.startswith(_DOCKER_BRIDGES)]
+                               + [e["subnet"] for e in exit_]
                                + [p for p, _d in (nets or ())])} if arr_e else None)
     # The categories that carry NAMES for the running engine — a Block of one is decided per connection (D1/D3), not by address.
     _name_cats = {c for c, v in domains.items() if v} | {c for k, byc in _pats.items() for c, v in (byc or {}).items() if v}

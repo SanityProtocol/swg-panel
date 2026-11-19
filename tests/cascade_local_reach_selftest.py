@@ -90,8 +90,7 @@ with open(proc, "w") as f:
 got = N._cascade_local_routes(CFG, _proc=proc)
 want = [("10.10.0.0/24", "csqtt1"), ("10.11.0.0/24", "wdtt1"), ("10.12.0.0/24", "wdttraw1"),
         ("10.28.0.0/24", "wg9"), ("10.8.0.0/24", "wg0")]
-if not PERTURB_DOCKER:
-    check("exactly wg0, wg9 (its IPv4 entry), wdtt1, its RAW TUN and csqtt1", got == want, got)
+check("exactly wg0, wg9 (its IPv4 entry), wdtt1, its RAW TUN and csqtt1", got == want, got)
 check("an unreadable table lists nothing (never raises)", N._cascade_local_routes(CFG, _proc=os.path.join(TMP, "nope")) == [])
 
 print("\n[2] the rebuild installs them into forward, smart and kill-switch tables — never an exit table")

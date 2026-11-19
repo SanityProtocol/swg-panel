@@ -186,9 +186,10 @@
       // make every module look missing. Small files, and we are already in the failed state.
       r.open("GET", n, true);
       /* No answer at all is not a missing file. Status 0 — a timeout, a refused or dropped connection — means the
-         request never reached the panel or its answer never came back: a route, a VPN, a firewall. 1.8.12 item 6: an
-         exit on the VPN interface this device used sent its packets for the panel away, and this screen told the user to
-         re-run an update that was never broken. 15 s, so a slow link that does answer is still counted as answering. */
+         request never reached the panel or its answer never came back: the panel is not running, or a route, a VPN, a
+         firewall is in the way, or the link is very slow (the probes share the browser's few connections, so a queued
+         one can time out). 1.8.12 item 6: an exit on the VPN interface this device used sent its packets for the panel
+         away, and this screen told the user to re-run an update that was never broken. */
       r.timeout = 15000;
       r.onloadend = function () {
         if (r.status !== 200) { missing.push(n); if (!r.status) silent++; }
@@ -197,10 +198,11 @@
           var hd = document.getElementById("swg-boot-head"), fx = document.getElementById("swg-boot-fix");
           if (hd) hd.innerHTML = "<b>The panel's files didn't arrive.</b>";
           if (fx) fx.innerHTML = "";
-          el.innerHTML = (missing.length === names.length ? "None of the " + names.length + " files"
-                            : missing.length + " of the " + names.length + " files") +
-            " the interface is built from answered when asked again (each waited 15 seconds). Nothing says the " +
-            "install is damaged: the connection between this device and the panel is failing — a route, a VPN " +
+          el.innerHTML = (missing.length === names.length
+                            ? "None of the " + names.length + " files the interface is built from got an answer"
+                            : missing.length + " of the " + names.length + " files the interface is built from got no answer") +
+            " when asked again (each waited 15 seconds), and none answered that it is missing. Either the panel " +
+            "is not answering — check that its service is running on the host — or the connection between this device and the panel is failing or very slow: a route, a VPN " +
             "tunnel or a firewall on the way. If this device reaches the panel through one of the panel's own VPN " +
             "interfaces, an exit or a routing rule on that interface may be sending it elsewhere: try another " +
             "connection.";

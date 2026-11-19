@@ -32,7 +32,7 @@ Run: python3 tests/devexit_killswitch_selftest.py (0 = pass)
                 distinguish, install the route and let it fail" — and expects RED on BOTH halves, because
                 decision 1 and decision 2 are one bargain and neither survives alone.
 """
-import importlib.machinery, importlib.util, os, sys
+import importlib.machinery, importlib.util, os, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -70,18 +70,24 @@ if INTENT:
     # ([[refactor-breaks-gate-anchors]]). Matching the code and re-using whatever indentation it is found
     # with means moving the function no longer disarms it.
     import re as _re
-    _m = _re.search(r'^([ \t]*)if not _x or _x\.get\("enabled"\) is False:$', _src, _re.M)
+    # …and on the condition's start only: F1 (ea31bc11) appended `or fo_exit_unfilled(_x)` and a comment to the line, and
+    # the `:$` anchor stopped matching. The plant drops only the `enabled is False` clause; whatever follows it stays.
+    _m = _re.search(r'^([ \t]*)if not _x or _x\.get\("enabled"\) is False(?=[ :])', _src, _re.M)
     assert _m, "perturbation anchor missing — this run would FALSE-PASS"
     _cut = _m.group(0)
     assert _src.count(_cut) == 1, "perturbation anchor is not unique — this run would FALSE-PASS"
     _tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".perturbed-panel.py")
-    open(_tmp, "w", encoding="utf-8").write(_src.replace(_cut, _m.group(1) + "if not _x:", 1))
+    open(_tmp, "w", encoding="utf-8").write(_src.replace(_cut, _m.group(1) + "if not _x", 1))
     PANEL = _tmp
 
 N, P = _load(NODED, "swgnoded"), _load(PANEL, "swgpanel")
 # Hermetic: the host's own /proc/net/route is not this test's subject. A host running Docker hands `_cascade_local_routes` its
 # bridges (1.8.12 item 6), which the fake kernel below cannot install, and the settle checks then read drift that is the host's.
-N._cascade_local_routes = lambda cfg, _proc=None: []
+# The real function still runs — on a route table of its own with nothing in it (review F8: a stub would hide it).
+_ROUTE0 = os.path.join(tempfile.mkdtemp(prefix="dks-route-"), "route")
+open(_ROUTE0, "w").write("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n")
+_CLR = N._cascade_local_routes
+N._cascade_local_routes = lambda cfg, _proc=None: _CLR(cfg, _proc=_ROUTE0)
 if INTENT:
     os.unlink(PANEL)
 
