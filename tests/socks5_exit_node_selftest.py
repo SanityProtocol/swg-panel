@@ -68,8 +68,8 @@ PLANTS = {
                          '                  and False})'),                                                                  # [5]
     "--perturb-f18": ('                    if rec.get("provider") in EXIT_KINDS and (_dev_link_state(_od) != "absent" or rec.get("started")):',
                       '                    if False:'),                                                                # [6]
-    "--perturb-hs": ('"handshake": (_exit_handshake(rec, dev) if _live and prov != "socks5" else None)',
-                     '"handshake": (_exit_handshake(rec, dev) if _live else None)'),                                     # [7]
+    "--perturb-hs": ('_hs = _exit_handshake(rec, dev) if _live and prov != "socks5" else None',
+                     '_hs = _exit_handshake(rec, dev) if _live else None'),                                     # [7]
     "--perturb-cadence": ("if dev not in _sx or _sx[dev]]", "]"),                                                    # [7]
     "--perturb-why": ('                    _hl["why"] = S5X_WHY.get(_c["why"], _c["why"])', '                    pass'),       # [7]
     "--perturb-t14": ('"flannel", "s5x")', '"flannel")'),                                                              # [8]

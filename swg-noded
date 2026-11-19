@@ -12355,7 +12355,7 @@ def _exit_ping(endpoint, timeout=1.5):
 
 _EXIT_REDIAL_AT = {}   # exit DEVICE -> when its endpoint name was last looked up (each probe thread writes only its own)
 _EXIT_RESOLVED = {}    # exit DEVICE -> (when, (host, port, [ip, …])): a probe's answer, waiting for the caller (_exit_redial)
-_EXIT_OFF_V6 = {}      # exit DEVICE -> (the v6 endpoint that got no answer, when, pass) once _exit_redial moved it to v4 (item 11)
+_EXIT_OFF_V6 = {}      # exit DEVICE -> (the v6 endpoint it left, when, pass, back on it, v4 silent once) — _exit_redial (item 11)
 
 
 def _exit_resolve(dev, rec, now=None):
@@ -12413,10 +12413,16 @@ def _exit_redial(dev, rec, found, stale=False):
     EXIT_SESSION_DEAD_S — 1.8.12 item 11). `wg` resolves the name once and takes the AAAA wherever the box has a v6
     address and route, whether or not that v6 goes anywhere: a user's node (2026-11-09) dialled every WARP exit over a v6
     that dropped everything, and msk-main lost its v6 on 2026-11-01 with a WARP exit still dialling it 17 days later. The
-    name still lists the dialled address, so the move above never fires; this one does, to the name's v4 address, once —
-    the never-into-v6 rule means it never moves back, so nothing alternates. Asked in the pass that carried nothing, after
-    the trace and the reach probe both queued packets into the tunnel for ~16 s: a v6 path that works has answered by
-    then, so a fresh exit on such a box handshakes the next pass, before the judge's 30 s ever fail it over."""
+    name still lists the dialled address, so the move above never fires; this one does, to the name's v4 address. Asked in
+    the pass that carried nothing, after the trace and the reach probe both queued packets into the tunnel for ~16 s: a v6
+    path that works has answered by then, so a fresh exit on such a box handshakes the next pass, before the judge's 30 s
+    ever fail it over. Only while the name still lists the silent v6 address: a DDNS name whose AAAA changed is the
+    same-family re-point above (review F2 — a rotated v6 prefix, the A record a dead CGNAT address).
+    …and BACK to that v6 once v4 has had no answer either (`back`, review F1): a network that blocks WARP over v4 but not
+    over v6, or a home router whose A record is a CGNAT address, would otherwise stay on a dead v4 after any v6 outage
+    longer than EXIT_SESSION_DEAD_S. This is the one move into v6, and only to a v6 this node dialled and moved off —
+    the never-into-v6 rule below guards a node with no v6 underlay, which never dialled one. While neither answers, the
+    two alternate at the lookup's cadence (EXIT_REDIAL_EVERY_S): one `wg set`, no bounce; logged once, at the first move."""
     if not found or not rec.get("peer_key"):
         return None
     host, port, ips = found
@@ -12439,9 +12445,14 @@ def _exit_redial(dev, rec, found, stale=False):
         fam = _v6(str(ipaddress.ip_address(live_ip)))
     except ValueError:
         fam = None                                   # "(none)": no endpoint at all — any v4 will do
-    off6 = bool(stale) and fam is True               # a v6 underlay with no session: to the name's v4 (docstring)
+    moved = _EXIT_OFF_V6.get(dev)
+    off6 = bool(stale) and fam is True and live_ip in ips    # a v6 underlay with no session: to the name's v4 (docstring)
+    back = bool(stale) and fam is False and moved is not None  # …and that v4 silent too: back to the v6 it left (F1)
     if off6:
         ip = next((a for a in ips if not _v6(a)), None)
+    elif back:
+        _left = moved[0].rpartition(":")[0].strip("[]")
+        ip = _left if _left in ips else next((a for a in ips if _v6(a)), None)
     elif live_ip in ips:
         return None                                  # it already dials what the name says: the far side is just down
     else:
@@ -12465,8 +12476,15 @@ def _exit_redial(dev, rec, found, stale=False):
     else:
         _EXIT_EP_IP.pop(host, None)
     if off6:
-        _EXIT_OFF_V6[dev] = (live, time.time(), _LOOP["n"])
-        log(LOG_WARNING, "exit device %s: no answer over IPv6 from %s — re-pointed to %s over IPv4", dev, live, fresh)
+        # (the v6 endpoint it left, when, pass, dialling it again, v4 already silent once)
+        _EXIT_OFF_V6[dev] = (live, time.time(), _LOOP["n"], False, bool(moved and moved[3]))
+        if not moved:
+            log(LOG_WARNING, "exit device %s: no answer over IPv6 from %s — re-pointed to %s over IPv4", dev, live, fresh)
+    elif back:
+        _EXIT_OFF_V6[dev] = (fresh, time.time(), _LOOP["n"], True, True)
+        if not moved[4]:
+            log(LOG_WARNING, "exit device %s: no answer over IPv4 from %s either — back to %s; the two alternate until one "
+                "answers", dev, live, fresh)
     else:
         log(LOG_INFO, "exit device %s: %s now resolves to %s (the tunnel was dialling %s) — re-pointed",
             dev, host, fresh, live)
@@ -12542,14 +12560,22 @@ def _exit_underlay(rec, dev, hs):
     and the ones that got no answer — only while its peer has never answered (`hs` 0) or once _exit_redial moved it off v6,
     so a healthy exit's row is what it always was. None otherwise. Any transport that dials an address can report through it.
     v4 counts as failed only once a pass AFTER the move went by with no handshake since it: in the move's own pass v4 has
-    not been tried, and the row would have said "neither family answered" about a tunnel that handshook seconds later.
-    A moved tunnel dials v4 (it never moves back); an unmoved one is read from the pass's dump — no fork, and nothing at all
-    for a peer that has answered."""
+    not been tried, and the row would have said "neither family answered" about a tunnel that handshook seconds later —
+    unless v4 already had its turn in an earlier round (moved[4]). Back on v6 after both were silent (moved[3]), the row
+    says both failed until v6 answers, then nothing. A moved tunnel's family is the record's; an unmoved one is read from
+    the pass's dump — no fork, and nothing at all for a peer that has answered."""
     moved = _EXIT_OFF_V6.get(dev)
     if moved:
         # "no handshake since the move": its age is whole seconds and floored at 1, so 2 s of slack — the one before the
         # move was at least EXIT_SESSION_DEAD_S old (rig 2026-11-19: a v4 handshake 0.8 s after the move read as before it)
-        v4dead = _LOOP["n"] > moved[2] and hs is not None and (hs == 0 or hs > time.time() - moved[1] + 2)
+        silent = hs is not None and (hs == 0 or hs > time.time() - moved[1] + 2)
+        if moved[3]:
+            if silent:
+                return {"via": "v6", "failed": ["v6", "v4"]}
+            if hs:                                  # v6 answered again: the move is over (this thread owns the record)
+                _EXIT_OFF_V6.pop(dev, None)
+            return None
+        v4dead = silent and (moved[4] or _LOOP["n"] > moved[2])
         return {"via": "v4", "failed": ["v6", "v4"] if v4dead else ["v6"]}
     if hs != 0:
         return None

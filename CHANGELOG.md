@@ -131,7 +131,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   IPv6 reaches anything — so such an exit never connected, while its latency column (always measured over IPv4) showed
   the server as reachable and the row blamed a network blocking WARP. When the tunnel gets no answer over IPv6, the node
   now points it at the server's IPv4 address on the live device, within the first pass and before it fails over; a
-  tunnel that loses its IPv6 later moves the same way once its session has expired. The exit row says which family it
+  tunnel that loses its IPv6 later moves the same way once its session has expired. If IPv4 gets no answer either, it
+  goes back to IPv6 and keeps trying both, so an exit that works only over IPv6 recovers once IPv6 does. The exit row says which family it
   dials and whether IPv6 got no answer, and the advice about networks that block WARP now appears only once both
   families have been tried.
 - **An exit no longer cuts a VPN interface's clients off the panel and other containers on a Docker node.** Docker

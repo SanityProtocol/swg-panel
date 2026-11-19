@@ -41,7 +41,8 @@ carry traffic asks `_devexit_state`, which reads `dead` for an up device whose t
   [10] (1.8.12 item 11) a v6 underlay that gets no answer moves to v4: `wg` resolves a name once and takes the AAAA on
       any box with a v6 route, whether or not that v6 goes anywhere (a user's node, 2026-11-09; msk-main since 2026-11-01).
       A tunnel dialling v6 with no session (never handshaken, or not for 180 s) in a pass that carried nothing is moved to
-      the name's v4 once — never back, so nothing alternates; one with a live session is never touched; the row carries
+      the name's v4 (only while the name still lists that v6), and back to it if v4 is silent too (review F1/F2); a v4
+      tunnel this node never moved is never moved into v6; one with a live session is never touched; the row carries
       `underlay` only while it matters, and says v4 failed too only once v4 has had a pass of its own.
 
 Hermetic: `run()` is stubbed and argv inspected; the probes are injected; nothing touches the network.
@@ -65,7 +66,12 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-rebuild     a rebuilt tunnel inherits the old one's lookup history — RED in [5]
      --perturb-backin      a dead tunnel carrying again reports no `back_in` (the row keeps blaming it) — RED in [5]
      --perturb-off6        a v6 tunnel with no session is never moved to v4 — the shipped behaviour — RED in [10]
-     --perturb-off6-any    a v4 tunnel with no session is "moved" too (re-set, the never-back rule gone) — RED in [10]
+     --perturb-off6-any    a v4 tunnel with no session is "moved" off v6 too (re-set to v4, not back to v6) — RED in [10]
+     --perturb-off6-inips  the move off v6 even when the name no longer lists the dialled v6 (a rotated AAAA goes to
+                           a dead v4 instead of the new v6 — review F2) — RED in [10]
+     --perturb-back        a moved tunnel whose v4 is silent too stays on v4 for ever (review F1) — RED in [10]
+     --perturb-ul-both     the row forgets v4 was silent in an earlier round: "trying v4" each cycle — RED in [10]
+     --perturb-ul-over     a tunnel back on v6 that answered keeps its "moved" note — RED in [10]
      --perturb-stale       only a NEVER-handshaken tunnel moves (msk-main's 17-day-dead exit stays dead) — RED in [10]
      --perturb-stale-live  a tunnel with a live session is moved as well (a working v6 exit touched) — RED in [10]
      --perturb-ul-always   every exit row carries `underlay` (a healthy row no longer byte-identical) — RED in [10]
@@ -111,7 +117,11 @@ PLANTS = {
     "--perturb-stale": ("stale=_hs is not None and (_hs == 0 or _hs > EXIT_SESSION_DEAD_S))", "stale=_hs == 0)"),
     "--perturb-stale-live": ("stale=_hs is not None and (_hs == 0 or _hs > EXIT_SESSION_DEAD_S))", "stale=True)"),
     "--perturb-ul-always": ("    if hs != 0:\n        return None\n", ""),
-    "--perturb-ul-early": ("    v4dead = _LOOP[\"n\"] > moved[2] and ", "    v4dead = "),
+    "--perturb-ul-early": ("    v4dead = silent and (moved[4] or _LOOP[\"n\"] > moved[2])", "    v4dead = silent"),
+    "--perturb-ul-both": ("    v4dead = silent and (moved[4] or _LOOP[\"n\"] > moved[2])", "    v4dead = silent and _LOOP[\"n\"] > moved[2]"),
+    "--perturb-ul-over": ("                _EXIT_OFF_V6.pop(dev, None)\n            return None\n", "                pass\n            return None\n"),
+    "--perturb-off6-inips": ("fam is True and live_ip in ips", "fam is True"),
+    "--perturb-back": ("    back = bool(stale) and fam is False and moved is not None", "    back = False"),
     "--perturb-ul-slack": ("(hs == 0 or hs > time.time() - moved[1] + 2)", "(hs == 0 or hs > time.time() - moved[1])"),
     "--perturb-ul-rebuild": ("                _EXIT_OFF_V6.pop(dev, None)            # what", "                pass  #"),
     # [9] — Part A
@@ -583,8 +593,21 @@ try:
           and (N._EXIT_EP_IP.get("engage.cloudflareclient.com") or (0, ""))[1] == V4, (N._EXIT_OFF_V6, N._EXIT_EP_IP))
     _runs8.clear()
     _c10 = _REAL_REDIAL("wgx-v6dead", _recW, _g10, stale=True)
-    check("[10] …and silent on v4 too: it stays on v4 — never back into v6, nothing alternates",
-          _c10 is None and not _sets(), (_c10, _runs8))
+    check("[10] …and silent on v4 too: back to the v6 it left (a network that blocks WARP over v4 only — review F1)",
+          _c10 == "[%s]:2408" % V6 and _sets() == ["%s set wgx-v6dead peer %s endpoint [%s]:2408" % (_WGC, KP, V6)]
+          and (N._EXIT_OFF_V6.get("wgx-v6dead") or ())[3:] == (True, True), (_c10, _runs8, N._EXIT_OFF_V6))
+    _runs8.clear()
+    _c10b = _REAL_REDIAL("wgx-v6dead", _recW, _g10, stale=True)
+    check("[10] …silent there again: to v4 again, the record remembering v4 was silent once (they alternate)",
+          _c10b == V4 + ":2408" and (N._EXIT_OFF_V6.get("wgx-v6dead") or ())[3:] == (False, True), (_c10b, N._EXIT_OFF_V6))
+    _runs8.clear(); _live8["ep"] = "%s:2408" % V4
+    _c10c = _REAL_REDIAL("wgx-v4own", _recW, _g10, stale=True)
+    check("[10] a v4 tunnel this node never moved off v6 is never moved into v6 (a node with no v6 underlay)",
+          _c10c is None and not _sets() and "wgx-v4own" not in N._EXIT_OFF_V6, (_c10c, _runs8))
+    _runs8.clear(); _live8["ep"] = "[2001:db8:5::1]:2408"
+    _c10d = _REAL_REDIAL("wgx-ddns6", _recW, ("home.example", "2408", ["198.51.100.66", "2001:db8:6::1"]), stale=True)
+    check("[10] a v6 tunnel with no session whose name's AAAA CHANGED goes to the new v6, not to v4 (review F2)",
+          _c10d == "[2001:db8:6::1]:2408" and "wgx-ddns6" not in N._EXIT_OFF_V6, (_c10d, _runs8, N._EXIT_OFF_V6))
     _runs8.clear(); _live8["ep"] = "[%s]:2408" % V6
     _d10 = _REAL_REDIAL("wgx-v6only", _recW, ("engage.cloudflareclient.com", "2408", [V6]), stale=True)
     check("[10] a v6 tunnel whose name has no v4 address keeps what it has (nothing to move to)",
@@ -599,7 +622,7 @@ N._exit_trace = lambda d: dict(BAD)
 N._exit_reach = lambda d, *a, **k: False
 N._exit_ping = lambda ep, *a, **k: None
 _w10 = [{"id": "c0ffee10", "device": "wgx-c0ffee10", "provider": "warp"}]
-N._EXIT_OFF_V6["wgx-c0ffee10"] = ("[%s]:2408" % V6, 0, 0)   # left over from the device this pass rebuilds
+N._EXIT_OFF_V6["wgx-c0ffee10"] = ("[%s]:2408" % V6, 0, 0, False, False)   # left over from the device this pass rebuilds
 _stale10, _real_hs10 = {}, N._exit_handshake
 for _hv in (0, 100, N.EXIT_SESSION_DEAD_S + 1, None):
     N._exit_handshake = lambda rec, dev, _h=_hv: _h
@@ -628,19 +651,27 @@ check("[10] a peer that has answered and was never moved: no `underlay`, and the
 _ep10["ep"] = ""
 check("[10] an endpoint the dump did not give: nothing said", N._exit_underlay(_recW, "wgx-u", 0) is None)
 _now10 = __import__("time").time()
-N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"])
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"], False, False)
 check("[10] moved off v6 THIS pass: {via: v4, failed: [v6]} — v4 has not had its turn, so it is not called silent yet",
       N._exit_underlay(_recW, "wgx-u", 0) == {"via": "v4", "failed": ["v6"]}, N._exit_underlay(_recW, "wgx-u", 0))
 N._LOOP["n"] += 1
 check("[10] a pass later, handshaken since the move: still only v6 failed",
       N._exit_underlay(_recW, "wgx-u", 12) == {"via": "v4", "failed": ["v6"]}, N._exit_underlay(_recW, "wgx-u", 12))
-N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, __import__("time").time() - 0.8, N._LOOP["n"] - 1)
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, __import__("time").time() - 0.8, N._LOOP["n"] - 1, False, False)
 check("[10] …even 0.8 s after the move, when the floored age (1 s) reads older than the move (rig 2026-11-19)",
       N._exit_underlay(_recW, "wgx-u", 1) == {"via": "v4", "failed": ["v6"]}, N._exit_underlay(_recW, "wgx-u", 1))
-N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"] - 1)
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"] - 1, False, False)
 check("[10] a pass later and never answered — or its last handshake older than the move: v4 failed too",
       N._exit_underlay(_recW, "wgx-u", 0) == N._exit_underlay(_recW, "wgx-u", 400) == {"via": "v4", "failed": ["v6", "v4"]},
       (N._exit_underlay(_recW, "wgx-u", 0), N._exit_underlay(_recW, "wgx-u", 400)))
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"], False, True)
+check("[10] moved to v4 again after v4 was silent once: both failed from the move's own pass (no \"trying v4\" each cycle)",
+      N._exit_underlay(_recW, "wgx-u", 400) == {"via": "v4", "failed": ["v6", "v4"]}, N._exit_underlay(_recW, "wgx-u", 400))
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"], True, True)
+check("[10] back on v6, no answer since: {via: v6, failed: [v6, v4]}",
+      N._exit_underlay(_recW, "wgx-u", 400) == {"via": "v6", "failed": ["v6", "v4"]}, N._exit_underlay(_recW, "wgx-u", 400))
+check("[10] …and once v6 answers: nothing said, and the move is over (no stale note when v6 later dies again)",
+      N._exit_underlay(_recW, "wgx-u", 12) is None and "wgx-u" not in N._EXIT_OFF_V6, N._EXIT_OFF_V6)
 N._EXIT_OFF_V6.clear()
 N._exit_learned_ep = lambda rec, dev: "[%s]:2408" % V6
 N._exit_trace = lambda d: dict(OK)
