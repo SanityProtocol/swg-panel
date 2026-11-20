@@ -14467,7 +14467,31 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # the band for ever. `_band_tables` exists for exactly this distinction.
     live_sig = _cascade_live_sig({str(p) for p in _band_tables(band)} | want_tables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
-    if want_sig != live_sig:
+    # ⚠️ A DEVICE REBUILT UNDER ITS EXIT → REPAIRED IN PLACE, NO TEARDOWN. The kernel purges a device's routes when the device
+    # is rebuilt (a WireGuard conf bounce, a WARP switch or restore, a usque restart), and while it is gone its exit's
+    # upmark rule is not wanted. The rebuild below starts by deleting every band rule: for that moment there is no rule at
+    # all, a client packet leaves by `main` — direct, past the kill-switch — and its flow's NAT stays the direct one after
+    # the band is back (rig .campaign/rigs/mqx `bounce`, `switch`; 2026-11-20). When the drift is only device routes and
+    # upmark rules (those steer this box's own marked sockets, never a client's packet), exactly those are put right in
+    # place — every client rule stays, and the table's `prohibit` (kill-switch on) holds the gap. Anything else rebuilds.
+    _drift = want_sig != live_sig
+    _miss = [t.split("|") for t in want_sig - live_sig] if _drift else []
+    _xtra = [t.split("|") for t in live_sig - want_sig] if _drift else []
+    _rt = lambda m: len(m) == 5 and m[0] == "T" and m[3] and not m[2].startswith("prohibit")
+    _um = lambda m: len(m) == 4 and m[:2] == ["R", "upmark"]
+    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):
+        for m in sorted(_xtra):
+            if _um(m):
+                run(["ip", "rule", "del", "pref", m[2]])
+            else:
+                run(["ip", "route", "del", m[2], "dev", m[3], "table", m[1]])
+        for m in sorted(_miss):
+            if _um(m):
+                run(["ip", "rule", "add", "fwmark", m[2], "lookup", m[3], "priority", m[2]])
+            else:
+                run(["ip", "route", "replace", m[2]] + (["via", m[4]] if m[4] else []) + ["dev", m[3], "table", m[1]])
+        res["changed"] += 1
+    elif _drift:
         if fwd or smart_e or exit_ or arr_exit:               # enable forwarding + loose rp_filter (asymmetric paths)
             _sysctl_ensure("net.ipv4.ip_forward", 1)
             wan = _detect_wan()
