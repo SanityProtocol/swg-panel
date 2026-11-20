@@ -12402,7 +12402,7 @@ def _exit_redial(dev, rec, found, stale=False):
     peer is touched only when the name no longer lists the address it dials — `wg set … endpoint` on the live device,
     no bounce, so the routing band is not rebuilt and a far side that is simply down costs one lookup. Every address
     the name has counts as current, so a round-robin name never flaps; a move keeps the family it was dialling
-    (or falls back to v4, never into v6 — see below). Tried with both CLIs (_exit_clis): an amneziawg-go device is
+    (or falls back to v4; into v6 only BACK to a v6 this node moved off — see below). Tried with both CLIs (_exit_clis): an amneziawg-go device is
     invisible to `ip -d link`, and the first version asked only `wg` there and never re-pointed it.
 
     ⚠️ IN THE CALLER'S THREAD, NOT THE PROBE'S, and only for a peer the device HAS. A probe thread can outlive its pass,
@@ -12447,7 +12447,7 @@ def _exit_redial(dev, rec, found, stale=False):
         fam = None                                   # "(none)": no endpoint at all — any v4 will do
     moved = _EXIT_OFF_V6.get(dev)
     off6 = bool(stale) and fam is True and live_ip in ips    # a v6 underlay with no session: to the name's v4 (docstring)
-    back = bool(stale) and fam is False and moved is not None  # …and that v4 silent too: back to the v6 it left (F1)
+    back = bool(stale) and fam is False and moved is not None and live_ip in ips  # …v4 silent too: back to the v6 it left (F1)
     if off6:
         ip = next((a for a in ips if not _v6(a)), None)
     elif back:
@@ -12456,7 +12456,8 @@ def _exit_redial(dev, rec, found, stale=False):
     elif live_ip in ips:
         return None                                  # it already dials what the name says: the far side is just down
     else:
-        # ⚠️ THE FAMILY IT WAS DIALLING, OR v4 — NEVER INTO v6. A DDNS name caught mid-update may answer AAAA alone; a v4
+        # ⚠️ THE FAMILY IT WAS DIALLING, OR v4 — NEVER INTO v6 HERE (`back` above is the one way in, to a v6 this node
+        # left; a v4 whose A record changed comes here, review F6). A DDNS name caught mid-update may answer AAAA alone; a v4
         # tunnel moved onto it on a node without a v6 underlay stays dead, and then reads as "current" for ever. v4 is the
         # one family every node has, so a v6 tunnel whose name lost its AAAA may fall back to it; nothing else changes family.
         ip = (next((a for a in ips if _v6(a) == fam), None) if fam is not None else None) \
@@ -12486,6 +12487,8 @@ def _exit_redial(dev, rec, found, stale=False):
             log(LOG_WARNING, "exit device %s: no answer over IPv4 from %s either — back to %s; the two alternate until one "
                 "answers", dev, live, fresh)
     else:
+        if moved:                                    # the record follows the family it dials now (review F8)
+            _EXIT_OFF_V6[dev] = moved[:3] + (_v6(ip), moved[4])
         log(LOG_INFO, "exit device %s: %s now resolves to %s (the tunnel was dialling %s) — re-pointed",
             dev, host, fresh, live)
     return fresh
@@ -12575,6 +12578,8 @@ def _exit_underlay(rec, dev, hs):
             if hs:                                  # v6 answered again: the move is over (this thread owns the record)
                 _EXIT_OFF_V6.pop(dev, None)
             return None
+        if moved[4] and not silent and hs:           # v4 answered: a later silence is a new incident, logged (review F7)
+            _EXIT_OFF_V6[dev] = moved = moved[:4] + (False,)
         v4dead = silent and (moved[4] or _LOOP["n"] > moved[2])
         return {"via": "v4", "failed": ["v6", "v4"] if v4dead else ["v6"]}
     if hs != 0:

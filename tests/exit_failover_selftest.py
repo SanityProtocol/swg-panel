@@ -72,6 +72,9 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-back        a moved tunnel whose v4 is silent too stays on v4 for ever (review F1) — RED in [10]
      --perturb-ul-both     the row forgets v4 was silent in an earlier round: "trying v4" each cycle — RED in [10]
      --perturb-ul-over     a tunnel back on v6 that answered keeps its "moved" note — RED in [10]
+     --perturb-back-inips  a moved tunnel whose A record CHANGED goes back to the dead v6, not to the new v4 (verify F6)
+     --perturb-rec-follow  a same-family re-point leaves the record's family behind (row says v6, dials v4 — F8)
+     --perturb-v4-reset    v4 answering does not end the "v4 silent once" mark: a later incident is never logged (F7)
      --perturb-stale       only a NEVER-handshaken tunnel moves (msk-main's 17-day-dead exit stays dead) — RED in [10]
      --perturb-stale-live  a tunnel with a live session is moved as well (a working v6 exit touched) — RED in [10]
      --perturb-ul-always   every exit row carries `underlay` (a healthy row no longer byte-identical) — RED in [10]
@@ -122,6 +125,9 @@ PLANTS = {
     "--perturb-ul-over": ("                _EXIT_OFF_V6.pop(dev, None)\n            return None\n", "                pass\n            return None\n"),
     "--perturb-off6-inips": ("fam is True and live_ip in ips", "fam is True"),
     "--perturb-back": ("    back = bool(stale) and fam is False and moved is not None", "    back = False"),
+    "--perturb-back-inips": ("fam is False and moved is not None and live_ip in ips", "fam is False and moved is not None"),
+    "--perturb-rec-follow": ("            _EXIT_OFF_V6[dev] = moved[:3] + (_v6(ip), moved[4])", "            pass"),
+    "--perturb-v4-reset": ("            _EXIT_OFF_V6[dev] = moved = moved[:4] + (False,)", "            pass"),
     "--perturb-ul-slack": ("(hs == 0 or hs > time.time() - moved[1] + 2)", "(hs == 0 or hs > time.time() - moved[1])"),
     "--perturb-ul-rebuild": ("                _EXIT_OFF_V6.pop(dev, None)            # what", "                pass  #"),
     # [9] — Part A
@@ -600,6 +606,18 @@ try:
     _c10b = _REAL_REDIAL("wgx-v6dead", _recW, _g10, stale=True)
     check("[10] …silent there again: to v4 again, the record remembering v4 was silent once (they alternate)",
           _c10b == V4 + ":2408" and (N._EXIT_OFF_V6.get("wgx-v6dead") or ())[3:] == (False, True), (_c10b, N._EXIT_OFF_V6))
+    _runs8.clear(); _live8["ep"] = "198.51.100.10:2408"
+    N._EXIT_OFF_V6["wgx-a-moved"] = ("[%s]:2408" % V6, 0, 0, False, True)
+    _c10e = _REAL_REDIAL("wgx-a-moved", _recW, ("home.example", "2408", ["198.51.100.42", V6]), stale=True)
+    check("[10] a tunnel moved off v6 whose A record CHANGED goes to the new v4, not back to the dead v6 (verify F6)",
+          _c10e == "198.51.100.42:2408" and (N._EXIT_OFF_V6.get("wgx-a-moved") or ())[3:] == (False, True),
+          (_c10e, _runs8, N._EXIT_OFF_V6))
+    _runs8.clear(); _live8["ep"] = "[%s]:2408" % V6
+    N._EXIT_OFF_V6["wgx-aaaa-gone"] = ("[%s]:2408" % V6, 0, 0, True, True)
+    _c10f = _REAL_REDIAL("wgx-aaaa-gone", _recW, ("home.example", "2408", ["198.51.100.42"]), stale=True)
+    check("[10] back on v6 when the name loses its AAAA: to v4, and the record says v4 now (the row follows — verify F8)",
+          _c10f == "198.51.100.42:2408" and (N._EXIT_OFF_V6.get("wgx-aaaa-gone") or ())[3] is False,
+          (_c10f, N._EXIT_OFF_V6))
     _runs8.clear(); _live8["ep"] = "%s:2408" % V4
     _c10c = _REAL_REDIAL("wgx-v4own", _recW, _g10, stale=True)
     check("[10] a v4 tunnel this node never moved off v6 is never moved into v6 (a node with no v6 underlay)",
@@ -667,6 +685,10 @@ check("[10] a pass later and never answered — or its last handshake older than
 N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"], False, True)
 check("[10] moved to v4 again after v4 was silent once: both failed from the move's own pass (no \"trying v4\" each cycle)",
       N._exit_underlay(_recW, "wgx-u", 400) == {"via": "v4", "failed": ["v6", "v4"]}, N._exit_underlay(_recW, "wgx-u", 400))
+N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"] - 1, False, True)
+check("[10] on v4 after an alternation, and v4 answers: only v6 failed, and the \"v4 silent once\" mark ends (a later"
+      " incident is logged again — verify F7)", N._exit_underlay(_recW, "wgx-u", 12) == {"via": "v4", "failed": ["v6"]}
+      and N._EXIT_OFF_V6["wgx-u"][4] is False, N._EXIT_OFF_V6)
 N._EXIT_OFF_V6["wgx-u"] = ("[%s]:2408" % V6, _now10 - 30, N._LOOP["n"], True, True)
 check("[10] back on v6, no answer since: {via: v6, failed: [v6, v4]}",
       N._exit_underlay(_recW, "wgx-u", 400) == {"via": "v6", "failed": ["v6", "v4"]}, N._exit_underlay(_recW, "wgx-u", 400))

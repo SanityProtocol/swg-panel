@@ -126,15 +126,15 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
-- **A WARP or WireGuard exit on a server whose IPv6 goes nowhere now switches to IPv4 by itself.** WireGuard looks
-  up the exit's server name once and takes its IPv6 address on any server that has IPv6 configured, whether or not that
+- **A WARP or WireGuard exit on a server whose IPv6 goes nowhere now switches to IPv4 by itself.** WireGuard looks up
+  the exit's server name once and takes its IPv6 address on any server that has IPv6 configured, whether or not that
   IPv6 reaches anything — so such an exit never connected, while its latency column (always measured over IPv4) showed
   the server as reachable and the row blamed a network blocking WARP. When the tunnel gets no answer over IPv6, the node
   now points it at the server's IPv4 address on the live device, within the first pass and before it fails over; a
   tunnel that loses its IPv6 later moves the same way once its session has expired. If IPv4 gets no answer either, it
-  goes back to IPv6 and keeps trying both, so an exit that works only over IPv6 recovers once IPv6 does. The exit row says which family it
-  dials and whether IPv6 got no answer, and the advice about networks that block WARP now appears only once both
-  families have been tried.
+  goes back to IPv6 and keeps trying both, so an exit that works only over IPv6 recovers once IPv6 does. The exit row
+  says which family it dials and whether IPv6 got no answer, and the advice about networks that block WARP now appears
+  only once both families have been tried.
 - **An exit no longer cuts a VPN interface's clients off the panel and other containers on a Docker node.** Docker
   hands a published container's traffic to its own internal network before routing, and an interface with an exit sent
   that traffic out of the exit, so a Docker master's panel (and the subscription page, or any other published container
