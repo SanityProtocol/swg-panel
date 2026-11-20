@@ -665,6 +665,9 @@ fi
 # ── PANEL host/master: docker → bare-metal ── (mirror of the bare→docker block; reuses install-host.sh + install-node.sh)
 if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; envf="$DOCKER_DIR/.env"
+  # A Docker NODE has the .env too, so that alone passed the pre-flight on a node-only box and the run died later, after
+  # writing a recovery marker and empty panel dirs (1.8.12 item 12). No container and no resume state → nothing to move.
+  docker_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no Docker panel on this box (no swg-panel container) — its Docker install is a node only: convert it with the role $(b node)"
   [ -f "$envf" ] || [ -n "${SWG_RV_URL:-}" ] || die "no docker panel settings found at $envf"
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | sed -n 1p | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"

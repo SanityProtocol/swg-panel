@@ -126,6 +126,12 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **`master` on a server that holds only a node converts the node and stops there.** Running the installer with
+  `master` to move a node-only server between Docker and bare-metal took the panel's road: the check before the move
+  promised a panel that wasn't there, then the move stopped with "couldn't stage the panel state" and left a marker that
+  offered the same failing move on every later run. It now says the server has only a node and which panel it belongs
+  to, converts the node, and says afterwards that no panel was installed (`host` adds one). A marker left by the old
+  attempt is cleared on the next run.
 - **A WARP or WireGuard exit on a server whose IPv6 goes nowhere now switches to IPv4 by itself.** WireGuard looks up
   the exit's server name once and takes its IPv6 address on any server that has IPv6 configured, whether or not that
   IPv6 reaches anything — so such an exit never connected, while its latency column (always measured over IPv4) showed

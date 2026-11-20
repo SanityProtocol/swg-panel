@@ -395,6 +395,7 @@ run_script(){   # run_script <script> [args…] — dispatch as a child, so the 
   for _a in "$@"; do if [ "$_a" = --dry-run ]; then _keep_tmp=1; fi; done
   local _rc=0
   bash "./$_s" "$@" || _rc=$?    # `|| _rc=$?` because set -e would otherwise exit before we do
+  [ "$_rc" = 0 ] && [ -n "${_RS_DONE_NOTE:-}" ] && { echo; info "$_RS_DONE_NOTE"; }   # said only once the child succeeded
   exit $_rc
 }
 TMP="$(mktemp -d)"; trap '_cleanup_tmp' EXIT
@@ -533,6 +534,16 @@ if [ -f /var/lib/swg-recovery ]; then
   if [ ! -e /etc/swg-agent ] && [ ! -e "$DOCKER_DIR" ] && [ ! -e "$SD/swg-noded.service" ] \
      && ! { command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null; }; then
     rm -f /var/lib/swg-recovery 2>/dev/null || true
+  # a master/host convert that never got past its staging (no panel on either method, no staged login — the convert's
+  # guard needs both before any teardown): nothing to resume, and the node never stopped. Before 1.8.12 item 12 this was
+  # `-- master` on a node-only box; resuming it as a node would enroll the node to the panel DOMAIN the master path read.
+  elif case "${SWG_RV_ROLE:-}" in master|host) true;; *) false;; esac && [ "$BARE_PANEL" = no ] && [ "$DOCK_PANEL" = no ] \
+       && [ ! -s /etc/swg-panel/auth ] && [ ! -s "$DOCKER_DIR/data/etc/auth" ]; then
+    info "dropped an unfinished $SWG_RV_ROLE conversion's marker — no panel is on this box on either method, so there is nothing to resume (the node was not touched)."
+    rm -f /var/lib/swg-recovery 2>/dev/null || true
+    # …and the panel dirs that attempt created: empty, or holding only its own status file (host_proc)
+    for _d in /var/lib/swg-panel /etc/swg-panel /var/www/wgstats; do
+      [ "$(ls -A "$_d" 2>/dev/null)" = host_proc ] && rm -f "$_d/host_proc"; rmdir "$_d" 2>/dev/null || true; done
   elif [ -n "${SWG_RV_FROM:-}" ] && [ -n "${SWG_RV_TO:-}" ] && [ -n "${SWG_RV_ROLE:-}" ]; then
     echo
     warn "An unfinished $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion was found."
@@ -612,6 +623,17 @@ if [ -n "$CONFLICT" ]; then
           _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE" \
             "name the role master to convert the whole box (converting only the $ROLE needs a terminal)"
           [ "$_msel" = master ] && ROLE=master
+        fi
+        # MASTER named on a NODE-ONLY box (no panel on either method): convert the node, and NEVER install a panel
+        # (1.8.12 item 12, operator 2026-11-10). The node's token and URL belong to another panel, so a new one here
+        # would be a blank second panel beside a node that answers to someone else. ROLE=master went on to convert.sh's
+        # panel path, whose pre-flight passed and whose run then died on the panel state that was never there.
+        if [ "$ROLE" = master ] && ! has_comp "$OTHER" panel && ! has_comp "$METHOD" panel; then
+          if [ "$OTHER" = docker ]; then _purl="$(sed -n 's/^PANEL_URL=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*#.*//; s/^"//; s/"$//' || true)"
+          else _purl="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url","") or "")' 2>/dev/null || true)"; fi
+          echo
+          echo "  This box has only a node${_purl:+ (enrolled to $(b "$_purl"))}. \"master\" would add a new panel beside it, so only the node is converted."
+          ROLE=node; _RS_DONE_NOTE="No panel was installed — this box is a node. To add a panel here later, run the installer with \"host\"."
         fi
         # pre-flight (port/interface check) lives in convert.sh --check: exit 0 = clear, non-0 = printed conflicts
         if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
