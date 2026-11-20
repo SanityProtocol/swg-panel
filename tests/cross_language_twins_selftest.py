@@ -147,7 +147,11 @@ _nk = ast.literal_eval(one("swg-noded", r"^EXIT_KINDS = (\(.*\))$", "EXIT_KINDS"
 _sk = ast.literal_eval(one("js/routing.js", r"^export const EXIT_KINDS = (\[.*\]);$", "EXIT_KINDS"))
 if PERTURB_KINDS:
     _sk = [k for k in _sk if k != "socks5"]
-check("panel EXIT_PROVIDERS == noded EXIT_KINDS == SPA EXIT_KINDS", list(_pk) == list(_nk) == list(_sk), (_pk, _nk, _sk))
+# STAGED (docs/WARP-MASQUE-PLAN.md §6): the node learns `warp-masque` in P2, the panel and the SPA in P3 — until then the node
+# knows exactly that one kind more (an older panel never sends a kind it does not make). P3 drops NODE_FIRST to ().
+NODE_FIRST = ["warp-masque"]
+check("panel EXIT_PROVIDERS == noded EXIT_KINDS == SPA EXIT_KINDS", list(_pk) == [k for k in _nk if k not in NODE_FIRST] == list(_sk)
+      and [k for k in _nk if k in NODE_FIRST] == NODE_FIRST, (_pk, _nk, _sk))
 
 print("\n[5] a bare VK call hash → its link — the panel's _vk_link_norm and the browser's normVkLink (S12b)")
 # The pool, a user's QR-modal field and their Manage sheet take a hash on its own. The browser turns it into the link

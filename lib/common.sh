@@ -823,8 +823,9 @@ on_tty(){ if { true >/dev/tty; } 2>/dev/null; then "$@" >/dev/tty 2>/dev/tty; el
 # to keep stay running). Generic for the wg/awg side (scan disk) → no per-iface args needed.
 lc_teardown_baremetal(){
   systemctl disable --now swg-noded 2>/dev/null || true
-  # the SOCKS5 exits' hev — transient units that outlive swg-noded by design, so the container's own would find the TUN taken
-  local u; for u in $(systemctl list-units --all --plain --no-legend "swg-s5x-*.service" 2>/dev/null | awk '{print $1}'); do
+  # the SOCKS5 exits' hev and the MASQUE exits' usque — transient units that outlive swg-noded by design, so the container's
+  # own would find the TUN taken
+  local u; for u in $(systemctl list-units --all --plain --no-legend "swg-s5x-*.service" "swg-mqx-*.service" 2>/dev/null | awk '{print $1}'); do
     systemctl stop "$u" 2>/dev/null || true; systemctl reset-failed "$u" 2>/dev/null || true; done   # (callers run set -e: verify F47)
   systemctl stop swg-exit.slice 2>/dev/null || true
   local f n s
