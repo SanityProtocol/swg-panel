@@ -10171,7 +10171,8 @@ def _supervised_logs():
         with contextlib.suppress(OSError):
             out += [os.path.join(root, name, "server.log") for name in os.listdir(root)]
     with contextlib.suppress(OSError):                # …and each SOCKS5 exit's hev
-        out += [os.path.join(EXIT_DIR, n) for n in os.listdir(EXIT_DIR) if n.startswith("s5x-") and n.endswith(".log")]
+        out += [os.path.join(EXIT_DIR, n) for n in os.listdir(EXIT_DIR) if n.startswith(("s5x-", "wgx-")) and n.endswith(".log")]
+        # (…and each MASQUE exit's usque: the only `wgx-*.log` — a WireGuard exit logs nothing here)
     return out
 
 
@@ -11649,7 +11650,8 @@ _P256_G = (0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296,
 
 
 def _p256_mul(k, pt=_P256_G):
-    """k·pt on P-256, affine, double-and-add. Not constant time, and need not be (§4.3): one key, made here, no oracle."""
+    """k·pt on P-256, affine, double-and-add. Not constant time, and need not be (§4.3): one key, made here, no oracle.
+    Inverses by Fermat (x^(P-2)): pow(x, -1, P) is Python 3.8+, and install-node.sh accepts 3.7."""
     P = _P256_P
     def add(a, b):
         if a is None:
@@ -11659,9 +11661,9 @@ def _p256_mul(k, pt=_P256_G):
         if a[0] == b[0]:
             if (a[1] + b[1]) % P == 0:
                 return None
-            lam = (3 * a[0] * a[0] - 3) * pow(2 * a[1], -1, P) % P
+            lam = (3 * a[0] * a[0] - 3) * pow(2 * a[1], P - 2, P) % P
         else:
-            lam = (b[1] - a[1]) * pow(b[0] - a[0], -1, P) % P
+            lam = (b[1] - a[1]) * pow(b[0] - a[0], P - 2, P) % P
         x = (lam * lam - a[0] - b[0]) % P
         return x, (lam * (a[0] - x) - a[1]) % P
     r = None
@@ -11762,8 +11764,8 @@ def _warp_reenrol_due(dev, rec, now=None):
     item 11's v6 → v4 move has had its 15 minutes by then); MASQUE: the last freeze run did not say "freeze"."""
     now = time.time() if now is None else now
     st = _EXIT_HEALTH.get(dev)
-    if not (st and st.get("dead") and now - st["since"] >= WARP_REENROL_AFTER_S):
-        return False
+    if not (st and st.get("dead") and now - st["since"] >= WARP_REENROL_AFTER_S) or st.get("ok_since") is not None:
+        return False                      # (carrying again, inside its EXIT_ALIVE_AFTER_S: a recovery, not a dead key — F15)
     if now < float(rec.get("reenrol_next") or 0) or now - _WARP_REENROL["at"] < WARP_REENROL_SPACING_S:
         return False
     if not (rec.get("account_id") and rec.get("token")) or rec.get("refused"):
@@ -11840,16 +11842,20 @@ def _warp_reenrol(xid, rec):
     return dict(rec, reenrol_next=time.time() + WARP_REENROL_BACKOFF_S)
 
 
-def _exit_restore(xid, dev, prov, rec, blob, res):
+def _exit_restore(xid, dev, prov, rec, blob, res, relay=""):
     """Decision 8's restore, both WARP kinds (§4.11, operator Q12, T24, T29): the blob's ACCOUNT, enrolled for the exit's
     CURRENT kind — its own key when it is of that kind, a fresh one otherwise. → (record to run, restore_error).
-    A blob already applied (`restored` = its `pub`) is skipped: the panel ends the relay on the row's `restored`, and the
-    relay rides every sync until then — a PATCH every pass otherwise. Cloudflare unreachable (R3): a blob of the current
+    A relay already acted on (`restore_ref` = `relay`, its ciphertext's digest) is skipped, applied or not: the relay rides every
+    sync until the panel ends it — a PATCH every pass otherwise; each press is sealed afresh in the browser, so a press again
+    is a new `relay` and is tried again (review F3). `restored` = the blob's `pub`, for the panel. Cloudflare unreachable (R3): a blob of the current
     kind, or one on a node with no key, is installed as it is (today's restore); one of the other kind keeps the running
     record and says why. A running record of another kind is torn down by its own kind first (T21)."""
     bk, bpub = str(blob.get("provider") or "warp"), str(blob.get("pub") or "")
-    if bpub and bpub == rec.get("restored"):
+    if relay and relay == rec.get("restore_ref"):
         return rec, str(rec.get("restore_err") or "")      # said for as long as the relay rides
+    _ub = usq_binary() if prov == "warp-masque" and rec.get("priv") else ("-", "")
+    if not _ub[0]:
+        return rec, "waits for the MASQUE tunnel program: " + _ub[1]   # nothing PATCHed or torn down yet (F8)
     blob = dict(blob, provider=bk)
     new, why, ref = None, "", False
     if prov in WARP_KINDS and bk in WARP_KINDS:
@@ -11858,8 +11864,8 @@ def _exit_restore(xid, dev, prov, rec, blob, res):
             new.pop("licence_applied", None)
     if new is None and (ref or (bk != prov and rec.get("priv"))):
         why = ("the escrowed account could not be enrolled: " + why)[:240]
-        return dict(rec, restored=bpub, restore_err=why), why
-    new = dict(new or blob, restored=bpub)
+        return dict(rec, restored=bpub, restore_ref=relay, restore_err=why), why
+    new = dict(new or blob, restored=bpub, restore_ref=relay)
     for k in ("reg_fails", "reg_next", "reg_error", "refused", "started", "reenrol_next", "restore_err"):
         new.pop(k, None)
     if rec.get("priv") and (rec.get("provider") or "warp") != new["provider"]:
@@ -12425,6 +12431,8 @@ def _mqx_down(xid, dev):
     _s5x_down(xid, dev, unit=_mqx_unit(xid), cfg=os.path.join(EXIT_DIR, dev + ".conf"))
     for m in (_MQX, _MQX_FZ):
         m.pop(dev, None)
+    with contextlib.suppress(OSError):
+        os.unlink(os.path.join(EXIT_DIR, dev + ".log"))     # a Docker child's log goes with it (F13)
 
 
 def _mqx_freeze(dev, host=None, port=443, timeout=10):
@@ -12473,6 +12481,16 @@ def _mqx_freeze(dev, host=None, port=443, timeout=10):
             so.close()
 
 
+_MQX_FZ_RUN = {}    # device -> the freeze run in flight (one at a time per device)
+
+
+def _mqx_freeze_run(dev):
+    try:
+        _MQX_FZ[dev] = (time.time(), _mqx_freeze(dev))
+    finally:
+        _MQX_FZ_RUN.pop(dev, None)
+
+
 def _mqx_probe(dev, rec):
     """The probe thread's copy of a MASQUE record, with when to run the freeze check (§4.7): "due" at bring-up (no run yet)
     and every MQX_FREEZE_EVERY_S; "onpass" — DEAD, and only if the trace passes, at most once a minute; "onfail" — only if
@@ -12503,7 +12521,7 @@ def _mqx_evidence(dev, tr, rch):
                 log(LOG_INFO if fz[1] == "pass" else LOG_WARNING, "exit device %s: %s", dev,
                     "64 KB cross the MASQUE tunnel again" if fz[1] == "pass" else MQX_FREEZE_WHY)
             m["freeze"] = fz[1]
-    if m.get("freeze") == "freeze" and not (tr or {}).get("ip"):
+    if m.get("freeze") == "freeze" and tr and not tr.get("ip"):          # a probe out at the bound ({}) is no evidence (F17)
         tr, rch = dict(tr or {}, err=MQX_FREEZE_WHY), False
     return tr, None, (lambda _d, _r=rch: _r)
 
@@ -12516,6 +12534,8 @@ def _mqx_kick(xid, dev, hl, now=None):
     if not (hl or {}).get("dead"):
         m.pop("kick_n", None); m.pop("kick_at", None)
         return False
+    if hl.get("ok_since") is not None:
+        return False                          # carrying again, inside its alive window: a restart would undo it (F15)
     now = time.time() if now is None else now
     n = m.get("kick_n", 0)
     due = (hl["since"] + MQX_KICK_AFTER_S) if not n else (m["kick_at"] + min(MQX_KICK_MAX_S, MQX_KICK_AFTER_S * 2 ** n))
@@ -12525,7 +12545,12 @@ def _mqx_kick(xid, dev, hl, now=None):
     if NODE_KIND == "docker":
         pid, _ = _s5x_child(dev, os.path.join(EXIT_DIR, dev + ".conf"))
         if pid:
-            _s5x_kill(pid)                    # relaunched by the next pass's _s5x_ensure_child
+            _s5x_kill(pid)                    # relaunched by the next pass's _s5x_ensure_child …
+        p = _S5X_PROCS.get(xid)
+        if p:                                 # … as a deliberate stop, never a death with its back-off (F20)
+            with contextlib.suppress(Exception):
+                p["proc"] and p["proc"].poll()
+            p["proc"], p["at"] = None, 0.0
     else:
         run(["systemctl", "restart", _mqx_unit(xid)], timeout=30)
     log(LOG_INFO, "exit device %s: dead for %ds — restarting usque (kick %d)", dev, int(now - hl["since"]), n + 1)
@@ -13437,7 +13462,9 @@ def _exit_probe_all(devs):
         res[dev] = (tr, rch, _exit_ping(rec.get("endpoint")))
         if rec.get("mqx") == "due" or (rec.get("mqx") == "onfail" and not (tr or {}).get("ip")) \
                 or (rec.get("mqx") == "onpass" and (tr or {}).get("ip")):
-            _MQX_FZ[dev] = (time.time(), _mqx_freeze(dev))   # a MASQUE exit's freeze run (§4.7), parked for the caller
+            if dev not in _MQX_FZ_RUN:           # a MASQUE exit's freeze run (§4.7), in its OWN thread: up to 10 s the
+                _MQX_FZ_RUN[dev] = threading.Thread(target=_mqx_freeze_run, args=(dev,), daemon=True)   # pass never
+                _MQX_FZ_RUN[dev].start()         # waits on (review F14); parked in _MQX_FZ for a later pass
         if rec.get("mapdns") or "mqx" in rec:
             pass                                 # a SOCKS exit: its endpoint is the proxy, whose name hev resolves itself;
                                                  # a MASQUE exit's is an address usque dials as it is (T12)
@@ -13608,10 +13635,11 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
     _EXITS["dialin"] = _dialin_devices(want)
     _slots = []                                  # live devices awaiting their probe: (slot in out, xid, dev, prov, rec, err, blob_err)
     _rin = {}                                    # exit id -> seconds to a failed switch's next try (§4.10), for its row
+    _reen = set()                                # devices re-enrolled this pass — no evidence taken from them this pass
     def _exit_row(xid, dev, prov, rec, err, _blob_err, _live, tr, _hl, ping):
         # ONE shape for every exit that reached its health step, judged now or after the loop (4b).
-        _hs = _exit_handshake(rec, dev) if _live and prov != "socks5" else None
-        _ul = _exit_underlay(rec, dev, _hs) if _live and prov != "socks5" and not _exit_dialin(rec) else None
+        _hs = _exit_handshake(rec, dev) if _live and _exit_is_wg(prov) else None
+        _ul = _exit_underlay(rec, dev, _hs) if _live and _exit_is_wg(prov) and not _exit_dialin(rec) else None
         return {"id": xid, "device": dev, "provider": prov, "up": _live,
                     # Present only while the node is routing around this tunnel, so its presence alone is the
                     # fact the panel shows; an older node never sends it and the row reads as it always did.
@@ -13682,6 +13710,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             # Set when a relayed escrow blob could not be opened but the exit has a key of its own and keeps
             # running. Reset per exit, or one exit's failure would be reported against the next one.
             _blob_err = ""
+            _keyed = False                               # enrolled/registered/restored this pass: no re-enrolment too (F1)
             # DECISION 3, and it has to mean PAUSE here or the word is a lie. A disabled exit keeps its key
             # material — for WARP that IS the account, and re-registering would hand the operator a different
             # egress IP than the one they turned off. Down, kept, and never created in the first place if it was
@@ -13832,7 +13861,9 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     _opened = json.loads(ivk_unseal(transport_priv(), d["key_blob"]).decode())
                 if isinstance(_opened, dict) and _opened.get("priv"):
                     # the blob's OWN kind (T24), its account enrolled for the exit's current kind (§4.11)
-                    rec, _blob_err = _exit_restore(xid, dev, prov, rec, _opened, res)
+                    rec, _blob_err = _exit_restore(xid, dev, prov, rec, _opened, res,
+                                                   hashlib.sha256(str(d["key_blob"]["ct"]).encode()).hexdigest()[:16])
+                    _keyed = True
                     if not rec.get("priv"):
                         with contextlib.suppress(Exception):
                             _replace_if_changed(sp, json.dumps(rec), 0o600)   # `restored`: one press, one PATCH (T29)
@@ -13865,7 +13896,12 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 # §4.10 — A SWITCH between the WARP kinds, keeping the account. Nothing is torn down before Cloudflare answers
                 # (T19): a failed PATCH leaves the old kind carrying on the same device — this pass runs the RECORD's kind —
                 # and says why, under the registration back-off.
-                rec, _sw, _rin[xid] = _warp_keyed(xid, dev, prov, rec, sp, res)
+                _ub = usq_binary() if prov == "warp-masque" else ("-", "")
+                if _ub[0]:
+                    rec, _sw, _rin[xid] = _warp_keyed(xid, dev, prov, rec, sp, res)
+                    _keyed = True
+                else:
+                    _sw = _ub[1]                         # fetching, or no build: the running WireGuard carries on (F8)
                 if _sw:
                     err = "still on %s: %s" % ("WireGuard" if (rec.get("provider") or "warp") == "warp" else "MASQUE", _sw)
             elif not rec.get("priv"):
@@ -13877,26 +13913,29 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 # bouncing the daemon is not a way to keep hammering.
                 # (_warp_keyed: the POST once, the MASQUE key a PATCH of its own — T6)
                 rec, err, _ri = _warp_keyed(xid, dev, prov, rec, sp, res)
+                _keyed = True
                 if err:
                     out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": err,
                                 **({"retry_in": _ri} if _ri is not None else {})})
                     continue
+            _wkind = prov                                # the panel's kind (a MASQUE transport is read only under it)
             if prov in WARP_KINDS and (rec.get("provider") or "warp") in WARP_KINDS:
                 if (rec.get("provider") or "warp") == prov and rec.get("reg_fails") and rec.get("priv"):
                     for _k in ("reg_fails", "reg_next", "reg_error"):
                         rec.pop(_k, None)                # a switch given up (the panel wants the running kind again)
                 prov = rec.get("provider") or "warp"     # the pass runs the RECORD's kind (§4.10)
-                if not _blob_err and rec.get("priv") and _warp_reenrol_due(dev, rec):
+                if not (_blob_err or _keyed) and rec.get("priv") and _warp_reenrol_due(dev, rec):
                     rec = _warp_reenrol(xid, rec)        # §4.12: dead 15 min, the network not to blame
+                    _reen.add(dev)                       # its PATCH took up to 30 s of this pass: not probed too (F2)
                 if rec.get("refused"):
                     err = err or rec["refused"]          # T26: said, and nothing more is asked of Cloudflare
             # 2) a WARP+ licence the operator supplied, applied ONCE per distinct key
             lic = str(d.get("licence") or "").strip()
-            if prov in WARP_KINDS and lic and lic != rec.get("licence_applied"):
+            if prov in WARP_KINDS and lic and lic != rec.get("licence_applied") and not rec.get("refused"):
                 acct, lerr = _warp_apply_licence(rec, lic)
                 rec["account_type"] = acct
                 rec["licence_applied"] = lic if not lerr else rec.get("licence_applied", "")
-                err = lerr
+                err = err or lerr
                 if lerr:
                     log(LOG_WARNING, "exit %s: WARP+ licence rejected — %s", xid, lerr)
                 else:
@@ -13905,7 +13944,11 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             rec["device"] = dev
             if prov == "warp-masque":
                 # usque presents the account over MASQUE as the TUN `dev` (§4.5), supervised like hev; judged after the loop
-                _e2, _setup = _mqx_up(xid, dev, rec, "h2" if d.get("transport") == "h2" else "h3")
+                # the transport the panel asks for is read only while it wants MASQUE; a pending switch away keeps running
+                # the one it had (the WireGuard entry carries none — F11)
+                if _wkind == "warp-masque":
+                    rec["transport"] = "h2" if d.get("transport") == "h2" else "h3"
+                _e2, _setup = _mqx_up(xid, dev, rec, rec.get("transport") or "h3")
                 with contextlib.suppress(Exception):
                     _replace_if_changed(sp, json.dumps(rec), 0o600)
                 if _e2:
@@ -13997,7 +14040,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
         # a SOCKS exit is probed at the adopted cadence (T3: its trace crosses a metered proxy), and whenever its check is due
         _sx = {dev: _exit_probe_due(dev) for _s, _x, dev, _p, _r, _e, _b in _slots if _p == "socks5"}
         _pr = _exit_probe_all([(dev, (_mqx_probe(dev, rec) if _p == "warp-masque" else rec) if dev not in _sx else {"endpoint": rec.get("endpoint"), "mapdns": S5X_DNS})
-                               for _s, _x, dev, _p, rec, _e, _b in _slots if dev not in _sx or _sx[dev]]
+                               for _s, _x, dev, _p, rec, _e, _b in _slots if (dev not in _sx or _sx[dev]) and dev not in _reen]
                               + [(d, {}) for d, due in _ad if due])
         if any(_exit_is_wg(_p) for _s, _x, _d, _p, _r, _e, _b in _slots):   # the handshakes below come from the pass's dump (B3):
             _pass_forget("all-dump:", keep_failed=True)   # one taken before these probes would miss a first handshake they made
@@ -20881,7 +20924,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap["exit_candidates"] = list(_EXIT_CAND["list"])
     snap["devexit"] = _devexit_report()               # decision 2: per-exit device state → the node's Issues tag
     snap["exits"] = list(_EXITS["list"])              # imported exits: what we registered/wrote, their health — never a private key
-    snap["exit_kinds"] = list(EXIT_KINDS)             # the kinds this node can make, by name: the panel sends no other (s9a F17)
+    snap["exit_kinds"] = [k for k in EXIT_KINDS if k != "warp-masque" or _turn_arch() in USQ_SHA256]   # the kinds this
+    # node can make, by name: the panel sends no other (s9a F17) — MASQUE only where a usque build exists (review F8)
     # Interfaces in ANOTHER container's netns (AmneziaWG's server is the case). A SEPARATE key, never
     # merged into the candidates above: those are offers to adopt, and this one cannot be adopted in
     # place — see _container_ifaces. Reported so the panel can say what is running instead of nothing.

@@ -128,12 +128,24 @@ N.run = lambda a, **k: _R("")
 N._dev_link_state = lambda dev: "absent"
 N._exit_trace = lambda dev: {}
 N._warp_register = lambda: (_ for _ in ()).throw(AssertionError("registered instead of restoring"))
+# ⚠️ NO CLOUDFLARE FROM A GATE. Since 1.8.12 item 17b a restore enrols the blob's key on its account with a PATCH; the real
+# `_warp_api` would send it to api.cloudflareclient.com (from the laptop: production's egress) and the verdict would hang on
+# the network's answer (review F4). A fake /reg that accepts the key, the only answer this section is about.
+_CF = []
+def _cf(path, data, method, token=""):
+    _CF.append((method, path, (data or {}).get("key")))
+    return 200, {"id": path.rsplit("/", 1)[-1], "config": {"interface": {"addresses": {"v4": "172.16.0.2"}},
+                 "peers": [{"public_key": "PEER", "endpoint": {"host": "engage.cloudflareclient.com:2408"}}]},
+                 "account": {"account_type": "free"}}
+N._warp_api = _cf
 res = {"changed": 0, "errors": []}
 N.reconcile_exits([{"id": "aabbccdd", "device": "wgx-aabbccdd", "provider": "warp", "key_blob": relayed}], res)
 _stored = json.load(open(os.path.join(d2, "aabbccdd.json")))
 check("a relayed escrow key is RESTORED, not replaced by a fresh registration",
       _stored.get("priv") == "PRIVKEY" and _stored.get("account_id") == "acc", _stored)
 check("…and the conf is written from it", "PRIVKEY" in open(os.path.join(d2, "wgx-aabbccdd.conf")).read())
+check("…its own key enrolled on its account (one PATCH, to the fake /reg)",
+      [c[:2] for c in _CF] == [("PATCH", "/reg/acc")] and _CF[0][2] == REC.get("pub"), _CF)
 
 # ⚠️ …EVEN WHEN THE NODE ALREADY HAS A KEY OF ITS OWN, which is the case that matters and the one the
 # guard excluded. A `key_blob` reaches the node only because the panel armed a one-shot relay, and the

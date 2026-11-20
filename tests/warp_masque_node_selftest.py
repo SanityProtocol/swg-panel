@@ -59,8 +59,13 @@ PLANTS = {
     "--perturb-onpass": ('        return dict(rec, mqx="onpass" if time.time() - fz_at >= 60 else "")', '        return dict(rec, mqx="")'),  # [5]
     "--perturb-namelater": ('                    _hl["why"] = MQX_FREEZE_WHY          # named once a run proves it, even after the exit went dead',
                             '                    pass'),                                                         # [5]
+    "--perturb-fzthread": ('                _MQX_FZ_RUN[dev].start()', '                _MQX_FZ_RUN[dev].run()'),                     # [5]
+    "--perturb-noevidence": ('    if m.get("freeze") == "freeze" and tr and not tr.get("ip"):',
+                             '    if m.get("freeze") == "freeze" and not (tr or {}).get("ip"):'),                                # [5]
     "--perturb-sticky": ('        tr, rch = dict(tr or {}, err=MQX_FREEZE_WHY), False', '        tr = dict(tr or {}, err=MQX_FREEZE_WHY)'),  # [5]
-    "--perturb-kick": ("min(MQX_KICK_MAX_S, MQX_KICK_AFTER_S * 2 ** n)", "MQX_KICK_AFTER_S"),                                 # [6]
+    "--perturb-kick": ("min(MQX_KICK_MAX_S, MQX_KICK_AFTER_S * 2 ** n)", "MQX_KICK_AFTER_S"),
+    "--perturb-kickok": ('    if hl.get("ok_since") is not None:\n        return False', '    if False:\n        return False'),       # [6]
+    "--perturb-kickdeath": ('        if p:                                 # … as a deliberate stop', '        if False:  # … as a deliberate stop'),  # [6]                                 # [6]
     "--perturb-post": ('    if not rec.get("account_id"):\n        reg, why = _warp_register()', '    if True:\n        reg, why = _warp_register()'),  # [7]
     "--perturb-acctonly": ('                acct = {k: v for k, v in reg.items() if k not in ("priv", "pub", "peer_key", "endpoint", "address")}',
                            '                acct = reg'),                                                                      # [7]
@@ -68,11 +73,17 @@ PLANTS = {
                             '                _exit_down(dev, dict(rec, id=xid)); rec, _sw, _rin[xid] = _warp_keyed(xid, dev, prov, rec, sp, res)'),  # [7]
     "--perturb-newkind": ('        if rec.get("priv") and (rec.get("provider") or "warp") != prov:\n            _exit_down(dev, dict(rec, id=xid))',
                           '        if rec.get("priv") and (rec.get("provider") or "warp") != prov:\n            _exit_down(dev, dict(new, id=xid))'),  # [7]
+    "--perturb-switchwait": ('                if _ub[0]:\n                    rec, _sw', '                if True:\n                    rec, _sw'),  # [7]
+    "--perturb-transport": ('                if _wkind == "warp-masque":\n                    rec["transport"]',
+                            '                if True:\n                    rec["transport"]'),                                   # [7]
     "--perturb-host": ('        endpoint = ep.get("host") or ep.get("v4") or ""', '        endpoint = ep.get("v4") or ep.get("host") or ""'),  # [7]
     "--perturb-1001": ("        if code == 1001 and not _try:", "        if False:"),                                        # [7]
     "--perturb-restorewarp": ('    bk, bpub = str(blob.get("provider") or "warp"), str(blob.get("pub") or "")',
                               '    bk, bpub = "warp", str(blob.get("pub") or "")'),                                         # [8]
-    "--perturb-restoreonce": ('    if bpub and bpub == rec.get("restored"):\n        return rec, ""', '    if False:\n        return rec, ""'),  # [8]
+    "--perturb-restoreonce": ('    if relay and relay == rec.get("restore_ref"):\n        return rec, str(', '    if False:\n        return rec, str('),  # [8]
+    "--perturb-relay": ('    if relay and relay == rec.get("restore_ref"):', '    if rec.get("restore_ref"):'),                         # [8]
+    "--perturb-usqwait": ('    if not _ub[0]:\n        return rec, "waits for the MASQUE', '    if False:\n        return rec, "waits for the MASQUE'),  # [8]
+    "--perturb-keyedpass": ('if not (_blob_err or _keyed) and rec.get("priv")', 'if not _blob_err and rec.get("priv")'),           # [8]
     "--perturb-restorepersist": ("                            _replace_if_changed(sp, json.dumps(rec), 0o600)   # `restored`: one press, one PATCH (T29)",
                                  "                            pass"),                                                 # [8]
     "--perturb-giveup": ('                    for _k in ("reg_fails", "reg_next", "reg_error"):\n                        rec.pop(_k, None)',
@@ -80,7 +91,10 @@ PLANTS = {
     "--perturb-asis": ('    if new is None and (ref or (bk != prov and rec.get("priv"))):', '    if new is None:'),         # [8]
     "--perturb-wgnet": ("    return hs is not None and (hs == 0 or hs > EXIT_SESSION_DEAD_S)", "    return hs is not None"),  # [9]
     "--perturb-mqnet": ('        return (_MQX.get(dev) or {}).get("freeze") != "freeze"', '        return True'),               # [9]
-    "--perturb-900": ('now - st["since"] >= WARP_REENROL_AFTER_S):', 'now - st["since"] >= 0):'),                             # [9]
+    "--perturb-900": ('now - st["since"] >= WARP_REENROL_AFTER_S) or st', 'now - st["since"] >= 0) or st'),
+    "--perturb-reenok": ('WARP_REENROL_AFTER_S) or st.get("ok_since") is not None:', 'WARP_REENROL_AFTER_S):'),                 # [9]
+    "--perturb-reenprobe": (' and dev not in _reen]', ']'),                                                                     # [9]
+    "--perturb-licrefused": ('lic != rec.get("licence_applied") and not rec.get("refused"):', 'lic != rec.get("licence_applied"):'),  # [9]                             # [9]
     "--perturb-6h": ("    return dict(rec, reenrol_next=time.time() + WARP_REENROL_BACKOFF_S)", "    return dict(rec, reenrol_next=0)"),  # [9]
     "--perturb-spacing": (' or now - _WARP_REENROL["at"] < WARP_REENROL_SPACING_S:', ':'),                                   # [9]
     "--perturb-401": ("        if code in (1012, 1006):\n            return None, False, WARP_REFUSED, True",
@@ -88,6 +102,10 @@ PLANTS = {
     "--perturb-fork": ('    now = time.time() if now is None else now\n    st = _EXIT_HEALTH.get(dev)\n    if not (st and st.get("dead")',
                        '    now = time.time() if now is None else now\n    _exit_handshake(rec, dev)\n    st = _EXIT_HEALTH.get(dev)\n    if not (st and st.get("dead")'),  # [9]
     "--perturb-acct": ("dict(ivk_seal(_IVK_VAULT_PUB, plaintext), **(got[2] if len(got) > 2 else {}))", "dict(ivk_seal(_IVK_VAULT_PUB, plaintext))"),  # [10]
+    "--perturb-underlay": ('_ul = _exit_underlay(rec, dev, _hs) if _live and _exit_is_wg(prov)',
+                           '_ul = _exit_underlay(rec, dev, _hs) if _live and prov != "socks5"'),                               # [11]
+    "--perturb-mqlog": ('n.startswith(("s5x-", "wgx-"))', 'n.startswith("s5x-")'),                                            # [11]
+    "--perturb-py37": ("pow(2 * a[1], P - 2, P)", "pow(2 * a[1], -1, P)"),                                                     # [1]
     "--perturb-colo": ('_exit_trace(dev, colo=True) if "mqx" in rec\n              else _exit_trace(dev))',
                        '_exit_trace(dev, colo=True) if "mqx" in rec\n              else _exit_trace(dev, colo=True))'),     # [11]
     "--perturb-pem": ('"peer_key": rec.get("peer_key", "") if prov != "warp-masque" else "",', '"peer_key": rec.get("peer_key", ""),'),  # [11]
@@ -260,6 +278,14 @@ def sync(*exits):
     return {x["id"]: x for x in N._EXITS["list"]}, res
 
 
+def fzwait():
+    """The freeze run is its own thread (review F14): wait for it, as a later pass would."""
+    for _ in range(500):
+        if not N._MQX_FZ_RUN:
+            return
+        time.sleep(0.01)
+
+
 def reset():
     LINK.clear(); UNITS.clear(); CALLS.clear(); UPS.clear(); CF["calls"].clear(); CF["fail"].clear(); TR.clear()
     for m in (N._EXIT_HEALTH, N._MQX, N._MQX_FZ, N._EXIT_PROBED_AT, N._S5X_PROCS):
@@ -291,6 +317,9 @@ check("openssl reads the private key and derives the same public key", _o.return
       (_o.returncode, _o.stderr[-200:]))
 _o2 = subprocess.run(["openssl", "ec", "-inform", "DER", "-in", os.path.join(_kd, "k.der"), "-check", "-noout"], capture_output=True)
 check("…and finds it a valid P-256 key", _o2.returncode == 0, _o2.stderr[-200:])
+_ps = open(N.__file__, encoding="utf-8").read()
+_ps = _ps[_ps.index("def _p256_mul"):_ps.index("def _p256_keypair")]
+check("inverses by Fermat: no pow(x, -1, P), which the Python 3.7 a node may run refuses (review F9)", ", -1, P) %" not in _ps)
 _r1, _r2 = N._p256_keypair(), N._p256_keypair()
 check("a fresh key each time", _r1 != _r2 and len(base64.b64decode(_r1[1])) == 91)
 
@@ -490,6 +519,10 @@ check("a run with no answer moves nothing (still freeze)", N._MQX[dev]["freeze"]
 N._MQX_FZ[dev] = (time.time(), "pass")
 N._mqx_evidence(dev, {}, None)
 check("a later pass clears it", N._MQX[dev]["freeze"] == "pass")
+N._MQX[dev]["freeze"] = "freeze"
+tr3, _n, rc3 = N._mqx_evidence(dev, {}, None)
+check("…and under a sticky freeze a probe still out at the bound ({}) stays no evidence (review F17)", tr3 == {} and rc3(dev) is None,
+      (tr3, rc3(dev)))
 # when it runs (§4.7)
 N._MQX.clear(); N._EXIT_HEALTH.clear()
 check("at bring-up: due", N._mqx_probe(dev, {})["mqx"] == "due")
@@ -506,10 +539,25 @@ check("DEAD: on a trace that passes (a fresh flow nobody else uses), at most onc
 _calls = []
 N._mqx_freeze = lambda d, *a, **k: (_calls.append(d), "freeze")[1]
 N._exit_probe_all([(dev, {"endpoint": "1.2.3.4:443", "mqx": "onpass"})])
+fzwait()
 TR[dev] = {"err": "timed out"}
 N._exit_probe_all([(dev, {"endpoint": "1.2.3.4:443", "mqx": "onpass"})])
+fzwait()
 TR.pop(dev)
 check("…run when the trace passed, not when it failed", _calls == [dev], _calls)
+# the run is a thread of its own: the pass never waits on its 10 s, one run at a time per device (review F14)
+_gate, _calls = threading.Event(), []
+N._mqx_freeze = lambda d, *a, **k: (_calls.append(d), _gate.wait(3), "pass")[2]
+N._MQX_FZ.clear()
+_t0 = time.monotonic()
+N._exit_probe_all([(dev, {"endpoint": "1.2.3.4:443", "mqx": "due"})])
+_el = time.monotonic() - _t0
+N._exit_probe_all([(dev, {"endpoint": "1.2.3.4:443", "mqx": "due"})])
+_n = len(_calls)
+_gate.set(); fzwait()
+check("the 64 KB run never holds the pass, one at a time per device, its answer parked for a later pass (review F14)",
+      _el < 1.5 and _n == 1 and (N._MQX_FZ.get(dev) or (0, None))[1] == "pass", (_el, _n, N._MQX_FZ.get(dev)))
+N._MQX_FZ.clear()
 N._mqx_freeze = lambda dev, *a, **k: FZ["v"]
 
 # a verdict already dead (the trace's timeout) is renamed once a run proves the freeze
@@ -521,6 +569,8 @@ N._EXIT_HEALTH[dev] = {"dead": True, "since": time.time() - 100, "fails": 20, "f
 N._MQX[dev] = {"fz_at": time.time() - 100}
 TR[dev] = {"ip": "198.51.100.7", "warp": "on"}       # usque reconnected: the fresh flow's trace passes …
 FZ["v"] = "freeze"                                     # … and the 64 KB check stalls
+sync({"id": "aabbccdd", "provider": "warp-masque"})
+fzwait()                                               # its own thread (F14): the next pass takes the answer
 rows, _ = sync({"id": "aabbccdd", "provider": "warp-masque"})
 FZ["v"] = "pass"; TR.pop(dev)
 check("a dead exit whose fresh flow passes the trace and stalls at 64 KB: named a freeze (the rig's case)",
@@ -536,6 +586,21 @@ check("restarts at 180, +360, +720, +1440, then every 1800", kicks == [180, 540,
 check("…with systemctl restart", ["systemctl", "restart", "swg-mqx-aabbccdd"] in CALLS)
 N._mqx_kick("aabbccdd", dev, {"dead": False})
 check("reset when the verdict clears", "kick_n" not in N._MQX[dev])
+check("a dead exit carrying again, inside its alive window, is not restarted (review F15)",
+      not N._mqx_kick("aabbccdd", dev, {"dead": True, "since": 0.0, "ok_since": 9990.0}, now=10000.0))
+N.NODE_KIND = "docker"
+_sc, _skl = N._s5x_child, N._s5x_kill
+N._s5x_child = lambda d, c: (4242, "sig")
+N._s5x_kill = lambda pid: None
+N._S5X_PROCS["aabbccdd"] = {"proc": None, "deaths": 1, "next": 0.0, "at": 5.0}
+N._MQX.pop(dev, None)
+_k = N._mqx_kick("aabbccdd", dev, {"dead": True, "since": 0.0}, now=200.0)
+_p = N._S5X_PROCS["aabbccdd"]
+check("docker: a kick is a deliberate stop — the next pass relaunches it with no death and no back-off (review F20)",
+      _k and _p["proc"] is None and not _p["at"] and _p["deaths"] == 1, _p)
+N._s5x_child, N._s5x_kill = _sc, _skl
+N.NODE_KIND = "baremetal"
+N._S5X_PROCS.clear()
 
 # ── [7] registration and the switch ─────────────────────────────────────────────────────────────────────────────────────────
 print("\n[7] registration and the switch, against a fake /reg")
@@ -610,6 +675,28 @@ CF["calls"].clear()
 rows, _ = sync({"id": X, "provider": "warp-masque"})
 check("a switch given up (the panel wants the running kind again): its back-off is cleared, no PATCH", not CF["calls"]
       and "reg_fails" not in rec_of(X) and not rows[X].get("error"), (CF["calls"], rec_of(X).get("reg_fails"), rows[X].get("error")))
+# a switch to MASQUE waits for usque: nothing PATCHed or torn down meanwhile (review F8)
+reset()
+sync({"id": X, "provider": "warp"})
+CF["calls"].clear(); CALLS.clear()
+N.usq_binary = lambda: ("", N.MQX_BUSY)
+rows, _ = sync({"id": X, "provider": "warp-masque"})
+check("a switch to MASQUE while usque is being fetched: no PATCH, WireGuard carries on, the row says so (review F8)",
+      not patches() and rec_of(X)["provider"] == "warp" and not any(c[:2] == ["wg-quick", "down"] for c in CALLS)
+      and rows[X]["up"] is True and rows[X].get("error", "").startswith("still on WireGuard: fetching"), (patches(), rows[X]))
+N.usq_binary = lambda: ("/opt/usque", "")
+sync({"id": X, "provider": "warp-masque"})
+check("…and goes ahead once it is there", rec_of(X)["provider"] == "warp-masque" and len(patches()) == 1, rec_of(X).get("provider"))
+# a failed switch away from an HTTP/2 MASQUE exit keeps it on HTTP/2 (review F11)
+CALLS.clear()
+sync({"id": X, "provider": "warp-masque", "transport": "h2"})
+_was = any(c[0] == "systemd-run" and "--http2" in c for c in CALLS)
+CALLS.clear()
+CF["fail"] = [(503, "busy")]
+rows, _ = sync({"id": X, "provider": "warp"})
+check("a failed switch away from an HTTP/2 MASQUE exit: usque is not restarted on HTTP/3 (review F11)",
+      _was and not any(c[0] == "systemd-run" or c[:2] == ["systemctl", "stop"] for c in CALLS) and rec_of(X).get("transport") == "h2"
+      and rows[X].get("error", "").startswith("still on MASQUE:"), (_was, CALLS, rec_of(X).get("transport")))
 # 1001: a fresh key, once
 reset()
 save_rec(X, {"provider": "warp", "account_id": "acct-9", "token": "tok-acct-9"})
@@ -682,6 +769,53 @@ rows2, _ = sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "x", "_p
 check("a blob whose account Cloudflare deleted (1006), on a node with no key: said, and never PATCHed twice",
       n1 >= 1 and len(patches()) == n1 and "could not be enrolled" in rows2[X].get("error", ""), (n1, len(patches()), rows2[X]))
 
+# a failed restore: not again on the same relay, tried again on a new press — each is sealed afresh (review F3)
+reset()
+sync({"id": X, "provider": "warp"})
+CF["accts"]["acct-old"] = {"token": "tok-acct-old", "key": ""}
+CF["fail"] = [(0, "timed out")]
+sync({"id": X, "provider": "warp", "key_blob": {"ct": "x", "_plain": BLOB_MQ}})
+CF["calls"].clear()
+sync({"id": X, "provider": "warp", "key_blob": {"ct": "x", "_plain": BLOB_MQ}})
+_same = len(patches())
+rows, _ = sync({"id": X, "provider": "warp", "key_blob": {"ct": "y", "_plain": BLOB_MQ}})
+check("a restore that failed: not again on the same relay, tried again on a new press — and applied (review F3)",
+      _same == 0 and len(patches()) == 1 and rec_of(X).get("account_id") == "acct-old" and not rows[X].get("restore_error"),
+      (_same, patches(), rows[X]))
+# a restore onto a MASQUE exit waits for usque (review F8)
+reset()
+sync({"id": X, "provider": "warp"})
+CF["accts"]["acct-old"] = {"token": "tok-acct-old", "key": ""}
+CF["calls"].clear(); CALLS.clear()
+N.usq_binary = lambda: ("", N.MQX_BUSY)
+rows, _ = sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "x", "_plain": BLOB_WG}})
+check("a restore onto a MASQUE exit while usque is being fetched: nothing PATCHed or torn down, and said (review F8)",
+      not patches() and rec_of(X)["provider"] == "warp" and not any(c[:2] == ["wg-quick", "down"] for c in CALLS)
+      and "waits for the MASQUE tunnel program" in rows[X].get("restore_error", ""), (patches(), rows[X]))
+N.usq_binary = lambda: ("/opt/usque", "")
+sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "x", "_plain": BLOB_WG}})
+check("…and the same relay applies once it is there", len(patches()) == 1 and rec_of(X)["provider"] == "warp-masque", patches())
+# a restore onto a DEAD exit: one PATCH; the restored key is judged afresh, never re-enrolled in that pass (review F1).
+# (A new key is a new config: the bring-up drops the old key's verdict — _mqx_up, the WireGuard bounce.)
+reset()
+CF["accts"]["acct-old"] = {"token": "tok-acct-old", "key": ""}
+sync({"id": X, "provider": "warp-masque"})
+dev = "wgx-" + X
+_dead = lambda: {"dead": True, "since": time.time() - 1000, "fails": 99, "fail_since": time.time() - 1000, "ok_since": None, "why": "x"}
+N._EXIT_HEALTH[dev] = _dead()
+N._MQX[dev] = {"fz_at": time.time(), "freeze": "pass"}
+N._WARP_REENROL["at"] = 0.0
+CF["calls"].clear()
+sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "x", "_plain": BLOB_MQ}})
+check("a restore onto an exit dead 15 min: one PATCH, no 6 h back-off on the restored key, the old key's verdict dropped (review F1)",
+      len(patches()) == 1 and not rec_of(X).get("reenrol_next") and not (N._EXIT_HEALTH.get(dev) or {}).get("dead"),
+      (patches(), rec_of(X).get("reenrol_next"), N._EXIT_HEALTH.get(dev)))
+N._EXIT_HEALTH[dev] = _dead()
+N._WARP_REENROL["at"] = 0.0
+CF["calls"].clear()
+sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "z", "_plain": BLOB_MQ}})
+check("…and the same key put back on a dead exit: still one PATCH in that pass", len(patches()) == 1, patches())
+
 # ── [9] re-enrolment ────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[9] re-enrolment, both kinds")
 reset()
@@ -716,6 +850,9 @@ N._MQX[dev] = {"freeze": "freeze"}
 check("MASQUE: not while the freeze verdict blames the network", not N._warp_reenrol_due(dev, mrec, now=now))
 N._MQX[dev] = {"freeze": "pass"}
 check("MASQUE: due when bytes flowed and stopped", N._warp_reenrol_due(dev, mrec, now=now))
+N._EXIT_HEALTH[dev]["ok_since"] = now - 5
+check("…not while it carries again, inside its alive window (review F15)", not N._warp_reenrol_due(dev, mrec, now=now))
+N._EXIT_HEALTH[dev].pop("ok_since")
 N._MQX.clear()
 # through the pass: a new peer key → rebuilt; the same → 6 h
 HS["v"] = 0
@@ -724,8 +861,12 @@ TR[dev] = {"err": "timed out"}
 N._exit_reach = lambda d, *a, **k: False
 CF["wg_peer"] = "TmV3UGVlcktleU5ld1BlZXJLZXlOZXdQZWVyS2V5MD0="
 CF["calls"].clear(); UPS.clear()
+_trc, _tr0 = [], N._exit_trace
+N._exit_trace = lambda d, *a, **k: (_trc.append(d), _tr0(d, *a, **k))[1]
 sync({"id": X, "provider": "warp"})
+N._exit_trace = _tr0
 rc2 = rec_of(X)
+check("the pass that re-enrolled an exit (its PATCH took up to 30 s of it) does not probe it too (review F2)", dev not in _trc, _trc)
 check("a WireGuard exit whose /reg answers a new peer key is rebuilt on it", patches() and patches()[-1][2]["key"] == rc["pub"]
       and rc2["peer_key"] == CF["wg_peer"] and UPS and not rc2.get("reenrol_next"), (patches(), rc2.get("peer_key"), UPS))
 check("…its own key, the same account", rc2["pub"] == rc["pub"] and rc2["account_id"] == rc["account_id"])
@@ -752,6 +893,9 @@ N._WARP_REENROL["at"] = 0.0
 CF["calls"].clear()
 sync({"id": X, "provider": "warp"})
 check("…and nothing more is asked of Cloudflare", not CF["calls"], CF["calls"])
+rows, _ = sync({"id": X, "provider": "warp", "licence": "LIC-123"})
+check("…not even a WARP+ licence, and the row keeps saying why (review F5)", not CF["calls"] and rows[X].get("error") == N.WARP_REFUSED,
+      (CF["calls"], rows[X].get("error")))
 N._exit_handshake = _hs_real
 N._exit_reach = lambda dev, *a, **k: True
 CF["wg_peer"] = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
@@ -785,6 +929,15 @@ check("a MASQUE row: no peer key (the PEM stays on the node), no handshake", m.g
 check("…its colo and freeze verdict", m.get("colo") == "DME" and m.get("freeze") == "pass", m)
 check("a WireGuard row as before: no colo anywhere", "colo" not in w and "colo" not in (w.get("trace") or {}) and "freeze" not in w, w)
 check("node reports the new kind", "warp-masque" in N.EXIT_KINDS)
+_ul0 = N._exit_underlay
+N._exit_underlay = lambda rec, dev, hs: {"via": "v4", "failed": ["v6"]}
+rows, _ = sync({"id": X, "provider": "warp-masque"}, {"id": "11223344", "provider": "warp"})
+N._exit_underlay = _ul0
+check("item 11's underlay is WireGuard's: never on a MASQUE row (review F18)", "underlay" not in rows[X] and "underlay" in rows["11223344"],
+      (rows[X].get("underlay"), rows["11223344"].get("underlay")))
+open(os.path.join(N.EXIT_DIR, "wgx-aabbccdd.log"), "w").close()
+check("docker: a MASQUE child's log is inside the log budget (review F13)",
+      os.path.join(N.EXIT_DIR, "wgx-aabbccdd.log") in N._supervised_logs(), N._supervised_logs())
 
 if MODE:
     print("\nperturbed (%s): %s" % (MODE, "CAUGHT — %d red" % len(FAILS) if FAILS else "NOTHING FAILED"))

@@ -68,7 +68,7 @@ PLANTS = {
                          '                  and False})'),                                                                  # [5]
     "--perturb-f18": ('                    if rec.get("provider") in EXIT_KINDS and (_dev_link_state(_od) != "absent" or rec.get("started")):',
                       '                    if False:'),                                                                # [6]
-    "--perturb-hs": ('_hs = _exit_handshake(rec, dev) if _live and prov != "socks5" else None',
+    "--perturb-hs": ('_hs = _exit_handshake(rec, dev) if _live and _exit_is_wg(prov) else None',
                      '_hs = _exit_handshake(rec, dev) if _live else None'),                                     # [7]
     "--perturb-cadence": ("if dev not in _sx or _sx[dev]]", "]"),                                                    # [7]
     "--perturb-why": ('                    _hl["why"] = S5X_WHY.get(_c["why"], _c["why"])', '                    pass'),       # [7]
@@ -837,7 +837,7 @@ N.run = _run16
 print("\n[8] the TUN is not an operator's device")
 check("`s5x` is skipped like every tunnel of ours (no picker row, no node IP)", any("s5x-aa".startswith(p) for p in N._NODE_ADDR_SKIP))
 check("the node reports the kinds it can make, socks5 among them", "socks5" in N.EXIT_KINDS
-      and 'snap["exit_kinds"] = list(EXIT_KINDS)' in open(NODED, encoding="utf-8").read())
+      and 'snap["exit_kinds"] = [k for k in EXIT_KINDS if k != "warp-masque" or _turn_arch() in USQ_SHA256]' in open(NODED, encoding="utf-8").read())
 
 print()
 if os.environ.get("S5X_PLANT_SETE"):
