@@ -666,8 +666,10 @@ fi
 if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; envf="$DOCKER_DIR/.env"
   # A Docker NODE has the .env too, so that alone passed the pre-flight on a node-only box and the run died later, after
-  # writing a recovery marker and empty panel dirs (1.8.12 item 12). No container and no resume state → nothing to move.
-  docker_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no Docker panel on this box (no swg-panel container) — its Docker install is a node only: convert it with the role $(b node)"
+  # writing a recovery marker and empty panel dirs (1.8.12 item 12). A panel to move = its container, or a login already
+  # staged (an interrupted convert past its staging always has one — the guard below needs it before any teardown). NOT
+  # "a recovery marker": the one a pre-fix `master` attempt left on a node-only box would pass (review F3).
+  docker_panel_present || [ -s "$ETC/auth" ] || [ -s "$DOCKER_DIR/data/etc/auth" ] || die "no Docker panel on this box (no swg-panel container) — its Docker install is a node only: convert it with the role $(b node)"
   [ -f "$envf" ] || [ -n "${SWG_RV_URL:-}" ] || die "no docker panel settings found at $envf"
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | sed -n 1p | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"

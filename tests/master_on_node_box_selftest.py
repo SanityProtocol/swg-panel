@@ -38,7 +38,7 @@ def plant(src, a, b):
 if PERTURB:
     B = plant(B, 'if [ "$ROLE" = master ] && ! has_comp "$OTHER" panel && ! has_comp "$METHOD" panel; then',
               'if false; then')                                                                                  # [1]
-    C = plant(C, '  docker_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no Docker panel on this box', '  true || die "')  # [2]
+    C = plant(C, '  docker_panel_present || [ -s "$ETC/auth" ] || [ -s "$DOCKER_DIR/data/etc/auth" ] || die "no Docker panel on this box', '  true || die "')  # [2]
     B = plant(B, '  elif case "${SWG_RV_ROLE:-}" in master|host) true;; *) false;; esac', '  elif false')             # [3]
 
 def fn(src, name):
@@ -73,10 +73,12 @@ ASK = fn(B, "ask_choice") + fn(B, "ask_yn") + fn(B, "run_script")
 
 # ── [1] the convert branch ────────────────────────────────────────────────────────────────────────────────────────
 cross = between(B, 'ROLE_COMPS=""; case "$ROLE"', "\n# A plain (re-)install clears")
-def boot(method, role, box, conv_rc=0, url="https://panel.example:8443"):
+def boot(method, role, box, conv_rc=0, url="https://panel.example:8443", learned=""):
     """box = 'dnode' (Docker node only) | 'bnode' (bare node only) | 'dmaster' (Docker panel + node)."""
     d = tempfile.mkdtemp(prefix="mnb-"); dd = os.path.join(d, "dd"); os.makedirs(dd)
     open(os.path.join(dd, ".env"), "w").write("PANEL_URL=%s     # the panel this node dials\nNODE_TOKEN=x\n" % url)
+    if learned:
+        os.makedirs(os.path.join(dd, "data", "node")); open(os.path.join(dd, "data", "node", "panel-url"), "w").write(learned + "\n")
     open(os.path.join(d, "convert.sh"), "w").write(
         '#!/bin/bash\nif [ "$1" = --check ]; then echo "CHECK $*"; exit 0; fi\necho "CONVERT $*"; exit %d\n' % conv_rc)
     flags = {"dnode": "no no no yes", "bnode": "no yes no no", "dmaster": "no no yes yes"}[box].split()
@@ -95,6 +97,9 @@ check("…it says why, naming the panel the node is enrolled to (the .env's comm
 check("…and once the convert succeeded: no panel was installed, `host` adds one",
       rc == 0 and "No panel was installed" in out and '"host"' in out
       and out.index("No panel was installed") > out.index("CONVERT docker"), (rc, out))
+rc, out, err = boot("baremetal", "master", "dnode", learned="https://panel-b.example")
+check("…a node transferred to another panel names the panel it syncs to now (data/node/panel-url), not the .env's (review F1)",
+      "enrolled to https://panel-b.example)" in out, out)
 rc, out, err = boot("baremetal", "master", "dnode", conv_rc=1)
 check("a convert that FAILED says nothing about the result (no 'No panel was installed'), keeps its exit code",
       rc == 1 and "No panel was installed" not in out, (rc, out, err))
@@ -116,12 +121,19 @@ blk = between(C, 'if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM
               '  getv(){')
 check("the refusal sits before anything in that block is read or written",
       "mkdir" not in blk and "write_recovery" not in blk and "docker_panel_present" in blk or PERTURB, blk[-400:])
-def conv(containers, rv_url=""):
+def conv(containers, rv_url="", staged=""):
     d = tempfile.mkdtemp(prefix="mnb-c-"); bd = os.path.join(d, "bin"); os.makedirs(bd)
     open(os.path.join(bd, "docker"), "w").write('#!/bin/bash\n[ "$1" = ps ] && printf "%%s\\n" %s\nexit 0\n' % containers)
     os.chmod(os.path.join(bd, "docker"), 0o755)
+    etc = os.path.join(d, "etc-swg-panel"); os.makedirs(etc)
+    if staged == "bare":
+        open(os.path.join(etc, "auth"), "w").write("admin:x\n")
+    if staged == "docker":
+        os.makedirs(os.path.join(d, "data", "etc")); open(os.path.join(d, "data", "etc", "auth"), "w").write("admin:x\n")
+    b2 = blk.replace("ETC=/etc/swg-panel;", "ETC=%s;" % etc)
+    assert b2 != blk or PERTURB, "ETC anchor moved"
     s = (PRE + fn(C, "docker_panel_present") + 'FROM=docker; TO=baremetal; ROLE=master; DOCKER_DIR=%s; SWG_RV_URL=%s\n' % (d, rv_url)
-         + blk + '\necho REACHED-SETTINGS\nfi\n')
+         + b2 + '\necho REACHED-SETTINGS\nfi\n')
     open(os.path.join(d, ".env"), "w").write("PANEL_URL=https://x\n")
     return bash(s, d, {"PATH": bd + ":" + os.environ["PATH"]})
 rc, out, err = conv("swg-node")
@@ -129,8 +141,13 @@ check("a Docker node alone → refused, and the refusal names the role that work
       rc == 9 and "no Docker panel on this box" in err and "node" in err and "REACHED" not in out, (rc, out, err))
 rc, out, err = conv("swg-node swg-panel")
 check("a Docker master (swg-panel container) → goes on as before", rc == 0 and "REACHED-SETTINGS" in out, (rc, out, err))
-rc, out, err = conv("swg-node", rv_url="https://resumed")
-check("a resume (the marker's state, container already gone) → goes on as before", rc == 0 and "REACHED-SETTINGS" in out, (rc, out, err))
+rc, out, err = conv("swg-node", rv_url="localhost")
+check("a hand-run convert.sh on a box with the pre-fix attempt's stale master marker → still refused (review F3)",
+      rc == 9 and "no Docker panel on this box" in err, (rc, out, err))
+rc, out, err = conv("swg-node", rv_url="https://resumed", staged="bare")
+check("a resume past the staging (container gone, login staged in /etc/swg-panel) → goes on as before", rc == 0 and "REACHED-SETTINGS" in out, (rc, out, err))
+rc, out, err = conv("swg-node", rv_url="https://resumed", staged="docker")
+check("…or with the login still in the Docker data dir → goes on as before", rc == 0 and "REACHED-SETTINGS" in out, (rc, out, err))
 
 # ── [3] the Resume block ──────────────────────────────────────────────────────────────────────────────────────────
 print("\n[3] bootstrap.sh's Resume: a master/host marker with no panel anywhere is dropped, not offered")

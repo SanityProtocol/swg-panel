@@ -629,8 +629,12 @@ if [ -n "$CONFLICT" ]; then
         # would be a blank second panel beside a node that answers to someone else. ROLE=master went on to convert.sh's
         # panel path, whose pre-flight passed and whose run then died on the panel state that was never there.
         if [ "$ROLE" = master ] && ! has_comp "$OTHER" panel && ! has_comp "$METHOD" panel; then
-          if [ "$OTHER" = docker ]; then _purl="$(sed -n 's/^PANEL_URL=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*#.*//; s/^"//; s/"$//' || true)"
-          else _purl="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url","") or "")' 2>/dev/null || true)"; fi
+          # the address the node syncs to: a learned panel-url (a transfer / repoint) first, as node-entrypoint.sh and
+          # convert.sh read it, then the install's own setting
+          if [ "$OTHER" = docker ]; then _purl="$(head -n1 "$DOCKER_DIR/data/node/panel-url" 2>/dev/null | tr -d '[:space:]' || true)"
+            [ -n "$_purl" ] || _purl="$(sed -n 's/^PANEL_URL=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*#.*//; s/^"//; s/"$//' || true)"
+          else _purl="$(head -n1 /var/lib/swg-noded/panel-url 2>/dev/null | tr -d '[:space:]' || true)"
+            [ -n "$_purl" ] || _purl="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url","") or "")' 2>/dev/null || true)"; fi
           echo
           echo "  This box has only a node${_purl:+ (enrolled to $(b "$_purl"))}. \"master\" would add a new panel beside it, so only the node is converted."
           ROLE=node; _RS_DONE_NOTE="No panel was installed — this box is a node. To add a panel here later, run the installer with \"host\"."
