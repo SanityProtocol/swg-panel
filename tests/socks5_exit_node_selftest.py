@@ -70,7 +70,7 @@ PLANTS = {
                       '                    if False:'),                                                                # [6]
     "--perturb-hs": ('_hs = _exit_handshake(rec, dev) if _live and _exit_is_wg(prov) else None',
                      '_hs = _exit_handshake(rec, dev) if _live else None'),                                     # [7]
-    "--perturb-cadence": ("if dev not in _sx or _sx[dev]]", "]"),                                                    # [7]
+    "--perturb-cadence": ("if (dev not in _sx or _sx[dev]) and dev not in _reen]", "if dev not in _reen]"),                                                    # [7]
     "--perturb-why": ('                    _hl["why"] = S5X_WHY.get(_c["why"], _c["why"])', '                    pass'),       # [7]
     "--perturb-t14": ('"flannel", "s5x")', '"flannel")'),                                                              # [8]
     "--perturb-idle": ('    if whole or _S5X_NFT["dns"] is not False:', '    if True:'),                                       # [5]

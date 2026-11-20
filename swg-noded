@@ -12419,8 +12419,9 @@ def _mqx_up(xid, dev, rec, transport):
                                extra=["-p", "UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY "
                                             "http_proxy https_proxy all_proxy no_proxy"])
     if not err and rec.get("started") != sig:
-        for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ):
-            m.pop(dev, None)                  # a new config: judged afresh, its freeze checked again at bring-up
+        for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ, _MQX_FZ_RUN):
+            m.pop(dev, None)                  # a new config: judged afresh, its freeze checked again at bring-up (a run of the
+                                              # old one in flight is discarded — F30)
         rec["started"] = sig
     return err, ""
 
@@ -12429,10 +12430,11 @@ def _mqx_down(xid, dev):
     """Stop a MASQUE exit: its unit (or child), the device, its conf and pidfile, every verdict (pause, delete, switch, reap).
     The account stays in the record."""
     _s5x_down(xid, dev, unit=_mqx_unit(xid), cfg=os.path.join(EXIT_DIR, dev + ".conf"))
-    for m in (_MQX, _MQX_FZ):
+    for m in (_MQX, _MQX_FZ, _MQX_FZ_RUN):
         m.pop(dev, None)
-    with contextlib.suppress(OSError):
-        os.unlink(os.path.join(EXIT_DIR, dev + ".log"))     # a Docker child's log goes with it (F13)
+    for lg in (dev + ".log", dev + ".log.1"):                # a Docker child's log, rotated half included, goes with it
+        with contextlib.suppress(OSError):                   # (F13, F34)
+            os.unlink(os.path.join(EXIT_DIR, lg))
 
 
 def _mqx_freeze(dev, host=None, port=443, timeout=10):
@@ -12481,14 +12483,20 @@ def _mqx_freeze(dev, host=None, port=443, timeout=10):
             so.close()
 
 
-_MQX_FZ_RUN = {}    # device -> the freeze run in flight (one at a time per device)
+_MQX_FZ_RUN = {}    # device -> the token of its freeze run in flight (one at a time per device)
 
 
-def _mqx_freeze_run(dev):
+def _mqx_freeze_run(dev, me):
+    """One freeze run, in its own thread. Its answer is parked only while it is still this tunnel's run: a new config or a
+    teardown drops the token (_mqx_up, _mqx_down), and a run that outlived its tunnel is discarded (review F30)."""
+    ok, v = False, None
     try:
-        _MQX_FZ[dev] = (time.time(), _mqx_freeze(dev))
+        v, ok = _mqx_freeze(dev), True
     finally:
-        _MQX_FZ_RUN.pop(dev, None)
+        if _MQX_FZ_RUN.get(dev) is me:
+            if ok:
+                _MQX_FZ[dev] = (time.time(), v)
+            _MQX_FZ_RUN.pop(dev, None)
 
 
 def _mqx_probe(dev, rec):
@@ -12499,6 +12507,8 @@ def _mqx_probe(dev, rec):
     within seconds, so a check made then finds the tunnel already stalled — nothing connects, no answer. A DEAD exit carries
     no client (its route is withheld), so the first trace that passes after usque reconnected is a fresh flow with its whole
     budget: the 64 KB check then stalls where the network cuts, or proves the way back."""
+    if dev in _MQX_FZ_RUN or dev in _MQX_FZ:
+        return dict(rec, mqx="")              # a run in flight, or its answer not yet taken: `fz_at` is not moved yet (F29)
     fz_at = (_MQX.get(dev) or {}).get("fz_at", 0)
     st = _EXIT_HEALTH.get(dev) or {}
     if time.time() - fz_at >= MQX_FREEZE_EVERY_S:
@@ -13463,8 +13473,8 @@ def _exit_probe_all(devs):
         if rec.get("mqx") == "due" or (rec.get("mqx") == "onfail" and not (tr or {}).get("ip")) \
                 or (rec.get("mqx") == "onpass" and (tr or {}).get("ip")):
             if dev not in _MQX_FZ_RUN:           # a MASQUE exit's freeze run (§4.7), in its OWN thread: up to 10 s the
-                _MQX_FZ_RUN[dev] = threading.Thread(target=_mqx_freeze_run, args=(dev,), daemon=True)   # pass never
-                _MQX_FZ_RUN[dev].start()         # waits on (review F14); parked in _MQX_FZ for a later pass
+                _MQX_FZ_RUN[dev] = _me = object()   # pass never waits on (review F14); parked in _MQX_FZ for a later pass
+                threading.Thread(target=_mqx_freeze_run, args=(dev, _me), daemon=True).start()
         if rec.get("mapdns") or "mqx" in rec:
             pass                                 # a SOCKS exit: its endpoint is the proxy, whose name hev resolves itself;
                                                  # a MASQUE exit's is an address usque dials as it is (T12)
@@ -13710,7 +13720,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             # Set when a relayed escrow blob could not be opened but the exit has a key of its own and keeps
             # running. Reset per exit, or one exit's failure would be reported against the next one.
             _blob_err = ""
-            _keyed = False                               # enrolled/registered/restored this pass: no re-enrolment too (F1)
+            _keyed = False                               # a PATCH/POST went out this pass: no re-enrolment too (F1, F32)
             # DECISION 3, and it has to mean PAUSE here or the word is a lie. A disabled exit keeps its key
             # material — for WARP that IS the account, and re-registering would hand the operator a different
             # egress IP than the one they turned off. Down, kept, and never created in the first place if it was
@@ -13861,9 +13871,10 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     _opened = json.loads(ivk_unseal(transport_priv(), d["key_blob"]).decode())
                 if isinstance(_opened, dict) and _opened.get("priv"):
                     # the blob's OWN kind (T24), its account enrolled for the exit's current kind (§4.11)
+                    _r0 = rec
                     rec, _blob_err = _exit_restore(xid, dev, prov, rec, _opened, res,
                                                    hashlib.sha256(str(d["key_blob"]["ct"]).encode()).hexdigest()[:16])
-                    _keyed = True
+                    _keyed = rec is not _r0              # a request went out (a skipped or waiting relay returns rec as is — F32)
                     if not rec.get("priv"):
                         with contextlib.suppress(Exception):
                             _replace_if_changed(sp, json.dumps(rec), 0o600)   # `restored`: one press, one PATCH (T29)
@@ -13898,8 +13909,9 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 # and says why, under the registration back-off.
                 _ub = usq_binary() if prov == "warp-masque" else ("-", "")
                 if _ub[0]:
+                    _r0 = rec
                     rec, _sw, _rin[xid] = _warp_keyed(xid, dev, prov, rec, sp, res)
-                    _keyed = True
+                    _keyed = rec is not _r0              # (backing off or refused: rec as is, nothing sent — F32)
                 else:
                     _sw = _ub[1]                         # fetching, or no build: the running WireGuard carries on (F8)
                 if _sw:
@@ -13912,8 +13924,9 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 # Exponential from a minute, capped at an hour, remembered ACROSS RESTARTS in the state file so
                 # bouncing the daemon is not a way to keep hammering.
                 # (_warp_keyed: the POST once, the MASQUE key a PATCH of its own — T6)
+                _r0 = rec
                 rec, err, _ri = _warp_keyed(xid, dev, prov, rec, sp, res)
-                _keyed = True
+                _keyed = rec is not _r0
                 if err:
                     out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": err,
                                 **({"retry_in": _ri} if _ri is not None else {})})

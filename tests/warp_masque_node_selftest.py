@@ -59,7 +59,12 @@ PLANTS = {
     "--perturb-onpass": ('        return dict(rec, mqx="onpass" if time.time() - fz_at >= 60 else "")', '        return dict(rec, mqx="")'),  # [5]
     "--perturb-namelater": ('                    _hl["why"] = MQX_FREEZE_WHY          # named once a run proves it, even after the exit went dead',
                             '                    pass'),                                                         # [5]
-    "--perturb-fzthread": ('                _MQX_FZ_RUN[dev].start()', '                _MQX_FZ_RUN[dev].run()'),                     # [5]
+    "--perturb-fzthread": ('threading.Thread(target=_mqx_freeze_run, args=(dev, _me), daemon=True).start()', '_mqx_freeze_run(dev, _me)'),  # [5]
+    "--perturb-fzonce": ('    if dev in _MQX_FZ_RUN or dev in _MQX_FZ:\n        return dict(rec, mqx="")', '    if False:\n        return dict(rec, mqx="")'),  # [5]
+    "--perturb-fzstale": ('        if _MQX_FZ_RUN.get(dev) is me:\n            if ok:', '        if True:\n            if ok:'),       # [5]
+    "--perturb-fzdrop": ('for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ, _MQX_FZ_RUN):', 'for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ):'),  # [5]
+    "--perturb-log1": ('    for lg in (dev + ".log", dev + ".log.1"):', '    for lg in (dev + ".log",):'),                     # [4]
+    "--perturb-keyedsent": ('                    _keyed = rec is not _r0              # a request went out', '                    _keyed = True              # a request went out'),  # [9]
     "--perturb-noevidence": ('    if m.get("freeze") == "freeze" and tr and not tr.get("ip"):',
                              '    if m.get("freeze") == "freeze" and not (tr or {}).get("ip"):'),                                # [5]
     "--perturb-sticky": ('        tr, rch = dict(tr or {}, err=MQX_FREEZE_WHY), False', '        tr = dict(tr or {}, err=MQX_FREEZE_WHY)'),  # [5]
@@ -73,7 +78,7 @@ PLANTS = {
                             '                _exit_down(dev, dict(rec, id=xid)); rec, _sw, _rin[xid] = _warp_keyed(xid, dev, prov, rec, sp, res)'),  # [7]
     "--perturb-newkind": ('        if rec.get("priv") and (rec.get("provider") or "warp") != prov:\n            _exit_down(dev, dict(rec, id=xid))',
                           '        if rec.get("priv") and (rec.get("provider") or "warp") != prov:\n            _exit_down(dev, dict(new, id=xid))'),  # [7]
-    "--perturb-switchwait": ('                if _ub[0]:\n                    rec, _sw', '                if True:\n                    rec, _sw'),  # [7]
+    "--perturb-switchwait": ('                if _ub[0]:\n                    _r0 = rec', '                if True:\n                    _r0 = rec'),  # [7]
     "--perturb-transport": ('                if _wkind == "warp-masque":\n                    rec["transport"]',
                             '                if True:\n                    rec["transport"]'),                                   # [7]
     "--perturb-host": ('        endpoint = ep.get("host") or ep.get("v4") or ""', '        endpoint = ep.get("v4") or ep.get("host") or ""'),  # [7]
@@ -457,6 +462,12 @@ N.run = _lu
 check("the once-per-start sweep stops a MASQUE unit nothing wants", ["systemctl", "stop", "swg-mqx-deadbeef"] in CALLS, CALLS)
 
 # ── [5] the freeze check ────────────────────────────────────────────────────────────────────────────────────────────────────
+for _lg in ("wgx-aabbccdd.log", "wgx-aabbccdd.log.1"):
+    open(os.path.join(N.EXIT_DIR, _lg), "w").close()
+N._mqx_down("aabbccdd", "wgx-aabbccdd")
+check("docker: a MASQUE exit's log goes with it, its rotated half too (review F13, F34)",
+      not any(os.path.exists(os.path.join(N.EXIT_DIR, _lg)) for _lg in ("wgx-aabbccdd.log", "wgx-aabbccdd.log.1")))
+
 print("\n[5] the freeze check (T1) and its sticky verdict (T30)")
 cd = tempfile.mkdtemp(dir=TMP)
 crt, key = os.path.join(cd, "c.pem"), os.path.join(cd, "k.pem")
@@ -558,6 +569,31 @@ _gate.set(); fzwait()
 check("the 64 KB run never holds the pass, one at a time per device, its answer parked for a later pass (review F14)",
       _el < 1.5 and _n == 1 and (N._MQX_FZ.get(dev) or (0, None))[1] == "pass", (_el, _n, N._MQX_FZ.get(dev)))
 N._MQX_FZ.clear()
+# …and the next pass starts no second run while one is in flight or its answer is unread: fz_at moves when it is taken (F29)
+N._MQX[dev] = {"fz_at": time.time() - 700}
+N._EXIT_HEALTH.pop(dev, None)
+N._MQX_FZ_RUN[dev] = object()
+_d1 = N._mqx_probe(dev, {})["mqx"]
+N._MQX_FZ_RUN.clear()
+N._MQX_FZ[dev] = (time.time(), "pass")
+_d2 = N._mqx_probe(dev, {})["mqx"]
+N._mqx_evidence(dev, {"ip": "1.2.3.4"}, None)
+_d3 = N._mqx_probe(dev, {})["mqx"]
+check("no second freeze run while one is in flight or its answer is not yet taken; none after it is (review F29)",
+      (_d1, _d2, _d3) == ("", "", "onfail"), (_d1, _d2, _d3))
+# a run that outlives its tunnel (a new config) is discarded, and does not hold up the new tunnel's own run (F30)
+reset()
+sync({"id": "aabbccdd", "provider": "warp-masque"})
+fzwait(); N._MQX_FZ.clear()
+_gate = threading.Event()
+N._mqx_freeze = lambda d, *a, **k: (_gate.wait(3), "freeze")[1]
+N._exit_probe_all([(dev, {"endpoint": "1.2.3.4:443", "mqx": "due"})])
+_r = rec_of("aabbccdd")
+N._mqx_up("aabbccdd", dev, _r, "h2")                    # a new config (the transport) while the run is out
+_free = dev not in N._MQX_FZ_RUN
+_gate.set(); time.sleep(0.3)
+check("a freeze run that outlived its tunnel's config is discarded, and the new tunnel may run its own (review F30)",
+      _free and dev not in N._MQX_FZ, (_free, N._MQX_FZ.get(dev)))
 N._mqx_freeze = lambda dev, *a, **k: FZ["v"]
 
 # a verdict already dead (the trace's timeout) is renamed once a run proves the freeze
@@ -815,6 +851,13 @@ N._WARP_REENROL["at"] = 0.0
 CF["calls"].clear()
 sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "z", "_plain": BLOB_MQ}})
 check("…and the same key put back on a dead exit: still one PATCH in that pass", len(patches()) == 1, patches())
+# a relay already acted on, riding on: nothing was sent this pass, so a due re-enrolment is not held off (review F32)
+N._EXIT_HEALTH[dev] = _dead()
+N._WARP_REENROL["at"] = 0.0
+CF["calls"].clear()
+sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "z", "_plain": BLOB_MQ}})
+check("…a relay already acted on, still riding, does not hold off a due re-enrolment (review F32)",
+      len(patches()) == 1 and patches()[0][2]["key"] == rec_of(X)["pub"], patches())
 
 # ── [9] re-enrolment ────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[9] re-enrolment, both kinds")
