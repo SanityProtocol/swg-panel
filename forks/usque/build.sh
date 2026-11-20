@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build usque (Diniboy1123/usque), the MASQUE client a `warp-masque` exit runs as `usque nativetun`
-# (1.8.12 item 17b, docs/WARP-MASQUE-PLAN.md §1.4). UNPATCHED upstream at a pinned commit; upstream has no tags.
+# Build usque (Diniboy1123/usque), the MASQUE client a `warp-masque` exit runs as `usque nativetun` (WARP over HTTP/3
+# or HTTP/2 instead of WireGuard). UNPATCHED upstream at a pinned commit; upstream has no tags.
 # Usage: ./build.sh [out]   Env: GOARCH (amd64 | arm64)
 # Reproducible: this commit + this exact Go toolchain + these flags give the sha256s pinned in swg-noded
 # (USQ_SHA256), so the published release asset can be rebuilt and compared byte for byte.

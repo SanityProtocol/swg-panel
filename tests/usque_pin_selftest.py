@@ -12,9 +12,11 @@ arch, plan §6 P1); this checks the parts that can drift without a build.
       upstream licence named for the release notes.
   [4] the verify step, run as written (GitHub expressions filled in): a build matching USQ_SHA256 passes on both arches;
       a wrong pin, a missing arch and a missing USQ_SHA256 fail it; amneziawg-go is still checked against lib/common.sh.
+  [5] publishing usque: the release tag must be USQ_TAG; another fork's tag is not held to it.
 
 Run: python3 tests/usque_pin_selftest.py    (0 = pass)
-     --perturb   makes the verify step read the pin it is handed as always right; expects RED on [4].
+     --perturb   makes the verify step read the pin it is handed as always right, and drops the publish step's tag
+                 check; expects RED on [4] and [5].
 """
 import ast, os, re, shutil, subprocess, sys, tempfile
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -27,7 +29,7 @@ rd = lambda p: open(os.path.join(ROOT, p)).read()
 noded, build, wf, lib = rd("swg-noded"), rd("forks/usque/build.sh"), rd(".github/workflows/fork-binaries.yml"), rd("lib/common.sh")
 
 # [1] the pin
-tag = re.search(r'^USQ_TAG = "usque-(\d{8})-([0-9a-f]{7})"$', noded, re.M)
+tag = re.search(r'^USQ_TAG = "usque-(\d{8})-([0-9a-f]{7})(?:-[2-9]|-[1-9]\d+)?"$', noded, re.M)   # -2, -3… = a rebuild
 owner = re.search(r'^USQ_OWNER = "([\w.-]+/[\w.-]+)"$', noded, re.M)
 pins = re.search(r'^USQ_SHA256 = (\{.*?\})', noded, re.S | re.M)
 pins = ast.literal_eval(pins.group(1)) if pins else {}
@@ -105,4 +107,26 @@ check("[4] no USQ_SHA256 fails", verify("usque", "amd64", pins.get("amd64", ""),
 awg = re.search(r'^AWG_GO_SHA256_amd64="([0-9a-f]{64})"', lib, re.M)
 check("[4] amneziawg-go: its pin still passes, a wrong one fails", bool(awg)
       and verify("amneziawg-go", "amd64", awg.group(1)) == 0 and verify("amneziawg-go", "amd64", "f" * 64) != 0)
+
+# [5] publishing: usque's release tag must be USQ_TAG — swg-noded downloads from exactly that tag (review F3)
+pub = step_body(wf, "the tag is required to publish")
+if PERTURB:
+    pub = pub.replace('[ "${{ inputs.tag }}" = "$want" ]', 'true')
+def publish_check(fork, tag_in):
+    run = re.sub(r"\$\{\{ ([^}]+) \}\}", lambda m: {"inputs.fork": fork, "inputs.tag": tag_in}[m.group(1)], pub)
+    t = tempfile.mkdtemp(prefix="usqpin.")
+    try:
+        os.makedirs(os.path.join(t, "bin"))
+        open(os.path.join(t, "bin", "gh"), "w").write("#!/bin/sh\nexit 1\n")    # "no such release yet"
+        os.chmod(os.path.join(t, "bin", "gh"), 0o755)
+        open(os.path.join(t, "swg-noded"), "w").write(noded)
+        return subprocess.run(["bash", "-c", run], cwd=t, capture_output=True, text=True,
+                              env=dict(os.environ, PATH=os.path.join(t, "bin") + ":/usr/bin:/bin")).returncode
+    finally:
+        shutil.rmtree(t, ignore_errors=True)
+usq_tag = (re.search(r'^USQ_TAG = "([^"]+)"', noded, re.M) or [None, ""])[1]
+check("[5] usque published under USQ_TAG passes", publish_check("usque", usq_tag) == 0)
+check("[5] usque under any other tag is refused", publish_check("usque", usq_tag[:-1]) != 0
+      and publish_check("usque", usq_tag + "-2") != 0)
+check("[5] another fork's tag is not held to USQ_TAG", publish_check("qwdtt", "wdtt-qwdtt-9.9.9") == 0)
 print("\n%s — %d failed" % ("RED" if FAILS else "GREEN", len(FAILS))); sys.exit(1 if FAILS else 0)

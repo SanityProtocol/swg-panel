@@ -155,6 +155,11 @@ jobs:
       - name: the tag is required to publish
         run: |
           [ -n "${{ inputs.tag }}" ] || { echo "::error::publish=true needs a tag"; exit 1; }
+          # swg-noded fetches usque from exactly releases/download/<USQ_TAG>/: any other tag publishes a release no node reads
+          if [ "${{ inputs.fork }}" = usque ]; then
+            want="$(grep -oP '^USQ_TAG = "\K[^"]+' swg-noded || true)"
+            [ "${{ inputs.tag }}" = "$want" ] || { echo "::error::usque's tag must be swg-noded's USQ_TAG ($want)"; exit 1; }
+          fi
           if gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::release ${{ inputs.tag }} already exists — delete it first, or pick another tag"; exit 1
           fi
