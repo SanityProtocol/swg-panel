@@ -11422,25 +11422,128 @@ def exit_aa_refused(stderr):
         return False
 
 
+def _split_hello(rec, host):
+    """One TLS record → two, cut inside `host` (the SNI), so neither record carries the whole name. RFC 8446 §5.1 lets a
+    handshake message span records; a DPI that reads the name from one record does not see it. A record that is not a
+    handshake (0x16), or does not carry `host`, comes back unchanged."""
+    if len(rec) < 6 or rec[0] != 0x16:
+        return rec
+    body, name = rec[5:], host.encode()
+    i = body.find(name)
+    if i < 0:
+        return rec
+    cut, hdr = i + max(1, len(name) // 2), rec[:3]
+    return hdr + struct.pack("!H", cut) + body[:cut] + hdr + struct.pack("!H", len(body) - cut) + body[cut:]
+
+
+class _SplitHTTPS(http.client.HTTPSConnection):
+    """HTTPS whose ClientHello leaves as two TLS records cut inside the server name, its first byte in a TCP segment of
+    its own (1.8.12 item 17a). Some Russian networks block api.cloudflareclient.com by SNI — measured on msk-forge
+    2026-11-20: the handshake times out. There, BOTH halves are needed (8/8 with both; 0 with either alone): the record
+    split sent in one segment, or one segment per record, is still blocked; the 1-byte first segment without the record
+    split is still blocked. The TLS layer talks to one end of a socketpair; two threads pump the other end to the wire
+    and back, re-shaping only the FIRST record. Certificate checking is the context's own — the split changes framing,
+    not trust."""
+
+    def connect(self):
+        raw = socket.create_connection((self.host, self.port), self.timeout)
+        with contextlib.suppress(OSError):
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)    # each send its own segment
+        mine, tls_end = socket.socketpair()
+
+        def up():                        # TLS layer → wire
+            buf, first = b"", True
+            try:
+                while True:
+                    d = mine.recv(65536)
+                    if not d:
+                        break
+                    if first:
+                        buf += d
+                        if len(buf) < 5 or len(buf) < 5 + struct.unpack("!H", buf[3:5])[0]:
+                            continue
+                        n = 5 + struct.unpack("!H", buf[3:5])[0]
+                        d, first = _split_hello(buf[:n], self.host) + buf[n:], False
+                        raw.sendall(d[:1])                 # the first byte alone (see the class note)
+                        time.sleep(0.02)
+                        d = d[1:]
+                    raw.sendall(d)
+            except OSError:
+                pass
+            with contextlib.suppress(OSError):
+                raw.shutdown(socket.SHUT_WR)
+
+        def down():                      # wire → TLS layer; its end closes everything (shutdown wakes up()'s recv)
+            try:
+                while True:
+                    d = raw.recv(65536)
+                    if not d:
+                        break
+                    mine.sendall(d)
+            except OSError:
+                pass
+            for s in (mine, raw):
+                with contextlib.suppress(OSError):
+                    s.shutdown(socket.SHUT_RDWR)
+                with contextlib.suppress(OSError):
+                    s.close()
+
+        threading.Thread(target=up, daemon=True, name="warp-split-up").start()
+        threading.Thread(target=down, daemon=True, name="warp-split-down").start()
+        tls_end.settimeout(self.timeout)
+        self.sock = self._context.wrap_socket(tls_end, server_hostname=self.host)
+
+
+_WARP_SPLIT = {"on": False}      # a split call got an answer: this daemon's later calls go split first (one wait, not one per call)
+
+
+def _warp_call(url, body, method, h, split, timeout=20, ctx=None):
+    """One HTTPS request → (status, parsed-or-text); status 0 = no HTTP answer (the str of the error)."""
+    try:
+        if split:
+            u = urllib.parse.urlsplit(url)
+            conn = _SplitHTTPS(u.hostname, u.port or 443, timeout=timeout, context=ctx or ssl.create_default_context())
+            try:
+                conn.request(method, u.path + ("?" + u.query if u.query else ""), body=body, headers=h)
+                r = conn.getresponse()
+                st, txt = r.status, r.read().decode("utf-8", "replace")
+            finally:
+                conn.close()
+        else:
+            req = urllib.request.Request(url, method=method, headers=h, data=body)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                    st, txt = r.status, r.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                st, txt = e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:
+        return 0, str(e)
+    if st == 200 or txt.strip():
+        with contextlib.suppress(ValueError):
+            return st, json.loads(txt or "{}")
+    return st, txt
+
+
 def _warp_api(path, data, method, token=""):
     """One call to the WARP account API. Returns (status, parsed-or-text). stdlib only — no wgcf binary:
     registration is a single anonymous POST, not a datapath component, so §11.6's "a new supervised binary
-    class per node" argument does not apply and there is nothing to version, gate by arch or supervise."""
+    class per node" argument does not apply and there is nothing to version, gate by arch or supervise.
+    A call with no HTTP answer at all is tried once more with the ClientHello split (_SplitHTTPS, item 17a); an HTTP
+    answer — whatever its status — is Cloudflare speaking, never a block, and is never retried."""
     h = dict(WARP_HDRS)
     if token:
         h["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(WARP_API + path, method=method, headers=h,
-                                 data=(json.dumps(data).encode() if data is not None else None))
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status, json.loads(r.read().decode() or "{}")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
-        with contextlib.suppress(Exception):
-            return e.code, json.loads(body)
-        return e.code, body
-    except Exception as e:
-        return 0, str(e)
+    body = json.dumps(data).encode() if data is not None else None
+    split = _WARP_SPLIT["on"]
+    st, d = _warp_call(WARP_API + path, body, method, h, split)
+    if st == 0 and not split:
+        st2, d2 = _warp_call(WARP_API + path, body, method, h, True)
+        if st2:
+            _WARP_SPLIT["on"] = True
+            return st2, d2
+        return 0, ("Cloudflare's WARP registration address is blocked from this node's network (the TLS handshake "
+                   "never completed, even split: %s)" % str(d2)[:80])
+    return st, d
 
 
 def _warp_err(body):
@@ -11473,6 +11576,8 @@ def _warp_register():
         # which layer turns it away — 429 `error code: 1015`, and 404 from the edge — and "registration
         # failed (404) Not Found" sends an operator hunting a configuration problem they do not have. The
         # throttle family is named for what it IS, and for the fact that waiting is the whole fix.
+        if st == 0 and str(d).startswith("Cloudflare's WARP registration address is blocked"):
+            return None, str(d)[:240]                 # _warp_api's own sentence (item 17a), whole
         if st in (401, 403, 404, 429, 503):
             return None, ("Cloudflare is refusing registrations from this node's address just now "
                           "(HTTP %s). Nothing to change — it retries on its own." % st)

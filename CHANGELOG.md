@@ -126,6 +126,11 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **A WARP exit can be created on networks that block Cloudflare's WARP registration address.** Some Russian
+  providers block `api.cloudflareclient.com` by name while the WARP tunnel itself works, so the node could never
+  register and the exit stayed "registration failed". When the registration gets no answer, the node now tries once more
+  with its connection opening split so the name is not read, and keeps doing so for later registrations. If even that
+  is blocked, the exit says the network blocks WARP registration.
 - **`master` on a server that holds only a node converts the node and stops there.** Running the installer with
   `master` to move a node-only server between Docker and bare-metal took the panel's road: the check before the move
   promised a panel that wasn't there, then the move stopped with "couldn't stage the panel state" and left a marker that
