@@ -7908,6 +7908,7 @@ def _sysctl_ensure(key, want, ok=None):
 # of an asymmetric route, which is exactly what a cascade/exit entry creates — so a node that cannot loosen it
 # forwards a peer's packets out and silently discards the replies: connected, zero throughput, nothing said.
 _RPF = {"needed": False, "bad": []}
+_BAND_REPAIR = {"last": None}   # (want, live) signatures the last in-place band repair acted on (reconcile_cascade, B1)
 # DECISION 2 — the exit's state, reported so the panel can make a failure LOUD. It has to ship with the
 # kill-switch, not after it: decision 1 leaves the switch OFF by default, and that default is only
 # defensible because the fall-back is announced. A node that quietly egresses direct when its exit dies is
@@ -14475,11 +14476,32 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # upmark rules (those steer this box's own marked sockets, never a client's packet), exactly those are put right in
     # place — every client rule stays, and the table's `prohibit` (kill-switch on) holds the gap. Anything else rebuilds.
     _drift = want_sig != live_sig
+    if _drift and (fwd or smart_e or exit_ or arr_exit):      # enable forwarding + loose rp_filter (asymmetric paths) —
+        _sysctl_ensure("net.ipv4.ip_forward", 1)              # on EVERY drift, the in-place repair's too: a rebuilt device is
+        wan = _detect_wan()                                   # exactly when they need saying again (review F2)
+        # effective = max(all, <dev>), so `all` already at 2 covers a device sitting at 1 — test the
+        # EFFECTIVE value or a healthy node reports itself broken. Still written per device, exactly as
+        # before; the only change is that we now find out whether it took.
+        _all = _sysctl_ensure("net.ipv4.conf.all.rp_filter", 2)
+        _eff = lambda v: v if _all is None else max(v, _all)
+        _bad = []
+        for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_exit + arr_exit + exit_)}):
+            v = _all if dev == "all" else _sysctl_ensure("net.ipv4.conf.%s.rp_filter" % dev, 2,
+                                                         ok=lambda cur: _eff(cur) == 2)
+            if v is not None and _eff(v) != 2:
+                _bad.append(dev)
+        _RPF["needed"] = True
+        _RPF["bad"] = sorted(_bad)
     _miss = [t.split("|") for t in want_sig - live_sig] if _drift else []
     _xtra = [t.split("|") for t in live_sig - want_sig] if _drift else []
     _rt = lambda m: len(m) == 5 and m[0] == "T" and m[3] and not m[2].startswith("prohibit")
     _um = lambda m: len(m) == 4 and m[:2] == ["R", "upmark"]
-    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):
+    # …and a repair that did not take (the same drift again on the next pass: a rule it cannot delete by its mark, a route
+    # line `ip route del` cannot name) falls back to the rebuild, which always converges (review F1)
+    _again = _drift and _BAND_REPAIR.get("last") == (want_sig, live_sig)
+    _BAND_REPAIR["last"] = None
+    if _drift and not _again and all(_rt(m) or _um(m) for m in _miss + _xtra):
+        _BAND_REPAIR["last"] = (want_sig, live_sig)
         for m in sorted(_xtra):
             if _um(m):
                 run(["ip", "rule", "del", "pref", m[2]])
@@ -14492,22 +14514,6 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 run(["ip", "route", "replace", m[2]] + (["via", m[4]] if m[4] else []) + ["dev", m[3], "table", m[1]])
         res["changed"] += 1
     elif _drift:
-        if fwd or smart_e or exit_ or arr_exit:               # enable forwarding + loose rp_filter (asymmetric paths)
-            _sysctl_ensure("net.ipv4.ip_forward", 1)
-            wan = _detect_wan()
-            # effective = max(all, <dev>), so `all` already at 2 covers a device sitting at 1 — test the
-            # EFFECTIVE value or a healthy node reports itself broken. Still written per device, exactly as
-            # before; the only change is that we now find out whether it took.
-            _all = _sysctl_ensure("net.ipv4.conf.all.rp_filter", 2)
-            _eff = lambda v: v if _all is None else max(v, _all)
-            _bad = []
-            for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_exit + arr_exit + exit_)}):
-                v = _all if dev == "all" else _sysctl_ensure("net.ipv4.conf.%s.rp_filter" % dev, 2,
-                                                             ok=lambda cur: _eff(cur) == 2)
-                if v is not None and _eff(v) != 2:
-                    _bad.append(dev)
-            _RPF["needed"] = True
-            _RPF["bad"] = sorted(_bad)
         for pri in band:                                       # teardown our whole band (rules + tables)
             # ⚠️ DEL-UNTIL-ABSENT MEANS ALL OF THEM. A priority carries a backstop + exit rule pair per exit subnet, and
             # a fwmark rule: 17 at 7000 on a node exiting 8 subnets. A cap of 8 left the rest in place, the deleted ones

@@ -33,7 +33,8 @@ Run: python3 tests/devexit_killswitch_selftest.py (0 = pass)
                 decision 1 and decision 2 are one bargain and neither survives alone.
      --perturb-repair  takes out B1's in-place repair of a purged route, so a device rebuilt under a carrying
                 exit rebuilds the whole band again (a moment with no rule: a packet direct past the kill-switch);
-                expects RED in 2e.
+                expects RED in 2f. --perturb-again: a repair that did not take is repeated for ever instead of falling back
+                to the rebuild (RED in 2f). --perturb-rpf: the in-place repair no longer re-asserts rp_filter (RED in 2f).
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -48,8 +49,12 @@ PERTURB = "--perturb" in sys.argv
 # turned OFF, and decision 3 ("disabling degrades, never rewrites") is the thing that becomes unreachable.
 # Applied to the panel's SOURCE, because the branch it removes has no seam to monkey-patch.
 INTENT = "--perturb-intent" in sys.argv
-# B1's plant: the in-place route repair taken out, so a purged route rebuilds the whole band again (expects RED in 2e).
-REPAIR = "--perturb-repair" in sys.argv
+# B1's plants: the in-place route repair taken out, so a purged route rebuilds the whole band again; a repair that did not
+# take repeated for ever; rp_filter no longer said on a repair (each expects RED in 2f).
+_B1 = {"--perturb-repair": ("    if _drift and not _again and all(_rt(m) or _um(m) for m in _miss + _xtra):", "    if False:"),
+       "--perturb-again": ("    _again = _drift and _BAND_REPAIR.get(\"last\") == (want_sig, live_sig)", "    _again = False"),
+       "--perturb-rpf": ("    if _drift and (fwd or smart_e or exit_ or arr_exit):", "    if _drift and not all(t.startswith((\"T|\", \"R|upmark|\")) for t in want_sig ^ live_sig) and (fwd or smart_e or exit_ or arr_exit):")}
+REPAIR = next((a for a in sys.argv[1:] if a in _B1), None)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -87,10 +92,10 @@ if INTENT:
 
 if REPAIR:
     _nsrc = open(NODED, encoding="utf-8").read()
-    _ncut = "    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):"
-    assert _nsrc.count(_ncut) == 1, "perturbation anchor (--perturb-repair) missing or not unique — this run would FALSE-PASS"
+    _ncut, _nnew = _B1[REPAIR]
+    assert _nsrc.count(_ncut) == 1, "perturbation anchor (%s) missing or not unique — this run would FALSE-PASS" % REPAIR
     NODED = os.path.join(tempfile.mkdtemp(prefix="dks-repair-"), "noded-perturbed.py")
-    open(NODED, "w", encoding="utf-8").write(_nsrc.replace(_ncut, "    if False:", 1))
+    open(NODED, "w", encoding="utf-8").write(_nsrc.replace(_ncut, _nnew, 1))
 N, P = _load(NODED, "swgnoded"), _load(PANEL, "swgpanel")
 # Hermetic: the host's own /proc/net/route is not this test's subject. A host running Docker hands `_cascade_local_routes` its
 # bridges (1.8.12 item 6), which the fake kernel below cannot install, and the settle checks then read drift that is the host's.
@@ -273,6 +278,10 @@ class _Kernel:
             if not hit:
                 r = _R(""); r.returncode = 2; return r
             (k.rules if hit[0] in k.rules else k.marks).remove(hit[0]); return _R("")
+        if a[:3] == ["ip", "route", "del"] and "table" in a:      # `ip route del <dst> dev D table T` (B1's repair)
+            T, dev = a[a.index("table") + 1], a[a.index("dev") + 1]
+            k.tables[T] = [r for r in k.tables.get(T, []) if not (r.startswith(a[3] + " ") and " dev %s " % dev in r + " ")]
+            return _R("")
         if a[:3] == ["ip", "route", "flush"]:
             k.tables.pop(a[a.index("table") + 1], None); return _R("")
         return _R("")
@@ -296,10 +305,10 @@ for _st, _ks in (("up", False), ("up", True), ("down", True), ("absent", True), 
           % (_st, "ON" if _ks else "OFF"), not _churn,
           "the band is flushed and rebuilt EVERY sync: " + str(_churn[:3]))
 
-# 2e) B1 — A DEVICE REBUILT UNDER A CARRYING EXIT (a WireGuard conf bounce, a WARP switch, a usque restart): the kernel
+# 2f) B1 — A DEVICE REBUILT UNDER A CARRYING EXIT (a WireGuard conf bounce, a WARP switch, a usque restart): the kernel
 # purges its routes and nothing else. Repaired IN PLACE — no `ip rule del`, no flush: the teardown left a moment with no
 # band rule at all, and a client packet in it went out direct past the kill-switch (rig .campaign/rigs/mqx `bounce`).
-def _purged(ks, drop_rule=False):
+def _purged(ks, drop_rule=False, mid=None):
     kern = _Kernel(["wgcf"])
     N._dev_link_state = lambda d: "up"
     plan = {"devexit": [{"subnet": "10.17.0.0/24", "dev": "wgcf", "table": 7000, "killswitch": ks}]}
@@ -308,6 +317,8 @@ def _purged(ks, drop_rule=False):
     kern.tables["7000"] = [r for r in kern.tables.get("7000", []) if not r.startswith("default dev")]   # the kernel's purge
     if drop_rule:
         kern.rules = []                                        # …and a rule gone too: that is not a route repair
+    if mid:
+        mid()
     seen = []
     N.run = lambda argv, **kw: (seen.append(" ".join(map(str, argv))), kern(argv, **kw))[1]
     N.reconcile_cascade({"interfaces": {}}, plan, None, "")
@@ -339,6 +350,42 @@ _cl = lambda xs: [x for x in xs if x.startswith("ip route flush") or (x.startswi
 check("a device gone a while, then back: its client rule never deleted, no table flushed — upmark and route in place (B1)",
       _marks0 and not _cl(_gone) and not _cl(_back) and ROUTE in _back and _kern.marks == _marks0
       and ("10.17.0.0/24", 7000) in _kern.rules, (_cl(_gone), _cl(_back), _kern.marks, _marks0))
+# an exit moved to another device, both up: the old route withdrawn, the new one added — no rule touched (review F3)
+_kern = _Kernel(["wgcf", "wgcf2"])
+N._dev_link_state = lambda d: "up"
+N.run = _kern
+N.reconcile_cascade({"interfaces": {}}, _plan, None, "")
+_mv = []
+N.run = lambda argv, **kw: (_mv.append(" ".join(map(str, argv))), _kern(argv, **kw))[1]
+N.reconcile_cascade({"interfaces": {}}, {"devexit": [dict(_plan["devexit"][0], dev="wgcf2")]}, None, "")
+check("an exit moved to another device: the old route withdrawn and the new one added in place, no rule deleted (B1)",
+      not _cl(_mv) and [r for r in _kern.tables["7000"] if r.startswith("default dev")] == ["default dev wgcf2 scope link"],
+      (_cl(_mv), _kern.tables["7000"]))
+# …the repair re-asserts loose rp_filter as the rebuild did: a rebuilt device is when it needs saying (review F2)
+_sx, _sx0 = [], N._sysctl_ensure
+N._sysctl_ensure = lambda key, *a, **k: (_sx.append(key), 2)[1]
+_purged(True, mid=_sx.clear)                                   # only the repair pass's own calls
+N._sysctl_ensure = _sx0
+check("…and says loose rp_filter again on a repair, as the rebuild did (review F2)", "net.ipv4.conf.all.rp_filter" in _sx, _sx)
+# a repair that does not take falls back to the rebuild on the next pass, which always converges (review F1)
+class _Deaf(_Kernel):
+    def __call__(k, argv, **kw):
+        a = list(map(str, argv))
+        if a[:4] == ["ip", "route", "replace", "default"] and "dev" in a:
+            return _R("")                                      # says yes, installs nothing
+        return _Kernel.__call__(k, argv, **kw)
+_kern = _Deaf(["wgcf"])
+N.run = _kern
+N._dev_link_state = lambda d: "up"
+_kern.tables["7000"] = []
+N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # first pass: a rebuild (nothing there)
+_r1, _r2 = [], []
+N.run = lambda argv, **kw: (_r1.append(" ".join(map(str, argv))), _kern(argv, **kw))[1]
+N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # the route is still missing: a repair
+N.run = lambda argv, **kw: (_r2.append(" ".join(map(str, argv))), _kern(argv, **kw))[1]
+N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # …which did not take: the rebuild
+check("a repair that did not take is not repeated: the next pass rebuilds the band (review F1)",
+      not _cl(_r1) and any(x.startswith("ip rule del") for x in _r2), (_cl(_r1), _r2[:4]))
 _seen, _k = _purged(True, drop_rule=True)
 check("…but a missing RULE still rebuilds the band, as before (the repair is routes only)",
       any(x.startswith("ip rule del") for x in _seen) and RULE in _seen, _seen[:6])
@@ -414,9 +461,9 @@ if INTENT:
 
 if REPAIR:
     if FAILS:
-        print("\nperturbed (repair): a purged route rebuilding the whole band was CAUGHT (%d red)" % len(FAILS))
+        print("\nperturbed (%s): CAUGHT (%d red)" % (REPAIR, len(FAILS)))
         sys.exit(0)
-    print("\nperturbed (repair): NOTHING FAILED — this gate does not hold the in-place route repair (B1)")
+    print("\nperturbed (%s): NOTHING FAILED — this gate does not hold the in-place band repair (B1)" % REPAIR)
     sys.exit(1)
 
 if PERTURB:
