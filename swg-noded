@@ -11491,20 +11491,41 @@ class _SplitHTTPS(http.client.HTTPSConnection):
         threading.Thread(target=up, daemon=True, name="warp-split-up").start()
         threading.Thread(target=down, daemon=True, name="warp-split-down").start()
         tls_end.settimeout(self.timeout)
-        self.sock = self._context.wrap_socket(tls_end, server_hostname=self.host)
+        try:
+            self.sock = self._context.wrap_socket(tls_end, server_hostname=self.host)
+        except ssl.SSLCertVerificationError:
+            tls_end.close()
+            raise                        # a certificate problem (a clock, an intercepting box) — not a block
+        except OSError as e:
+            tls_end.close()
+            raise _HandshakeBlocked(str(e)) from e
 
 
-_WARP_SPLIT = {"on": False}      # a split call got an answer: this daemon's later calls go split first (one wait, not one per call)
+class _HandshakeBlocked(OSError):
+    """The split's TCP connect worked and its TLS handshake did not: the one failure that reads as a block (review F1)."""
+
+
+_WARP_SPLIT = {"on": False}      # the split answered: this daemon's later calls go split first (one wait, not one per call)
+WARP_SPLIT_TIMEOUT_S = 10        # a split that gets through answers in < 1 s (msk-forge 0.06–1 s); it must not hold the pass long
 
 
 def _warp_call(url, body, method, h, split, timeout=20, ctx=None):
-    """One HTTPS request → (status, parsed-or-text); status 0 = no HTTP answer (the str of the error)."""
+    """One HTTPS request → (status, parsed-or-text, stage). An HTTP answer has stage "". Status 0 (the str of the error)
+    says WHERE it failed: "pre" — nothing was delivered (connect, handshake, send: urllib's URLError, or the split's
+    request()), so a retry cannot make a second account (review F4); "blocked" — the split's TCP connect worked and its
+    handshake did not; "post" — the request went out and the answer never came: never retried."""
+    stage = "pre"
     try:
         if split:
             u = urllib.parse.urlsplit(url)
             conn = _SplitHTTPS(u.hostname, u.port or 443, timeout=timeout, context=ctx or ssl.create_default_context())
             try:
-                conn.request(method, u.path + ("?" + u.query if u.query else ""), body=body, headers=h)
+                try:
+                    conn.request(method, u.path + ("?" + u.query if u.query else ""), body=body, headers=h)
+                except _HandshakeBlocked:
+                    stage = "blocked"
+                    raise
+                stage = "post"
                 r = conn.getresponse()
                 st, txt = r.status, r.read().decode("utf-8", "replace")
             finally:
@@ -11516,34 +11537,45 @@ def _warp_call(url, body, method, h, split, timeout=20, ctx=None):
                     st, txt = r.status, r.read().decode("utf-8", "replace")
             except urllib.error.HTTPError as e:
                 st, txt = e.code, e.read().decode("utf-8", "replace")
+            except urllib.error.URLError:
+                raise                    # connect / handshake / send — stage stays "pre"
+            except Exception:
+                stage = "post"           # urllib raises the response stage's errors unwrapped
+                raise
     except Exception as e:
-        return 0, str(e)
+        return 0, str(e), stage
     if st == 200 or txt.strip():
         with contextlib.suppress(ValueError):
-            return st, json.loads(txt or "{}")
-    return st, txt
+            return st, json.loads(txt or "{}"), ""
+    return st, txt, ""
 
 
 def _warp_api(path, data, method, token=""):
     """One call to the WARP account API. Returns (status, parsed-or-text). stdlib only — no wgcf binary:
     registration is a single anonymous POST, not a datapath component, so §11.6's "a new supervised binary
     class per node" argument does not apply and there is nothing to version, gate by arch or supervise.
-    A call with no HTTP answer at all is tried once more with the ClientHello split (_SplitHTTPS, item 17a); an HTTP
-    answer — whatever its status — is Cloudflare speaking, never a block, and is never retried."""
+    A call that delivered nothing is tried once more the other way (plain ↔ the ClientHello split, _SplitHTTPS, item 17a);
+    the way that answered is the one this daemon uses first from then on (review F2). An HTTP answer — whatever its
+    status — is Cloudflare speaking, never a block; a call whose request went out is never repeated (a second account,
+    review F4). Only a split whose handshake died after its connect worked is called a block (review F1): DNS, a dead
+    route, a refused connect, a bad clock keep their own error."""
     h = dict(WARP_HDRS)
     if token:
         h["Authorization"] = "Bearer " + token
     body = json.dumps(data).encode() if data is not None else None
-    split = _WARP_SPLIT["on"]
-    st, d = _warp_call(WARP_API + path, body, method, h, split)
-    if st == 0 and not split:
-        st2, d2 = _warp_call(WARP_API + path, body, method, h, True)
-        if st2:
-            _WARP_SPLIT["on"] = True
-            return st2, d2
+    first = _WARP_SPLIT["on"]
+    tmo = lambda sp: WARP_SPLIT_TIMEOUT_S if sp else 20
+    st, d, stage = _warp_call(WARP_API + path, body, method, h, first, timeout=tmo(first))
+    if st or stage == "post":
+        return st, d
+    st2, d2, stage2 = _warp_call(WARP_API + path, body, method, h, not first, timeout=tmo(not first))
+    if st2:
+        _WARP_SPLIT["on"] = not first
+        return st2, d2
+    if "blocked" in (stage, stage2):
         return 0, ("Cloudflare's WARP registration address is blocked from this node's network (the TLS handshake "
-                   "never completed, even split: %s)" % str(d2)[:80])
-    return st, d
+                   "never completed, even split: %s)" % str(d2 if stage2 == "blocked" else d)[:80])
+    return 0, d
 
 
 def _warp_err(body):
@@ -11600,6 +11632,8 @@ def _warp_apply_licence(rec, key):
     """Put a WARP+ licence on the account. Returns (account_type, error-sentence)."""
     st, d = _warp_api("/reg/%s/account" % rec.get("account_id", ""), {"license": key}, "PUT",
                       token=rec.get("token", ""))
+    if st == 0 and str(d).startswith("Cloudflare's WARP registration address is blocked"):
+        return rec.get("account_type") or "free", str(d)[:240]   # _warp_api's own sentence, whole (review F6)
     if st != 200:
         return rec.get("account_type") or "free", _warp_err(d) or ("licence update failed (%s)" % st)
     return (d.get("account_type") if isinstance(d, dict) else "") or "warp_plus", ""

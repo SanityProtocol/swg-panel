@@ -10,13 +10,17 @@ into TWO TLS RECORDS cut inside the name got through; split into TCP segments it
   [2] _SplitHTTPS against a local TLS server behind a stand-in DPI that drops any connection whose FIRST record carries
       the whole name: the plain request is dropped (status 0), the split one completes (200, certificate verified), its
       first byte sent alone on a TCP_NODELAY socket (msk-forge needed both halves).
-  [3] _warp_api: no HTTP answer → one split retry, which sets the flag (the next call goes split first); an HTTP answer
-      (403) is never retried; both failing → the blocked-network sentence; _warp_register passes it on whole.
+  [3] _warp_api: nothing delivered → one retry the other way, and the way that answered goes first from then on (both
+      directions); an HTTP answer (403) or a request that went out ("post") is never retried; the blocked-network
+      sentence only when the split's handshake died after its connect — DNS, refused, a bad clock keep their own error;
+      _warp_register and _warp_apply_licence pass the sentence on whole.
 
 Run: python3 tests/warp_split_hello_selftest.py     (0 = pass)
      --perturb   _split_hello returns the record unchanged → RED on [1] and [2]
 """
 import importlib.machinery, importlib.util, json, os, socket, ssl, struct, subprocess, sys, tempfile, threading, time
+for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
+    os.environ.pop(_k, None)     # a desktop proxy in the env would answer the plain request itself (review F7)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -103,9 +107,9 @@ threading.Thread(target=accept, daemon=True).start()
 cctx = ssl.create_default_context(cafile=cert)
 url = "https://localhost:%d/v0a2158/reg" % PORT
 hdr = {"Content-Type": "application/json"}
-st, dd = N._warp_call(url, b'{"key":"k"}', "POST", hdr, False, timeout=1.5, ctx=cctx)
-check("plain request: the DPI drops it — no HTTP answer (status 0)", st == 0, (st, dd))
-st, dd = N._warp_call(url, b'{"key":"k"}', "POST", hdr, True, timeout=3, ctx=cctx)
+st, dd, sg = N._warp_call(url, b'{"key":"k"}', "POST", hdr, False, timeout=1.5, ctx=cctx)
+check("plain request: the DPI drops it — no HTTP answer (status 0), nothing delivered (stage pre)", st == 0 and sg == "pre", (st, sg, dd))
+st, dd, sg = N._warp_call(url, b'{"key":"k"}', "POST", hdr, True, timeout=3, ctx=cctx)
 check("split request: answered 200 with the server's JSON (the body went through)",
       st == 200 and isinstance(dd, dict) and dd.get("got") == {"key": "k"}, (st, dd))
 check("…its first record on the wire did not carry the whole name", bool(SEEN) and b"localhost" not in SEEN[-1], SEEN[-1:] and SEEN[-1][:80])
@@ -120,14 +124,23 @@ class Rec:
     def __getattr__(s, k): return getattr(s.so, k)
 socket.create_connection = lambda *a, **k: Rec(_cc(*a, **k))
 try:
-    st, dd = N._warp_call(url, b'{"key":"k"}', "POST", hdr, True, timeout=3, ctx=cctx)
+    st, dd, sg = N._warp_call(url, b'{"key":"k"}', "POST", hdr, True, timeout=3, ctx=cctx)
 finally:
     socket.create_connection = _cc
 check("…its first byte leaves alone, ahead of the rest, on a TCP_NODELAY socket (msk-forge: the record split alone is blocked)",
       st == 200 and SENDS[:1] == [1] and len(SENDS) >= 2 and NODELAY == [1], (st, SENDS[:4], NODELAY))
 bad = ssl.create_default_context()                       # no trust in the test CA: the split must not weaken the check
-st, dd = N._warp_call(url, b"{}", "POST", hdr, True, timeout=3, ctx=bad)
-check("CONTROL: an untrusted certificate still fails through the split", st == 0 and "CERTIFICATE" in str(dd).upper(), (st, dd))
+st, dd, sg = N._warp_call(url, b"{}", "POST", hdr, True, timeout=3, ctx=bad)
+check("CONTROL: an untrusted certificate still fails through the split — and is not called a block", st == 0 and "CERTIFICATE" in str(dd).upper()
+      and sg == "pre", (st, sg, dd))
+mute = socket.socket(); mute.bind(("127.0.0.1", 0)); mute.listen(4)     # accepts TCP, never answers TLS: the msk-forge shape
+MUTED = []
+threading.Thread(target=lambda: [MUTED.append(mute.accept()) for _ in range(4)], daemon=True).start()
+st, dd, sg = N._warp_call("https://localhost:%d/x" % mute.getsockname()[1], b"{}", "POST", hdr, True, timeout=1.5, ctx=cctx)
+check("a split whose connect worked and whose handshake never finished → stage blocked", st == 0 and sg == "blocked", (st, sg, dd))
+closed = socket.socket(); closed.bind(("127.0.0.1", 0)); cport = closed.getsockname()[1]; closed.close()
+st, dd, sg = N._warp_call("https://localhost:%d/x" % cport, b"{}", "POST", hdr, True, timeout=1.5, ctx=cctx)
+check("a refused connect through the split → stage pre, not blocked (review F1)", st == 0 and sg == "pre", (st, sg, dd))
 
 print("\n[3] _warp_api's retry")
 calls = []
@@ -136,25 +149,40 @@ def fake(results):
     def f(url, body, method, h, split, **kw):
         calls.append(split); return next(it)
     return f
-N._WARP_SPLIT["on"] = False; calls.clear(); N._warp_call = fake([(0, "timed out"), (200, {"id": "x"})])
+N._WARP_SPLIT["on"] = False; calls.clear(); N._warp_call = fake([(0, "timed out", "pre"), (200, {"id": "x"}, "")])
 st, dd = N._warp_api("/reg", {}, "POST")
 check("no answer → retried once, split, and its answer returned", calls == [False, True] and st == 200 and dd == {"id": "x"}, (calls, st, dd))
 check("…and the flag is set", N._WARP_SPLIT["on"] is True)
-calls.clear(); N._warp_call = fake([(200, {"id": "y"})])
+calls.clear(); N._warp_call = fake([(200, {"id": "y"}, "")])
 N._warp_api("/reg", {}, "POST")
 check("the next call goes split first, no wait on the plain one", calls == [True], calls)
-N._WARP_SPLIT["on"] = False; calls.clear(); N._warp_call = fake([(403, {"errors": []})])
+N._WARP_SPLIT["on"] = False; calls.clear(); N._warp_call = fake([(403, {"errors": []}, "")])
 st, dd = N._warp_api("/reg", {}, "POST")
 check("an HTTP answer (403) is never retried", calls == [False] and st == 403 and N._WARP_SPLIT["on"] is False, (calls, st))
-calls.clear(); N._warp_call = fake([(0, "timed out"), (0, "timed out")])
+calls.clear(); N._warp_call = fake([(0, "timed out", "pre"), (0, "timed out", "blocked")])
 st, dd = N._warp_api("/reg", {}, "POST")
-check("both fail → status 0 with the blocked-network sentence, flag not set",
+check("plain delivered nothing, the split's handshake died after its connect → the blocked-network sentence, flag not set",
       st == 0 and str(dd).startswith("Cloudflare's WARP registration address is blocked") and N._WARP_SPLIT["on"] is False, (st, dd))
+calls.clear(); N._warp_call = fake([(0, "[Errno -3] Temporary failure in name resolution", "pre"), (0, "[Errno -3] Temporary failure in name resolution", "pre")])
+st, dd = N._warp_api("/reg", {}, "POST")
+check("DNS down both ways → its own error, NOT the blocked sentence (review F1)", st == 0 and "name resolution" in dd and "blocked" not in dd, (st, dd))
+calls.clear(); N._warp_call = fake([(0, "timed out", "post")])
+st, dd = N._warp_api("/reg", {}, "POST")
+check("the request went out, the answer never came → no second POST (a second account, review F4)", calls == [False] and st == 0, (calls, st))
+N._WARP_SPLIT["on"] = True; calls.clear(); N._warp_call = fake([(0, "refused", "pre"), (200, {"id": "z"}, "")])
+st, dd = N._warp_api("/reg", {}, "POST")
+check("split first fails before sending, plain answers → plain is used, and goes first again (review F2)",
+      calls == [True, False] and st == 200 and N._WARP_SPLIT["on"] is False, (calls, st, N._WARP_SPLIT))
+N._WARP_SPLIT["on"] = False
 N.run = lambda *a, **k: type("R", (), {"stdout": "a2V5\n", "returncode": 0})()
-N._warp_call = fake([(0, "timed out"), (0, "timed out")])
+N._warp_call = fake([(0, "timed out", "pre"), (0, "timed out", "blocked")])
 reg, err = N._warp_register()
 check("_warp_register passes that sentence on whole (not 'registration failed (0)' cut at 120)",
       reg is None and err.startswith("Cloudflare's WARP registration address is blocked") and "registration failed" not in err, err)
+N._warp_call = fake([(0, "timed out", "pre"), (0, "timed out", "blocked")])
+acct, lerr = N._warp_apply_licence({"account_id": "a", "token": "t"}, "KEY")
+check("…and so does _warp_apply_licence, whole (review F6)", lerr.startswith("Cloudflare's WARP registration address is blocked")
+      and len(lerr) > 120 and acct == "free", lerr)
 
 print()
 if FAILS:
