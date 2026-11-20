@@ -11764,6 +11764,13 @@ HEV_OWNER = "heiher/hev-socks5-tunnel"
 HEV_SHA256 = {"amd64": "1903b23869cbd12b7b57045ca161c0f90314d9c4ef2835e7a9e4a3179bf7d925",
               "arm64": "e44a6965cd718d98829f344e9f300a5664d12020557127b7469bee7c8f3098b0"}
 HEV_ASSET = {"amd64": "hev-socks5-tunnel-linux-x86_64", "arm64": "hev-socks5-tunnel-linux-arm64"}
+# usque, the MASQUE client of the `warp-masque` exit (1.8.12 item 17b, docs/WARP-MASQUE-PLAN.md §4.2) — DORMANT: nothing
+# reads these yet. Our own build of upstream 6aa03fc9 (forks/usque/build.sh: go1.27.1, -trimpath, -s -w), asset
+# `usque-linux-<arch>`. fork-binaries.yml refuses a CI build whose sha256 is not USQ_SHA256 — a rebuild reproduces it.
+USQ_TAG = "usque-20260720-6aa03fc"
+USQ_OWNER = "SanityProtocol/swg-panel"
+USQ_SHA256 = {"amd64": "51ea456fbf9f211f7be96d0a609eb985c16baebd4035461f4ab0177a6aeea032",
+              "arm64": "709aaeefcd2320f65b03440aaaf389514dd9140749bda1234cf117c117183797"}
 # ONE address plan for every SOCKS exit (§6.3): packets are steered into a TUN by source or mark, never by destination, so
 # the same addresses on two TUNs never meet. 198.18.0.0/15 is RFC 2544's benchmark range, never routed on the internet.
 S5X_ADDR, S5X_DNS, S5X_NET, S5X_MASK = "198.18.0.1", "198.18.0.2", "198.19.0.0", "255.255.0.0"

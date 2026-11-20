@@ -4,16 +4,18 @@
 # pinned — upstream commit, our patch, `-trimpath` — but nobody ever checked that a rebuild produces the same
 # bytes, so "reproducible" was an assertion. Here it is evidence: the build runs in the open, the log says which
 # commit and which toolchain, the artifact carries provenance attestation, and for amneziawg-go the job FAILS
-# unless the bytes match the sha256 the installer will verify against (`AWG_GO_SHA256_*` in lib/common.sh).
+# unless the bytes match the sha256 the installer will verify against (`AWG_GO_SHA256_*` in lib/common.sh); for usque,
+# the sha256 swg-noded fetches against (`USQ_SHA256`).
 #
 # ⚠️ MANUAL ONLY, and publishing is opt-in. Publishing a binary is outward-facing and is the operator's call, so
 # there is no push/schedule trigger: the default run builds, verifies and uploads artifacts, and changes nothing
 # anyone can download. Pass publish=true (with a tag) to cut the release.
 #
-# ⚠️ The toolchain is pinned HERE, not in most of the build scripts. Only forks/amneziawg-go/build.sh refuses a
-# wrong Go (its sha256 pins reproduce only with go1.27.1); the WDTT/qwdtt scripts build with whatever Go is on
-# PATH, so their bytes have never been comparable between two builds. Pinning it in one place is what makes a
-# rebuild-and-compare meaningful for them from now on — it does NOT retroactively match what was published by hand.
+# ⚠️ The toolchain is pinned HERE, not in most of the build scripts. Only forks/amneziawg-go/build.sh and
+# forks/usque/build.sh refuse a wrong Go (their sha256 pins reproduce only with go1.27.1); the WDTT/qwdtt scripts
+# build with whatever Go is on PATH, so their bytes have never been comparable between two builds. Pinning it in one
+# place is what makes a rebuild-and-compare meaningful for them from now on — it does NOT retroactively match what was
+# published by hand.
 name: fork binaries
 
 on:
@@ -23,14 +25,14 @@ on:
         description: which fork to build
         required: true
         type: choice
-        options: [amneziawg-go, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, qwdtt, csqtt]
+        options: [amneziawg-go, usque, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, qwdtt, csqtt]
       publish:
         description: "publish a release (leave OFF to build + verify only)"
         required: false
         default: false
         type: boolean
       tag:
-        description: "release tag, e.g. amneziawg-go-3.1.20260828 or wdtt-ildarmaga-1.5.61 (required when publishing)"
+        description: "release tag, e.g. amneziawg-go-3.1.20260828, usque-20260720-6aa03fc or wdtt-ildarmaga-1.5.61 (required when publishing)"
         required: false
         type: string
 
@@ -38,7 +40,7 @@ permissions:
   contents: read
 
 env:
-  GO_PIN: "1.27.1"          # forks/amneziawg-go/build.sh REQUIRES go1.27.1; the rest are pinned here for reproducibility
+  GO_PIN: "1.27.1"          # forks/amneziawg-go/build.sh and forks/usque/build.sh REQUIRE go1.27.1; the rest are pinned here for reproducibility
   RUST_PIN: "1.97.1"        # forks/csqtt/build.sh installs this toolchain itself
 
 jobs:
@@ -52,13 +54,14 @@ jobs:
       - uses: actions/checkout@v4
 
       # One place that knows how each fork is built and what its asset is called. The WDTT/csqtt releases we
-      # already publish name their assets `server-linux-<arch>`; amneziawg-go uses its own name because the
-      # installer fetches it by that exact path (lib/common.sh awg_go_pinned).
+      # already publish name their assets `server-linux-<arch>`; amneziawg-go and usque use their own names because
+      # the installer / swg-noded fetch them by that exact path (lib/common.sh awg_go_pinned; USQ_TAG).
       - name: resolve the fork
         id: f
         run: |
           case "${{ inputs.fork }}" in
             amneziawg-go)   script=forks/amneziawg-go/build.sh;      asset=amneziawg-go-linux ; kind=go   ;;
+            usque)          script=forks/usque/build.sh;             asset=usque-linux        ; kind=go   ;;
             wdtt-amurcanov) script=forks/wdtt/build.sh;              asset=server-linux       ; kind=go   ;;
             wdtt-ildarmaga) script=forks/wdtt/ildarmaga/build.sh;    asset=server-linux       ; kind=go   ;;
             wdtt-wdttplus)  script=forks/wdtt/wdttplus/build.sh;     asset=server-linux       ; kind=go   ;;
@@ -106,23 +109,31 @@ jobs:
           sha256sum "out/${{ steps.f.outputs.asset }}" | tee "out/${{ steps.f.outputs.asset }}.sha256"
           file "out/${{ steps.f.outputs.asset }}" || true
 
-      # ⚠️ THE CHECK WORTH HAVING. The installer refuses a download whose sha256 is not the pinned one, so a build
-      # that does not reproduce that value is a build nobody can install — better to fail here than to publish an
-      # asset the fleet will reject. Only amneziawg-go carries such a pin today; the others say so rather than
-      # pretending to verify.
+      # ⚠️ THE CHECK WORTH HAVING. The installer (amneziawg-go) and swg-noded (usque) refuse a download whose sha256 is
+      # not the pinned one, so a build that does not reproduce that value is a build nobody can install — better to
+      # fail here than to publish an asset the fleet will reject. Only these two carry such a pin; the others say so
+      # rather than pretending to verify.
       - name: verify against the installer's pin
         run: |
           set -euo pipefail
           got="$(cut -d' ' -f1 < "out/${{ steps.f.outputs.asset }}.sha256")"
-          if [ "${{ inputs.fork }}" = "amneziawg-go" ]; then
-            want="$(grep -oP 'AWG_GO_SHA256_${{ matrix.arch }}="\K[a-f0-9]+' lib/common.sh)"
-            [ -n "$want" ] || { echo "no AWG_GO_SHA256_${{ matrix.arch }} in lib/common.sh" >&2; exit 1; }
-            echo "pinned : $want"; echo "built  : $got"
-            [ "$want" = "$got" ] || { echo "::error::rebuild does NOT match the pin the installer verifies — not publishable"; exit 1; }
-            echo "::notice::reproduced the pinned sha256 exactly"
-          else
-            echo "::notice::no installer-side sha256 pin for ${{ inputs.fork }} (only amneziawg-go has one) — recording $got"
-          fi
+          case "${{ inputs.fork }}" in
+            amneziawg-go)
+              where="AWG_GO_SHA256_${{ matrix.arch }} in lib/common.sh"
+              want="$(grep -oP 'AWG_GO_SHA256_${{ matrix.arch }}="\K[a-f0-9]+' lib/common.sh || true)" ;;
+            usque)
+              where="USQ_SHA256[\"${{ matrix.arch }}\"] in swg-noded"
+              want="$(python3 -c 'import ast, re, sys
+          m = re.search(r"^USQ_SHA256 = (\{.*?\})", open("swg-noded").read(), re.S | re.M)
+          print(ast.literal_eval(m.group(1)).get(sys.argv[1], "") if m else "")' "${{ matrix.arch }}")" ;;
+            *)
+              echo "::notice::no installer-side sha256 pin for ${{ inputs.fork }} (only amneziawg-go and usque have one) — recording $got"
+              exit 0 ;;
+          esac
+          [ -n "$want" ] || { echo "::error::no $where"; exit 1; }
+          echo "pinned : $want   ($where)"; echo "built  : $got"
+          [ "$want" = "$got" ] || { echo "::error::rebuild does NOT match the pin the fleet verifies — not publishable"; exit 1; }
+          echo "::notice::reproduced the pinned sha256 exactly"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -179,6 +190,12 @@ jobs:
             for f in dl/*; do case "$f" in *.sha256) continue;; esac
               echo "| \`$(basename "$f")\` | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"; done; }
           run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # an unpatched upstream we redistribute carries its licence notice in the notes (MIT asks for it with every copy)
+          lic=""; [ "${{ inputs.fork }}" = usque ] && lic=forks/usque/LICENSE.md
+          licence(){ [ -n "$lic" ] || return 0
+            if [ "$1" = en ]; then echo "Upstream: [Diniboy1123/usque](https://github.com/Diniboy1123/usque), unmodified. Its licence:"
+            else echo "Upstream: [Diniboy1123/usque](https://github.com/Diniboy1123/usque), без изменений. Его лицензия:"; fi
+            echo; echo '```'; cat "$lic"; echo '```'; echo; }
           {
             echo '<p align="center"><b>English</b> · <a href="#ru">Русский</a></p>'
             echo; echo '<a name="en"></a>'; echo
@@ -188,6 +205,7 @@ jobs:
             echo
             sums asset
             echo
+            licence en
             echo "Built by [this run](${run}) with provenance attestation — verify with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
             echo; echo '---'; echo; echo '<a name="ru"></a>'
             echo '<p align="center"><a href="#en">English</a> · <b>Русский</b></p>'
@@ -198,6 +216,7 @@ jobs:
             echo
             sums файл
             echo
+            licence ru
             echo "Собрано [этим запуском](${run}) с аттестацией происхождения — проверка: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
           } > notes.md
           gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
