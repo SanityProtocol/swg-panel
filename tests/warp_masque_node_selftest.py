@@ -60,9 +60,13 @@ PLANTS = {
     "--perturb-namelater": ('                    _hl["why"] = MQX_FREEZE_WHY          # named once a run proves it, even after the exit went dead',
                             '                    pass'),                                                         # [5]
     "--perturb-fzthread": ('threading.Thread(target=_mqx_freeze_run, args=(dev, _me), daemon=True).start()', '_mqx_freeze_run(dev, _me)'),  # [5]
-    "--perturb-fzonce": ('    if dev in _MQX_FZ_RUN or dev in _MQX_FZ:\n        return dict(rec, mqx="")', '    if False:\n        return dict(rec, mqx="")'),  # [5]
-    "--perturb-fzstale": ('        if _MQX_FZ_RUN.get(dev) is me:\n            if ok:', '        if True:\n            if ok:'),       # [5]
-    "--perturb-fzdrop": ('for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ, _MQX_FZ_RUN):', 'for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ):'),  # [5]
+    "--perturb-fzonce": ('    if dev in _MQX_FZ_RUN:\n        return dict(rec, mqx="")', '    if False:\n        return dict(rec, mqx="")'),  # [5]
+    "--perturb-fzparked": ('    fz_at = max((_MQX.get(dev) or {}).get("fz_at", 0), (_MQX_FZ.get(dev) or (0, None))[0])',
+                           '    fz_at = (_MQX.get(dev) or {}).get("fz_at", 0)'),                                                # [5]
+    "--perturb-fzstale": ('            if _MQX_FZ_RUN.get(dev) is me:\n                if ok:', '            if True:\n                if ok:'),  # [5]
+    "--perturb-fzlock": ('        with _MQX_FZ_LOCK:\n            if _MQX_FZ_RUN.get(dev) is me:', '        if True:\n            if _MQX_FZ_RUN.get(dev) is me:'),  # [5]
+    "--perturb-fzdrop": ('        for m in (_MQX, _MQX_FZ, _MQX_FZ_RUN) + more:', '        for m in (_MQX, _MQX_FZ) + more:'),       # [5]
+    "--perturb-fzsweep": ('list(_MQX) + list(_MQX_FZ) + list(_MQX_FZ_RUN) if k not in _held]', 'list(_MQX) + list(_MQX_FZ) if k not in _held]'),  # [5]
     "--perturb-log1": ('    for lg in (dev + ".log", dev + ".log.1"):', '    for lg in (dev + ".log",):'),                     # [4]
     "--perturb-keyedsent": ('                    _keyed = rec is not _r0              # a request went out', '                    _keyed = True              # a request went out'),  # [9]
     "--perturb-noevidence": ('    if m.get("freeze") == "freeze" and tr and not tr.get("ip"):',
@@ -88,7 +92,12 @@ PLANTS = {
     "--perturb-restoreonce": ('    if relay and relay == rec.get("restore_ref"):\n        return rec, str(', '    if False:\n        return rec, str('),  # [8]
     "--perturb-relay": ('    if relay and relay == rec.get("restore_ref"):', '    if rec.get("restore_ref"):'),                         # [8]
     "--perturb-usqwait": ('    if not _ub[0]:\n        return rec, "waits for the MASQUE', '    if False:\n        return rec, "waits for the MASQUE'),  # [8]
-    "--perturb-keyedpass": ('if not (_blob_err or _keyed) and rec.get("priv")', 'if not _blob_err and rec.get("priv")'),           # [8]
+    "--perturb-keyedpass": ('if not _keyed and rec.get("priv") and _warp_reenrol_due', 'if rec.get("priv") and _warp_reenrol_due'),  # [8]
+    "--perturb-blobwait": ('if not _keyed and rec.get("priv") and _warp_reenrol_due', 'if not (_blob_err or _keyed) and rec.get("priv") and _warp_reenrol_due'),  # [8]
+    "--perturb-regfails": ('    if rec.get("reg_fails"):\n        return False                      # a switch waiting',
+                           '    if False:\n        return False                      # a switch waiting'),                              # [9]
+    "--perturb-licbackoff": ('                if _lb.get("key") == lic and time.time() < float(_lb.get("next") or 0):',
+                             '                if False:'),                                                                         # [9]
     "--perturb-restorepersist": ("                            _replace_if_changed(sp, json.dumps(rec), 0o600)   # `restored`: one press, one PATCH (T29)",
                                  "                            pass"),                                                 # [8]
     "--perturb-giveup": ('                    for _k in ("reg_fails", "reg_next", "reg_error"):\n                        rec.pop(_k, None)',
@@ -569,7 +578,8 @@ _gate.set(); fzwait()
 check("the 64 KB run never holds the pass, one at a time per device, its answer parked for a later pass (review F14)",
       _el < 1.5 and _n == 1 and (N._MQX_FZ.get(dev) or (0, None))[1] == "pass", (_el, _n, N._MQX_FZ.get(dev)))
 N._MQX_FZ.clear()
-# …and the next pass starts no second run while one is in flight or its answer is unread: fz_at moves when it is taken (F29)
+# …and the next pass starts no second run while one is in flight, nor a "due" or "onpass" one on an answer not yet taken:
+# a parked answer IS the last run (F29) — and the first failure of a spell still gets its run (F37)
 N._MQX[dev] = {"fz_at": time.time() - 700}
 N._EXIT_HEALTH.pop(dev, None)
 N._MQX_FZ_RUN[dev] = object()
@@ -577,10 +587,30 @@ _d1 = N._mqx_probe(dev, {})["mqx"]
 N._MQX_FZ_RUN.clear()
 N._MQX_FZ[dev] = (time.time(), "pass")
 _d2 = N._mqx_probe(dev, {})["mqx"]
+N._EXIT_HEALTH[dev] = {"dead": True, "since": time.time() - 100, "fails": 9}
+_d2b = N._mqx_probe(dev, {})["mqx"]
+N._EXIT_HEALTH.pop(dev, None)
 N._mqx_evidence(dev, {"ip": "1.2.3.4"}, None)
 _d3 = N._mqx_probe(dev, {})["mqx"]
-check("no second freeze run while one is in flight or its answer is not yet taken; none after it is (review F29)",
-      (_d1, _d2, _d3) == ("", "", "onfail"), (_d1, _d2, _d3))
+check("no second freeze run while one is in flight (review F29)", _d1 == "", _d1)
+check("…an answer not yet taken is the last run: no \"due\" again on it, the first failure still runs (F37)", _d2 == "onfail", _d2)
+check("…nor \"onpass\" on a dead exit within a minute of it (F29)", _d2b == "", _d2b)
+check("…and once it is taken, the first failure runs", _d3 == "onfail", _d3)
+# a run's "still mine?" and its parking are one step under the lock a forget takes: a forget can never fall between (F35)
+N._MQX_FZ.clear(); N._MQX_FZ_RUN.clear()
+_f0 = N._mqx_freeze
+N._mqx_freeze = lambda d, *a, **k: "freeze"
+_me = object()
+N._MQX_FZ_RUN[dev] = _me
+N._MQX_FZ_LOCK.acquire()
+_t = threading.Thread(target=N._mqx_freeze_run, args=(dev, _me), daemon=True)
+_t.start(); _t.join(0.3)
+_early = dev in N._MQX_FZ
+N._MQX_FZ_RUN.pop(dev, None)                           # what _mqx_forget does, holding the lock (a new config, a teardown)
+N._MQX_FZ_LOCK.release(); _t.join(2)
+N._mqx_freeze = _f0
+check("a freeze run parks only under the lock a forget holds: a tunnel forgotten mid-run gets no answer (review F35)",
+      not _early and dev not in N._MQX_FZ, (_early, N._MQX_FZ.get(dev)))
 # a run that outlives its tunnel (a new config) is discarded, and does not hold up the new tunnel's own run (F30)
 reset()
 sync({"id": "aabbccdd", "provider": "warp-masque"})
@@ -594,6 +624,11 @@ _free = dev not in N._MQX_FZ_RUN
 _gate.set(); time.sleep(0.3)
 check("a freeze run that outlived its tunnel's config is discarded, and the new tunnel may run its own (review F30)",
       _free and dev not in N._MQX_FZ, (_free, N._MQX_FZ.get(dev)))
+# a run in flight for a device no exit holds any more is forgotten by the T9 sweep, like its verdicts (F38)
+N._MQX_FZ_RUN["wgx-0dd0dd00"] = object()
+sync({"id": "aabbccdd", "provider": "warp-masque"})
+check("the T9 sweep forgets a freeze run whose device nothing holds (review F38)", "wgx-0dd0dd00" not in N._MQX_FZ_RUN,
+      list(N._MQX_FZ_RUN))
 N._mqx_freeze = lambda dev, *a, **k: FZ["v"]
 
 # a verdict already dead (the trace's timeout) is renamed once a run proves the freeze
@@ -858,6 +893,22 @@ CF["calls"].clear()
 sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "z", "_plain": BLOB_MQ}})
 check("…a relay already acted on, still riding, does not hold off a due re-enrolment (review F32)",
       len(patches()) == 1 and patches()[0][2]["key"] == rec_of(X)["pub"], patches())
+# a restore that FAILED, its relay riding on (≤ 1 h): the exit's own dead key is re-enrolled meanwhile (F32's tail)
+N._EXIT_HEALTH[dev] = _dead()
+N._WARP_REENROL["at"] = 0.0
+CF["fail"] = [(0, "timed out")]
+CF["calls"].clear()
+sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "w", "_plain": BLOB_WG}})
+_n1, _re = len(patches()), rec_of(X).get("restore_err")
+save_rec(X, dict(rec_of(X), reenrol_next=0))           # (the re-enrolment just above answered the same pin: its 6 h)
+N._EXIT_HEALTH[dev] = _dead()
+N._MQX[dev] = {"fz_at": time.time(), "freeze": "pass"}
+N._WARP_REENROL["at"] = 0.0
+CF["calls"].clear()
+rows, _ = sync({"id": X, "provider": "warp-masque", "key_blob": {"ct": "w", "_plain": BLOB_WG}})
+check("…a FAILED restore's relay, still riding, does not hold off the exit's own re-enrolment (F32's tail)",
+      _n1 == 1 and _re and len(patches()) == 1 and patches()[0][2]["key"] == rec_of(X)["pub"] and rows[X].get("restore_error"),
+      (_n1, _re, patches(), rows[X].get("restore_error")))
 
 # ── [9] re-enrolment ────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[9] re-enrolment, both kinds")
@@ -887,6 +938,7 @@ N._WARP_REENROL["at"] = now - 100
 check("one per node per 5 min", not N._warp_reenrol_due(dev, rc, now=now))
 N._WARP_REENROL["at"] = 0.0
 check("its own back-off", not N._warp_reenrol_due(dev, dict(rc, reenrol_next=now + 60), now=now))
+check("…nor while a switch waits out its registration back-off (F36)", not N._warp_reenrol_due(dev, dict(rc, reg_fails=1), now=now))
 check("no account, no re-enrolment", not N._warp_reenrol_due(dev, dict(rc, token=""), now=now))
 mrec = dict(MREC)
 N._MQX[dev] = {"freeze": "freeze"}
@@ -897,6 +949,23 @@ N._EXIT_HEALTH[dev]["ok_since"] = now - 5
 check("…not while it carries again, inside its alive window (review F15)", not N._warp_reenrol_due(dev, mrec, now=now))
 N._EXIT_HEALTH[dev].pop("ok_since")
 N._MQX.clear()
+# through the pass: a switch whose PATCH failed on a dead exit is not joined by a re-enrolment PATCH while it backs off (F36)
+HS["v"] = 0
+N._EXIT_HEALTH[dev] = {"dead": True, "since": time.time() - 1000, "fails": 99, "fail_since": time.time() - 1000, "ok_since": None, "why": "x"}
+TR[dev] = {"err": "timed out"}
+N._exit_reach = lambda d, *a, **k: False
+CF["fail"] = [(429, {"success": False, "errors": [{"code": 1015, "message": "rate limited"}]})]
+CF["calls"].clear()
+sync({"id": X, "provider": "warp-masque"})
+_n1 = len(patches())
+N._WARP_REENROL["at"] = 0.0
+CF["calls"].clear()
+rows, _ = sync({"id": X, "provider": "warp-masque"})
+check("a switch PATCH refused (429) on a dead exit: no re-enrolment PATCH while it backs off (F36)",
+      _n1 == 1 and not patches() and rec_of(X).get("reg_fails") and rows[X].get("error", "").startswith("still on WireGuard:"),
+      (_n1, patches(), rows[X].get("error")))
+save_rec(X, {k: v for k, v in rec_of(X).items() if k not in ("reg_fails", "reg_next", "reg_error")})
+N._WARP_REENROL["at"] = 0.0
 # through the pass: a new peer key → rebuilt; the same → 6 h
 HS["v"] = 0
 N._EXIT_HEALTH[dev] = {"dead": True, "since": time.time() - 1000, "fails": 99, "fail_since": time.time() - 1000, "ok_since": None, "why": "x"}
@@ -942,6 +1011,29 @@ check("…not even a WARP+ licence, and the row keeps saying why (review F5)", n
 N._exit_handshake = _hs_real
 N._exit_reach = lambda dev, *a, **k: True
 CF["wg_peer"] = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+# a WARP+ licence Cloudflare rejects is not PUT again every pass: per key, from a minute, doubling; a new key at once
+reset()
+sync({"id": X, "provider": "warp"})
+puts = lambda: [c for c in CF["calls"] if c[0] == "PUT"]
+CF["fail"] = [(400, {"success": False, "errors": [{"code": 1000, "message": "Invalid license"}]})]
+CF["calls"].clear()
+rows1, _ = sync({"id": X, "provider": "warp", "licence": "LIC-BAD"})
+_n1, _lb = len(puts()), dict(rec_of(X).get("licence_bad") or {})
+rows2, _ = sync({"id": X, "provider": "warp", "licence": "LIC-BAD"})
+check("a rejected WARP+ licence is not PUT again the next pass, and the row keeps saying why",
+      _n1 == 1 and len(puts()) == 1 and rows1[X].get("error") and rows2[X].get("error") == rows1[X].get("error")
+      and 50 < _lb.get("next", 0) - time.time() <= 60, (_n1, puts(), rows1[X].get("error"), rows2[X].get("error"), _lb))
+save_rec(X, dict(rec_of(X), licence_bad=dict(_lb, next=0)))
+CF["fail"] = [(400, {"success": False, "errors": [{"code": 1000, "message": "Invalid license"}]})]
+sync({"id": X, "provider": "warp", "licence": "LIC-BAD"})
+_lb2 = rec_of(X).get("licence_bad") or {}
+check("…tried again once its wait is over, and the wait doubles", len(puts()) == 2 and _lb2.get("n") == 2
+      and 110 < _lb2.get("next", 0) - time.time() <= 120, (puts(), _lb2))
+rows, _ = sync({"id": X, "provider": "warp", "licence": "LIC-GOOD"})
+rc = rec_of(X)
+check("…a different key is tried at once; applied, the back-off goes", len(puts()) == 3 and rc.get("licence_applied") == "LIC-GOOD"
+      and "licence_bad" not in rc and rc.get("account_type") == "unlimited" and not rows[X].get("error"), (puts(), rc.get("licence_applied")))
 
 # ── [10] escrow ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[10] escrow: both kinds, `acct` in the clear")

@@ -370,7 +370,7 @@ finally:
     N._sysctl_ensure = _sx0
 check("…and says loose rp_filter again on a repair — the repair, not a rebuild (review F2, F7)",
       "net.ipv4.conf.all.rp_filter" in _sx and not _cl(_rp), (_sx, _cl(_rp)))
-# a repair that does not take falls back to the rebuild on the next pass, which always converges (review F1)
+# a repair that does not take is read back and falls back to the rebuild IN THE SAME PASS, which always converges (review F1)
 class _Deaf(_Kernel):
     def __call__(k, argv, **kw):
         a = list(map(str, argv))
@@ -385,10 +385,11 @@ N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # first pass: a
 _r1 = []
 N.run = lambda argv, **kw: (_r1.append(" ".join(map(str, argv))), _kern(argv, **kw))[1]
 N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # the route is still missing: a repair, which does not take
-check("a repair that did not take is read back and the band rebuilt in the same pass (review F1)",
-      any(x.startswith("ip route replace default") for x in _r1)
-      and any(x.startswith("ip rule del") for x in _r1), _r1[:6])
-# the same device rebuilt twice, no pass between: each a repair, never the rebuild (review F5)
+_rr = [i for i, x in enumerate(_r1) if x.startswith("ip route replace default")]
+_rd = [i for i, x in enumerate(_r1) if x.startswith("ip rule del")]
+check("a repair that did not take is read back and the band rebuilt in the same pass: the repair first (review F1, F10)",
+      _rr and _rd and _rr[0] < _rd[0], _r1[:6])
+# the same device rebuilt twice in a row, a full pass after each purge: each a repair, never the rebuild (review F5, F11)
 _k5 = _Kernel(["wgcf"])
 N._dev_link_state = lambda d: "up"
 N.run = _k5

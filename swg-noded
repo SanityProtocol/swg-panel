@@ -11768,6 +11768,8 @@ def _warp_reenrol_due(dev, rec, now=None):
         return False                      # (carrying again, inside its EXIT_ALIVE_AFTER_S: a recovery, not a dead key — F15)
     if now < float(rec.get("reenrol_next") or 0) or now - _WARP_REENROL["at"] < WARP_REENROL_SPACING_S:
         return False
+    if rec.get("reg_fails"):
+        return False                      # a switch waiting out its back-off: Cloudflare is not asked twice (F36)
     if not (rec.get("account_id") and rec.get("token")) or rec.get("refused"):
         return False
     if rec.get("provider") == "warp-masque":
@@ -11866,7 +11868,7 @@ def _exit_restore(xid, dev, prov, rec, blob, res, relay=""):
         why = ("the escrowed account could not be enrolled: " + why)[:240]
         return dict(rec, restored=bpub, restore_ref=relay, restore_err=why), why
     new = dict(new or blob, restored=bpub, restore_ref=relay)
-    for k in ("reg_fails", "reg_next", "reg_error", "refused", "started", "reenrol_next", "restore_err"):
+    for k in ("reg_fails", "reg_next", "reg_error", "refused", "started", "reenrol_next", "restore_err", "licence_bad"):
         new.pop(k, None)
     if rec.get("priv") and (rec.get("provider") or "warp") != new["provider"]:
         _exit_down(dev, dict(rec, id=xid))
@@ -12419,9 +12421,8 @@ def _mqx_up(xid, dev, rec, transport):
                                extra=["-p", "UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY "
                                             "http_proxy https_proxy all_proxy no_proxy"])
     if not err and rec.get("started") != sig:
-        for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _MQX, _MQX_FZ, _MQX_FZ_RUN):
-            m.pop(dev, None)                  # a new config: judged afresh, its freeze checked again at bring-up (a run of the
-                                              # old one in flight is discarded — F30)
+        _mqx_forget(dev, _EXIT_HEALTH, _EXIT_PROBED_AT)   # a new config: judged afresh, its freeze checked again at bring-up
+                                                          # (a run of the old one in flight is discarded — F30)
         rec["started"] = sig
     return err, ""
 
@@ -12430,8 +12431,7 @@ def _mqx_down(xid, dev):
     """Stop a MASQUE exit: its unit (or child), the device, its conf and pidfile, every verdict (pause, delete, switch, reap).
     The account stays in the record."""
     _s5x_down(xid, dev, unit=_mqx_unit(xid), cfg=os.path.join(EXIT_DIR, dev + ".conf"))
-    for m in (_MQX, _MQX_FZ, _MQX_FZ_RUN):
-        m.pop(dev, None)
+    _mqx_forget(dev)
     for lg in (dev + ".log", dev + ".log.1"):                # a Docker child's log, rotated half included, goes with it
         with contextlib.suppress(OSError):                   # (F13, F34)
             os.unlink(os.path.join(EXIT_DIR, lg))
@@ -12484,6 +12484,15 @@ def _mqx_freeze(dev, host=None, port=443, timeout=10):
 
 
 _MQX_FZ_RUN = {}    # device -> the token of its freeze run in flight (one at a time per device)
+_MQX_FZ_LOCK = threading.Lock()   # a run's "still mine?" and its parking, against a forget between the two (F35)
+
+
+def _mqx_forget(dev, *more):
+    """Drop a MASQUE tunnel's verdicts and its freeze run in flight (a new config, a teardown, the T9 sweep, the reap), under
+    the lock a run parks its answer under, so a run of the tunnel forgotten can never park after it (F35, F38)."""
+    with _MQX_FZ_LOCK:
+        for m in (_MQX, _MQX_FZ, _MQX_FZ_RUN) + more:
+            m.pop(dev, None)
 
 
 def _mqx_freeze_run(dev, me):
@@ -12493,10 +12502,11 @@ def _mqx_freeze_run(dev, me):
     try:
         v, ok = _mqx_freeze(dev), True
     finally:
-        if _MQX_FZ_RUN.get(dev) is me:
-            if ok:
-                _MQX_FZ[dev] = (time.time(), v)
-            _MQX_FZ_RUN.pop(dev, None)
+        with _MQX_FZ_LOCK:
+            if _MQX_FZ_RUN.get(dev) is me:
+                if ok:
+                    _MQX_FZ[dev] = (time.time(), v)
+                _MQX_FZ_RUN.pop(dev, None)
 
 
 def _mqx_probe(dev, rec):
@@ -12507,9 +12517,11 @@ def _mqx_probe(dev, rec):
     within seconds, so a check made then finds the tunnel already stalled — nothing connects, no answer. A DEAD exit carries
     no client (its route is withheld), so the first trace that passes after usque reconnected is a fresh flow with its whole
     budget: the 64 KB check then stalls where the network cuts, or proves the way back."""
-    if dev in _MQX_FZ_RUN or dev in _MQX_FZ:
-        return dict(rec, mqx="")              # a run in flight, or its answer not yet taken: `fz_at` is not moved yet (F29)
-    fz_at = (_MQX.get(dev) or {}).get("fz_at", 0)
+    if dev in _MQX_FZ_RUN:
+        return dict(rec, mqx="")              # a run in flight (F29)
+    # an answer parked but not yet taken is the last run: no "due" or "onpass" again on it (F29), and the first failure of a
+    # spell still gets its own run (F37)
+    fz_at = max((_MQX.get(dev) or {}).get("fz_at", 0), (_MQX_FZ.get(dev) or (0, None))[0])
     st = _EXIT_HEALTH.get(dev) or {}
     if time.time() - fz_at >= MQX_FREEZE_EVERY_S:
         return dict(rec, mqx="due")
@@ -13937,7 +13949,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     for _k in ("reg_fails", "reg_next", "reg_error"):
                         rec.pop(_k, None)                # a switch given up (the panel wants the running kind again)
                 prov = rec.get("provider") or "warp"     # the pass runs the RECORD's kind (§4.10)
-                if not (_blob_err or _keyed) and rec.get("priv") and _warp_reenrol_due(dev, rec):
+                if not _keyed and rec.get("priv") and _warp_reenrol_due(dev, rec):   # (a relay waiting or refused: its own key)
                     rec = _warp_reenrol(xid, rec)        # §4.12: dead 15 min, the network not to blame
                     _reen.add(dev)                       # its PATCH took up to 30 s of this pass: not probed too (F2)
                 if rec.get("refused"):
@@ -13945,15 +13957,25 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             # 2) a WARP+ licence the operator supplied, applied ONCE per distinct key
             lic = str(d.get("licence") or "").strip()
             if prov in WARP_KINDS and lic and lic != rec.get("licence_applied") and not rec.get("refused"):
-                acct, lerr = _warp_apply_licence(rec, lic)
-                rec["account_type"] = acct
-                rec["licence_applied"] = lic if not lerr else rec.get("licence_applied", "")
-                err = err or lerr
-                if lerr:
-                    log(LOG_WARNING, "exit %s: WARP+ licence rejected — %s", xid, lerr)
+                # ⚠️ A REJECTED KEY BACKS OFF, PER KEY — it was PUT again every pass (a mistyped key: a call to Cloudflare every
+                # 5 s, for ever). From a minute, doubling, capped at an hour, kept in the record across restarts; the row keeps
+                # saying why meanwhile, and a different key is tried at once.
+                _lb = rec.get("licence_bad") or {}
+                if _lb.get("key") == lic and time.time() < float(_lb.get("next") or 0):
+                    err = err or str(_lb.get("why") or "licence update failed")
                 else:
-                    log(LOG_INFO, "exit %s: WARP+ licence applied (%s)", xid, acct)
-                    res["changed"] += 1
+                    acct, lerr = _warp_apply_licence(rec, lic)
+                    rec["account_type"] = acct
+                    err = err or lerr
+                    if lerr:
+                        _n = int(_lb.get("n") or 0) + 1 if _lb.get("key") == lic else 1
+                        rec["licence_bad"] = {"key": lic, "n": _n, "next": time.time() + min(3600, 60 * 2 ** (_n - 1)), "why": lerr}
+                        log(LOG_WARNING, "exit %s: WARP+ licence rejected — %s", xid, lerr)
+                    else:
+                        rec["licence_applied"] = lic
+                        rec.pop("licence_bad", None)
+                        log(LOG_INFO, "exit %s: WARP+ licence applied (%s)", xid, acct)
+                        res["changed"] += 1
             rec["device"] = dev
             if prov == "warp-masque":
                 # usque presents the account over MASQUE as the TUN `dev` (§4.5), supervised like hev; judged after the loop
@@ -14115,9 +14137,10 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
         # up, a NIC) is dropped, so a name used again later is judged from scratch instead of inheriting a "dead".
         _held = _mine | {d for d, _ in _ad}
         for k in [k for k in _EXIT_HEALTH if k not in _held] + [k for k in _EXIT_PROBED_AT if k not in _held] \
-                + [k for k in _S5X_CHECKS if k not in _held] + [k for k in list(_MQX) + list(_MQX_FZ) if k not in _held]:
+                + [k for k in _S5X_CHECKS if k not in _held] \
+                + [k for k in list(_MQX) + list(_MQX_FZ) + list(_MQX_FZ_RUN) if k not in _held]:
             _EXIT_HEALTH.pop(k, None); _EXIT_PROBED_AT.pop(k, None); _S5X_CHECKS.pop(k, None)   # (a check that ended after its exit went)
-            _MQX.pop(k, None); _MQX_FZ.pop(k, None)
+            _mqx_forget(k)                                                                       # (its freeze run too — F38)
 
     # …and stamp EVERY report with the config revision it describes. Done here, in one place, rather than
     # at each `out.append` above: this loop has five exits from it (paused, escrow refused, registration
@@ -14157,8 +14180,7 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             if od and (_dev_link_state(od) != "absent" or not _exit_is_wg(old.get("provider"))):
                 _exit_down(od, dict(old, id=_stem))   # a SOCKS / MASQUE unit mid-back-off has no device, and is stopped all the same (T28)
             if od and od not in _held:                # T9: its verdict and lookup history go with it (a name reused later
-                for _m in (_EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT, _EXIT_OFF_V6, _MQX, _MQX_FZ):   # starts from scratch)
-                    _m.pop(od, None)
+                _mqx_forget(od, _EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT, _EXIT_OFF_V6)   # starts from scratch)
             for p2 in (os.path.join(EXIT_DIR, fn), os.path.join(EXIT_DIR, od + ".conf") if od else ""):
                 if p2:
                     with contextlib.suppress(Exception):
