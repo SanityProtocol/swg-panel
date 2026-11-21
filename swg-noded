@@ -13702,7 +13702,9 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     **(dict({"colo": (tr or {}).get("colo") or None, "freeze": (_MQX.get(dev) or {}).get("freeze")},
                             **({"setup": rec["setup"]} if rec.get("setup") else {})) if prov == "warp-masque" else {}),
                     # T29: the escrow blob this node applied, while its key is not the one reported (a cross-kind restore)
-                    **({"restored": rec["restored"]} if rec.get("restored") and rec["restored"] != rec.get("pub") else {})}
+                    **({"restored": rec["restored"]} if rec.get("restored") and rec["restored"] != rec.get("pub") else {}),
+                    # …and WHICH relay it acted on (its ciphertext's digest): `restored` outlives the press, this names it
+                    **({"restore_ref": rec["restore_ref"]} if rec.get("restore_ref") else {})}
     with contextlib.suppress(Exception):
         os.makedirs(EXIT_DIR, mode=0o700, exist_ok=True)
 
@@ -13892,7 +13894,8 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                         with contextlib.suppress(Exception):
                             _replace_if_changed(sp, json.dumps(rec), 0o600)   # `restored`: one press, one PATCH (T29)
                         out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": _blob_err,
-                                    **({"restored": rec["restored"]} if rec.get("restored") else {})})
+                                    **({"restored": rec["restored"]} if rec.get("restored") else {}),
+                                    **({"restore_ref": rec["restore_ref"]} if rec.get("restore_ref") else {})})
                         continue
                 else:
                     # ⚠️ NOT THE LOOP'S `err`. That variable is this exit's own HEALTH, and further down

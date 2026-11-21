@@ -22615,6 +22615,13 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
             # D-c: a SOCKS exit and a tunnel are not one exit edited — the device, and for WARP the account, would change
             # under every reference to the id. The SPA never offers it; the door refuses it.
             _was_pv = str((known.get(eid) or {}).get("provider") or "warp") if (known.get(eid) or {}).get("producer") == "imported" else ""
+            # A SWITCH between the WARP kinds re-enrols the account and rebuilds the tunnel, so it is taken only when the
+            # sheet's confirm asks for it (`kind_switch`): a whole-list save from a view opened before a switch re-posts
+            # the old kind, and must not switch it back (review F6). Its transport is then the stored one.
+            if _was_pv in WARP_PROVIDERS and _pv in WARP_PROVIDERS and _pv != _was_pv and e.get("kind_switch") is not True:
+                _pv = _was_pv
+                if "transport" not in e:
+                    e = dict(e, transport=(known.get(eid) or {}).get("transport"))
             # …nor a pasted profile and a WARP account (F12): only the two WARP kinds switch in place, keeping the account (§4.10)
             if _was_pv and _was_pv != _pv and not (_was_pv in WARP_PROVIDERS and _pv in WARP_PROVIDERS):
                 return None, ("an exit cannot change between a SOCKS5 proxy and a tunnel — add a new exit instead"
@@ -22768,7 +22775,9 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
         if out.get("provider") in WARP_PROVIDERS and _old.get("producer") == "imported" \
                 and str(_old.get("provider") or "warp") in WARP_PROVIDERS:     # (a switch keeps the account, §4.10)
             for _k in _EXIT_ESCROW_KEYS:
-                if _k in _old:
+                # …but ends a restore still riding: the node takes the relay before the switch, so a refused one
+                # would hold the switch for its hour (review F2) — pressed again, it is enrolled for the new kind
+                if _k in _old and not (_k.startswith("key_restore") and out["provider"] != str(_old.get("provider") or "warp")):
                     out[_k] = _old[_k]
         clean.append(out)
     # …and two dial-in exits of this list cannot share a port or an address — read from the NEW list, so removing one
@@ -32955,13 +32964,14 @@ def api(method, path, qs, body, deps):
             _pf = node_mesh_cfg(deps, _c).get("iface_prefix") or "swg_"
             _sn = (deps.get("node_snaps") or {}).get(nid) or {}
             _nic = _sn.get("ether_ifaces") or []
-            # T27: this node's failover node runs a copy of every exit, of the same kind — asked too, once it has reported
+            # T27: this node's failover node runs a copy of every exit, of the same kind — asked too; one that has not
+            # reported cannot be shown to run it, and its older copy would reap the account (review F14)
             _fb = failover_pairs(nodes).get(nid)
-            _fbs = (deps.get("node_snaps") or {}).get(_fb) or {} if _fb else {}
+            _fbs = (deps.get("node_snaps") or {}).get(_fb) or {} if _fb else None
             _ex, _err = _validate_exits(body.get("exits"), _c, mesh_prefix=_pf, link_ifaces=_lk,
                                         prev=_c.get("exits") or [], nics=_nic, dialin=_dialin_ctx(deps, nodes, nid),
                                         gws=_sn.get("ether_gws"), wan=(_sn.get("wan_iface") or ""), gen_snap=_sn,
-                                        fo_snaps=[(_fbs, (nodes.get(_fb) or {}).get("name") or _fb)] if _fbs else [])
+                                        fo_snaps=[(_fbs, (nodes.get(_fb) or {}).get("name") or _fb)] if _fb else [])
             if isinstance(_err, dict):                   # a perr: a 3.1 profile this node cannot run, or a bad 3.x key
                 return 400, {"ok": False, **_err, "code": "bad_request"}
             if _err:
@@ -37934,19 +37944,25 @@ class Handler(BaseHTTPRequestHandler):
                     _xrec["key_restore_at"] = _at = int(time.time()); ifaces_dirty = True
                 _stale = (time.time() - float(_at)) > _KEY_RESTORE_TTL
                 # T29: a node that enrolled the blob's account for the exit's OTHER WARP kind reports a new key, and
-                # names the blob it applied in `restored`. Refused (`restore_error` beside it), the relay rides on: the
-                # node acts on it once and says why for as long as it rides — the escrow row's one source of the reason.
+                # names the relay it acted on in `restore_ref` (its ciphertext's digest — one per press: `restored`
+                # outlives the press, review F1). Refused, the relay rides on: the node acts on it once and says why
+                # for as long as it rides (`restore_error`, or `error` on a node with no key of its own — F7), the
+                # escrow row's one source of the reason.
                 _lv = _xlive2.get(str(_xrec.get("id"))) or {}
-                _acted = bool(_want) and str(_lv.get("restored") or "") == _want
-                _applied = (bool(_have) and (_have == _want if _want else True)) or (_acted and not _lv.get("restore_error"))
+                _acted = str(_lv.get("restore_ref") or "") == \
+                    hashlib.sha256(str(_xrec["key_restore"].get("ct") or "").encode()).hexdigest()[:16]
+                _rwhy = str(_lv.get("restore_error") or (_lv.get("error") if _acted and not _have else "") or "")
+                _applied = (bool(_have) and (_have == _want if _want else True)) or (_acted and bool(_have) and not _rwhy)
+                if _applied and _want and (_xrec.get("key_blob_prev") or {}).get("pub") == _want:
+                    _xrec.pop("key_blob_prev", None)     # the parked account is back, under whatever key (F8)
                 if _applied or _stale:
                     # ⚠️ "NOT APPLIED" IS NOT "REPORTED NO KEY". The case this bound exists for is a node
                     # that reports a key on every single pass — its OWN — which is why the exact-pub match
                     # never fires. A first version asked `not _have` and so stayed silent in precisely the
                     # situation it was written to announce. Ask the question the clear itself asks.
-                    if _stale and not _applied and _acted:
+                    if _stale and not _applied and _rwhy:          # the node's own reason, whatever held it (F9)
                         ev_append(Handler.deps["roster_path"], "node", nid, "An exit key restore could not be carried out",
-                                  _xrec.get("label") or str(_xrec.get("id") or ""), str(_lv.get("restore_error") or "")[:240])
+                                  _xrec.get("label") or str(_xrec.get("id") or ""), _rwhy[:240])
                     elif _stale and not _applied:
                         # Said out loud: the operator pressed a button and nothing happened, and the row
                         # would otherwise just stop offering to explain itself.

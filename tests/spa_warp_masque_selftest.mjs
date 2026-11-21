@@ -29,7 +29,11 @@ const SRC_PLANTS = {
   "--perturb-confirm": ["const save = () => (!switching ? commit(false) : openConfirm({", "const save = () => (true ? commit(false) : openConfirm({"],
   "--perturb-create": ['    if (p2.provider === "warp") return openEdit(rec, true);', ""],
   "--perturb-escrow": ["!exitIsWarp(ex)) return null;", 'exitProv(ex) !== "warp") return null;'],
+  // the fix round (runs/item17b-p3)
+  "--perturb-back": ['  const back = k => exitProv(ex) === k ? { transport: ex.transport } : {};', '  const back = k => ({});'],   // F3
+  "--perturb-flag": ["...(switching ? { kind_switch: true } : {}),", ""],                                                     // F6
 };
+PLANTS["--perturb-pick"] = ["routing.js", ' && h.state !== "switching";', ";"];                                                // F4
 const MODE = [...Object.keys(PLANTS), ...Object.keys(SRC_PLANTS)].find(k => process.argv.includes(k));
 const load = async f => {
   if (!MODE || !PLANTS[MODE] || PLANTS[MODE][0] !== f) return import(pathToFileURL(path.join(ROOT, "js", f)).href);
@@ -81,6 +85,11 @@ const wg = groups.find(g => g.items.some(i => i.value === "exit|8b8b8b8b"));
 check("both WARP kinds sit in the one WARP group — never \"Other exits\"",
       wg && wg.items.some(i => i.value === "exit|7a7a7a7a") && !groups.some(g => g.group === "Other exits"), groups.map(g => g.group));
 
+const PK = { ...NODE, exits: [mx({}, { provider: "warp", error: "still on WireGuard: Cloudflare did not answer (timed out)" })] };
+const pick = (R.exitOptionGroups(PK, { prefix: "exit|" }).flatMap(g => g.items).find(i => i.value === "exit|7a7a7a7a") || {});
+check("⚠️ an exit still carrying while its switch waits is a choice in every picker — not dimmed, not refused (review F4)",
+      !/dim/.test(pick.className || "") && !pick.refuse, pick);
+
 console.log("\n[3] the save paths");
 let SET = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8");
 if (SRC_PLANTS[MODE]) {
@@ -97,6 +106,12 @@ check("a switch is confirmed first, in the kill-switch's own words (Q11)", sheet
       && sheet.includes("For a few seconds this exit's users leave by this node's own address."));
 check("…and the confirm and the sheet close together on success", sheet.includes("viaConfirm ? closeModals(2) : (onClose || closeModal)();"));
 check("a new WARP exit opens the sheet: WireGuard or MASQUE is chosen at create (Q1)", SET.includes('    if (p2.provider === "warp") return openEdit(rec, true);'));
+const wt = SET.slice(SET.indexOf("function WarpTransport("), SET.indexOf("/* The two switches every exits grid carries"));
+check("there and back on the transport is no change: the stored transport returns with its kind, the dial source is untouched (review F3)",
+      wt.includes("const back = k => exitProv(ex) === k ? { transport: ex.transport } : {};") && wt.includes('...back("warp")')
+      && wt.includes('...back("warp-masque")') && !/dial_src/.test(wt.replace(/\/\/.*$/gm, "")), wt.slice(0, 400));
+check("a switch is sent as one, past the confirm (the server keeps the stored kind otherwise — review F6)",
+      sheet.includes("...(switching ? { kind_switch: true } : {}),"));
 check("the escrow row serves both WARP kinds (§4.11)", SET.includes("!exitIsWarp(ex)) return null;"));
 check("a MASQUE exit offers no \"Connect from\" (usque dials from the node's default source)",
       sheet.includes("${isDialin || isSocks || isMasque || fill ? null : html`<div class=\"field\"><label>${T(\"Connect from\")}</label>"));

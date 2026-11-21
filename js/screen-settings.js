@@ -4406,7 +4406,7 @@ const exitBadgeOf = (ex, live) => exitProv(ex) === "profile"
   : !exitIsWarp(ex) ? ["exwg", exitProv(ex)]
   // a MASQUE exit says so on its badge, and which HTTP on hover (WARP-MASQUE-PLAN §4.8)
   : exitProv(ex) === "warp-masque" ? ((String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
-    ? ["warp plus", badgeLabel(T("val|WARP+ · MASQUE")), exitHttpSay(ex)] : ["warp", T("val|WARP · MASQUE"), exitHttpSay(ex)])
+    ? ["warp plus", html`${badgeLabel(T("val|WARP+"))} · MASQUE`, exitHttpSay(ex)] : ["warp", T("val|WARP · MASQUE"), exitHttpSay(ex)])
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];
@@ -4876,6 +4876,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
       if (confIfLine(out, "ListenPort") === null && dinPort0) out = confIfSet(out, "ListenPort", dinPort0);
     }
     const body = { ...v, ...(isProf && out !== profileText(ex) ? { profile_text: out } : { profile_text: "" }),
+                   // the server takes a kind switch only when it is asked for here, past the confirm (review F6)
+                   ...(switching ? { kind_switch: true } : {}),
                    ...(isDialin || isSocks ? { dial_src: "" } : {}),
                    // the proxy: the paste only when it changed, the password only when one was typed (else "keep")
                    ...(isSocks ? { socks_text: sTxt !== sTxt0 ? sTxt.trim() : "",
@@ -4942,7 +4944,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
       : isSocks ? html`<${SocksExitFields} node=${node} ex=${ex} isNew=${isNew} sTxt=${sTxt} setSTxt=${setSTxt}
           sPass=${sPass} setSPass=${setSPass} dirtyRef=${dirtyRef}/>`
       : !isWarp ? html`<p class="hint">${T("This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.")}</p>`
-      : html`<${WarpTransport} node=${node} v=${v} set=${set} live=${(stored.live || {})}/>
+      : html`<${WarpTransport} node=${node} v=${v} ex=${ex} set=${set} live=${(stored.live || {})}/>
         <div class="field"><label>${T("WARP+ licence key")}</label>
           <input value=${v.licence || ""} spellcheck="false" autocomplete="off"
             placeholder=${T("WARP+ licence key — optional")}
@@ -4961,18 +4963,21 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
 
 /* A WARP exit's transport (WARP-MASQUE-PLAN Q1, Q2): WireGuard or MASQUE — chosen at create, and an edit is a switch that keeps
    the account (§4.10) — and, over MASQUE, HTTP/3 or HTTP/2. The MASQUE row's Cloudflare site is said here when it is in Russia. */
-function WarpTransport({ node, v, set, live }) {
+function WarpTransport({ node, v, ex, set, live }) {
   const mq = exitProv(v) === "warp-masque", tr = v.transport === "h2" ? "h2" : "h3";
+  // there and back is no change: the stored transport comes back with its kind, and the dial source is left alone (the
+  // server blanks it for MASQUE) — or a round trip saved a field the operator never touched (review F3)
+  const back = k => exitProv(ex) === k ? { transport: ex.transport } : {};
   const seg = (on, label, pick) => html`<button type="button" role="radio" aria-checked=${on} class=${"seg" + (on ? " on" : "")}
     onClick=${pick}>${label}</button>`;
   const colo = live.provider === "warp-masque" ? String(live.colo || "") : "";
   return html`<div class="field"><label>${T("Transport")}</label>
     <div class="segrow wtr">
       <span class="wtr-g" role="radiogroup" aria-label=${T("Transport")}>
-        ${seg(!mq, T("WireGuard"), () => set({ provider: "warp", transport: undefined }))}
-        ${seg(mq, T("MASQUE"), () => set({ provider: "warp-masque", transport: tr, dial_src: "" }))}</span>
+        ${seg(!mq, T("val|WireGuard"), () => set({ provider: "warp", transport: undefined, ...back("warp") }))}
+        ${seg(mq, T("val|MASQUE"), () => set({ provider: "warp-masque", transport: tr, ...back("warp-masque") }))}</span>
       ${mq ? html`<span class="wtr-g" role="radiogroup" aria-label="HTTP">
-        ${seg(tr === "h3", T("HTTP/3"), () => set({ transport: "h3" }))}${seg(tr === "h2", T("HTTP/2"), () => set({ transport: "h2" }))}</span>` : null}
+        ${seg(tr === "h3", T("val|HTTP/3"), () => set({ transport: "h3" }))}${seg(tr === "h2", T("val|HTTP/2"), () => set({ transport: "h2" }))}</span>` : null}
     </div>
     <div class="hint">${mq
       ? T("MASQUE looks like ordinary HTTPS to a filter. Use it where WireGuard to Cloudflare is cut. It is slower (measured 0.5–0.75×). HTTP/2 is for a network that also cuts HTTP/3, and slower again.")
@@ -5122,7 +5127,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     // afterwards left a broken exit behind whenever the operator changed their mind at the paste box: an
     // imported profile with no profile, which the node cannot bring up and the grid shows as permanently
     // unhealthy. So the sheet opens on an UNSAVED record and the save is what appends it. A WARP account
-    // is the opposite — there is nothing to type, so it is written straight away and starts registering.
+    // too, now: WireGuard or MASQUE is chosen there first (WARP-MASQUE-PLAN Q1) — every kind offered opens a sheet.
     if (p2.dialin) return openDialin(rec);
     if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);
     if (p2.provider === "warp") return openEdit(rec, true);    // WireGuard or MASQUE is chosen at create (WARP-MASQUE-PLAN Q1)

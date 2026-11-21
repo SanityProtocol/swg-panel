@@ -9,7 +9,11 @@
   [3] T22 — the escrow: a new key of the SAME account (`acct`) replaces the blob and parks nothing; another account parks the
       displaced one as before; a blob without `acct` is asked for once more of a node that seals it, never of an older one
   [4] T29 / F10 — the restore relay: a MASQUE public key (124 characters) is kept at the door; the relay ends on the row's
-      `restored` (a cross-kind restore reports a new key); one the node refused rides on, saying why
+      `restore_ref` — the relay it acted on, one per press (a cross-kind restore reports a new key, and `restored` outlives
+      the press); one the node refused rides on, saying why — in `restore_error`, or in `error` on a node with no key; a
+      switch ends a relay still riding; the parked account coming back ends its offer
+  [6] the fix round — a stale whole-list save never switches a kind back (only the sheet's `kind_switch` does); a failover
+      node that has not reported is asked too (and refuses)
   [5] the usque mirror — the pinned bytes or nothing; a twin of swg-noded's USQ_*; the node's turn-binary door never takes a
       usque tag down the turn-fork path
 
@@ -39,8 +43,16 @@ PLANTS = {
     "--perturb-acctold": ('                               and ((x.get("key_blob") or {}).get("acct") or not _acct_ok)\n',
                           '                               and (x.get("key_blob") or {}).get("acct")\n'),                     # [3]
     "--perturb-pub64": ('        if _pub and len(_pub) <= 200:', '        if _pub and len(_pub) <= 64:'),                        # [4]
-    "--perturb-restored": (' or (_acted and not _lv.get("restore_error"))', ''),                                             # [4]
-    "--perturb-refused": (' or (_acted and not _lv.get("restore_error"))', ' or _acted'),                                     # [4]
+    "--perturb-restored": (' or (_acted and bool(_have) and not _rwhy)', ''),                                                # [4]
+    "--perturb-refused": (' or (_acted and bool(_have) and not _rwhy)', ' or _acted'),                                       # [4]
+    # the fix round (runs/item17b-p3)
+    "--perturb-ref": ('                _acted = str(_lv.get("restore_ref") or "") == \\\n',
+                      '                _acted = str(_lv.get("restored") or "") == _want or "" == \\\n'),                 # [4] F1
+    "--perturb-keyless": (' or (_acted and bool(_have) and not _rwhy)', ' or (_acted and not _lv.get("restore_error"))'),     # [4] F7
+    "--perturb-prevpop": ('                    _xrec.pop("key_blob_prev", None)     # the parked account is back', '                    pass  #'),  # F8
+    "--perturb-switchrelay": (' and not (_k.startswith("key_restore") and out["provider"] != str(_old.get("provider") or "warp"))', ''),  # F2
+    "--perturb-stale": ('and _pv != _was_pv and e.get("kind_switch") is not True:', 'and False:'),                         # [6] F6
+    "--perturb-foabsent": ('if _fb else [])', 'if _fbs else [])'),                                                          # [6] F14
     "--perturb-usqarm": ('        elif owner == USQ_OWNER and tag.startswith("usque-"):', '        elif False:'),               # [5]
     "--perturb-usqpin": ('        if r.returncode == 0 and os.path.isfile(tmp) and _turn_sha256_file(tmp) == want:',
                          '        if r.returncode == 0 and os.path.isfile(tmp):'),                                            # [5]
@@ -91,11 +103,11 @@ check("…for this kind only: a WireGuard WARP exit carries no transport and kee
       "transport" not in _w[0] and _w[0]["cfg_sig"] == _old_sig, (_w, _old_sig))
 ESC = {"key_blob": {"ct": "c", "eph": "e", "mac": "m", "pub": "P1", "acct": "A1"}, "key_blob_prev": {"ct": "c0", "pub": "P0"}}
 WG = dict(NEW, id="aaaa0003", provider="warp", device="wgx-aaaa0003", **ESC)
-ex, err = V([dict(NEW, id="aaaa0003", provider="warp-masque")], prev=[WG])
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp-masque", kind_switch=True)], prev=[WG])
 check("WireGuard → MASQUE on one id is a switch: saved, the same device, the account's escrow kept (§4.10)",
       not err and ex[0]["provider"] == "warp-masque" and ex[0]["device"] == "wgx-aaaa0003"
       and all(ex[0].get(k) == v for k, v in ESC.items()), (ex, err))
-ex, err = V([dict(NEW, id="aaaa0003", provider="warp")], prev=[dict(WG, provider="warp-masque", transport="h2")])
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp", kind_switch=True)], prev=[dict(WG, provider="warp-masque", transport="h2")])
 check("…and back: WireGuard again, the transport dropped, the escrow kept", not err and ex[0]["provider"] == "warp"
       and "transport" not in ex[0] and ex[0].get("key_blob") == ESC["key_blob"], (ex, err))
 PROF = dict(NEW, id="aaaa0004", provider="profile", device="wgx-aaaa0004", profile={"private_key": "k", "address": "10.9.0.2/32"})
@@ -108,18 +120,31 @@ for frm, to in (("socks5", "warp-masque"), ("warp-masque", "socks5")):
                prev=[dict(NEW, id="aaaa0005", provider=frm, device="wgx-aaaa0005", socks={"host": "h", "port": 1, "pass": ""})])
     check("SOCKS ↔ WARP still refused: %s → %s" % (frm, to), _r is None and "SOCKS5" in str(_e), (_r, _e))
 
+_RL = {"key_restore": {"eph": "e", "ct": "c", "mac": "m"}, "key_restore_pub": "P9", "key_restore_at": 1}
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp-masque", kind_switch=True)], prev=[dict(WG, **_RL)])
+check("⚠️ a switch ends a restore relay still riding — the node takes the relay first, so it would hold the switch (review F2)",
+      not err and not any(k in ex[0] for k in _RL) and ex[0].get("key_blob") == ESC["key_blob"], (ex, err))
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp")], prev=[dict(WG, **_RL)])
+check("…while any other save keeps it", not err and all(ex[0].get(k) == v for k, v in _RL.items()), (ex, err))
+print("\n[6] a stale whole-list save (review F6)")
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp")], prev=[dict(WG, provider="warp-masque", transport="h2")])
+check("⚠️ a list saved from a view opened before the switch re-posts the old kind: the stored MASQUE exit stays MASQUE, on its HTTP/2",
+      not err and ex[0]["provider"] == "warp-masque" and ex[0].get("transport") == "h2", (ex, err))
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp-masque")], prev=[WG])
+check("…and a stored WireGuard one stays WireGuard", not err and ex[0]["provider"] == "warp" and "transport" not in ex[0], (ex, err))
+
 # ── [2] T27 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] an older node, or an older failover node (T27)")
 _r, _e = V([dict(NEW, id="bbbb0001", provider="warp-masque")], snap=OLD)
 check("a new MASQUE exit on a node that does not list the kind is refused, naming the update",
       _r is None and "1.8.12" in json.dumps(_e), _e)
-_r, _e = V([dict(NEW, id="bbbb0002", provider="warp-masque")], prev=[dict(WG, id="bbbb0002", device="wgx-bbbb0002")], snap=OLD)
+_r, _e = V([dict(NEW, id="bbbb0002", provider="warp-masque", kind_switch=True)], prev=[dict(WG, id="bbbb0002", device="wgx-bbbb0002")], snap=OLD)
 check("⚠️ …and so is a SWITCH of an existing WARP exit (the sync would withhold it, the node would reap the account)",
       _r is None and "1.8.12" in json.dumps(_e), _e)
 _r, _e = V([dict(NEW, id="bbbb0003", provider="warp-masque")], fo=[(OLD, "nb")])
 check("⚠️ a failover node that does not list it refuses the save too, by its name (its copy follows the kind)",
       _r is None and "nb" in json.dumps(_e), _e)
-_r, _e = V([dict(NEW, id="bbbb0004", provider="warp-masque")], prev=[dict(WG, id="bbbb0004", device="wgx-bbbb0004")], fo=[(OLD, "nb")])
+_r, _e = V([dict(NEW, id="bbbb0004", provider="warp-masque", kind_switch=True)], prev=[dict(WG, id="bbbb0004", device="wgx-bbbb0004")], fo=[(OLD, "nb")])
 check("…on a switch as well", _r is None and "nb" in json.dumps(_e), _e)
 _r, _e = V([dict(NEW, id="bbbb0005", provider="warp-masque")], prev=[dict(WG, id="bbbb0005", device="wgx-bbbb0005", provider="warp-masque")],
            snap=OLD, fo=[(OLD, "nb")])
@@ -132,9 +157,10 @@ def free_port():
 
 state = os.path.join(TMP, "state"); os.makedirs(os.path.join(state, "subs")); stats = os.path.join(TMP, "stats"); os.makedirs(stats)
 NODES = os.path.join(state, "nodes.json")
-NIDS = ("na", "nb", "nold")
+NIDS = ("na", "nb", "nold", "nd", "nc")
 _recs = {n: {"id": n, "name": n, "links": {}, "ifaces": {}} for n in NIDS}
 _recs["nb"]["failover_of"] = "na"
+_recs["nc"]["failover_of"] = "nd"
 json.dump(_recs, open(NODES, "w"))
 open(os.path.join(state, "users.json"), "w").write("{}\n")
 VAULT = "dmF1bHQtcHViLWZvci10aGUtc2VsZnRlc3QtMDAwMDA="
@@ -175,7 +201,7 @@ try:
                 sys.exit("panel exited: " + open(log.name).read()[-2000:])
             time.sleep(0.1)
     TOK = {n: req("/api/nodes/rotate", {"id": n})[1]["data"]["token"] for n in NIDS}
-    KINDS = {"na": CAN["exit_kinds"], "nb": OLD["exit_kinds"], "nold": OLD["exit_kinds"]}
+    KINDS = {"na": CAN["exit_kinds"], "nb": OLD["exit_kinds"], "nold": OLD["exit_kinds"], "nd": CAN["exit_kinds"], "nc": None}
     ROWS = {n: [] for n in NIDS}
     SEALED = {n: {} for n in NIDS}
 
@@ -195,7 +221,7 @@ try:
             json.dump(n, f)
         os.replace(NODES + ".tmp", NODES)
 
-    for n in NIDS:
+    for n in ("na", "nb", "nold"):
         sync(n)
     code, r = req("/api/nodes/update", {"id": "na", "exits": [dict(NEW, id="cccc0001", provider="warp-masque")]})
     check("⚠️ through the door: na lists the kind, its failover node nb does not — refused, naming nb",
@@ -257,14 +283,37 @@ try:
     code, r = req("/api/exit/restore", {"node": "na", "id": "cccc0001", "key_blob": {"eph": "e", "ct": "c", "mac": "m"}, "pub": MQPUB})
     check("⚠️ the door keeps a MASQUE key to recognise the restore by — F10", code == 200
           and stored("na", "cccc0001").get("key_restore_pub") == MQPUB, stored("na", "cccc0001"))
-    ROWS["na"][0].update(public_key="W" * 43 + "=", provider="warp", restore_error="the escrowed account could not be enrolled: x", restored=MQPUB)
+    REF = lambda ct: hashlib.sha256(ct.encode()).hexdigest()[:16]
+    ROWS["na"][0].update(public_key="W" * 43 + "=", provider="warp", restore_error="the escrowed account could not be enrolled: x",
+                         restored=MQPUB, restore_ref=REF("c"))
     rep = sync("na")
     check("a restore the node REFUSED rides on — the node says why while it rides, and acts on it only once",
           stored("na", "cccc0001").get("key_restore") and any(e.get("key_blob") for e in rep.get("exits") or []), stored("na", "cccc0001"))
     ROWS["na"][0].pop("restore_error")
     sync("na")
-    check("⚠️ a cross-kind restore ends on the row's `restored` though the key reported is a new one (T29)",
+    check("⚠️ a cross-kind restore ends on the row's `restore_ref` though the key reported is a new one (T29)",
           not stored("na", "cccc0001").get("key_restore") and not stored("na", "cccc0001").get("key_restore_pub"), stored("na", "cccc0001"))
+    req("/api/exit/restore", {"node": "na", "id": "cccc0001", "key_blob": {"eph": "e", "ct": "c2", "mac": "m"}, "pub": MQPUB})
+    rep = sync("na")
+    check("⚠️ pressed again, the same blob is carried to the node: `restored` from the earlier press is no ack of this one (review F1)",
+          stored("na", "cccc0001").get("key_restore") and any((e.get("key_blob") or {}).get("ct") == "c2" for e in rep.get("exits") or []),
+          stored("na", "cccc0001"))
+    ROWS["na"][0].update(public_key="", up=False, error="the escrowed account could not be enrolled: 1006", restore_ref=REF("c2"))
+    sync("na")
+    check("⚠️ refused on a node with no key (the reason in `error`, no `restore_error`): it rides on, never read as applied (review F7)",
+          stored("na", "cccc0001").get("key_restore"), stored("na", "cccc0001"))
+    x = stored("na", "cccc0001")
+    plant("na", [dict(x, key_blob_prev={"ct": "old", "pub": MQPUB}), stored("na", "cccc0002")])
+    ROWS["na"][0].update(public_key="Z" * 43 + "=", up=True, error="")
+    sync("na")
+    check("the parked account restored under a new key ends its offer, `acct` or not (review F8)",
+          not stored("na", "cccc0001").get("key_restore") and not stored("na", "cccc0001").get("key_blob_prev"), stored("na", "cccc0001"))
+
+    print("\n[6] …and a failover node that has not reported (review F14)")
+    sync("nd")
+    code, r = req("/api/nodes/update", {"id": "nd", "exits": [dict(NEW, id="dddd0001", provider="warp-masque")]})
+    check("⚠️ a failover node that has not reported cannot be shown to run the kind: refused, by its name",
+          code == 400 and "nc" in json.dumps(r), (code, r))
 finally:
     proc.terminate()
     with __import__("contextlib").suppress(Exception):
@@ -276,6 +325,8 @@ NSRC = open(NODED, encoding="utf-8").read()
 for k in ("USQ_TAG", "USQ_OWNER", "USQ_SHA256", "USQ_ASSET"):
     m = re.search(r"^%s = (.*(?:\n +.*)*)$" % k, NSRC, re.M)
     check("the twin of swg-noded's %s" % k, m and ast.literal_eval(m.group(1).strip()) == getattr(P, k), (m and m.group(1), getattr(P, k)))
+check("the node names the relay it acted on (`restore_ref`) on both of its rows that carry `restored` — review F1",
+      NSRC.count('**({"restore_ref": rec["restore_ref"]} if rec.get("restore_ref") else {})') == 2)
 _door = SRC[SRC.index("    def _node_turn_binary(self, u):"):]
 _door = _door[:_door.index("        if not sha or not os.path.isfile(dest):")]
 check("the node's door takes any usque tag to the usque arm — the pin, or nothing — before the turn-fork path",

@@ -3785,9 +3785,9 @@ export function exitHealth(x, node) {
     why: said(warpV6
       ? T("The tunnel is up, but Cloudflare has not answered it over IPv6. Nothing here is yours to correct — the node tries IPv4 by itself.")
       : warp && ulBoth
-      ? T("The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.")
+      ? T("The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node.")
       : warp
-      ? T("The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.")
+      ? T("The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node.")
       : l.awg
       ? T("The device is up, but this peer has never answered. Check the endpoint, the keys, and that the server really is AmneziaWG with these exact obfuscation values.")
       : T("The device is up, but this peer has never answered. Check the endpoint and the keys — and if the server is AmneziaWG, its profile must be pasted with its obfuscation lines intact."), warp && !!ul) };
@@ -3820,7 +3820,8 @@ export const exitHealthMark = (h) => {
   // buttons: in the exits table the row opens the editor, in the dropdown it selects the exit.
   return html`<span class=${"ddwarn ddwarn-clk " + h.tone} title=${T("Show the reason")}
     onClick=${e => { e.preventDefault(); e.stopPropagation();
-                     openConfirm({ title: T("This exit isn't working"), log: h.why, confirmLabel: T("Close") }); }}
+                     openConfirm({ title: h.state === "switching" ? T("The switch has not happened yet") : T("This exit isn't working"),
+                  log: h.why, confirmLabel: T("Close") }); }}
     ><${Ic} i=${h.icon || "warn"}/></span>`;
 };
 
@@ -3905,7 +3906,8 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
     // ADOPTED rows are deliberately exempt — see `exitHealth`: a device the node has not reported yet is the
     // documented way to name one ahead of time, not a fault.
     const h = health(x);
-    const notReady = (x.producer || "adopted") === "imported" && h.state !== "ok";
+    // (a switch between the WARP kinds that has not happened yet still carries on the old kind: a choice — review F4)
+    const notReady = (x.producer || "adopted") === "imported" && h.state !== "ok" && h.state !== "switching";
     const mark = h.tone
       ? exitHealthMark(h)
       : null;
