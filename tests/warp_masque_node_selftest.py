@@ -94,8 +94,10 @@ PLANTS = {
     "--perturb-usqwait": ('    if not _ub[0]:\n        return rec, "waits for the MASQUE', '    if False:\n        return rec, "waits for the MASQUE'),  # [8]
     "--perturb-keyedpass": ('if not _keyed and rec.get("priv") and _warp_reenrol_due', 'if rec.get("priv") and _warp_reenrol_due'),  # [8]
     "--perturb-blobwait": ('if not _keyed and rec.get("priv") and _warp_reenrol_due', 'if not (_blob_err or _keyed) and rec.get("priv") and _warp_reenrol_due'),  # [8]
-    "--perturb-regfails": ('    if rec.get("reg_fails"):\n        return False                      # a switch waiting',
+    "--perturb-regfails": ('    if now < float(rec.get("reg_next") or 0):\n        return False                      # a switch waiting',
                            '    if False:\n        return False                      # a switch waiting'),                              # [9]
+    "--perturb-regstale": ('    if now < float(rec.get("reg_next") or 0):\n        return False                      # a switch waiting',
+                           '    if rec.get("reg_fails"):\n        return False                      # a switch waiting'),                # [9]
     "--perturb-licbackoff": ('                if _lb.get("key") == lic and time.time() < float(_lb.get("next") or 0):',
                              '                if False:'),                                                                         # [9]
     "--perturb-restorepersist": ("                            _replace_if_changed(sp, json.dumps(rec), 0o600)   # `restored`: one press, one PATCH (T29)",
@@ -938,7 +940,10 @@ N._WARP_REENROL["at"] = now - 100
 check("one per node per 5 min", not N._warp_reenrol_due(dev, rc, now=now))
 N._WARP_REENROL["at"] = 0.0
 check("its own back-off", not N._warp_reenrol_due(dev, dict(rc, reenrol_next=now + 60), now=now))
-check("…nor while a switch waits out its registration back-off (F36)", not N._warp_reenrol_due(dev, dict(rc, reg_fails=1), now=now))
+check("…nor while a switch waits out its registration back-off (F36)",
+      not N._warp_reenrol_due(dev, dict(rc, reg_fails=1, reg_next=now + 60), now=now))
+check("…but a back-off that ran out (a switch no longer tried: usque not there) holds nothing (node-tidy review F1)",
+      N._warp_reenrol_due(dev, dict(rc, reg_fails=1, reg_next=now - 1), now=now))
 check("no account, no re-enrolment", not N._warp_reenrol_due(dev, dict(rc, token=""), now=now))
 mrec = dict(MREC)
 N._MQX[dev] = {"freeze": "freeze"}

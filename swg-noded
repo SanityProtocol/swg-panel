@@ -11768,8 +11768,9 @@ def _warp_reenrol_due(dev, rec, now=None):
         return False                      # (carrying again, inside its EXIT_ALIVE_AFTER_S: a recovery, not a dead key — F15)
     if now < float(rec.get("reenrol_next") or 0) or now - _WARP_REENROL["at"] < WARP_REENROL_SPACING_S:
         return False
-    if rec.get("reg_fails"):
-        return False                      # a switch waiting out its back-off: Cloudflare is not asked twice (F36)
+    if now < float(rec.get("reg_next") or 0):
+        return False                      # a switch waiting out its back-off: Cloudflare is not asked twice (F36) — only
+                                          # WHILE it waits: a switch no longer tried (usque not there) holds nothing (F1)
     if not (rec.get("account_id") and rec.get("token")) or rec.get("refused"):
         return False
     if rec.get("provider") == "warp-masque":
@@ -13957,9 +13958,10 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             # 2) a WARP+ licence the operator supplied, applied ONCE per distinct key
             lic = str(d.get("licence") or "").strip()
             if prov in WARP_KINDS and lic and lic != rec.get("licence_applied") and not rec.get("refused"):
-                # ⚠️ A REJECTED KEY BACKS OFF, PER KEY — it was PUT again every pass (a mistyped key: a call to Cloudflare every
-                # 5 s, for ever). From a minute, doubling, capped at an hour, kept in the record across restarts; the row keeps
-                # saying why meanwhile, and a different key is tried at once.
+                # ⚠️ A KEY THAT FAILED BACKS OFF, PER KEY — it was PUT again every pass (a mistyped key: a call to Cloudflare
+                # every 5 s, for ever). From a minute, doubling, capped at an hour, kept in the record across restarts; the row
+                # keeps saying why meanwhile, and a different key is tried at once. A blocked or busy API backs off the same
+                # way (a registration does too): hammering it is the same fault.
                 _lb = rec.get("licence_bad") or {}
                 if _lb.get("key") == lic and time.time() < float(_lb.get("next") or 0):
                     err = err or str(_lb.get("why") or "licence update failed")
@@ -13970,7 +13972,8 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     if lerr:
                         _n = int(_lb.get("n") or 0) + 1 if _lb.get("key") == lic else 1
                         rec["licence_bad"] = {"key": lic, "n": _n, "next": time.time() + min(3600, 60 * 2 ** (_n - 1)), "why": lerr}
-                        log(LOG_WARNING, "exit %s: WARP+ licence rejected — %s", xid, lerr)
+                        log(LOG_WARNING, "exit %s: WARP+ licence not applied (next try in %d min) — %s", xid,
+                            min(60, 2 ** (_n - 1)), lerr)
                     else:
                         rec["licence_applied"] = lic
                         rec.pop("licence_bad", None)
