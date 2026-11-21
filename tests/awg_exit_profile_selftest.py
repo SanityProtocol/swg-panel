@@ -320,7 +320,7 @@ check("…and renamed with no paste: taken", V([{k: v for k, v in X31.items() if
 c, e = V([dict(X31, profile_text=AWG31_CONF.replace("10-100", "20-80"))], S20MOD, ok31)
 check("…but a CHANGED 3.1 profile on it: refused", c is None and isinstance(e, dict), e)
 check("the node update passes its snapshot and answers a perr as one",
-      "wan=(_sn.get(\"wan_iface\") or \"\"), gen_snap=_sn)" in PSRC and
+      "wan=(_sn.get(\"wan_iface\") or \"\"), gen_snap=_sn," in PSRC and
       'if isinstance(_err, dict):                   # a perr' in PSRC)
 ru = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
 for e2 in (V([X31], S20MOD)[1], V([X31], S20GO)[1], V([X31], SOLD)[1]):
