@@ -3344,6 +3344,7 @@ export const STR = {
   "For a few seconds the kill-switch holds this exit's users.": "На несколько секунд kill-switch задержит трафик пользователей этого выхода.",
   "For a few seconds this exit's users leave by this node's own address.": "На несколько секунд пользователи этого выхода выйдут в интернет с собственного адреса этой ноды.",
   "Switch": "Перевести",
+  "{v1}, the failover node, has not reported yet — save this exit once it has (its copy must run the same kind)": "{v1}, нода-резерв, ещё не выходила на связь — сохраните этот выход, когда она появится (её копия должна работать на том же типе)",
   "The switch has not happened yet": "Переход ещё не состоялся",
   "val|MASQUE": "MASQUE",
   "val|HTTP/3": "HTTP/3",
@@ -3567,11 +3568,15 @@ export const STR = {
   // A WARP exit that never handshook. «Не ваша вина» would be too chatty; «здесь нечего исправлять» says the
   // same thing in the panel's register. «Сети, которые блокируют WARP, выглядят ровно так» keeps the hedge —
   // the panel cannot prove it is the network, only that it looks like one.
+  "The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.":
+    "Туннель поднят, но Cloudflare ни разу не ответил. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: попробуйте вставить свой профиль или перенести этот выход на другую ноду.",
   "The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node.":
     "Туннель поднят, но Cloudflare ни разу не ответил. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: переведите этот выход на MASQUE (аккаунт сохранится), вставьте свой профиль или перенесите выход на другую ноду.",
   // 1.8.12 item 11: the family the tunnel dials — before the node moves it off a silent IPv6, and after
   "The tunnel is up, but Cloudflare has not answered it over IPv6. Nothing here is yours to correct — the node tries IPv4 by itself.":
     "Туннель поднят, но Cloudflare не ответил по IPv6. Здесь нечего исправлять — нода сама пробует IPv4.",
+  "The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.":
+    "Туннель поднят, но Cloudflare не ответил ни по IPv6, ни по IPv4. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: попробуйте вставить свой профиль или перенести этот выход на другую ноду.",
   "The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node.":
     "Туннель поднят, но Cloudflare не ответил ни по IPv6, ни по IPv4. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: переведите этот выход на MASQUE (аккаунт сохранится), вставьте свой профиль или перенесите выход на другую ноду.",
   "It dials over IPv6.": "Подключается по IPv6.",

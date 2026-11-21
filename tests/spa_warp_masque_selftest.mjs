@@ -30,9 +30,11 @@ const SRC_PLANTS = {
   "--perturb-create": ['    if (p2.provider === "warp") return openEdit(rec, true);', ""],
   "--perturb-escrow": ["!exitIsWarp(ex)) return null;", 'exitProv(ex) !== "warp") return null;'],
   // the fix round (runs/item17b-p3)
+  "--perturb-f28": ['  const mqPending = exitProv(ex) === "warp-masque";', "  const mqPending = false;"],                      // round 2
   "--perturb-back": ['  const back = k => exitProv(ex) === k ? { transport: ex.transport } : {};', '  const back = k => ({});'],   // F3
   "--perturb-flag": ["...(switching ? { kind_switch: true } : {}),", ""],                                                     // F6
 };
+PLANTS["--perturb-f28"] = ["routing.js", ...SRC_PLANTS["--perturb-f28"]]; delete SRC_PLANTS["--perturb-f28"];
 PLANTS["--perturb-pick"] = ["routing.js", ' && h.state !== "switching";', ";"];                                                // F4
 const MODE = [...Object.keys(PLANTS), ...Object.keys(SRC_PLANTS)].find(k => process.argv.includes(k));
 const load = async f => {
@@ -72,6 +74,12 @@ check("the way back says it still runs over MASQUE", back.state === "switching" 
 const stall = h({}, { provider: "warp", error: "still on WireGuard: x", no_traffic: { since: 1, why: "no answer" } });
 check("a pending switch on a tunnel that carries nothing reads as the stall it is, the switch said beside it",
       stall.state === "stalled" && /switch to MASQUE/.test(stall.why), stall);
+const nh = R.exitHealth(mx({ provider: "warp-masque" }, { provider: "warp", handshake: 0, trace: {}, error: "still on WireGuard: x" }), NODE);
+check("an exit already asked to switch to MASQUE is never advised to switch to MASQUE (verify F28)",
+      /has not happened yet/.test(nh.why) && !/switch this exit to MASQUE/.test(nh.why), nh.why);
+const nw = R.exitHealth(mx({ provider: "warp" }, { provider: "warp", handshake: 0, trace: {} }), NODE);
+check("…while a WireGuard WARP exit Cloudflare never answered is told the MASQUE switch keeps its account (review F10)",
+      /switch this exit to MASQUE/.test(nw.why), nw.why);
 check("any other error is still a failure", h({}, { error: "Cloudflare no longer accepts this account — re-create the exit" }).state === "failed");
 
 console.log("\n[2] the names and the pickers");

@@ -49,7 +49,12 @@ PLANTS = {
     "--perturb-ref": ('                _acted = str(_lv.get("restore_ref") or "") == \\\n',
                       '                _acted = str(_lv.get("restored") or "") == _want or "" == \\\n'),                 # [4] F1
     "--perturb-keyless": (' or (_acted and bool(_have) and not _rwhy)', ' or (_acted and not _lv.get("restore_error"))'),     # [4] F7
-    "--perturb-prevpop": ('                    _xrec.pop("key_blob_prev", None)     # the parked account is back', '                    pass  #'),  # F8
+    "--perturb-prevpop": ('or _same(_bp, _blob) or _bp.get("landed"):', 'or _same(_bp, _blob):'),                                   # F8
+    # round 2 (the operator's permit, runs/item17b-p3/round2-stop-rule.md)
+    "--perturb-landedpop": ('                    _xrec["key_blob_prev"] = dict(_xrec["key_blob_prev"], landed=True)',
+                            '                    _xrec.pop("key_blob_prev", None)'),                                          # verify F23
+    "--perturb-staleds": ('                e = dict(e, dial_src=(known.get(eid) or {}).get("dial_src") or "")    # stale too (verify F24)\n', ''),  # F24
+    "--perturb-fosay": ('                    if _no and _i and not _s:', '                    if False:'),                               # F25
     "--perturb-switchrelay": (' and not (_k.startswith("key_restore") and out["provider"] != str(_old.get("provider") or "warp"))', ''),  # F2
     "--perturb-stale": ('and _pv != _was_pv and e.get("kind_switch") is not True:', 'and False:'),                         # [6] F6
     "--perturb-foabsent": ('if _fb else [])', 'if _fbs else [])'),                                                          # [6] F14
@@ -132,6 +137,9 @@ check("⚠️ a list saved from a view opened before the switch re-posts the old
       not err and ex[0]["provider"] == "warp-masque" and ex[0].get("transport") == "h2", (ex, err))
 ex, err = V([dict(NEW, id="aaaa0003", provider="warp-masque")], prev=[WG])
 check("…and a stored WireGuard one stays WireGuard", not err and ex[0]["provider"] == "warp" and "transport" not in ex[0], (ex, err))
+ex, err = V([dict(NEW, id="aaaa0003", provider="warp-masque", dial_src="")], prev=[dict(WG, dial_src="203.0.113.10")])
+check("…keeping its \"Connect from\" too — the stale view of a MASQUE exit had none (verify F24)",
+      not err and ex[0]["dial_src"] == "203.0.113.10", (ex, err))
 
 # ── [2] T27 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] an older node, or an older failover node (T27)")
@@ -303,17 +311,25 @@ try:
     check("⚠️ refused on a node with no key (the reason in `error`, no `restore_error`): it rides on, never read as applied (review F7)",
           stored("na", "cccc0001").get("key_restore"), stored("na", "cccc0001"))
     x = stored("na", "cccc0001")
-    plant("na", [dict(x, key_blob_prev={"ct": "old", "pub": MQPUB}), stored("na", "cccc0002")])
+    plant("na", [dict(x, key_blob=B("Y1", "A9"), key_blob_prev={"ct": "old", "pub": MQPUB}), stored("na", "cccc0002")])
     ROWS["na"][0].update(public_key="Z" * 43 + "=", up=True, error="")
     sync("na")
-    check("the parked account restored under a new key ends its offer, `acct` or not (review F8)",
-          not stored("na", "cccc0001").get("key_restore") and not stored("na", "cccc0001").get("key_blob_prev"), stored("na", "cccc0001"))
+    x = stored("na", "cccc0001")
+    check("the parked account restored under a new key: the relay ends, its offer is marked landed", not x.get("key_restore")
+          and (x.get("key_blob_prev") or {}).get("landed") is True, x)
+    SEALED["na"] = {"cccc0001": B("Z" * 43 + "=", "A0")}
+    sync("na"); SEALED["na"] = {}
+    x = stored("na", "cccc0001")
+    check("⚠️ …and its re-seal ends the offer WITHOUT parking the account it replaced (review F8, verify F23)",
+          not x.get("key_blob_prev") and (x.get("key_blob") or {}).get("pub") == "Z" * 43 + "=", x)
 
     print("\n[6] …and a failover node that has not reported (review F14)")
     sync("nd")
     code, r = req("/api/nodes/update", {"id": "nd", "exits": [dict(NEW, id="dddd0001", provider="warp-masque")]})
     check("⚠️ a failover node that has not reported cannot be shown to run the kind: refused, by its name",
           code == 400 and "nc" in json.dumps(r), (code, r))
+    check("…saying it has not reported, never \"update the node\" (verify F25)", "has not reported yet" in json.dumps(r)
+          and "update" not in json.dumps(r), r)
 finally:
     proc.terminate()
     with __import__("contextlib").suppress(Exception):

@@ -3966,7 +3966,7 @@ function ExitEscrow({ node, ex, stored, live, goSection, escrowOn }) {
   // back" restored `prev`, the generation BEFORE the key the escrow currently holds. Two wrong answers to
   // a question nobody asked. When the node has no key there is only ever one offer: the escrow's own
   // current blob, which is the key it lost.
-  if (prev && prev.ct && nodeHasKey) {
+  if (prev && prev.ct && !prev.landed && nodeHasKey) {   // (`landed`: restored, its re-seal on the way — verify F23)
     // The node minted its own key and the panel still holds the one before it. Two answers, and neither is
     // a default: going back restores an address something outside this panel may be allow-listed against,
     // and keeping the new one is perfectly reasonable if nothing was.
@@ -4386,8 +4386,9 @@ const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).add
 // The trailing "+" is the whole point of the WARP+ badge and it was the least visible glyph in it — same
 // weight, same colour, sitting low. Split on the SYMBOL rather than on a language: every translation of
 // this label ends with it ("WARP+", «ВАРП+»), so the split is safe wherever it is rendered.
-const badgeLabel = lbl => String(lbl).endsWith("+")
-  ? html`${String(lbl).slice(0, -1)}<span class="exg-plus">+</span>`
+// (the first "+", wherever it is: "WARP+ · MASQUE" has it mid-label — review F12)
+const badgeLabel = lbl => String(lbl).includes("+")
+  ? html`${String(lbl).slice(0, String(lbl).indexOf("+"))}<span class="exg-plus">+</span>${String(lbl).slice(String(lbl).indexOf("+") + 1)}`
   : lbl;
 // ⚠️ A PASTED PROFILE IS COLOURED BY WHAT IT ACTUALLY IS. Both kinds wore the WARP green, so the one
 // visible difference between a WireGuard exit and an AmneziaWG one — which is the difference that decides
@@ -4406,7 +4407,7 @@ const exitBadgeOf = (ex, live) => exitProv(ex) === "profile"
   : !exitIsWarp(ex) ? ["exwg", exitProv(ex)]
   // a MASQUE exit says so on its badge, and which HTTP on hover (WARP-MASQUE-PLAN §4.8)
   : exitProv(ex) === "warp-masque" ? ((String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
-    ? ["warp plus", html`${badgeLabel(T("val|WARP+"))} · MASQUE`, exitHttpSay(ex)] : ["warp", T("val|WARP · MASQUE"), exitHttpSay(ex)])
+    ? ["warp plus", badgeLabel(T("val|WARP+ · MASQUE")), exitHttpSay(ex)] : ["warp", T("val|WARP · MASQUE"), exitHttpSay(ex)])
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];

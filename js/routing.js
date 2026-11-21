@@ -3780,14 +3780,18 @@ export function exitHealth(x, node) {
   // (over IPv6). Nothing on that node was misconfigured and nothing on that screen could have fixed it.
   // …and blaming the network for blocking WARP fits only once there is no other family to try: a box whose IPv6 goes
   // nowhere looked exactly like this too (item 11), and the node now moves such a tunnel to IPv4 by itself.
+  // …and the MASQUE advice is not given to an exit already asked to switch to it, still on WireGuard (verify F28)
+  const mqPending = exitProv(ex) === "warp-masque";
   const warp = exitIsWarp(ex), warpV6 = warp && !!ul && !ulBoth && (ulOff6 || ul.via === "v6");
   if (l.handshake === 0 && !(l.trace || {}).ip) return { state: "nohandshake", tone: "warn", icon: "warn", dot: "down",
     why: said(warpV6
       ? T("The tunnel is up, but Cloudflare has not answered it over IPv6. Nothing here is yours to correct — the node tries IPv4 by itself.")
       : warp && ulBoth
-      ? T("The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node.")
+      ? (mqPending ? T("The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.")
+        : T("The tunnel is up, but Cloudflare answered it over neither IPv6 nor IPv4. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node."))
       : warp
-      ? T("The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node.")
+      ? (mqPending ? T("The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.")
+        : T("The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so switch this exit to MASQUE (its account is kept), try a pasted profile instead, or put it on another node."))
       : l.awg
       ? T("The device is up, but this peer has never answered. Check the endpoint, the keys, and that the server really is AmneziaWG with these exact obfuscation values.")
       : T("The device is up, but this peer has never answered. Check the endpoint and the keys — and if the server is AmneziaWG, its profile must be pasted with its obfuscation lines intact."), warp && !!ul) };

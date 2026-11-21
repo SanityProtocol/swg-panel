@@ -22622,6 +22622,7 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                 _pv = _was_pv
                 if "transport" not in e:
                     e = dict(e, transport=(known.get(eid) or {}).get("transport"))
+                e = dict(e, dial_src=(known.get(eid) or {}).get("dial_src") or "")    # stale too (verify F24)
             # …nor a pasted profile and a WARP account (F12): only the two WARP kinds switch in place, keeping the account (§4.10)
             if _was_pv and _was_pv != _pv and not (_was_pv in WARP_PROVIDERS and _pv in WARP_PROVIDERS):
                 return None, ("an exit cannot change between a SOCKS5 proxy and a tunnel — add a new exit instead"
@@ -22630,8 +22631,11 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
             # F17 / T27: a new exit, or a switch, of a kind an older node misreads — only where every node that runs it can
             # (an older node registered WARP for any kind but `profile`; a withheld kind makes it reap the account)
             if gen_snap is not None and _pv != _was_pv:
-                for _s, _nm in [(gen_snap, c.get("name") or "this node")] + list(fo_snaps or ()):
+                for _i, (_s, _nm) in enumerate([(gen_snap, c.get("name") or "this node")] + list(fo_snaps or ())):
                     _no = exit_kind_refusal(_s, _pv, _nm)
+                    if _no and _i and not _s:            # a failover node that has not reported: off, or the panel just started
+                        _no = perr("{v1}, the failover node, has not reported yet — save this exit once it has (its copy must run the same kind)",
+                                   v1=_nm)                # (verify F25)
                     if _no:
                         return None, _no
             out["provider"] = _pv
@@ -37954,7 +37958,9 @@ class Handler(BaseHTTPRequestHandler):
                 _rwhy = str(_lv.get("restore_error") or (_lv.get("error") if _acted and not _have else "") or "")
                 _applied = (bool(_have) and (_have == _want if _want else True)) or (_acted and bool(_have) and not _rwhy)
                 if _applied and _want and (_xrec.get("key_blob_prev") or {}).get("pub") == _want:
-                    _xrec.pop("key_blob_prev", None)     # the parked account is back, under whatever key (F8)
+                    # the parked account is back, under whatever key (F8): marked, and dropped when its re-seal arrives —
+                    # popped now, that re-seal would park the account it replaced (verify F23)
+                    _xrec["key_blob_prev"] = dict(_xrec["key_blob_prev"], landed=True)
                 if _applied or _stale:
                     # ⚠️ "NOT APPLIED" IS NOT "REPORTED NO KEY". The case this bound exists for is a node
                     # that reports a key on every single pass — its OWN — which is why the exact-pub match
@@ -38006,7 +38012,7 @@ class Handler(BaseHTTPRequestHandler):
                         # nothing left to go back to. No door needed for the happy path — only for "keep the new
                         # one", which is a decision and not an observation.
                         _bp = _xrec.get("key_blob_prev") or {}
-                        if _bp.get("pub") == _blob.get("pub") or _same(_bp, _blob):
+                        if _bp.get("pub") == _blob.get("pub") or _same(_bp, _blob) or _bp.get("landed"):
                             _xrec.pop("key_blob_prev", None)
                         _xrec["key_blob"] = _blob
                         ifaces_dirty = True          # same save gate as the interface blobs just above

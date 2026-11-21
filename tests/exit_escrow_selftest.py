@@ -259,7 +259,7 @@ check("'keep the new one' has a door — nothing the node reports can say it",
 _ss = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read()
 check("the screen offers BOTH answers, and only when there is a displaced key",
       "const prev = (stored || {}).key_blob_prev || null;" in _ss
-      and "if (prev && prev.ct && nodeHasKey) {" in _ss)
+      and "if (prev && prev.ct && !prev.landed && nodeHasKey) {" in _ss)
 check("…restoring and keeping are both wired to a door",
       "api.exitEscrowForget(node.id, ex.id)" in _ss and "restore(prev, ASK_BACK())" in _ss)
 # ⚠️ AND THE ORDER OF THE TWO BRANCHES IS THE WHOLE ANSWER. `prev` and "the node has no key" are not
@@ -272,7 +272,7 @@ _fn = _ss[_ss.index("function ExitEscrow("):]
 _dec = _fn[:_fn.index("\n}\n")]
 def _branch(has_key, blob, prev):
     """Which arm does the source take? Mirrors the two conditions verbatim, extracted from the file."""
-    _c1 = "if (prev && prev.ct && nodeHasKey) {" in _dec
+    _c1 = "if (prev && prev.ct && !prev.landed && nodeHasKey) {" in _dec   # (a landed one is no offer — item17b-p3 verify F23)
     _c2 = "if (!_restorable || nodeHasKey) return null;" in _dec
     if not (_c1 and _c2):
         return "SHAPE-CHANGED"
