@@ -7908,7 +7908,6 @@ def _sysctl_ensure(key, want, ok=None):
 # of an asymmetric route, which is exactly what a cascade/exit entry creates — so a node that cannot loosen it
 # forwards a peer's packets out and silently discards the replies: connected, zero throughput, nothing said.
 _RPF = {"needed": False, "bad": []}
-_BAND_REPAIR = {"last": None}   # (want, live) signatures the last in-place band repair acted on (reconcile_cascade, B1)
 # DECISION 2 — the exit's state, reported so the panel can make a failure LOUD. It has to ship with the
 # kill-switch, not after it: decision 1 leaves the switch OFF by default, and that default is only
 # defensible because the fall-back is announced. A node that quietly egresses direct when its exit dies is
@@ -14466,7 +14465,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # reconcile, for a table that cannot exist. Wasteful, and worse than wasteful: anything ELSE on the box
     # that happened to own a table by that number would put phantom routes in the live signature and drift
     # the band for ever. `_band_tables` exists for exactly this distinction.
-    live_sig = _cascade_live_sig({str(p) for p in _band_tables(band)} | want_tables)
+    _ltables = {str(p) for p in _band_tables(band)} | want_tables
+    live_sig = _cascade_live_sig(_ltables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
     # ⚠️ A DEVICE REBUILT UNDER ITS EXIT → REPAIRED IN PLACE, NO TEARDOWN. The kernel purges a device's routes when the device
     # is rebuilt (a WireGuard conf bounce, a WARP switch or restore, a usque restart), and while it is gone its exit's
@@ -14496,12 +14496,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _xtra = [t.split("|") for t in live_sig - want_sig] if _drift else []
     _rt = lambda m: len(m) == 5 and m[0] == "T" and m[3] and not m[2].startswith("prohibit")
     _um = lambda m: len(m) == 4 and m[:2] == ["R", "upmark"]
-    # …and a repair that did not take (the same drift again on the next pass: a rule it cannot delete by its mark, a route
-    # line `ip route del` cannot name) falls back to the rebuild, which always converges (review F1)
-    _again = _drift and _BAND_REPAIR.get("last") == (want_sig, live_sig)
-    _BAND_REPAIR["last"] = None
-    if _drift and not _again and all(_rt(m) or _um(m) for m in _miss + _xtra):
-        _BAND_REPAIR["last"] = (want_sig, live_sig)
+    _fixed = False
+    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):
         for m in sorted(_xtra):
             if _um(m):
                 run(["ip", "rule", "del", "pref", m[2]])
@@ -14513,7 +14509,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             else:
                 run(["ip", "route", "replace", m[2]] + (["via", m[4]] if m[4] else []) + ["dev", m[3], "table", m[1]])
         res["changed"] += 1
-    elif _drift:
+        # VERIFIED IN THIS PASS: read back, and a repair that did not take (a rule it cannot delete by its mark, a route line
+        # `ip route del` cannot name) falls through to the rebuild below, which always converges (review F1). Judged here,
+        # never from the next pass: the same device rebuilt again before then signs the same drift, and is not a failure (F5).
+        _fixed = _cascade_live_sig(_ltables) == want_sig
+    if _drift and not _fixed:
         for pri in band:                                       # teardown our whole band (rules + tables)
             # ⚠️ DEL-UNTIL-ABSENT MEANS ALL OF THEM. A priority carries a backstop + exit rule pair per exit subnet, and
             # a fwmark rule: 17 at 7000 on a node exiting 8 subnets. A cap of 8 left the rest in place, the deleted ones

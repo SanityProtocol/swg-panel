@@ -92,8 +92,8 @@ if P_DSPEC:
     nsrc = cut(nsrc, '"mark": int(e.get("mark") or 0), "up": int(e.get("up") or 0),',
                '"mark": int(e.get("mark") or 0),', "docker spec")
 if P_TBL:
-    nsrc = cut(nsrc, "    live_sig = _cascade_live_sig({str(p) for p in _band_tables(band)} | want_tables)",
-               "    live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)", "live sig tables")
+    nsrc = cut(nsrc, "    _ltables = {str(p) for p in _band_tables(band)} | want_tables",
+               "    _ltables = {str(p) for p in band} | want_tables", "live sig tables")
 
 def load(name, path, src, changed):
     if changed:
@@ -328,7 +328,7 @@ _asked = [a[a.index("table") + 1] for a in _seen if a[:3] == ["ip", "route", "sh
 check("it asks about the real table", "7000" in _asked, _asked)
 check("⚠️ …and not about an upstream PRIORITY", str(N._up_mark(7000)) not in _asked, _asked)
 check("…and the caller passes it through _band_tables",
-      "_cascade_live_sig({str(p) for p in _band_tables(band)}" in nsrc,
+      "_ltables = {str(p) for p in _band_tables(band)}" in nsrc and "live_sig = _cascade_live_sig(_ltables)" in nsrc,
       "otherwise one wasted fork per leg per reconcile — and phantom routes if anything else owns that number")
 
 print("\n[13] ⚠️ an instance no longer wanted is stopped AFTER A RESTART, not just within one process")

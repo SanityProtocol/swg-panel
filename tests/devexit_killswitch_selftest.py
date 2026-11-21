@@ -33,8 +33,8 @@ Run: python3 tests/devexit_killswitch_selftest.py (0 = pass)
                 decision 1 and decision 2 are one bargain and neither survives alone.
      --perturb-repair  takes out B1's in-place repair of a purged route, so a device rebuilt under a carrying
                 exit rebuilds the whole band again (a moment with no rule: a packet direct past the kill-switch);
-                expects RED in 2f. --perturb-again: a repair that did not take is repeated for ever instead of falling back
-                to the rebuild (RED in 2f). --perturb-rpf: the in-place repair no longer re-asserts rp_filter (RED in 2f).
+                expects RED in 2f. --perturb-verify: a repair is never read back, so one that did not take is repeated for
+                ever instead of falling through to the rebuild (RED in 2f). --perturb-rpf: the in-place repair no longer re-asserts rp_filter (RED in 2f).
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -49,10 +49,10 @@ PERTURB = "--perturb" in sys.argv
 # turned OFF, and decision 3 ("disabling degrades, never rewrites") is the thing that becomes unreachable.
 # Applied to the panel's SOURCE, because the branch it removes has no seam to monkey-patch.
 INTENT = "--perturb-intent" in sys.argv
-# B1's plants: the in-place route repair taken out, so a purged route rebuilds the whole band again; a repair that did not
-# take repeated for ever; rp_filter no longer said on a repair (each expects RED in 2f).
-_B1 = {"--perturb-repair": ("    if _drift and not _again and all(_rt(m) or _um(m) for m in _miss + _xtra):", "    if False:"),
-       "--perturb-again": ("    _again = _drift and _BAND_REPAIR.get(\"last\") == (want_sig, live_sig)", "    _again = False"),
+# B1's plants: the in-place route repair taken out, so a purged route rebuilds the whole band again; a repair never read
+# back, so one that did not take is repeated for ever; rp_filter no longer said on a repair (each expects RED in 2f).
+_B1 = {"--perturb-repair": ("    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):", "    if False:"),
+       "--perturb-verify": ("        _fixed = _cascade_live_sig(_ltables) == want_sig", "        _fixed = True"),
        "--perturb-rpf": ("    if _drift and (fwd or smart_e or exit_ or arr_exit):", "    if _drift and not all(t.startswith((\"T|\", \"R|upmark|\")) for t in want_sig ^ live_sig) and (fwd or smart_e or exit_ or arr_exit):")}
 REPAIR = next((a for a in sys.argv[1:] if a in _B1), None)
 
@@ -364,9 +364,12 @@ check("an exit moved to another device: the old route withdrawn and the new one 
 # …the repair re-asserts loose rp_filter as the rebuild did: a rebuilt device is when it needs saying (review F2)
 _sx, _sx0 = [], N._sysctl_ensure
 N._sysctl_ensure = lambda key, *a, **k: (_sx.append(key), 2)[1]
-_purged(True, mid=_sx.clear)                                   # only the repair pass's own calls
-N._sysctl_ensure = _sx0
-check("…and says loose rp_filter again on a repair, as the rebuild did (review F2)", "net.ipv4.conf.all.rp_filter" in _sx, _sx)
+try:
+    _rp, _ = _purged(True, mid=_sx.clear)                      # only the repair pass's own calls
+finally:
+    N._sysctl_ensure = _sx0
+check("…and says loose rp_filter again on a repair — the repair, not a rebuild (review F2, F7)",
+      "net.ipv4.conf.all.rp_filter" in _sx and not _cl(_rp), (_sx, _cl(_rp)))
 # a repair that does not take falls back to the rebuild on the next pass, which always converges (review F1)
 class _Deaf(_Kernel):
     def __call__(k, argv, **kw):
@@ -379,13 +382,24 @@ N.run = _kern
 N._dev_link_state = lambda d: "up"
 _kern.tables["7000"] = []
 N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # first pass: a rebuild (nothing there)
-_r1, _r2 = [], []
+_r1 = []
 N.run = lambda argv, **kw: (_r1.append(" ".join(map(str, argv))), _kern(argv, **kw))[1]
-N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # the route is still missing: a repair
-N.run = lambda argv, **kw: (_r2.append(" ".join(map(str, argv))), _kern(argv, **kw))[1]
-N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # …which did not take: the rebuild
-check("a repair that did not take is not repeated: the next pass rebuilds the band (review F1)",
-      not _cl(_r1) and any(x.startswith("ip rule del") for x in _r2), (_cl(_r1), _r2[:4]))
+N.reconcile_cascade({"interfaces": {}}, _plan, None, "")         # the route is still missing: a repair, which does not take
+check("a repair that did not take is read back and the band rebuilt in the same pass (review F1)",
+      any(x.startswith("ip route replace default") for x in _r1)
+      and any(x.startswith("ip rule del") for x in _r1), _r1[:6])
+# the same device rebuilt twice, no pass between: each a repair, never the rebuild (review F5)
+_k5 = _Kernel(["wgcf"])
+N._dev_link_state = lambda d: "up"
+N.run = _k5
+N.reconcile_cascade({"interfaces": {}}, _plan, None, "")
+_t5 = []
+for _ in range(2):
+    _k5.tables["7000"] = [r for r in _k5.tables["7000"] if not r.startswith("default dev")]   # the kernel's purge, again
+    N.run = lambda argv, **kw: (_t5.append(" ".join(map(str, argv))), _k5(argv, **kw))[1]
+    N.reconcile_cascade({"interfaces": {}}, _plan, None, "")
+check("the same device rebuilt twice in a row: repaired in place both times, the band never torn down (review F5)",
+      not _cl(_t5) and _t5.count(ROUTE) == 2, (_cl(_t5), _t5.count(ROUTE)))
 _seen, _k = _purged(True, drop_rule=True)
 check("…but a missing RULE still rebuilds the band, as before (the repair is routes only)",
       any(x.startswith("ip rule del") for x in _seen) and RULE in _seen, _seen[:6])
