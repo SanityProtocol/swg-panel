@@ -34,8 +34,8 @@ PLANTS = {
     "--perturb-carry": ('        if out.get("provider") in WARP_PROVIDERS and _old.get("producer") == "imported" \\',
                         '        if out.get("provider") == "warp" and _old.get("producer") == "imported" \\'),                  # [1]
     "--perturb-createonly": ('            if gen_snap is not None and _pv != _was_pv:', '            if gen_snap is not None and not _was_pv:'),  # [2]
-    "--perturb-fo": ('                for _s, _nm in [(gen_snap, c.get("name") or "this node")] + list(fo_snaps or ()):',
-                     '                for _s, _nm in [(gen_snap, c.get("name") or "this node")]:'),                              # [2]
+    "--perturb-fo": ('                for _i, (_s, _nm) in enumerate([(gen_snap, c.get("name") or "this node")] + list(fo_snaps or ())):',
+                     '                for _i, (_s, _nm) in enumerate([(gen_snap, c.get("name") or "this node")]):'),                              # [2]
     "--perturb-wire": ('                                           **({"transport": x.get("transport") or "h3"}\n'
                        '                                              if x.get("provider") == "warp-masque" else {}),\n', ''),     # [2]
     "--perturb-park": ('_same = lambda a, b: bool(a.get("acct")) and a.get("acct") == b.get("acct")', '_same = lambda a, b: False'),  # [3]
