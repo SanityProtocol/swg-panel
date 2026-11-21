@@ -13281,7 +13281,7 @@ def _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped=()):
 # What B's copy of one of A's device exits takes from A (FAILOVER-PLAN §14.3). Never `key_blob`/`key_restore` (A's WARP
 # account: one account on two boxes flaps), `cfg_sig` (B's own is derived), `dial_src` (A's box's address) or `profile`
 # (one key on two boxes flips at the provider; B's own, once filled, is kept).
-FO_EXIT_FOLLOW = ("label", "producer", "provider", "device", "enabled", "killswitch", "licence", "socks")
+FO_EXIT_FOLLOW = ("label", "producer", "provider", "device", "enabled", "killswitch", "licence", "socks", "transport")
 
 
 def fo_exit_unfilled(x):
@@ -13309,8 +13309,9 @@ def _fo_mirror_exits(a, w):
         nx = {"id": x.get("id"), **{k: _fo_copy(x[k]) for k in FO_EXIT_FOLLOW if k in x}}
         if nx.get("provider") == "profile" and bx.get("provider") == "profile" and isinstance(bx.get("profile"), dict):
             nx["profile"] = bx["profile"]                          # B's own config, filled by the operator
-        if nx.get("provider", "warp") == "warp" and bx.get("provider", "warp") == "warp":   # B's own WARP key escrow, written
-            nx.update({k: bx[k] for k in _EXIT_ESCROW_KEYS if k in bx})                     # by B's sync (a switch ends it)
+        if nx.get("provider", "warp") in WARP_PROVIDERS and bx.get("provider", "warp") in WARP_PROVIDERS:   # B's own WARP
+            nx.update({k: bx[k] for k in _EXIT_ESCROW_KEYS if k in bx})     # key escrow, by B's sync (a switch between the
+                                                                            # WARP kinds keeps B's account, §4.10)
         nx["cfg_sig"] = exit_cfg_sig(nx)
         out.append(nx)
         used.add(xid)
@@ -22135,13 +22136,19 @@ def exit_cfg_sig(rec):
            "down": rec.get("enabled", True) is False, "profile": rec.get("profile") or {}}
     if isinstance(rec.get("socks"), dict):              # only when there is one: every other exit keeps its signature
         mat["socks"] = _socks_sig_part(rec["socks"])
+    if rec.get("provider") == "warp-masque":            # a MASQUE exit's HTTP/3 or HTTP/2 — every other exit keeps its signature
+        mat["transport"] = str(rec.get("transport") or "h3")
     return hashlib.sha256(json.dumps(mat, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
 # Every kind of imported exit this panel can make, BY NAME (docs/SOCKS5-EXIT-PLAN.md T6). Everything that was not `profile`
 # used to be saved as WARP — so a kind added later, or one stored by a newer panel, silently became a Cloudflare account.
 # A TWIN of swg-noded's EXIT_KINDS and js/routing.js EXIT_KINDS (tests/cross_language_twins_selftest.py, s9a F28).
-EXIT_PROVIDERS = ("warp", "profile", "socks5")
+EXIT_PROVIDERS = ("warp", "profile", "socks5", "warp-masque")
+# The two WARP kinds: one Cloudflare account each, and an edit between them is a SWITCH that keeps it (WARP-MASQUE-PLAN §4.10).
+WARP_PROVIDERS = ("warp", "warp-masque")
+# The kinds an older node would misread, and the release that first runs each (T27): asked of the node, and of its failover node.
+EXIT_KIND_SINCE = {"socks5": "1.8.11", "warp-masque": "1.8.12"}
 
 # ── THE SOCKS5 EXIT (docs/SOCKS5-EXIT-PLAN.md §6) ───────────────────────────────────────────────────────────────────────────
 # The pinned hev-socks5-tunnel the node runs a SOCKS exit on — a TWIN of swg-noded's HEV_* (tests/socks5_exit_node_selftest.py [1]). The
@@ -22151,6 +22158,13 @@ HEV_OWNER = "heiher/hev-socks5-tunnel"
 HEV_SHA256 = {"amd64": "1903b23869cbd12b7b57045ca161c0f90314d9c4ef2835e7a9e4a3179bf7d925",
               "arm64": "e44a6965cd718d98829f344e9f300a5664d12020557127b7469bee7c8f3098b0"}
 HEV_ASSET = {"amd64": "hev-socks5-tunnel-linux-x86_64", "arm64": "hev-socks5-tunnel-linux-arm64"}
+# usque, a MASQUE exit's client (WARP-MASQUE-PLAN §4.2) — a TWIN of swg-noded's USQ_* (tests/warp_masque_panel_selftest.py).
+# Our own release repo also carries the turn forks, so the mirror tells it by its tag: this pin's bytes, or nothing.
+USQ_TAG = "usque-20260720-6aa03fc"
+USQ_OWNER = "SanityProtocol/swg-panel"
+USQ_SHA256 = {"amd64": "51ea456fbf9f211f7be96d0a609eb985c16baebd4035461f4ab0177a6aeea032",
+              "arm64": "709aaeefcd2320f65b03440aaaf389514dd9140749bda1234cf117c117183797"}
+USQ_ASSET = {"amd64": "usque-linux-amd64", "arm64": "usque-linux-arm64"}
 # The SOCKS password is write-only (T7): the browser never sees it, and sends this to keep the stored one.
 EXIT_PASS_KEEP = "(unchanged — the panel never shows a stored proxy password)"
 # D4: a link this panel cannot make an exit of is refused with a sentence that says where to look instead.
@@ -22296,11 +22310,13 @@ def exit_kind_refusal(snap, kind, name="this node"):
     is never sent one, because an older node REGISTERED A WARP ACCOUNT for any kind that was not `profile`."""
     # only a kind THIS panel makes that an older node could misread — an unknown one (a newer panel's, kept as stored) is the
     # node's to refuse (s9a F18), never withheld here: withheld, the node would reap its record (review F28)
-    if kind != "socks5":
+    if kind not in EXIT_KIND_SINCE:
         return None
     _k = (snap or {}).get("exit_kinds")
     if isinstance(_k, list) and kind in _k:           # a list — anything else in a snapshot is remote input (review F6)
         return None
+    if kind == "warp-masque":                         # (a 1.8.12 node without a usque build for its CPU does not list it either)
+        return perr("{v1}: this node cannot run WARP over MASQUE — it needs the 1.8.12 update, on amd64 or arm64", v1=name)
     return perr("{v1}: this node cannot run a SOCKS5 exit yet — update the node to 1.8.11", v1=name)
 
 
@@ -22415,29 +22431,40 @@ def exit_test_status(nid, rid=None, now=None):
 _HEV_MIRROR_LOCK = threading.Lock()
 _HEV_MIRROR_FAIL = {}                                  # arch -> when its fetch last failed: not asked again for HEV_MIRROR_RETRY_S
 HEV_MIRROR_RETRY_S = 600
+_USQ_MIRROR_LOCK = threading.Lock()
+_USQ_MIRROR_FAIL = {}                                  # usque's, the same shape
 
 
 def hev_mirror_file(arch):
     """The panel's copy of the pinned hev for `arch` — fetched once from GitHub, KEPT only if its sha256 is the pinned one —
     or "" when there is none. A file in the store that does not hash to the pin is deleted, never served."""
-    want = HEV_SHA256.get(arch)
+    return _pin_mirror_file(arch, HEV_OWNER, HEV_TAG, HEV_SHA256, HEV_ASSET, _HEV_MIRROR_LOCK, _HEV_MIRROR_FAIL)
+
+
+def usq_mirror_file(arch):
+    """usque's, as hev_mirror_file (WARP-MASQUE-PLAN §1.2): the pinned bytes or ""."""
+    return _pin_mirror_file(arch, USQ_OWNER, USQ_TAG, USQ_SHA256, USQ_ASSET, _USQ_MIRROR_LOCK, _USQ_MIRROR_FAIL)
+
+
+def _pin_mirror_file(arch, owner, tag, sums, assets, lock, fail):
+    want = sums.get(arch)
     if not want:
         return ""
     # a panel that cannot reach GitHub answers at once for ten minutes after a failed fetch — the queue behind the lock would
     # otherwise run one ~200 s failing fetch per waiting node (verify F48); the node goes to GitHub itself meanwhile
-    if time.time() - _HEV_MIRROR_FAIL.get(arch, 0) < HEV_MIRROR_RETRY_S:
+    if time.time() - fail.get(arch, 0) < HEV_MIRROR_RETRY_S:
         return ""
-    with _HEV_MIRROR_LOCK:                            # one fetch at a time: nodes asking at once wait for it (review F5)
-        if time.time() - _HEV_MIRROR_FAIL.get(arch, 0) < HEV_MIRROR_RETRY_S:
+    with lock:                                        # one fetch at a time: nodes asking at once wait for it (review F5)
+        if time.time() - fail.get(arch, 0) < HEV_MIRROR_RETRY_S:
             return ""
-        got = _hev_mirror_file(arch, want)
+        got = _pin_mirror_fetch(arch, want, owner, tag, assets[arch])
         if not got:
-            _HEV_MIRROR_FAIL[arch] = time.time()
+            fail[arch] = time.time()
         return got
 
 
-def _hev_mirror_file(arch, want):
-    dest = os.path.join(TURN_BINS_DIR, _turn_safe(HEV_OWNER), _turn_safe(HEV_TAG), HEV_ASSET[arch])
+def _pin_mirror_fetch(arch, want, owner, tag, asset):
+    dest = os.path.join(TURN_BINS_DIR, _turn_safe(owner), _turn_safe(tag), asset)
     with contextlib.suppress(OSError):
         if os.path.getsize(dest) > 0:
             if _turn_sha256_file(dest) == want:
@@ -22450,8 +22477,8 @@ def _hev_mirror_file(arch, want):
     tmp = dest + ".dl." + secrets.token_hex(4)
     try:
         r = subprocess.run(["curl", "-4", "-fsSL", "--connect-timeout", "15", "--max-time", "180", "--retry", "2",
-                            "--retry-delay", "2", "https://github.com/%s/releases/download/%s/%s" % (HEV_OWNER, HEV_TAG,
-                                                                                              HEV_ASSET[arch]), "-o", tmp],
+                            "--retry-delay", "2", "https://github.com/%s/releases/download/%s/%s" % (owner, tag, asset),
+                            "-o", tmp],
                            capture_output=True, text=True, timeout=200)
         if r.returncode == 0 and os.path.isfile(tmp) and _turn_sha256_file(tmp) == want:
             os.replace(tmp, dest)
@@ -22468,7 +22495,7 @@ _EXIT_ESCROW_KEYS = ("key_blob", "key_blob_prev", "key_restore", "key_restore_pu
 
 
 def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan="", gen_snap=None,
-                    dialin=None):
+                    dialin=None, fo_snaps=()):
     """Clean a node's exit list → [{id, label, producer, device, enabled, killswitch, …}]. (clean, error).
     Adopted entries also carry `egress_ip`; imported ones carry `provider`/`licence`/`dial_src`/`profile`.
 
@@ -22493,7 +22520,10 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
 
     A DIAL-IN profile (docs/LISTEN-EXIT-PLAN.md §2.3) is checked against `dialin` = {"ports": {port: holder},
     "nets": [(name, network)], …} — what else on the node binds a UDP port or holds a subnet (_dialin_ctx) — only for a port
-    or an address this save CHANGES; None (a caller that parses no profile) asks nothing, and refuses a `dialin_gen`."""
+    or an address this save CHANGES; None (a caller that parses no profile) asks nothing, and refuses a `dialin_gen`.
+
+    A kind an older node would misread (EXIT_KIND_SINCE) is asked of `gen_snap` on a create or a kind switch, and of each
+    reporting failover node in `fo_snaps` = [(snapshot, name)] — its copy follows this exit's kind (T27)."""
     if not isinstance(exits, list):
         return None, "exits must be a list"
     known = {str(e.get("id") or ""): e for e in (prev or []) if isinstance(e, dict)}
@@ -22585,16 +22615,21 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
             # D-c: a SOCKS exit and a tunnel are not one exit edited — the device, and for WARP the account, would change
             # under every reference to the id. The SPA never offers it; the door refuses it.
             _was_pv = str((known.get(eid) or {}).get("provider") or "warp") if (known.get(eid) or {}).get("producer") == "imported" else ""
-            if _was_pv and (_was_pv == "socks5") != (_pv == "socks5"):
-                return None, "an exit cannot change between a SOCKS5 proxy and a tunnel — add a new exit instead"
+            # …nor a pasted profile and a WARP account (F12): only the two WARP kinds switch in place, keeping the account (§4.10)
+            if _was_pv and _was_pv != _pv and not (_was_pv in WARP_PROVIDERS and _pv in WARP_PROVIDERS):
+                return None, ("an exit cannot change between a SOCKS5 proxy and a tunnel — add a new exit instead"
+                              if "socks5" in (_was_pv, _pv) else
+                              "an exit cannot change between a pasted profile and a WARP account — add a new exit instead")
+            # F17 / T27: a new exit, or a switch, of a kind an older node misreads — only where every node that runs it can
+            # (an older node registered WARP for any kind but `profile`; a withheld kind makes it reap the account)
+            if gen_snap is not None and _pv != _was_pv:
+                for _s, _nm in [(gen_snap, c.get("name") or "this node")] + list(fo_snaps or ()):
+                    _no = exit_kind_refusal(_s, _pv, _nm)
+                    if _no:
+                        return None, _no
             out["provider"] = _pv
             if _pv == "socks5":
                 _kept = (known.get(eid) or {}).get("socks") if isinstance((known.get(eid) or {}).get("socks"), dict) else {}
-                # F17: a new SOCKS exit only on a node that can run one (an older node would register WARP for it)
-                if gen_snap is not None and not _kept:
-                    _no = exit_kind_refusal(gen_snap, "socks5", c.get("name") or "this node")
-                    if _no:
-                        return None, _no
                 _sk, _serr = socks_resolve(e.get("socks_text"), e.get("socks_pass"), _kept)
                 if _serr:
                     return None, perr("{v1}: {v2}", v1=lbl or out["device"], v2=perr(_serr))   # the list is saved whole: say which
@@ -22609,13 +22644,16 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
             # dials on its own and there is nothing for us to pin (§3.1), so the field is not offered there
             # rather than shown doing nothing. Validated as an address, not merely trimmed — it is spliced
             # into an `ip route ... src` on the node.
-            _ds = str(e.get("dial_src") or "").strip() if _pv != "socks5" else ""   # v1: the proxy is dialled from the default source
+            # v1: the proxy is dialled from the default source; usque dials from main's (§5: no `dial_src` for it)
+            _ds = str(e.get("dial_src") or "").strip() if _pv not in ("socks5", "warp-masque") else ""
             if _ds:
                 try:
                     ipaddress.IPv4Address(_ds)
                 except Exception:
                     return None, "the dial source must be an IPv4 address on this node"
             out["dial_src"] = _ds
+            if _pv == "warp-masque":                     # HTTP/3 unless HTTP/2 is asked for (Q2); never on a WireGuard exit
+                out["transport"] = "h2" if str(e.get("transport") or "") == "h2" else "h3"
             if out["provider"] == "profile":
                 # Carried forward when the operator is editing something else — a paste is a one-time act
                 # and re-typing the whole profile to rename the exit would be absurd.
@@ -22725,10 +22763,10 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
         # address", and an in-flight restore. The current key is re-sealed on the next sync, so the loss was
         # silent; the displaced one is not reported by anything and was gone for good. Never from the request:
         # these are written by the sync loop and the escrow doors, and a body must not be able to arm a restore.
-        # A WARP account only — a profile is not escrowed, and switching an exit to one ends the account.
+        # A WARP account only — a profile is not escrowed (and an exit cannot be switched to one, F12).
         _old = known.get(eid) or {}
-        if out.get("provider") == "warp" and _old.get("producer") == "imported" \
-                and str(_old.get("provider") or "warp") == "warp":
+        if out.get("provider") in WARP_PROVIDERS and _old.get("producer") == "imported" \
+                and str(_old.get("provider") or "warp") in WARP_PROVIDERS:     # (a switch keeps the account, §4.10)
             for _k in _EXIT_ESCROW_KEYS:
                 if _k in _old:
                     out[_k] = _old[_k]
@@ -32917,9 +32955,13 @@ def api(method, path, qs, body, deps):
             _pf = node_mesh_cfg(deps, _c).get("iface_prefix") or "swg_"
             _sn = (deps.get("node_snaps") or {}).get(nid) or {}
             _nic = _sn.get("ether_ifaces") or []
+            # T27: this node's failover node runs a copy of every exit, of the same kind — asked too, once it has reported
+            _fb = failover_pairs(nodes).get(nid)
+            _fbs = (deps.get("node_snaps") or {}).get(_fb) or {} if _fb else {}
             _ex, _err = _validate_exits(body.get("exits"), _c, mesh_prefix=_pf, link_ifaces=_lk,
                                         prev=_c.get("exits") or [], nics=_nic, dialin=_dialin_ctx(deps, nodes, nid),
-                                        gws=_sn.get("ether_gws"), wan=(_sn.get("wan_iface") or ""), gen_snap=_sn)
+                                        gws=_sn.get("ether_gws"), wan=(_sn.get("wan_iface") or ""), gen_snap=_sn,
+                                        fo_snaps=[(_fbs, (nodes.get(_fb) or {}).get("name") or _fb)] if _fbs else [])
             if isinstance(_err, dict):                   # a perr: a 3.1 profile this node cannot run, or a bad 3.x key
                 return 400, {"ok": False, **_err, "code": "bad_request"}
             if _err:
@@ -34932,7 +34974,7 @@ def api(method, path, qs, body, deps):
         # has some key". The panel cannot read it out of the ciphertext; the browser, which just opened the
         # escrow, knows it. It is a public key — nothing secret — and it is only ever compared.
         _pub = str(body.get("pub") or "").strip()
-        if _pub and len(_pub) <= 64:
+        if _pub and len(_pub) <= 200:                   # a WireGuard key is 44 characters, a MASQUE (P-256 PKIX) one 124 (F10)
             _x["key_restore_pub"] = _pub
         else:
             _x.pop("key_restore_pub", None)
@@ -37891,13 +37933,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(_at, (int, float)):
                     _xrec["key_restore_at"] = _at = int(time.time()); ifaces_dirty = True
                 _stale = (time.time() - float(_at)) > _KEY_RESTORE_TTL
-                _applied = bool(_have) and (_have == _want if _want else True)
+                # T29: a node that enrolled the blob's account for the exit's OTHER WARP kind reports a new key, and
+                # names the blob it applied in `restored`. Refused (`restore_error` beside it), the relay rides on: the
+                # node acts on it once and says why for as long as it rides — the escrow row's one source of the reason.
+                _lv = _xlive2.get(str(_xrec.get("id"))) or {}
+                _acted = bool(_want) and str(_lv.get("restored") or "") == _want
+                _applied = (bool(_have) and (_have == _want if _want else True)) or (_acted and not _lv.get("restore_error"))
                 if _applied or _stale:
                     # ⚠️ "NOT APPLIED" IS NOT "REPORTED NO KEY". The case this bound exists for is a node
                     # that reports a key on every single pass — its OWN — which is why the exact-pub match
                     # never fires. A first version asked `not _have` and so stayed silent in precisely the
                     # situation it was written to announce. Ask the question the clear itself asks.
-                    if _stale and not _applied:
+                    if _stale and not _applied and _acted:
+                        ev_append(Handler.deps["roster_path"], "node", nid, "An exit key restore could not be carried out",
+                                  _xrec.get("label") or str(_xrec.get("id") or ""), str(_lv.get("restore_error") or "")[:240])
+                    elif _stale and not _applied:
                         # Said out loud: the operator pressed a button and nothing happened, and the row
                         # would otherwise just stop offering to explain itself.
                         ev_append(Handler.deps["roster_path"], "node", nid,
@@ -37929,13 +37979,18 @@ class Handler(BaseHTTPRequestHandler):
                         # operator knew; a flapping box would otherwise walk the escrow forward one
                         # generation at a time and end up offering to restore an account nobody remembers.
                         _prev = _xrec.get("key_blob") or {}
-                        if _prev.get("pub") and _blob.get("pub") and _prev["pub"] != _blob["pub"] \
+                        # T22: the SAME account under a new key (a switch between the WARP kinds, a re-enrolment) is a
+                        # rotation, not a displaced account — `acct` names the account; a blob without one keeps the rule
+                        _same = lambda a, b: bool(a.get("acct")) and a.get("acct") == b.get("acct")
+                        if _prev.get("pub") and _blob.get("pub") and _prev["pub"] != _blob["pub"] and not _same(_prev, _blob) \
                                 and not (_xrec.get("key_blob_prev") or {}).get("ct"):
                             _xrec["key_blob_prev"] = _prev
                         # …and a restore that LANDED ends the offer by itself: the node is now reporting the
-                        # escrowed key, so there is nothing left to go back to. No door needed for the happy
-                        # path — only for "keep the new one", which is a decision and not an observation.
-                        if (_xrec.get("key_blob_prev") or {}).get("pub") == _blob.get("pub"):
+                        # escrowed key — or its account, enrolled for the other WARP kind (§4.11) — so there is
+                        # nothing left to go back to. No door needed for the happy path — only for "keep the new
+                        # one", which is a decision and not an observation.
+                        _bp = _xrec.get("key_blob_prev") or {}
+                        if _bp.get("pub") == _blob.get("pub") or _same(_bp, _blob):
                             _xrec.pop("key_blob_prev", None)
                         _xrec["key_blob"] = _blob
                         ifaces_dirty = True          # same save gate as the interface blobs just above
@@ -38869,13 +38924,16 @@ class Handler(BaseHTTPRequestHandler):
         _ivk_pub = (_vault.get("ivk_pub") or "") if _vault.get("ivk_enabled") else ""   # only hand nodes the key when escrow is ON
         _ivk_want = []
         _wdtt_want = []
-        # …and the imported exits. Only `warp`: a pasted profile is already restorable from the panel's own
+        # …and the imported exits. Only the WARP kinds: a pasted profile is already restorable from the panel's own
         # copy, so escrowing it would store the same secret twice. Same two staleness tests as above — the
-        # exit's key rotated, or the vault moved under it.
+        # exit's key rotated, or the vault moved under it — and a third (T22): a blob sealed before `acct` existed is
+        # asked for once more, of a node that seals it (one that lists `warp-masque`; an older one would be asked for ever).
+        _acct_ok = isinstance(snap.get("exit_kinds"), list) and "warp-masque" in snap["exit_kinds"]
         _exit_want = [str(x.get("id")) for x in (node.get("exits") or [])
                       if isinstance(x, dict) and x.get("producer") == "imported"
-                      and (x.get("provider") or "warp") == "warp"
+                      and (x.get("provider") or "warp") in WARP_PROVIDERS
                       and not ((x.get("key_blob") or {}).get("ct")
+                               and ((x.get("key_blob") or {}).get("acct") or not _acct_ok)
                                and (x.get("key_blob") or {}).get("vault") == _ivk_pub
                                and (x.get("key_blob") or {}).get("pub")
                                    == (((snap.get("exits") or [{}]) and next(
@@ -39073,6 +39131,9 @@ class Handler(BaseHTTPRequestHandler):
                                            "licence": x.get("licence") or "",
                                            "down": x.get("enabled", True) is False,
                                            "dial_src": x.get("dial_src") or "",
+                                           # a MASQUE exit's HTTP/3 or HTTP/2 (WARP-MASQUE-PLAN §4.1) — on its entry only
+                                           **({"transport": x.get("transport") or "h3"}
+                                              if x.get("provider") == "warp-masque" else {}),
                                            # A restore the operator asked for: the browser opened the escrow
                                            # with the vault key and re-sealed it to THIS node's transport
                                            # key, so what travels is ciphertext the panel cannot read.
@@ -39430,6 +39491,9 @@ class Handler(BaseHTTPRequestHandler):
         if owner == HEV_OWNER:                          # a SOCKS5 exit's hev: the pinned release, the pinned bytes, only
             dest = hev_mirror_file(arch) if tag == HEV_TAG else ""
             sha = HEV_SHA256.get(arch, "") if dest else ""
+        elif owner == USQ_OWNER and tag.startswith("usque-"):   # a MASQUE exit's usque: the pin, or nothing (never the turn path)
+            dest = usq_mirror_file(arch) if tag == USQ_TAG else ""
+            sha = USQ_SHA256.get(arch, "") if dest else ""
         else:
             sha = turn_sum(owner, tag, arch, need_file=True)   # ensures it's mirrored (fetch-on-miss, a pruned one too) + its hash
             dest = _turn_store_path(owner, tag, arch)

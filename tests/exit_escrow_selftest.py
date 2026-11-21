@@ -219,8 +219,10 @@ _PROF = ("[Interface]\nPrivateKey = aGVsbG8taGVsbG8taGVsbG8taGVsbG8taGVsbG8taGU=
          "Endpoint = vps.example.com:51820\n")
 ex, err = P._validate_exits([{"id": "aabbccdd", "producer": "imported", "provider": "profile",
                               "profile_text": _PROF}], {"name": "n1"}, prev=_PREV)
-check("…and an exit switched to a pasted profile does not inherit a WARP account's escrow",
-      not err and ex[0].get("provider") == "profile" and not any(k in ex[0] for k in _ESC), (ex, err))
+# 1.8.12 item 17b F12: a WARP account cannot be edited into a pasted profile at all (only WARP ↔ WARP over MASQUE switch in
+# place), so it can never carry the account's escrow into one — a new exit is the way
+check("…and an exit cannot be switched to a pasted profile, so it never inherits a WARP account's escrow (F12)",
+      ex is None and "pasted profile" in str(err), (ex, err))
 P._EXIT_ESCROW_KEYS = _carry
 if "--perturb-escrow-carry" in sys.argv:
     if FAILS:

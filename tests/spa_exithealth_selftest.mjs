@@ -73,7 +73,7 @@ if (PERTURB) {
     ["    const nt = l.no_traffic;\n", "    const nt = null;\n"],
   ] : PWARP ? [
     // the shipped shape: no provider arm at all, so a WARP exit gets the pasted-profile instruction
-    ['const warp = (ex.provider || "warp") === "warp"', "const warp = false"],
+    ['const warp = exitIsWarp(ex)', "const warp = false"],
   ] : PSTALE ? [
     ["&& !nodeStale((node || {}).id))", ")"],
   ] : PRECSTALE ? [

@@ -3582,7 +3582,15 @@ export const cardGateway = (node, name) => String((((node || {}).ether_gws) || {
 export const exitProv = x => String((x || {}).provider || "warp");
 /** The kinds this panel can make, by name — a TWIN of the panel's EXIT_PROVIDERS and swg-noded's EXIT_KINDS
  *  (tests/cross_language_twins_selftest.py, s9a F28). */
-export const EXIT_KINDS = ["warp", "profile", "socks5"];
+export const EXIT_KINDS = ["warp", "profile", "socks5", "warp-masque"];
+/** A Cloudflare WARP account, over WireGuard or over MASQUE (docs/WARP-MASQUE-PLAN.md): one account each, and an edit between
+ *  the two is a switch that keeps it — so every "is this a WARP account" question asks this, never `=== "warp"`. */
+export const exitIsWarp = x => exitProv(x) === "warp" || exitProv(x) === "warp-masque";
+/** Cloudflare's sites in Russia: a MASQUE exit lands at one from a Russian node (measured: DME), and sites blocked in Russia
+ *  stay blocked there (plan §6a #8) — the exit is up and carries, so this is said, never judged. */
+export const WARP_RU_COLOS = ["DME", "LED"];
+/** A pending switch between the WARP kinds (§4.10): the node keeps the running kind carrying and says why in `error`. */
+const EXIT_SWITCH_RE = /^still on (WireGuard|MASQUE): /;
 /** A DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2): a pasted SERVER config — a ListenPort, no Endpoint — which the upstream (a
  *  router behind NAT) dials. Derived from the stored profile, as the panel and the node derive it; nothing else marks it. */
 export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profile || {}).listen_port
@@ -3591,7 +3599,8 @@ export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profi
  *  port, so two untitled ones never read alike in a sheet or a note. */
 export const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex)
     ? (exitIsDialin(ex) ? T("Dial-in exit :{v1}", { v1: ex.profile.listen_port }) : T("Dial-in exit")) : T("Custom exit"))
-  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex) === "socks5" ? T("SOCKS5 exit") : exitProv(ex);
+  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex) === "warp-masque" ? T("WARP exit (MASQUE)")
+  : exitProv(ex) === "socks5" ? T("SOCKS5 exit") : exitProv(ex);
 
 /** Where the traffic of an exit the NODE is routing around goes meanwhile, by its kill-switch — and the plain stalled
  *  sentence — shared by the imported and the adopted arm, so both say it in one set of words (and one set of RU keys). */
@@ -3613,7 +3622,8 @@ export function exitHealth(x, node) {
   // A SOCKS5 exit on a node older than the kind (s9a F17): the panel does not send it there — an older node would register a
   // WARP account for it — so the row says what to do, as a dial-in exit on an older node does.
   if (why === "kind_unsupported") return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
-    why: T("This node needs the 1.8.11 update for SOCKS5 exits.") };
+    why: exitProv(ex) === "warp-masque" ? T("This node cannot run WARP over MASQUE — it needs the 1.8.12 update, on amd64 or arm64.")
+      : T("This node needs the 1.8.11 update for SOCKS5 exits.") };
   if (why) return { state: "refused", tone: "bad", dot: "bad", why: T("Refused: {v1}", { v1: why }) };
   // ⚠️ A NODE OLDER THAN THE FEATURE ITSELF, which no test below can catch because it has nothing to read.
   // Such a node reports no exits at all, so `l` is empty for ever — and the tests then resolved to PROGRESS:
@@ -3670,6 +3680,20 @@ export function exitHealth(x, node) {
   // A node older than dial-in exits refuses one as a profile with no endpoint; a 1.8.11 node reports the port on every row.
   if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
     why: T("This node needs the 1.8.11 update for dial-in exits.") };
+  // A SWITCH BETWEEN THE WARP KINDS THAT HAS NOT HAPPENED YET (§4.10, T19): the node keeps the running kind carrying on the
+  // same device and says why in `error`, with its retry. Judged as the exit it still is, the switch said beside it: progress
+  // while the tunnel program is fetched, a warning while Cloudflare refuses or cannot be reached — never "failed".
+  const sw = EXIT_SWITCH_RE.exec(String(l.error || ""));
+  if (sw) {
+    const h = exitHealth({ ...ex, live: { ...l, error: "", retry_in: 0 } }, node);
+    const left = String(l.error).slice(sw[0].length), fetching = /^fetching /.test(left);
+    const note = (sw[1] === "WireGuard" ? T("The switch to MASQUE has not happened yet — this exit still runs over WireGuard: {v1}", { v1: T(left) })
+      : T("The switch to WireGuard has not happened yet — this exit still runs over MASQUE: {v1}", { v1: T(left) }))
+      + (l.retry_in ? " " + T("Retrying in {v1}.", { v1: l.retry_in >= 60
+        ? T("{v1} min", { v1: Math.round(l.retry_in / 60) }) : T("{v1} s", { v1: l.retry_in }) }) : "");
+    return h.state !== "ok" ? { ...h, why: h.why + " " + note }
+      : { state: "switching", tone: fetching ? "busy" : "warn", icon: fetching ? "refresh" : "warn", dot: "up", why: note };
+  }
   // A SOCKS exit whose tunnel program is still being fetched: progress, not a fault (review F13)
   if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) };
   if (l.error) return { state: "failed", tone: "bad", dot: "bad",
@@ -3756,7 +3780,7 @@ export function exitHealth(x, node) {
   // (over IPv6). Nothing on that node was misconfigured and nothing on that screen could have fixed it.
   // …and blaming the network for blocking WARP fits only once there is no other family to try: a box whose IPv6 goes
   // nowhere looked exactly like this too (item 11), and the node now moves such a tunnel to IPv4 by itself.
-  const warp = (ex.provider || "warp") === "warp", warpV6 = warp && !!ul && !ulBoth && (ulOff6 || ul.via === "v6");
+  const warp = exitIsWarp(ex), warpV6 = warp && !!ul && !ulBoth && (ulOff6 || ul.via === "v6");
   if (l.handshake === 0 && !(l.trace || {}).ip) return { state: "nohandshake", tone: "warn", icon: "warn", dot: "down",
     why: said(warpV6
       ? T("The tunnel is up, but Cloudflare has not answered it over IPv6. Nothing here is yours to correct — the node tries IPv4 by itself.")
@@ -3926,7 +3950,7 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   // which list you opened it from, and an untitled one never said what it WAS.
   // …and grouped by what they are: a WireGuard profile the operator pasted is imported too, but it is no WARP account (OE, 1.8.9)
   const imp = exits.filter(x => (x.producer || "adopted") === "imported");
-  const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));
+  const warp = imp.filter(exitIsWarp).map(x => mk(x, exitLabel(x, node)));
   const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));
   const socks = imp.filter(x => exitProv(x) === "socks5").map(x => mk(x, exitLabel(x, node)));
   const other = imp.filter(x => !EXIT_KINDS.includes(exitProv(x))).map(x => mk(x, exitLabel(x, node)));
@@ -4003,6 +4027,7 @@ export function exitTypeLabel(ex, node) {
   if ((x.producer || "adopted") === "imported")
     return exitProv(x) === "profile" ? (exitIsDialin(x) ? T("Dial-in exit") : T("Custom exit"))
       : exitProv(x) === "warp" ? (exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit"))
+      : exitProv(x) === "warp-masque" ? (exitIsPlus(x) ? T("WARP+ exit (MASQUE)") : T("WARP exit (MASQUE)"))
       : exitProv(x) === "socks5" ? T("SOCKS5 exit") : exitProv(x);
   // ⚠️ A NETWORK CARD SAYS SO, and this is the whole of decision B1 in one line. `Direct — source from
   // eth2` (a NAT pin) and an eth2 EXIT (a route) can now both be on screen at once, and they do completely

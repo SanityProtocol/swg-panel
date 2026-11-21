@@ -53,7 +53,7 @@ const PLANTS = {
   "--perturb-rconf": ["screen-settings.js", 'Number(o[3]) ^ 1].join(".") + "/31"', 'Number(o[3])].join(".") + "/31"'],
   "--perturb-r31": ["screen-settings.js", 'Number(o[3]) ^ 1].join(".") + "/31"', 'Number(o[3]) + 1].join(".") + "/32"'],
   "--perturb-rawg": ["screen-settings.js", 'awg = Object.keys((ex.profile || {}).awg || {}).length > 0;', 'awg = /^\\s*Jc\\s*=/m.test(conf);'],
-  "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
+  "--perturb-warp": ["routing.js", 'imp.filter(exitIsWarp)', 'imp.filter(x => x.provider !== "profile")'],
   "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
   "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); _keepFail.delete(pk); return", "return"],
   "--perturb-pendfail": ["crypto.js", "if (r && r.ok !== false) { _pendingKeep.delete(pk); _keepFail.delete(pk); return true; }", "_pendingKeep.delete(pk); if (r && r.ok !== false) return true;"],

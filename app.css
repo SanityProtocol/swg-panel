@@ -2742,6 +2742,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .exg-act{justify-content:flex-end;gap:5px}
 .exg-t{font-size:10.5px;padding:2px 8px;border-radius:99px;white-space:nowrap;font-weight:600}
 .exg-t.warp{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
+/* a MASQUE exit's Cloudflare site beside its address — in Russia (sites blocked there stay blocked), in the warning colour,
+   the sentence on hover and in the sheet. Text, not a tag: the address column is the grid's narrowest that grows. */
+.exg-colo{color:var(--faint);margin-left:6px}
+.exg-colo.ru{color:var(--partial);font-weight:700;text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
 /* WARP+ — the one row in the list somebody paid for. Same green, so it reads as the same family, but lit:
    a ring plus a soft bloom is enough to find it at a glance without inventing a second colour. */
 /* The "+" carries the meaning, so it gets the weight and the accent — and 1px up, because a "+" sits on the
@@ -4007,6 +4011,9 @@ a.tg:hover{filter:brightness(1.25)}
   font-weight:700;padding:5px 13px;border-radius:20px;cursor:pointer}
 .seg:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
 .seg.on{background:color-mix(in srgb,var(--brand) 16%,transparent);border-color:var(--brand);color:var(--brand)}
+/* a WARP exit's transport, then — over MASQUE only — its HTTP: two groups a wider gap apart, which wrap whole on a phone */
+.segrow.wtr{flex-wrap:wrap;column-gap:22px;row-gap:8px}
+.wtr-g{display:flex;gap:6px}
 /* ── Datapath switch ───────────────────────────────────────────────────────────────────────────────────
    ONE control with two halves, not two buttons that happen to be adjacent: a single track, equal-width
    sides, and the chosen one filled. Equal widths are fixed rather than content-sized, so the switch does

@@ -172,7 +172,7 @@ PLANTS = {   # (file, anchor, replacement)
     "ex-release": ("panel", "    xs = [x for x in (b.get(\"exits\") or []) if not fo_exit_unfilled(x)]", "    xs = list(b.get(\"exits\") or [])"),
     "ex-resolve": ("panel", 'or _x.get("enabled") is False or fo_exit_unfilled(_x):', 'or _x.get("enabled") is False:'),
     "ex-preflight": ("panel", "    _fo_mirror_exits(a, _s)\n", ""),
-    "ex-escrow-kind": ("panel", 'if nx.get("provider", "warp") == "warp" and bx.get("provider", "warp") == "warp":', 'if True:'),
+    "ex-escrow-kind": ("panel", 'if nx.get("provider", "warp") in WARP_PROVIDERS and bx.get("provider", "warp") in WARP_PROVIDERS:', 'if True:'),
     "ex-fill-warn": ("panel", '    warn["exit_fill"] = [str(x.get("id"))', '    warn["exit_fill"] = [] and [str(x.get("id"))'),
     "rbl-clash": ("panel", "                    and not _rbl_both(nid, e[1], s, e[0], P)), None)", "), None)"),
     "rbl-to": ("panel", "                if o == _quiet:\n                    e[\"to\"] = False", "                if False:\n                    e[\"to\"] = False"),

@@ -45,7 +45,7 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitDefaultTitle, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitIsWarp, WARP_RU_COLOS, exitDefaultTitle, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
   p2pVal, p2pRec, p2pTarget, p2pLabel, p2pTargetOpts, p2pTargetHints,
@@ -2448,6 +2448,8 @@ export function PanelSettingsScreen() {
       // profile that is missing its key and re-submit it as a replacement. Empty box = keep what is stored.
       ...(x.producer === "imported" ? { provider: x.provider || "warp", licence: x.licence || "",
                                         dial_src: x.dial_src || "",
+                                        // a MASQUE exit's HTTP/3 or HTTP/2 — carried by every list save, or saving another exit resets it
+                                        ...(x.transport ? { transport: x.transport } : {}),
                                         profile: x.profile || null, profile_text: "",
                                         // a SOCKS exit's address as the browser has it (no password — T7); the paste box and
                                         // the password field are empty = keep what is stored, as `profile_text` is
@@ -3898,7 +3900,7 @@ const newExitId = () => Array.from(crypto.getRandomValues(new Uint8Array(4)))
    key — so the panel relays ciphertext and never holds the plaintext it is escrowing. */
 function ExitEscrow({ node, ex, stored, live, goSection, escrowOn }) {
   const [busy, setBusy] = useState(false);
-  if ((ex.producer || "adopted") !== "imported" || exitProv(ex) !== "warp") return null;
+  if ((ex.producer || "adopted") !== "imported" || !exitIsWarp(ex)) return null;   // both WARP kinds are escrowed (§4.11)
   const blob = (stored || {}).key_blob || null;
   const nodeHasKey = !!(live || {}).public_key;
   // ⚠️ NOTHING IS SAID ABOUT ESCROW ITSELF ANY MORE. It is ON by default and its switch lives on the
@@ -4401,10 +4403,22 @@ const exitBadgeOf = (ex, live) => exitProv(ex) === "profile"
       ? ["exawg exawg3", T("val|Custom"), T("AmneziaWG 3.1")]   // i18n-keys: the first of each pair is a CSS class
       : [(live || {}).awg ? "exawg" : "exwg", T("val|Custom")])
   : exitProv(ex) === "socks5" ? ["exsocks", T("val|SOCKS5")]   // i18n-keys: the first is a CSS class — a userspace path, the relay's violet
-  : exitProv(ex) !== "warp" ? ["exwg", exitProv(ex)]
+  : !exitIsWarp(ex) ? ["exwg", exitProv(ex)]
+  // a MASQUE exit says so on its badge, and which HTTP on hover (WARP-MASQUE-PLAN §4.8)
+  : exitProv(ex) === "warp-masque" ? ((String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
+    ? ["warp plus", badgeLabel(T("val|WARP+ · MASQUE")), exitHttpSay(ex)] : ["warp", T("val|WARP · MASQUE"), exitHttpSay(ex)])
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];
+/** A MASQUE exit's Cloudflare site (its row's `colo`, WARP-MASQUE-PLAN §4.7). One in Russia is said, never judged: the exit
+ *  is up and carries, but sites blocked in Russia stay blocked there (§6a #8 — WireGuard WARP lands in Frankfurt instead). */
+const exitColoRu = colo => WARP_RU_COLOS.includes(String(colo || "").toUpperCase());
+const exitRuSay = colo => T("This exit lands at Cloudflare's site in Russia ({v1}): sites blocked in Russia stay blocked through it. Over WireGuard, WARP lands outside Russia.", { v1: colo });
+function ExitColo({ colo }) {
+  return html`<span class=${"exg-colo" + (exitColoRu(colo) ? " ru" : "")}
+    title=${exitColoRu(colo) ? exitRuSay(colo) : T("Cloudflare's site this exit lands at")}>${colo}</span>`;
+}
+const exitHttpSay = ex => (ex || {}).transport === "h2" ? T("Over MASQUE, on HTTP/2") : T("Over MASQUE, on HTTP/3");
 // …and a dial-in profile reads "Dial-in", in the colours of what it is.
 const exitBadge = (ex, live) => {
   const b = exitBadgeOf(ex, live);
@@ -4810,7 +4824,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const dirtyRef = useRef(false);
-  const isProf = exitProv(v) === "profile", isWarp = exitProv(v) === "warp", isSocks = exitProv(v) === "socks5";
+  const isProf = exitProv(v) === "profile", isWarp = exitIsWarp(v), isSocks = exitProv(v) === "socks5";
+  const isMasque = exitProv(v) === "warp-masque";
   const [sTxt, setSTxt] = useState(() => socksText(ex));
   const [sTxt0] = useState(() => socksText(ex));
   const [sPass, setSPass] = useState("");
@@ -4835,8 +4850,16 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
   // to compare against and the operator has to be able to press Save.
   const dirty = isNew || txt !== txt0 || Object.values(dinBlank).some(Boolean)   // a "-" cleared changes no line yet (F12)
     || (isSocks && (sTxt !== sTxt0 || !!sPass))
-    || ["label", "dial_src", "licence"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""));
-  const save = async () => {
+    || ["label", "dial_src", "licence", "provider", "transport"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""));
+  // A SWITCH between the WARP kinds (§4.10) keeps the account and restarts the tunnel: said, and asked, before it is saved (Q11)
+  const switching = !isNew && isWarp && exitIsWarp(ex) && exitProv(v) !== exitProv(ex);
+  const save = () => (!switching ? commit(false) : openConfirm({
+    title: isMasque ? T("Switch this exit to MASQUE?") : T("Switch this exit to WireGuard?"),
+    body: T("The Cloudflare account is kept. The tunnel restarts on the new transport.") + " " + (ex.killswitch
+      ? T("For a few seconds the kill-switch holds this exit's users.")
+      : T("For a few seconds this exit's users leave by this node's own address.")),
+    confirmLabel: T("Switch"), onConfirm: () => commit(true) }));
+  const commit = async viaConfirm => {
     setBusy(true); setMsg("");
     // Only send `profile_text` when it actually CHANGED. An untouched box still contains the sentinel, and
     // re-submitting it would make the server do a keep-the-key round trip for nothing.
@@ -4860,7 +4883,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
     const ok = await onSave(body);
     setBusy(false);
     if (ok !== true) return setMsg(typeof ok === "string" ? ok : T("Couldn't save"));
-    (onClose || closeModal)();
+    viaConfirm ? closeModals(2) : (onClose || closeModal)();    // (the confirm, then this sheet)
   };
   // WHAT this is and WHO relies on it ride in the sheet's own header, beside the name — they are the row's
   // identity, not fields, and repeating them as a strip inside the body pushed the first real input below
@@ -4876,7 +4899,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
     </span>`}
     foot=${footRow({ left: msg ? html`<span class="err">${msg}</span>` : null,
                      onCancel: onClose || closeModal,
-                     action: busy ? T("Saving…") : T("Save changes"), onAction: save,
+                     action: busy ? T("Saving…") : isNew && isWarp ? T("Register") : T("Save changes"), onAction: save,
                      /* ⚠️ A SAVE THAT CHANGES NOTHING STILL LOOKS LIKE A SAVE, and here that is worse than it
                         sounds: the config box opens holding a RENDERING of the stored profile, so pressing
                         Save on an untouched sheet sends no `profile_text` (the sentinel is unchanged), the
@@ -4899,7 +4922,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
         <div class="field dinmtu"><label>${T("MTU")}</label>
           <input inputmode="numeric" value=${confIfLine(txt, "MTU") ?? ""} placeholder="1280"
             onInput=${e => dinLine("MTU", e.target.value)}/></div>` : null}
-      ${isDialin || isSocks || fill ? null : html`<div class="field"><label>${T("Connect from")}</label>
+      ${isDialin || isSocks || isMasque || fill ? null : html`<div class="field"><label>${T("Connect from")}</label>
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
     ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet} mtu=${confIfLine(txt, "MTU") || ""}
@@ -4919,7 +4942,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
       : isSocks ? html`<${SocksExitFields} node=${node} ex=${ex} isNew=${isNew} sTxt=${sTxt} setSTxt=${setSTxt}
           sPass=${sPass} setSPass=${setSPass} dirtyRef=${dirtyRef}/>`
       : !isWarp ? html`<p class="hint">${T("This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.")}</p>`
-      : html`<div class="field"><label>${T("WARP+ licence key")}</label>
+      : html`<${WarpTransport} node=${node} v=${v} set=${set} live=${(stored.live || {})}/>
+        <div class="field"><label>${T("WARP+ licence key")}</label>
           <input value=${v.licence || ""} spellcheck="false" autocomplete="off"
             placeholder=${T("WARP+ licence key — optional")}
             onInput=${e => set({ licence: e.target.value })}/>
@@ -4933,6 +4957,29 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
       <${ExitEscrow} node=${node} ex=${v} stored=${stored} live=${stored.live} goSection=${goSection} escrowOn=${escrowOn}/>
     </div>
   <//>`;
+}
+
+/* A WARP exit's transport (WARP-MASQUE-PLAN Q1, Q2): WireGuard or MASQUE — chosen at create, and an edit is a switch that keeps
+   the account (§4.10) — and, over MASQUE, HTTP/3 or HTTP/2. The MASQUE row's Cloudflare site is said here when it is in Russia. */
+function WarpTransport({ node, v, set, live }) {
+  const mq = exitProv(v) === "warp-masque", tr = v.transport === "h2" ? "h2" : "h3";
+  const seg = (on, label, pick) => html`<button type="button" role="radio" aria-checked=${on} class=${"seg" + (on ? " on" : "")}
+    onClick=${pick}>${label}</button>`;
+  const colo = live.provider === "warp-masque" ? String(live.colo || "") : "";
+  return html`<div class="field"><label>${T("Transport")}</label>
+    <div class="segrow wtr">
+      <span class="wtr-g" role="radiogroup" aria-label=${T("Transport")}>
+        ${seg(!mq, T("WireGuard"), () => set({ provider: "warp", transport: undefined }))}
+        ${seg(mq, T("MASQUE"), () => set({ provider: "warp-masque", transport: tr, dial_src: "" }))}</span>
+      ${mq ? html`<span class="wtr-g" role="radiogroup" aria-label="HTTP">
+        ${seg(tr === "h3", T("HTTP/3"), () => set({ transport: "h3" }))}${seg(tr === "h2", T("HTTP/2"), () => set({ transport: "h2" }))}</span>` : null}
+    </div>
+    <div class="hint">${mq
+      ? T("MASQUE looks like ordinary HTTPS to a filter. Use it where WireGuard to Cloudflare is cut. It is slower (measured 0.5–0.75×). HTTP/2 is for a network that also cuts HTTP/3, and slower again.")
+      : T("WireGuard is the fastest. If this node's network cuts WireGuard to Cloudflare, switch to MASQUE — the account is kept.")}
+      ${mq && (node || {}).kind === "docker" ? " " + T("On a Docker node its tunnel program runs without a CPU cap of its own.") : ""}</div>
+    ${mq && exitColoRu(colo) ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${exitRuSay(colo)}</span></div>` : null}
+  </div>`;
 }
 
 /* The two switches every exits grid carries, worded once. Both grids render the same pair, and a second
@@ -5078,6 +5125,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     // is the opposite — there is nothing to type, so it is written straight away and starts registering.
     if (p2.dialin) return openDialin(rec);
     if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);
+    if (p2.provider === "warp") return openEdit(rec, true);    // WireGuard or MASQUE is chosen at create (WARP-MASQUE-PLAN Q1)
     write([...exits, rec]);
   };
   // the four ways to add one: the desktop's row of buttons, a phone's sheet (ExitKindSheet), the same records
@@ -5091,7 +5139,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     title: T("Remove this exit?"), confirmLabel: T("Remove"), danger: true,
     body: exitProv(ex) === "profile"
       ? T("{v1} is removed from this node and its tunnel comes down. The profile and its key are deleted from the panel — you would have to paste it again.", { v1: ex.label || ex.device })
-      : exitProv(ex) === "warp"
+      : exitIsWarp(ex)
       ? T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device })
       : exitProv(ex) === "socks5"
       ? T("{v1} is removed from this node and its tunnel to the proxy comes down. The proxy's address and password are deleted from the panel.", { v1: ex.label || ex.device })
@@ -5146,7 +5194,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
             ${/* a failover node's copy with no config of its own (§14.3): said where its address would be — the one empty cell */""}
             ${unfilled(ex) ? html`<span class="tg tg-warn" title=${T("This server needs its own config for this exit before it can take over")}><${Ic} i="warn"/>${T("fill in for failover")}</span>`
               : (l.trace || {}).ip || html`<span class="faint">—</span>`}${exitProv(ex) === "socks5" && (l.trace || {}).loc
-              ? html` <span class="faint">${l.trace.loc}</span>` : null}</div>
+              ? html` <span class="faint">${l.trace.loc}</span>` : null}${l.colo ? html`<${ExitColo} colo=${l.colo}/>` : null}</div>
           ${/* ⚠️ THE HOP TO THE EXIT'S OWN SERVER, not a request made through it. This first showed the time
                 of a full HTTPS request to cloudflare.com via the tunnel, which for a Moscow exit one hop
                 away read 179 ms — because ~169 ms of that is what a TLS handshake to Cloudflare costs from

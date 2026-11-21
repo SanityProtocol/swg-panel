@@ -31,14 +31,15 @@ PLANTS = {
     "--perturb-salt": ('    "pass": hashlib.sha256((str(sk.get("salt") or "") + "\\0" + str(sk.get("pass") or "")).encode()).hexdigest()[:16]}',
                        '    "pass": hashlib.sha256(str(sk.get("pass") or "").encode()).hexdigest()[:16]}'),                  # [3]
     "--perturb-sig": ('        mat["socks"] = _socks_sig_part(rec["socks"])', '        pass'),                                # [3]
-    "--perturb-f17save": ('                if gen_snap is not None and not _kept:\n', '                if False:\n'),                # [4]
+    "--perturb-f17save": ('            if gen_snap is not None and _pv != _was_pv:\n', '            if False:\n'),                    # [4]
     "--perturb-f17sync": ('                                          and not exit_kind_refusal(snap, x.get("provider") or "warp")],',
                           '                                          ],'),                                                  # [4]
     "--perturb-state": ('**({"socks": socks_public(e["socks"])} if isinstance(e.get("socks"), dict) else {}))',
                         '**({"socks": e["socks"]} if isinstance(e.get("socks"), dict) else {}))'),                         # [5]
     "--perturb-salt-wire": ('**({"socks": {k: x["socks"].get(k) for k in ("host", "port", "user", "pass")}}',
                             '**({"socks": dict(x["socks"])}'),                                                          # [5]
-    "--perturb-kind": ('            if _was_pv and (_was_pv == "socks5") != (_pv == "socks5"):', '            if False:'),     # [6]
+    "--perturb-kind": ('            if _was_pv and _was_pv != _pv and not (_was_pv in WARP_PROVIDERS and _pv in WARP_PROVIDERS):',
+                       '            if False:'),                                                                         # [6]
     "--perturb-mirror": ('            if _turn_sha256_file(dest) == want:\n                return dest\n            os.remove(dest)',
                          '            return dest'),                                                                       # [7]
     # the max review's fix round (runs/s10-p3-socks)
@@ -52,13 +53,13 @@ PLANTS = {
     "--perturb-tiebreak": ("        if len(parts) == 4 and not _at and len(_real) == 1:", "        if False:"),               # [1] verify F70
     "--perturb-tiebreak-dots": ('            return h.lower() == "localhost" or h.count(".") >= 2', '            return h.lower() == "localhost" or "." in h'),  # review F3
     "--perturb-tiebreak-at": ("        if len(parts) == 4 and not _at and len(_real) == 1:", "        if len(_real) == 1:"),  # [1] verify F70
-    "--perturb-negcache": ("            _HEV_MIRROR_FAIL[arch] = time.time()", "            pass"),                              # [7] verify F48
+    "--perturb-negcache": ("            fail[arch] = time.time()", "            pass"),                              # [7] verify F48
     "--perturb-kinds-shape": ('    if isinstance(_k, list) and kind in _k:', '    if kind in (_k or []):'),                     # [4] F6
-    "--perturb-unknown": ('    if kind != "socks5":\n        return None\n', ''),                                              # [4] F28
+    "--perturb-unknown": ('    if kind not in EXIT_KIND_SINCE:\n        return None\n', ''),                                              # [4] F28
     "--perturb-fp": ('                    v = str(o.get("salt") or "") + "\\0" + v       # salted by its own record', '                    pass  #'),  # [5] F26
     "--perturb-transfer": ("_FP_EXCLUDE = (\n", "_FP_EXCLUDE = (\n    (\"exits.*.socks.pass\", \"x\"),\n"),  # [5] F46
     "--perturb-expire": ('        rec["socks"] = {}                             # its password goes with it, whoever asks first (review F27)\n', ''),  # [8] F27
-    "--perturb-lock": ("    with _HEV_MIRROR_LOCK:                            # one fetch at a time", "    if True:  #"),              # [7] F5
+    "--perturb-lock": ("    with lock:                                        # one fetch at a time", "    if True:  #"),              # [7] F5
     "--perturb-busy": ('            if cur["result"] is None:\n                return 409, {"ok": False, "error": "a test is already running on this node", "code": "busy"}',
                        '            if False:\n                return 409, {"ok": False, "error": "a test is already running on this node", "code": "busy"}'),  # [8]
 }

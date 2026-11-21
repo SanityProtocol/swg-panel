@@ -30,7 +30,7 @@ const PERTURB = process.argv.includes("--perturb") && !GROUPS;
 let R = await spa("routing.js");
 if (GROUPS) {
   const src = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");
-  const a = '  const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));';
+  const a = '  const warp = imp.filter(exitIsWarp).map(x => mk(x, exitLabel(x, node)));';
   const b = '  const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));';
   if (src.split(a).length !== 2) { console.log("PERTURB ANCHOR MISSING: the WARP group's filter"); process.exit(1); }
   if (src.split(b).length !== 2) { console.log("PERTURB ANCHOR MISSING: the custom-config group's filter"); process.exit(1); }

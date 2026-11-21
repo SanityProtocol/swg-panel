@@ -147,9 +147,9 @@ _nk = ast.literal_eval(one("swg-noded", r"^EXIT_KINDS = (\(.*\))$", "EXIT_KINDS"
 _sk = ast.literal_eval(one("js/routing.js", r"^export const EXIT_KINDS = (\[.*\]);$", "EXIT_KINDS"))
 if PERTURB_KINDS:
     _sk = [k for k in _sk if k != "socks5"]
-# STAGED (docs/WARP-MASQUE-PLAN.md §6): the node learns `warp-masque` in P2, the panel and the SPA in P3 — until then the node
-# knows exactly that one kind more (an older panel never sends a kind it does not make). P3 drops NODE_FIRST to [] (a list: compared with ==).
-NODE_FIRST = ["warp-masque"]
+# Was STAGED (docs/WARP-MASQUE-PLAN.md §6): the node learned `warp-masque` in P2, the panel and the SPA in P3 — so the three are
+# equal again. A kind the node learns first is named here until its panel half lands (a list: compared with ==).
+NODE_FIRST = []
 check("panel EXIT_PROVIDERS == noded EXIT_KINDS == SPA EXIT_KINDS", list(_pk) == [k for k in _nk if k not in NODE_FIRST] == list(_sk)
       and [k for k in _nk if k in NODE_FIRST] == NODE_FIRST, (_pk, _nk, _sk))
 
