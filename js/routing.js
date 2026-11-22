@@ -3611,6 +3611,11 @@ export const exitViaName = (ex, node) => {
   const b = v ? ((node || {}).exits || []).find(x => String(x.id) === v) : null;
   return v ? (b ? (b.label || exitDefaultTitle(b)) : v) : "";
 };
+/** The backup picker's choice in row `i` (1.8.12 item 18): an exit there, or the row's empty choice — "No backup" in the first
+ *  row, "Nothing else" after it — which ends the list THERE, as its label says (review F8). */
+export const exitBackupPick = (value, i, id) => (id
+  ? (i < value.length ? value.map((x, j) => (j === i ? id : x)) : [...value, id])
+  : value.slice(0, i));
 // …and the node said it has backups and none of them is up: today's sentence stands, and this one beside it
 const exitViaNone = ex => (((ex || {}).live) || {}).via === "" ? " " + T("Its backup exits are not carrying either.") : "";
 const exitFellSay = (ex, node) => exitViaName(ex, node)
@@ -3707,10 +3712,11 @@ export function exitHealth(x, node) {
     return h.state !== "ok" ? { ...h, why: h.why + " " + note }
       : { state: "switching", tone: fetching ? "busy" : "warn", icon: fetching ? "refresh" : "warn", dot: "up", why: note };
   }
-  // A SOCKS exit whose tunnel program is still being fetched: progress, not a fault (review F13)
-  if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) };
-  // a backup carrying this exit's traffic while it is down (item 18): said after whatever the row says about the exit itself
-  const _bk = exitViaName(ex, node) ? " " + exitFellSay(ex, node) : "";
+  // a backup carrying this exit's traffic while it is down (item 18): said after whatever the row says about the exit itself —
+  // and, the node saying none of them is up, that too (review F9, F18)
+  const _bk = exitViaName(ex, node) ? " " + exitFellSay(ex, node) : exitViaNone(ex);
+  // A SOCKS exit whose tunnel program is still being fetched: progress, not a fault (review F13) — its backup carrying meanwhile
+  if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) + _bk };
   if (l.error) return { state: "failed", tone: "bad", dot: "bad",
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
     // ⚠️ THROUGH T(), like every other sentence the SPA shows. The node's own words arrived verbatim, so a

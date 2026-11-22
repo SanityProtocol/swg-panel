@@ -13311,7 +13311,7 @@ def _fo_mirror_exits(a, w):
     WARP key's escrow (_EXIT_ESCROW_KEYS) — is B's and stays. An imported exit B holds that A no longer uses goes, unless the
     operator filled it and A still has it: that config is parked (disabled — no tunnel holds its key) until A uses it again;
     A deleting the exit takes it. An adopted device of B's own is never touched."""
-    refs = exit_refs(a)
+    refs = exit_held(a)
     a_ids = {str(x.get("id") or "") for x in (a.get("exits") or []) if isinstance(x, dict)}
     cur = {str(x.get("id") or ""): x for x in (w.get("exits") or []) if isinstance(x, dict)}
     out, used = [], set()
@@ -14485,10 +14485,12 @@ def _fo_exit_fill_only(nodes, aid, bid, new):
     def _n(x, k):
         v = x.get(k)
         return (v is not False) if k == "enabled" else bool(v) if k == "killswitch" else (v if v not in (None, "") else None)
-    held = exit_refs(nodes.get(aid) or {})
+    held = exit_held(nodes.get(aid) or {})
     for xid, o in old.items():
         n = newm[xid]
-        if any(_n(o, k) != _n(n, k) for k in ("id", "egress_ip", "gw") + FO_EXIT_FOLLOW if k != "socks"):
+        # (`backup` only when the request carries it: one that does not keeps the stored list, as _validate_exits keeps it)
+        if any(_n(o, k) != _n(n, k) for k in ("id", "egress_ip", "gw") + FO_EXIT_FOLLOW
+               if k != "socks" and (k != "backup" or "backup" in n)):
             return False
         if (n.get("socks_text") or n.get("dial_src")
                 or ((n.get("profile_text") or n.get("dialin_gen")) and not (xid in held and o.get("provider") == "profile"))):
@@ -23139,10 +23141,23 @@ def exit_refs(rec):
     _ps = [rec.get("p2p")] + [(ov or {}).get("p2p") for k in ("ifaces", "wdtt", "csqtt")
                               for ov in ((rec.get(k) or {}).values() if isinstance(rec.get(k), dict) else ()) if isinstance(ov, dict)]
     out |= {str(p.get("exit_id") or "") for p in _ps if isinstance(p, dict) and p.get("action") == "dev"}
-    # …and the backups of every exit used (item 18): a used exit's table may leave by one, so a failover node holds them too
-    _xs = {str((x or {}).get("id") or ""): x for x in (rec.get("exits") or []) if isinstance(x, dict)}
-    out |= {b for i in list(out) for b in exit_backups(_xs.get(i))}
     return out - {""}
+
+
+def exit_held(rec):
+    """The exits a failover node holds copies of (FAILOVER-PLAN §14.3): every exit `rec`'s settings use (exit_refs) and every
+    backup reachable from them (1.8.12 item 18) — a used exit's table may leave by one, and a list naming a copy B lacks would be
+    pruned by B's save and restored by the next mirror pass (review F5). Only the copies: a backup is not "in use", so the
+    failover readiness rows read exit_refs alone (F12, F17)."""
+    out = set(exit_refs(rec))
+    xs = {str((x or {}).get("id") or ""): x for x in (rec.get("exits") or []) if isinstance(x, dict)}
+    todo = list(out)
+    while todo:
+        for b in exit_backups(xs.get(todo.pop())):
+            if b not in out:
+                out.add(b)
+                todo.append(b)
+    return out
 
 
 def prune_exit_refs(rec):
@@ -24317,6 +24332,16 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
     _fo_part = failover_partners(nodes)                      # a failover pair, both ways — {} in a fleet without one
     _rbl_memo, _rbl_labs = {}, {}
 
+    _s5x_memo = {}
+
+    def _s5x_chain(P, xid):
+        """Does exit `xid` of node P name a backup that resolves to a SOCKS5 device (item 18)? Once per exit per plan."""
+        if (P, xid) not in _s5x_memo:
+            _x = next((x for x in ((nodes.get(P) or {}).get("exits") or []) if isinstance(x, dict) and str(x.get("id")) == xid), None)
+            _s5x_memo[(P, xid)] = any(str((resolve_exit(nodes, snaps, P, b) or ("",))[0]).startswith("s5x-")
+                                      for b in exit_backups(_x))
+        return _s5x_memo[(P, xid)]
+
     def _rbl_lab(P, n):
         """rbl_label, with P's labels worked out once per plan (every record of a pair asks)."""
         if P not in _rbl_labs:
@@ -24909,7 +24934,8 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
                 # stand-in by ITS rules — not to P. `part` makes P leave that subnet's DNS alone: it goes to the server the
                 # origin chose (its Force DNS, or the client's own) out P's own address, as a rule-scoped exit's DNS does.
                 # Only on a SOCKS device, so every other entry — and every fleet without one — stays byte-identical.
-                if not whole and str(_pdev).startswith("s5x-"):
+                # …and so is one whose backups include a SOCKS exit (item 18, review F3): the node may move the table onto it
+                if not whole and (str(_pdev).startswith("s5x-") or _s5x_chain(P, _pd)):
                     _pe["part"] = True
                 _dx_add(slot(P), _pe)
 

@@ -11,7 +11,8 @@
  * change, and a failover node's copy shows no picker (its list follows the primary's).
  *
  * Run: node tests/spa_exit_backup_selftest.mjs     --perturb  blinds `exitViaName` (no backup is ever named) and expects RED.
- *      --perturb-nfields · --perturb-dirty · --perturb-fill  take one save-path line out each (SRC_PLANTS) and expect RED.
+ *      --perturb-pick · --perturb-none · --perturb-setup (routing.js, R_PLANTS) · --perturb-nfields · --perturb-dirty ·
+ *      --perturb-fill (screen-settings.js, SRC_PLANTS) — each takes one line out and expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -25,16 +26,27 @@ const SRC_PLANTS = {
   "--perturb-fill": ["${fill || !bkOpts.length ? null : html`<${ExitBackupPick}", "${!bkOpts.length ? null : html`<${ExitBackupPick}"],
 };
 const SMODE = Object.keys(SRC_PLANTS).find(k => process.argv.includes(k));
+// routing.js plants: [anchor, replacement]
+const R_PLANTS = {
+  "--perturb": ["export const exitViaName = (ex, node) => {\n  const v = String((((ex || {}).live) || {}).via || \"\");",
+                "export const exitViaName = (ex, node) => {\n  const v = \"\";"],
+  "--perturb-pick": ["  : value.slice(0, i));", "  : value.filter((_, j) => j !== i));"],                        // review F8
+  "--perturb-none": ["const _bk = exitViaName(ex, node) ? \" \" + exitFellSay(ex, node) : exitViaNone(ex);",
+                     "const _bk = exitViaName(ex, node) ? \" \" + exitFellSay(ex, node) : \"\";"],                // F9, F18
+  "--perturb-setup": ["why: T(l.setup) + _bk };", "why: T(l.setup) };"],                                            // F10
+};
+const RMODE = Object.keys(R_PLANTS).filter(k => k !== "--perturb").find(k => process.argv.includes(k))
+  || (PERTURB ? "--perturb" : null);
 let R = await spa("routing.js");
-if (PERTURB) {
+if (RMODE) {
   const src = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");
-  const a = "export const exitViaName = (ex, node) => {\n  const v = String((((ex || {}).live) || {}).via || \"\");";
-  if (src.split(a).length !== 2) { console.log("PERTURB ANCHOR MISSING: exitViaName"); process.exit(1); }
+  const [a, b] = R_PLANTS[RMODE];
+  if (src.split(a).length !== 2) { console.log("PERTURB ANCHOR MISSING: " + RMODE); process.exit(1); }
   const tmp = path.join(ROOT, "js", "__perturb_exitbackup.js");
-  fs.writeFileSync(tmp, src.replace(a, "export const exitViaName = (ex, node) => {\n  const v = \"\";"));
+  fs.writeFileSync(tmp, src.replace(a, b));
   try { R = await import(pathToFileURL(tmp).href); } finally { fs.unlinkSync(tmp); }
 }
-const { exitHealth, exitViaName } = R;
+const { exitHealth, exitViaName, exitBackupPick } = R;
 const { Store } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
 Store.recon.nodeStatus = { n1: "live" };
 
@@ -71,6 +83,21 @@ const old = exitHealth(row(dead), NODE);
 check("no `via` at all: exactly today's row", /own IP/.test(old.why) && !/backup/.test(old.why), old.why);
 const ok = exitHealth({ ...A, live: { device: "wgx-a1", up: true, trace: { ip: "1.2.3.4" }, handshake: 5 } }, NODE);
 check("a healthy exit says nothing of backups", !/backup/.test(ok.why || ""), ok);
+const dn0 = exitHealth(row({ up: false, via: "" }), NODE);
+check("down, none of the backups up: said (review F9, F18)", dn0.state === "down" && /backup exits are not carrying either/.test(dn0.why), dn0.why);
+const fl0 = exitHealth(row({ up: false, error: "registration failed", via: "" }), NODE);
+check("failed, none of the backups up: said", fl0.state === "failed" && /backup exits are not carrying either/.test(fl0.why), fl0.why);
+const su = exitHealth({ ...B, live: { device: "wgx-b2", up: false, setup: "fetching the MASQUE tunnel program", via: "a1" } }, NODE);
+check("a tunnel program still being fetched: its backup carrying is said too (review F10)",
+      su.state === "creating" && /through its backup, WG WARP/.test(su.why), su);
+
+console.log("[2b] the picker's choices (review F8)");
+check("an exit in a row replaces that row", JSON.stringify(exitBackupPick(["b", "c"], 0, "d")) === '["d","c"]');
+check("…in the trailing row, appends", JSON.stringify(exitBackupPick(["b"], 1, "c")) === '["b","c"]');
+check("\"No backup\" in the first row clears the list", JSON.stringify(exitBackupPick(["b", "c"], 0, "")) === "[]",
+      exitBackupPick(["b", "c"], 0, ""));
+check("\"Nothing else\" in a later row ends the list there", JSON.stringify(exitBackupPick(["b", "c", "d"], 1, "")) === '["b"]',
+      exitBackupPick(["b", "c", "d"], 1, ""));
 
 console.log("[3] the save paths");
 let SET = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8");
@@ -84,5 +111,8 @@ check("the node's edit buffer carries each imported exit's backups (or the sheet
 const sheet = SET.slice(SET.indexOf("function ExitEditSheet("), SET.indexOf("function ExitBackupPick("));
 check("the sheet's change test sees a backup change", sheet.includes("JSON.stringify(v.backup || []) !== JSON.stringify(ex.backup || [])"));
 check("a failover node's copy shows no picker", sheet.includes("${fill || !bkOpts.length ? null : html`<${ExitBackupPick}"));
+check("the picker writes through exitBackupPick", SET.includes("const pick = (i, id) => onChange(exitBackupPick(value, i, id));"));
+check("the kill-switch's words say a backup carries first (review F11)",
+      SET.includes('T("On: if this exit stops working and none of its backups is up, traffic using it is refused.'));
 
-done(PERTURB || !!SMODE, SMODE || "exitViaName blinded");
+done(!!RMODE || !!SMODE, SMODE || RMODE);

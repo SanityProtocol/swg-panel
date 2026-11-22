@@ -35,9 +35,10 @@ Run: python3 tests/exit_backup_selftest.py   (0 = pass)
      SWG_XBK_BASE=<commit> … also compares, for plans WITHOUT backups, the node's every command and report and the panel's
      plan against that commit's programs (the byte-identical claim; needs git and the commit).
      --perturb-noswap · --perturb-order · --perturb-anystate · --perturb-delfirst · --perturb-snat · --perturb-s5x ·
-     --perturb-cut · --perturb-p2p · --perturb-p2proute · --perturb-carried · --perturb-sig · --perturb-report · --perturb-smart · --perturb-arr · --perturb-self ·
-     --perturb-prune · --perturb-keep · --perturb-resolve · --perturb-refs · --perturb-issue · --perturb-live ·
-     --perturb-follow — each plants one regression (PLANTS below) and must go RED.
+     --perturb-cutrepair · --perturb-cutorder · --perturb-p2p · --perturb-p2proute · --perturb-p2pstatic · --perturb-count ·
+     --perturb-carried · --perturb-sig · --perturb-report · --perturb-smart · --perturb-arr · --perturb-self ·
+     --perturb-prune · --perturb-keep · --perturb-resolve · --perturb-refs · --perturb-closure · --perturb-fillkeep ·
+     --perturb-part · --perturb-issue · --perturb-live · --perturb-follow — each plants one regression (PLANTS below), RED.
 """
 import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, tempfile
 
@@ -56,10 +57,14 @@ PLANTS = {
     "--perturb-anystate": ("N", "if md != own[\"dev\"] and not _dev_is_ether(md) and _devexit_state(md) == \"up\":",
                            "if md != own[\"dev\"] and not _dev_is_ether(md):"),
     "--perturb-delfirst": ("N", "            elif (m[1], m[2]) not in _took:", "            elif True:"),
-    "--perturb-snat": ("N", "devexit=devexit + [dict(e, dev=md, egress_ip=\"\", gw=\"\") for e in devexit",
-                       "devexit=devexit + [dict(e, dev=md, egress_ip=\"\", gw=\"\") for e in ()"),
+    "--perturb-snat": ("N", "xmembers=sorted({md for _o, ms in _xb.values() for _m, md in ms}))", "xmembers=())"),
     "--perturb-s5x": ("N", "    _s5x_rules(_dxs if _via else devexit, nets, res)", "    _s5x_rules(devexit, nets, res)"),
-    "--perturb-cut": ("N", "    _cut = _dialin_cut(fwd + smart_exit + arr_exit + _xcut,", "    _cut = _dialin_cut(fwd + smart_exit + arr_exit,"),
+    "--perturb-cutrepair": ("N", "    if _drift and all(_rt(m) or _ct(m) or _um(m) for m in _miss + _xtra):",
+                            "    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):"),
+    "--perturb-cutorder": ("N", "        for m in sorted(_miss, key=lambda m: (not _ct(m), m)):", "        for m in sorted(_miss, key=lambda m: (_ct(m), m)):"),
+    "--perturb-p2pstatic": ("N", "                xdevs={T: [d] for T, d in _via.items()})",
+                            "                xdevs=_xbackup_devs(plan.get(\"xbackup\")))"),
+    "--perturb-count": ("N", "    _EXIT_VIA[\"devs\"] = set(_via.values())", "    _EXIT_VIA[\"devs\"] = set()"),
     "--perturb-p2p": ("N", "        take(\"r%d\" % T, e.get(\"subnets\"), T | P2P_BIT, [e[\"via_iface\"]] + list((xdevs or {}).get(T) or ()), T)",
                       "        take(\"r%d\" % T, e.get(\"subnets\"), T | P2P_BIT, [e[\"via_iface\"]], T)"),
     "--perturb-p2proute": ("N", "else ([ent[\"via_iface\"]] + list((xdevs or {}).get(int(ent[\"table\"])) or ())",
@@ -77,7 +82,12 @@ PLANTS = {
     "--perturb-keep": ("P", "        elif isinstance(_old.get(\"backup\"), list):", "        elif False:"),
     "--perturb-resolve": ("P", "                _r = resolve_exit(nodes, snaps, nid, bid)\n",
                           "                _r = resolve_exit(nodes, snaps, nid, bid) or (\"wgx-\" + bid,)\n"),
-    "--perturb-refs": ("P", "    out |= {b for i in list(out) for b in exit_backups(_xs.get(i))}", "    out |= set()"),
+    "--perturb-refs": ("P", "    refs = exit_held(a)\n", "    refs = exit_refs(a)\n"),
+    "--perturb-closure": ("P", "            if b not in out:\n                out.add(b)\n                todo.append(b)",
+                          "            if b not in out:\n                out.add(b)"),
+    "--perturb-fillkeep": ("P", "               if k != \"socks\" and (k != \"backup\" or \"backup\" in n)):", "               if k != \"socks\"):"),
+    "--perturb-part": ("P", "if not whole and (str(_pdev).startswith(\"s5x-\") or _s5x_chain(P, _pd)):",
+                       "if not whole and str(_pdev).startswith(\"s5x-\"):"),
     "--perturb-issue": ("P", "        if _vid:\n            _vx = next(", "        if False:\n            _vx = next("),
     "--perturb-live": ("P", "            out[str(xi)] = dict(out[str(xi)], via=xv)", "            pass"),
     "--perturb-follow": ("P", "                  \"backup\")", "                  )"),
@@ -112,7 +122,8 @@ def _planted(path, which):
     return out
 
 
-N = _load(_planted(NODED, "N"), "swgnoded_xbk")
+NODED_SRC = _planted(NODED, "N")
+N = _load(NODED_SRC, "swgnoded_xbk")
 P = _load(_planted(PANEL, "P"), "swgpanel_xbk")
 
 # Hermetic: the host's own routes are not this test's subject (as tests/devexit_killswitch_selftest.py does it).
@@ -199,6 +210,10 @@ class Kernel:
             rt[:] = [r for r in rt if not (r.split()[0] == dst and "metric" not in r)]
             rt.append("%s %sdev %s scope link" % (dst, ("via %s " % via) if via else "", dev))
             return _R()
+        if a[:4] == ["ip", "route", "del", "prohibit"] and "table" in a:   # a dial-in cut's `prohibit <p>`
+            T = a[a.index("table") + 1]
+            k.tables[T] = [r for r in k.tables.get(T, []) if r != "prohibit " + a[4]]
+            return _R()
         if a[:3] == ["ip", "route", "del"] and "table" in a:
             T, dev = a[a.index("table") + 1], a[a.index("dev") + 1]
             k.tables[T] = [r for r in k.tables.get(T, []) if not (r.split()[0] == a[3] and " dev %s " % dev in " " + r + " ")]
@@ -250,13 +265,22 @@ def table(kern):
     return [r for r in kern.tables.get(str(T), [])]
 
 
-print("[1] the owner up: its own route, and every member's SNAT installed up front")
+print("[1] the owner up: its own route, and each backup's SNAT installed up front — one a device")
 K = Kernel({})
 set_state(N, K, {DA: "up", DB: "up", DC: "up"})
 l1, r1 = pas(K, plan())
 check("the table defaults via the owner", table(K) == ["default dev %s scope link" % DA], table(K))
-check("SNAT for the owner AND each backup, before any move",
-      tags(K) == sorted("swg-egress:exit:%s@%s" % (S, d) for d in (DA, DB, DC)), tags(K))
+check("SNAT: the owner's per subnet, and ONE per backup device, before any move",
+      tags(K) == sorted(["swg-egress:exit:%s@%s" % (S, DA), "swg-egress:exit:xbk@" + DB, "swg-egress:exit:xbk@" + DC]), tags(K))
+check("…a backup's MASQUERADE takes any source (no -s): what leaves by it is the table's",
+      all(" -s " not in ln for ln in K.nat if "xbk@" in ln) and any("-o %s " % DB in ln for ln in K.nat if "xbk@" in ln), K.nat)
+K1m = Kernel({})
+set_state(N, K1m, {DA: "up", DB: "up", DC: "up"})
+_p1m = plan()
+_p1m["devexit"] = [dict(_p1m["devexit"][0], subnet="10.%d.0.0/24" % i, scope="rule") for i in range(30, 36)]
+pas(K1m, _p1m)
+check("…whatever the subnets: six arrival subnets, still one rule per backup (review F6)",
+      len([t for t in tags(K1m) if "xbk@" in t]) == 2 and len(tags(K1m)) == 8, tags(K1m))
 check("nothing says a backup carries", N._EXIT_VIA["m"] == {} and not N._EXIT_VIA["carried"], N._EXIT_VIA)
 check("no errors", not r1["errors"], r1["errors"])
 l1b, _ = pas(K, plan())
@@ -277,6 +301,7 @@ check("`exit_via` names the backup carrying", N._EXIT_VIA["m"] == {A: B}, N._EXI
 check("the report keeps the owner's own device and verdict",
       [(e["dev"], e["state"]) for e in N._DEVEXIT["list"]] == [(DA, "dead")], N._DEVEXIT["list"])
 check("the owner's device is the one carried (the P2P status reads it)", N._EXIT_VIA["carried"] == {DA}, N._EXIT_VIA)
+check("…and the backup is the one counted while it carries (review F16)", N._EXIT_VIA["devs"] == {DB}, N._EXIT_VIA)
 l2b, _ = pas(K, plan())
 check("settles on the backup", not muts(l2b) and not nat_muts(l2b), muts(l2b))
 
@@ -316,7 +341,11 @@ l5, _ = pas(K, plan())
 check("back via the owner, in one replace", table(K) == ["default dev %s scope link" % DA]
       and "ip route replace default dev %s table %d" % (DA, T) in l5
       and not [x for x in l5 if x.startswith(("ip rule del", "ip route flush", "ip route del"))], muts(l5))
-check("`exit_via` empties", N._EXIT_VIA["m"] == {} and not N._EXIT_VIA["carried"], N._EXIT_VIA)
+check("`exit_via` empties, and no backup is counted", N._EXIT_VIA["m"] == {} and not N._EXIT_VIA["carried"]
+      and not N._EXIT_VIA["devs"], N._EXIT_VIA)
+_SRC_N = open(NODED_SRC, encoding="utf-8").read()
+check("the internet lane counts the backup carrying, not every backup (the main loop's reconcile_inet_chain)",
+      '| set(_EXIT_VIA["devs"]))' in _SRC_N and "_xbackup_devs((reply.get(\"cascade\")" not in _SRC_N)
 
 print("[6] no `xbackup` → exactly today")
 K6 = Kernel({})
@@ -336,7 +365,8 @@ for bad in ([{"table": True, "id": A, "b": [{"id": B, "dev": DB}]}],
             [{"table": T, "id": A, "b": [{"id": B, "dev": "a b"}]}],
             [{"table": T, "id": A, "b": [{"id": B, "dev": "x" * 16}]}],
             [{"table": T, "id": "", "b": [{"id": B, "dev": DB}]}],
-            [{"table": T, "id": A, "b": "wgx-b"}], "nope", [1, None]):
+            [{"table": T, "id": A, "b": "wgx-b"}], "nope", [1, None],
+            [{"table": T, "id": A, "b": [{"id": B, "dev": "wgx-b\n"}]}], [{"table": T, "id": A, "b": [{"id": "", "dev": DB}]}]):
     check("refused: %s" % json.dumps(bad)[:70], N._xbackup_take(bad) == {}, N._xbackup_take(bad))
 check("a good one reads", N._xbackup_take(plan()["xbackup"]) == {T: (A, [(B, DB), (C, DC)])})
 
@@ -364,20 +394,32 @@ l9b, _ = pas(K9, plan())
 check("the SOCKS backup carrying: its subnet's DNS goes to the proxy's mapdns", dns(l9b), [x for x in l9b if "s5x" in x][:4])
 N._EXITS["socks"] = _sx
 
-print("[10] a dial-in backup's private cut stays put across a move")
+print("[10] a dial-in backup's private cut: only while it carries, and moved in place")
 _dl = N._EXITS.get("dialin")
 N._EXITS["dialin"] = {DC}
+cuts = lambda k: sorted(r for r in table(k) if r.startswith("prohibit ") and "default" not in r)
 K10 = Kernel({})
 set_state(N, K10, {DA: "up", DB: "absent", DC: "up"})
 pas(K10, plan(members=((C, DC),)))
-_cuts = sorted(r for r in table(K10) if r.startswith("prohibit ") and "default" not in r)
-check("the cut is in the table while the owner carries (a member is a dial-in exit)", len(_cuts) == len(N.EXIT_PRIVATE_CUT), table(K10))
+check("the owner carrying: no cut — its own private destinations stay reachable (review F4)", cuts(K10) == [], table(K10))
 set_state(N, K10, {DA: "dead", DB: "absent", DC: "up"})
 l10, _ = pas(K10, plan(members=((C, DC),)))
-check("the move to the dial-in backup is in place: no flush, no rule deleted",
-      not [x for x in l10 if x.startswith(("ip rule del", "ip route flush"))] and table(K10)[-1] == "default dev %s scope link" % DC,
-      muts(l10))
-check("…and the cut is the same", sorted(r for r in table(K10) if r.startswith("prohibit ") and "default" not in r) == _cuts)
+check("the dial-in backup carrying: the cut is in", len(cuts(K10)) == len(N.EXIT_PRIVATE_CUT), table(K10))
+check("…moved in place: no flush, no rule deleted", not [x for x in l10 if x.startswith(("ip rule del", "ip route flush"))], muts(l10))
+_ci = [i for i, x in enumerate(l10) if x.startswith("ip route replace prohibit 1")]
+_ri = [i for i, x in enumerate(l10) if x == "ip route replace default dev %s table %d" % (DC, T)]
+check("…the cut BEFORE the default onto the router (no moment it reaches the home LAN)", _ci and _ri and max(_ci) < _ri[0], muts(l10))
+set_state(N, K10, {DA: "up", DB: "absent", DC: "up"})
+l10b, _ = pas(K10, plan(members=((C, DC),)))
+_cd = [i for i, x in enumerate(l10b) if x.startswith("ip route del prohibit")]
+_rb = [i for i, x in enumerate(l10b) if x == "ip route replace default dev %s table %d" % (DA, T)]
+check("back: the cut goes in place, AFTER the default left the router", cuts(K10) == [] and _cd and _rb and _rb[0] < min(_cd)
+      and not [x for x in l10b if x.startswith(("ip rule del", "ip route flush"))], muts(l10b))
+K10c = Kernel({})                                         # review F1: everything down, kill switch off — settles
+set_state(N, K10c, {DA: "dead", DB: "absent", DC: "down"})
+pas(K10c, plan(members=((C, DC),)))
+l10c, _ = pas(K10c, plan(members=((C, DC),)))
+check("the owner and its dial-in backup both down: the second pass changes nothing (no rebuild loop, F1)", not muts(l10c), muts(l10c))
 N._EXITS["dialin"] = _dl
 
 print("[11] the P2P route follows, and its drop allows every member")
@@ -394,8 +436,12 @@ K11 = Kernel({})
 set_state(N, K11, {DA: "dead", DB: "up", DC: "up"})
 del _cap[:]
 pas(K11, _p11, smart=_sm)
-check("the route's allowed devices: the owner and every backup", _cap and _cap[-1][1] == [DA, DB, DC], _cap[-1:])
+check("the route's allowed devices: the owner and the backup CARRYING it", _cap and _cap[-1][1] == [DA, DB], _cap[-1:])
 check("…and its table defaults via the live backup", table(K11) == ["default dev %s scope link" % DB], table(K11))
+set_state(N, K11, {DA: "up", DB: "up", DC: "up"})
+del _cap[:]
+pas(K11, _p11, smart=_sm)
+check("the owner carrying: the owner alone — a backup's own traffic stays guarded (review F2)", _cap and _cap[-1][1] == [DA], _cap[-1:])
 del _cap[:]
 pas(Kernel({}), plan(xb=None), smart=_sm)
 check("without backups: the owner alone, as today", _cap and _cap[-1][1] == [DA], _cap[-1:])
@@ -470,12 +516,34 @@ check("a member on the owner's own device is left out", "xbackup" not in P.casca
       P.cascade_plan(_nd, _sd)["n1"].get("xbackup"))
 
 print("[15] failover nodes")
-_a = {"exits": [X(A, backup=[B]), X(B)], "ifaces": {"awg0": {"egress_mode": "exit", "exit_id": A}}}
-check("exit_refs takes the backups of an exit in use", P.exit_refs(_a) == {A, B}, P.exit_refs(_a))
+_a = {"exits": [X(A, backup=[B]), X(B, backup=[C]), X(C)], "ifaces": {"awg0": {"egress_mode": "exit", "exit_id": A}}}
+check("exit_refs (the readiness rows) counts only what is used, not its backups (review F12, F17)", P.exit_refs(_a) == {A}, P.exit_refs(_a))
+check("exit_held takes every backup reachable from a used exit", P.exit_held(_a) == {A, B, C}, P.exit_held(_a))
 _w = {}
 P._fo_mirror_exits(_a, _w)
 _wb = {x["id"]: x for x in _w.get("exits") or []}
-check("the mirror holds the backup's copy and the list", B in _wb and _wb.get(A, {}).get("backup") == [B], _w.get("exits"))
+check("the mirror holds the backups' copies — a backup's backup too — and their lists (review F5)",
+      {A, B, C} <= set(_wb) and _wb[A].get("backup") == [B] and _wb[B].get("backup") == [C], _w.get("exits"))
+_nf = {"a1": dict(_a), "b1": {"exits": [dict(x) for x in _w["exits"]]}}
+_req = [{k: v for k, v in x.items() if k != "backup"} for x in _w["exits"]]
+check("a failover node's fill save that does not carry `backup` is not refused (a stale tab)", P._fo_exit_fill_only(_nf, "a1", "b1", _req))
+
+print("[18] a SOCKS backup makes a default exit's arrivals partial (review F3)")
+SC = {"id": C, "label": "S", "device": "s5x-" + C, "enabled": True, "producer": "imported", "provider": "socks5", "killswitch": False,
+      "socks": {"host": "gw.example.com", "port": 1080, "user": "", "pass": "", "salt": "00"}}
+def fleet2(bk):
+    n1 = {"name": "node-n", "routing_mode": "kernel", "links": {"n2": {"iface": "swg_p", "peer_address": "10.255.0.1"}},
+          "ifaces": {"wg0": {"egress_mode": "smart", "routing": [{"enabled": True, "category": "custom", "targets": "203.0.113.80/32",
+                                                                   "action": "exit", "node": "n2"}]}}}
+    n2 = {"name": "node-p", "routing_mode": "kernel", "links": {"n1": {"iface": "swg_n", "peer_address": "10.255.0.0"}},
+          "exits": [X(A, **({"backup": [C]} if bk else {})), dict(SC)], "default_exit": A, "ifaces": {"wg0": {}}}
+    return {"n1": n1, "n2": n2}
+_s18 = {"n1": {"interfaces": {"wg0": {"meta": {"subnet": "10.8.0.0/24"}}}, "smartroute": {"mode": "kernel", "src": 1, "arr": 1}},
+        "n2": {"interfaces": {"wg0": {"meta": {"subnet": "10.9.0.0/24"}}}, "smartroute": {"mode": "kernel", "src": 1}}}
+_a18 = [d for d in (P.cascade_plan(fleet2(True), _s18).get("n2") or {}).get("devexit") or [] if d.get("subnet") == "10.8.0.0/24"]
+check("WARP default with a SOCKS backup: the smart arrival's entry is partial", _a18 and all(d.get("part") is True for d in _a18), _a18)
+_a18b = [d for d in (P.cascade_plan(fleet2(False), _s18).get("n2") or {}).get("devexit") or [] if d.get("subnet") == "10.8.0.0/24"]
+check("…and without the backup, not (as today)", _a18b and not any("part" in d for d in _a18b), _a18b)
 
 print("[16] the node's Issues line")
 _c16 = {"exits": [X(A), X(B, label="Bee")], "ifaces": {"awg0": {"egress_mode": "exit", "exit_id": A}}}

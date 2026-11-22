@@ -2341,8 +2341,8 @@ def _snat_reconcile_rule(tag, subnet, des, rules):
     for ln in existing:                                   # drop stale rule(s)
         run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
     if des:
-        args = ["iptables", "-t", "nat", "-I", "POSTROUTING", "-s", subnet, "-o", des[1],
-                "-m", "comment", "--comment", tag, "-j", des[0]]
+        args = (["iptables", "-t", "nat", "-I", "POSTROUTING"] + (["-s", subnet] if subnet else [])   # "": any source
+                + ["-o", des[1], "-m", "comment", "--comment", tag, "-j", des[0]])
         if des[0] == "SNAT":
             args += ["--to-source", des[2]]
         r = run(args)
@@ -5747,7 +5747,7 @@ def _band_tables(prios):
     return [p for p in prios if SWG_RT_BASE <= p <= SWG_RT_MAX]
 
 
-def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", devexit=()):
+def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", devexit=(), xmembers=()):
     """Idempotent (no-churn) exit SNAT + FORWARD-accept + MSS-clamp for the link devices, tagged
     swg-fwd-{snat,acl,mss}:* so stale entries (after a forward→direct switch) are cleaned up. Traffic
     received from other nodes (the cascade/smart exit side) SNATs to the exit record's egress_ip, falling
@@ -5770,7 +5770,8 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", dev
     # `swg-fwd-snat:` must KEEP reading as foreign: that is how a forward-mode interface's baseline defers to
     # the cascade's SNAT instead of stacking a duplicate. Measured too. Narrow fix, on purpose.
     _dx = list(devexit or [])
-    link_devs = sorted(set(link_devs) | {e["dev"] for e in _dx})   # §5.10: the clamp must reach the exit dev too
+    link_devs = sorted(set(link_devs) | {e["dev"] for e in _dx}    # §5.10: the clamp must reach the exit dev too
+                       | {d for d in xmembers if _WANIF_RE.match(d)})   # …and an exit's backups, up front (item 18)
     # 1) exit SNAT per forwarded subnet (diff via the shared helper) + drop stale tags
     try:
         nat = run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout.splitlines()
@@ -5810,6 +5811,18 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", dev
         _ch, err = _snat_reconcile_rule(tag, S, _des, nat)
         if err:
             res["errors"].append("devexit snat " + S + ": " + err)
+        elif _ch:
+            res["changed"] += 1
+    # AN EXIT'S BACKUPS (item 18): one MASQUERADE each, any source — what leaves by a backup device is a client of an exit
+    # whose table it carries, and its address is the device's own (an exit this node creates: point-to-point, no egress_ip)
+    for dev in xmembers:
+        tag = "swg-egress:exit:xbk@%s" % dev
+        if not _WANIF_RE.match(str(dev or "")) or tag in want_dx:
+            continue
+        want_dx.add(tag)
+        _ch, err = _snat_reconcile_rule(tag, "", ("MASQUERADE", dev, ""), nat)
+        if err:
+            res["errors"].append("devexit snat backup " + dev + ": " + err)
         elif _ch:
             res["changed"] += 1
     for ln in nat:                            # drop device-exit SNATs no longer wanted
@@ -13649,8 +13662,8 @@ def _devexit_state(dev):
 # interface, a rule, arrivals, the P2P route), so no user of the exit needs a change of its own. The list is the exit's
 # OWN, never followed into a backup's list: A → [B] beside B → [A] is two flat lists, not a loop. No backup up → nothing
 # changes: the route is withheld and the exit's own kill switch decides. A plan without `xbackup` reads exactly as before.
-_EXIT_VIA = {"m": {}, "carried": set()}   # m: owner exit id -> the member id carrying its table, "" none (snap.exit_via);
-                                          # carried: owner devices whose table a member carries now (the P2P route status)
+_EXIT_VIA = {"m": {}, "carried": set(), "devs": set()}   # m: owner exit id -> the member id carrying its table, "" none
+# (snap.exit_via); carried: owner devices whose table a member carries now (the P2P route status); devs: those members
 
 
 def _xbackup_take(xb):
@@ -13664,16 +13677,16 @@ def _xbackup_take(xb):
         if not (isinstance(T, int) and not isinstance(T, bool) and SWG_RT_BASE <= T <= SWG_RT_MAX
                 and isinstance(oid, str) and oid and isinstance(b, list)):
             continue
-        ms = [(m["id"], m["dev"]) for m in b if isinstance(m, dict) and isinstance(m.get("id"), str)
-              and isinstance(m.get("dev"), str) and _WANIF_RE.match(m["dev"])]
+        ms = [(m["id"], m["dev"]) for m in b if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]
+              and isinstance(m.get("dev"), str) and re.fullmatch(r"[A-Za-z0-9._-]{1,15}", m["dev"])]
         if ms:
             out[T] = (oid, ms)
     return out
 
 
 def _xbackup_devs(xb):
-    """{table: [member device, …]} — every device a table may leave by besides its own exit's, whether up or not: what is
-    installed for the whole chain up front (SNAT, clamp, the P2P route's allowed devices), so a move touches the route only."""
+    """{table: [member device, …]} — every device a table may leave by besides its own exit's, whether up or not: the routing
+    trigger watches each (`_devexit_sig`), so a backup coming up or going dead moves the table the same sync."""
     return {T: [d for _i, d in ms] for T, (_o, ms) in _xbackup_take(xb).items()}
 
 
@@ -14385,6 +14398,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 break
     _EXIT_VIA["m"] = _xvia
     _EXIT_VIA["carried"] = {e["dev"] for e in _dxs if e.get("table") in _via}
+    _EXIT_VIA["devs"] = set(_via.values())
     if _via:
         _dxs = [dict(e, dev=_via[e["table"]], state="up", needs_gw=False, gw="", egress_ip="")
                 if e.get("table") in _via else e for e in _dxs]
@@ -14556,12 +14570,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _troutes += [(p, dev) for p, dev in _cascade_local_routes(node_cfg) if p not in _taken]
     _net_tables = _tbls if _troutes else []
     # A dial-in exit's private cut, in each table whose default route actually leaves by one (EXIT_PRIVATE_CUT)
-    # …and in a table whose exit has backups, the cut stays whichever member carries (item 18): a move then changes one route,
-    # never the cut's `prohibit` routes, which only a rebuild of the band could change. A public exit serves no private range.
-    _xcut = [{"via_iface": d, "table": T} for T, (_o, ms) in sorted(_xb.items())
-             for d in sorted({str(e0.get("dev") or "") for e0 in devexit if e0.get("table") == T} | {md for _m, md in ms})
-             if any(e0.get("table") == T for e0 in devexit)] if _xb else []
-    _cut = _dialin_cut(fwd + smart_exit + arr_exit + _xcut, exit_, _troutes if _net_tables else (), set(_net_tables))
+    _cut = _dialin_cut(fwd + smart_exit + arr_exit, exit_, _troutes if _net_tables else (), set(_net_tables))
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard,
                                  nets=_troutes, net_tables=_net_tables, arr=arr_exit, cut=_cut)   # only exit entries create fwmark→table policy routing
     # ⚠️ ONLY THE PRIORITIES THAT ARE ALSO TABLES. `band` now spans both bands, and an upstream priority
@@ -14599,24 +14608,32 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _miss = [t.split("|") for t in want_sig - live_sig] if _drift else []
     _xtra = [t.split("|") for t in live_sig - want_sig] if _drift else []
     _rt = lambda m: len(m) == 5 and m[0] == "T" and m[3] and not m[2].startswith("prohibit")
+    # …and a dial-in exit's private cut (`prohibit:<p>`), so a table moving onto or off a dial-in exit — its backup taking over
+    # (item 18), or the exit itself going down or coming back — changes routes in place, never the band (review F1, F4)
+    _ct = lambda m: len(m) == 5 and m[0] == "T" and m[2].startswith("prohibit:") and not m[3]
     _um = lambda m: len(m) == 4 and m[:2] == ["R", "upmark"]
     _fixed = False
-    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):
-        # A route a `replace` below puts on another device or gateway in the same table and destination is taken over in
-        # one step, never deleted first: an exit moving to its backup (item 18) has no moment without a default, so no packet
-        # falls through to `main` (and leaves direct) with the kill switch off. `ip route del … dev D` would also delete the
-        # new route had it run after, when only the gateway changes.
-        _took = {(m[1], m[2]) for m in _miss if not _um(m)}
+    if _drift and all(_rt(m) or _ct(m) or _um(m) for m in _miss + _xtra):
+        # WHAT COMES, THEN WHAT GOES. A route a `replace` puts on another device or gateway in the same table and destination is
+        # taken over in one step, never deleted first: an exit moving to its backup (item 18) has no moment without a default, so
+        # no packet falls through to `main` (and leaves direct) with the kill switch off — and `ip route del … dev D` would
+        # delete the new route when only the gateway changes. A cut comes before any route (onto a dial-in device: never a moment
+        # without it) and goes after them (off one: the default has left the router first — sorted, `default` < `prohibit:`).
+        _took = {(m[1], m[2]) for m in _miss if _rt(m)}
+        for m in sorted(_miss, key=lambda m: (not _ct(m), m)):
+            if _um(m):
+                run(["ip", "rule", "add", "fwmark", m[2], "lookup", m[3], "priority", m[2]])
+            elif _ct(m):
+                run(["ip", "route", "replace", "prohibit", m[2][len("prohibit:"):], "table", m[1]])
+            else:
+                run(["ip", "route", "replace", m[2]] + (["via", m[4]] if m[4] else []) + ["dev", m[3], "table", m[1]])
         for m in sorted(_xtra):
             if _um(m):
                 run(["ip", "rule", "del", "pref", m[2]])
+            elif _ct(m):
+                run(["ip", "route", "del", "prohibit", m[2][len("prohibit:"):], "table", m[1]])
             elif (m[1], m[2]) not in _took:
                 run(["ip", "route", "del", m[2], "dev", m[3], "table", m[1]])
-        for m in sorted(_miss):
-            if _um(m):
-                run(["ip", "rule", "add", "fwmark", m[2], "lookup", m[3], "priority", m[2]])
-            else:
-                run(["ip", "route", "replace", m[2]] + (["via", m[4]] if m[4] else []) + ["dev", m[3], "table", m[1]])
         res["changed"] += 1
         # VERIFIED IN THIS PASS: read back, and a repair that did not take (a rule it cannot delete by its mark, a route line
         # `ip route del` cannot name) falls through to the rebuild below, which always converges (review F1). Judged here,
@@ -14707,11 +14724,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 run(["ip", "rule", "add", "fwmark", str(_u), "lookup", str(_t), "priority", str(_u)])
                 res["changed"] += 1
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
-    # an exit's backups get their SNAT, clamp and accept up front, for every entry of its table (item 18): a move is the route
-    # alone, with no moment where a packet leaves a backup un-NATed. A SOCKS backup's DNS redirect follows the move (`_dxs`).
-    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip,
-                         devexit=devexit + [dict(e, dev=md, egress_ip="", gw="") for e in devexit
-                                            if e.get("table") in _xb for _m, md in _xb[e["table"]][1]])
+    # an exit's backups get their SNAT, clamp and accept up front (item 18): a move is the route alone, with no moment where a
+    # packet leaves a backup un-NATed. One MASQUERADE per backup device, whatever the subnets (review F6). A SOCKS backup's DNS
+    # redirect follows the move (`_dxs`).
+    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip, devexit=devexit,
+                         xmembers=sorted({md for _o, ms in _xb.values() for _m, md in ms}))
     _s5x_rules(_dxs if _via else devexit, nets, res)   # a SOCKS5 exit's DNS redirect, UDP refusal and rule-DNS unmark (§6.6)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e + arr_e})
@@ -14919,7 +14936,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 routers=(smart or {}).get("p2p_routers") or [],   # router peers: never flagged (S11b)
                 portok=(smart or {}).get("p2p_portok"),           # the operator's never-cut ports (S11c); absent → built-in
                 fwd=(smart or {}).get("p2p_fwd"),                 # devices' incoming ports (Part C), kept where P2P leaves Direct
-                xdevs=_xbackup_devs(plan.get("xbackup")))         # a routed exit's backups may carry it too (item 18)
+                xdevs={T: [d] for T, d in _via.items()})          # the backup carrying a routed exit's table (item 18, F2)
     _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)
     # RETURN BY LINK (§14.7) — outside the band (its own priority and tables), so the band's flush never touches it. LAST:
     # every writer and restore above has just been rendered with the label masked, so no labelled connection meets an
@@ -28859,9 +28876,9 @@ def main():
                         # `_DEVEXIT`, so the chain is built from the same answer the routing was.
                         reconcile_inet_chain(node_cfg, {e.get("dev") for e in
                                                         ((reply.get("cascade") or {}).get("devexit") or [])}
-                                             # an exit's backups count what they carry for it (item 18), installed up front
-                                             | {d for ds in _xbackup_devs((reply.get("cascade") or {}).get("xbackup")).values()
-                                                for d in ds})
+                                             # …and the backup carrying an exit's table (item 18): only while it carries — a
+                                             # counting pair is walked by every forwarded packet (review F16)
+                                             | set(_EXIT_VIA["devs"]))
                     last_route_sig = _route_sig; last_route_t = time.time(); last_desired_sig = _route_sig
                     _ROUTED["judged"] = _ROUTED["pending"]    # …with what it judged: a pass that raised is retried next sync
                 else:

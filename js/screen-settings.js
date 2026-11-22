@@ -45,7 +45,7 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitIsWarp, WARP_RU_COLOS, exitDefaultTitle, exitViaName, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitIsWarp, WARP_RU_COLOS, exitDefaultTitle, exitViaName, exitBackupPick, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
   p2pVal, p2pRec, p2pTarget, p2pLabel, p2pTargetOpts, p2pTargetHints,
@@ -4979,8 +4979,7 @@ function ExitBackupPick({ node, opts, value, onChange }) {
   const name = x => (x.label || exitDefaultTitle(x)) + (x.enabled === false ? " " + T("(off)") : "");
   const sr = ((Store.stats || {})[node.id] || {}).smartroute;
   const rows = [...value, ...(opts.some(x => !value.includes(String(x.id))) ? [""] : [])];
-  const pick = (i, id) => onChange(id ? value.map((x, j) => (j === i ? id : x)).concat(i === value.length ? [id] : [])
-    : value.filter((_, j) => j !== i));
+  const pick = (i, id) => onChange(exitBackupPick(value, i, id));
   return html`<div class="field exbk">
     ${rows.map((cur, i) => html`<div class="exbk-r" key=${i + ":" + cur}>
       <label>${i ? T("If that one fails too") : T("If this exit fails, use")}</label>
@@ -5025,7 +5024,8 @@ function WarpTransport({ node, v, ex, set, live }) {
 /* The two switches every exits grid carries, worded once. Both grids render the same pair, and a second
    copy of a sentence is how the two come to say different things about one control. Functions rather than
    constants so the language switch reaches them — `T` resolves at call time. */
-const KS_TITLE = () => T("On: if this exit stops working, traffic using it is refused. Off: it falls back to this node's own address.");
+// (with backups, they carry first — item 18, review F11: the switch decides only once none of them is up)
+const KS_TITLE = () => T("On: if this exit stops working and none of its backups is up, traffic using it is refused. Off: it falls back to this node's own address.");
 const ACTIVE_TITLE = () => T("Off pauses this exit — its account and keys are kept, and anything pointing at it stays pointed at it and uses the node's default meanwhile.");
 
 export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, saveExits }) {
