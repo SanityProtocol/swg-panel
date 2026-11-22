@@ -65,9 +65,15 @@ PLANTS = [
      "[2] an IP literal beside a name is left out of the order"),
     ("ip-panel", "PANEL", '        if old_domain and _mode in REAL_CA_MODES and _is_ip(old_domain.strip("[]")):',
      "        if False:", "[3] letsencrypt: an old IPv4 is left out, the change armed new-only"),
-    ("wait", "PANEL", 'def _place_cert(deps, service, domain, reload_flag="reload", timeout=300):',
-     'def _place_cert(deps, service, domain, reload_flag="reload", timeout=180):',
-     "[3] _place_cert waits ≥ 300 s (the first issuance may install acme.sh)"),
+    ("wait", "PANEL", 'def _place_cert(deps, service, domain, reload_flag="reload", timeout=600):',
+     'def _place_cert(deps, service, domain, reload_flag="reload", timeout=300):', "[3] the panel waits longer than the install can take: its budget + every cap outside it, and 60 s for the order"),
+    # verify F4: dpkg is never killed for the budget
+    ("dpkg", "NETCTL", 'rc, out = run(["apt-get", "install", "-y"] + missing, env=env, timeout=180)',
+     'rc, out = run(["apt-get", "install", "-y"] + missing, env=env, timeout=_left(deadline, 180))',
+     "[1] apt-get install is never cut short by the budget (a SIGKILL mid-dpkg breaks apt on the box)"),
+    # verify F6: apt spent the budget → say so, not "does this box reach GitHub?"
+    ("apt-slow", "NETCTL", "    if deadline - time.monotonic() < ACME_FETCH_MIN and not DRYRUN:", "    if False:",
+     "[1] apt spent the budget: the Reject says so and to apply again (cron is in now), no doomed fetch"),
     ("dedupe", "NETCTL", '    return tuple(dict.fromkeys((os.path.join(ACME_HOME, "acme.sh"),) + _ACME_CANDIDATES))',
      '    return (os.path.join(ACME_HOME, "acme.sh"),) + _ACME_CANDIDATES',
      "[4] the message names /root/.acme.sh once (under root `~` is /root)"),
@@ -75,7 +81,7 @@ PLANTS = [
     ("store", "NETCTL", "    for a in _acme_paths():", "    for a in _ACME_CANDIDATES:",
      "[1] no acme.sh: installed, then the certificate ordered"),
     # review F1: the network steps share one budget, so the panel hears this helper's answer, not its own timeout
-    ("budget", "NETCTL", "    deadline = time.monotonic() + ACME_INSTALL_BUDGET\n", "    deadline = time.monotonic() + 10 ** 6\n",
+    ("budget", "NETCTL", "    deadline = started + ACME_INSTALL_BUDGET\n", "    deadline = started + 10 ** 6\n",
      "[1] the install's network steps share one budget: a slow installer is stopped when it runs out, and the Reject says so"),
 ]
 
@@ -122,7 +128,7 @@ _l = importlib.machinery.SourceFileLoader("netctl_aod", PATHS["NETCTL"])
 N = importlib.util.module_from_spec(importlib.util.spec_from_loader("netctl_aod", _l))
 _l.exec_module(N)
 os.environ["HOME"] = _h
-SHIPPED_CANDIDATES, SHIPPED_BUDGET = N._ACME_CANDIDATES, N.ACME_INSTALL_BUDGET
+SHIPPED_CANDIDATES, SHIPPED_BUDGET, SHIPPED_FETCH_MIN = N._ACME_CANDIDATES, N.ACME_INSTALL_BUDGET, N.ACME_FETCH_MIN
 
 # ── the sandbox ──────────────────────────────────────────────────────────────────────────────────────────────────────
 LOG = os.path.join(SB, "calls.log")
@@ -139,7 +145,8 @@ exit 0
 # apt-get installs exactly the stubs it is asked for, or fails the way apt does
 APT_STUB = r'''#!/bin/sh
 echo "apt-get $* DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-}" >> "$AOD_LOG"
-[ "$1" = update ] && exit 0
+[ "$1" = update ] && { [ -n "${AOD_APT_SLEEP:-}" ] && sleep "$AOD_APT_SLEEP"; exit 0; }
+[ -n "${AOD_APT_INSTALL_SLEEP:-}" ] && sleep "$AOD_APT_INSTALL_SLEEP"
 if [ -n "${AOD_APT_FAIL:-}" ]; then echo "E: Unable to locate package cron"; exit 100; fi
 for p in "$@"; do case "$p" in
   cron) cp "$AOD_STUBS/crontab" "$AOD_BIN/crontab"; chmod 755 "$AOD_BIN/crontab";;
@@ -210,7 +217,7 @@ def sandbox(cron=False, curl=True, apt=True, acme=False, **env):
                       LE_WORKING_DIR=store, **{"AOD_" + k.upper(): v for k, v in env.items()})
     N.ACME_HOME = store
     N._ACME_CANDIDATES = (os.path.join(box, "decoy", "acme.sh"),)   # the store itself must be where it is looked for
-    N.ACME_INSTALL_BUDGET = SHIPPED_BUDGET
+    N.ACME_INSTALL_BUDGET, N.ACME_FETCH_MIN = SHIPPED_BUDGET, SHIPPED_FETCH_MIN
     N.DRYRUN = False
     tempfile.tempdir = tmp
     open(LOG, "w").close()
@@ -296,14 +303,26 @@ check("[1] an installer that installs nothing (get.acme.sh exits 0 anyway): the 
       and idx(calls, r"--issue") < 0, (err, calls))
 
 box, store, tmp = sandbox(cron=True, install_sleep="6")
-N.ACME_INSTALL_BUDGET = 2
+N.ACME_INSTALL_BUDGET, N.ACME_FETCH_MIN = 2, 0
 t0 = __import__("time").monotonic()
 err, calls, _ = issue(["new.example.com"])
 took = __import__("time").monotonic() - t0
 check("[1] the install's network steps share one budget: a slow installer is stopped when it runs out, and the Reject says so",
       took < 5 and "stopped: still running after" in err and "curl -fsSL https://get.acme.sh | sh -s email=" in err
       and idx(calls, r"--issue") < 0, (round(took, 1), err, calls))
-check("[5] the budget leaves the order room inside the panel's 300 s wait", 0 < SHIPPED_BUDGET <= 180, SHIPPED_BUDGET)
+
+# verify F4: a slow `apt-get install` runs to its end even when the budget is gone — then F6: the Reject names apt
+box, store, tmp = sandbox(cron=False, apt_install_sleep="3")
+N.ACME_INSTALL_BUDGET, N.ACME_FETCH_MIN = 2, 1
+err, calls, _ = issue(["new.example.com"])
+check("[1] apt-get install is never cut short by the budget (a SIGKILL mid-dpkg breaks apt on the box)",
+      os.path.exists(os.path.join(box, "bin", "crontab")) and "could not be installed" not in err, (err, calls))
+box, store, tmp = sandbox(cron=False, apt_sleep="2")
+N.ACME_INSTALL_BUDGET, N.ACME_FETCH_MIN = 3, 2
+err, calls, _ = issue(["new.example.com"])
+check("[1] apt spent the budget: the Reject says so and to apply again (cron is in now), no doomed fetch",
+      "installing cron took" in err and "apply the change again" in err and "curl -fsSL https://get.acme.sh | sh -s" in err
+      and "reach GitHub" not in err and idx(calls, r"^curl ") < 0, (err, calls))
 
 box, store, tmp = sandbox(cron=True, acme_ver="3.1.2")
 err, calls, _ = issue(["new.example.com"])
@@ -385,7 +404,13 @@ r = cert_only("selfsigned", "203.0.113.7")[:2]
 check("[3] self-signed: unchanged (the old IP still beside the new name)", r == ("new.example.com,203.0.113.7", "203.0.113.7"), r)
 pc = next(n for n in PT.body if isinstance(n, ast.FunctionDef) and n.name == "_place_cert")
 dflt = dict(zip([a.arg for a in pc.args.args][-len(pc.args.defaults):], [ast.literal_eval(d) for d in pc.args.defaults]))
-check("[3] _place_cert waits ≥ 300 s (the first issuance may install acme.sh)", dflt.get("timeout", 0) >= 300, dflt)
+# the install's worst case, from the source: the shared budget, plus every step that keeps a cap of its own
+NT = ast.parse(SRC["NETCTL"])
+inst = "".join(ast.get_source_segment(SRC["NETCTL"], n) for n in NT.body
+               if isinstance(n, ast.FunctionDef) and n.name in ("_acme_prereqs", "_acme_install"))
+fixed = [int(x) for x in re.findall(r"timeout=(\d+)\)", inst)]
+worst = SHIPPED_BUDGET + sum(fixed)
+check("[3] the panel waits longer than the install can take: its budget + every cap outside it, and 60 s for the order", len(fixed) >= 5 and dflt.get("timeout", 0) >= worst + 60, (dflt, SHIPPED_BUDGET, fixed, worst))
 
 # ── [4] the message ──────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] the \"not found\" message")

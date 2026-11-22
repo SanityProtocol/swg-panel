@@ -40515,7 +40515,7 @@ def _adopt_pending(deps, managed_cert, domain, service="panel"):
     return bool(domain) and not _cert_covers(managed_cert, domain)
 
 
-def _place_cert(deps, service, domain, reload_flag="reload", timeout=300):
+def _place_cert(deps, service, domain, reload_flag="reload", timeout=600):
     """Put the right certificate in place for `service`, and wait for the root helper.
 
     THE one decision point: under TLS mode `skip` with a pair named, the operator's files are adopted;
@@ -40524,8 +40524,11 @@ def _place_cert(deps, service, domain, reload_flag="reload", timeout=300):
     still arrives at the managed path either way, which is what keeps backup-cert, restore-cert, the
     .applyback self-heal and the expiry watch working unchanged.
 
-    300 s by default: the first Let's Encrypt issuance on a box installed without acme.sh installs it first (swg-netctl
-    _acme_install — cron from apt on an image without it, then get.acme.sh), which the old 180 s did not always cover."""
+    600 s by default: the first Let's Encrypt issuance on a box installed without acme.sh installs it first (swg-netctl
+    _acme_install — cron from apt on an image without it, then get.acme.sh). Typically 10–150 s; at most its budget plus
+    the caps of the steps that must not be stopped (apt-get install, the local calls) — 480 s — which leaves the order
+    the rest, so a slow box hears the helper's own answer rather than "timed out" while the request runs on. The wait
+    runs in the apply's background thread; the screen shows "issuing" meanwhile."""
     cert, key = _adopt_paths(deps, service)
     if cert and key:
         rid = _netctl_enqueue(deps, "adopt-cert", [service, cert, key, reload_flag])
