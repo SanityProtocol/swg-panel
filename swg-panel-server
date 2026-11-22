@@ -10942,6 +10942,19 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
         # whose far side stopped answering — a WARP outage). Its own sentences, because the advice for a down
         # device ("bring it up") is advice about something that is already fine, and because this one ends by
         # itself: the node moves the traffic back once the exit carries again.
+        # …unless one of the exit's BACKUPS carries its traffic meanwhile (item 18): the node says which (`exit_via`). Not an
+        # outage then, and neither the kill switch nor this node's own IP is involved; with none of them up, the lines below
+        # stand as they are — they say where the traffic goes.
+        _vid = next((str(_xv) for _xi, _xv in (snap.get("exit_via") or {}).items() if str(_xi) in _ids and _xv), "")
+        if _vid:
+            _vx = next((x for x in (c.get("exits") or []) if isinstance(x, dict) and str(x.get("id") or "") == _vid), {})
+            _v4 = str(_vx.get("label") or "").strip() or str(_vx.get("device") or "") or _vid
+            issues.append(perr("{v1}: the tunnel through {v2} has stopped carrying traffic — {v3} is going out through its "
+                               "backup exit {v4} meanwhile, and moves back by itself once it works again.",
+                               v1=_lbl, v2=_d, v3=_v3, v4=_v4) if _st == "dead" else
+                          perr("{v1}: the exit device {v2} is not up — {v3} is going out through its backup exit {v4} "
+                               "meanwhile, and moves back by itself once the device is up.", v1=_lbl, v2=_d, v3=_v3, v4=_v4))
+            continue
         if _st == "dead" and _g["ks"]:
             issues.append(perr("{v1}: the tunnel through {v2} has stopped carrying traffic — the kill-switch is "
                                "holding {v3}, so nothing is leaving. Traffic resumes by itself once the exit "
@@ -13281,7 +13294,8 @@ def _fo_log_takeover(roster_path, bid, bname, aname, moved, left, dropped=()):
 # What B's copy of one of A's device exits takes from A (FAILOVER-PLAN §14.3). Never `key_blob`/`key_restore` (A's WARP
 # account: one account on two boxes flaps), `cfg_sig` (B's own is derived), `dial_src` (A's box's address) or `profile`
 # (one key on two boxes flips at the provider; B's own, once filled, is kept).
-FO_EXIT_FOLLOW = ("label", "producer", "provider", "device", "enabled", "killswitch", "licence", "socks", "transport")
+FO_EXIT_FOLLOW = ("label", "producer", "provider", "device", "enabled", "killswitch", "licence", "socks", "transport",
+                  "backup")                        # an exit's backups (item 18): their copies resolve on B, by the same ids
 
 
 def fo_exit_unfilled(x):
@@ -21428,6 +21442,7 @@ _SNAP_SHAPE = {
     **dict.fromkeys(("iface_drops", "mesh_health"), (dict, dict)),
     "udp_listen": (list, int),                           # S9e: walked by _host_listen inside reconcile_mesh (review F4)
     **dict.fromkeys(("iface_key_sealed", "ip_forward", "relay", "rp_filter", "wdtt_key_sealed"), (dict, None)),
+    "exit_via": (dict, str),                             # item 18: {exit id: the backup id carrying it, or ""}
 }
 _SNAP_SAID = set()                                       # (node, field) already logged as dropped — once each per process
 
@@ -22088,6 +22103,17 @@ def parse_wg_profile(text):
     return prof, ""
 
 
+def exits_live(snap):
+    """{exit id: the node's row} — what the node says about each exit it CREATED, for an imported exit's `live` on /api/state;
+    with `via` (1.8.12 item 18) while the exit is down and has backups: the backup id carrying its traffic, "" when none is
+    up either. A node that never sends `exit_via` gives the rows exactly as they came."""
+    out = {str((x or {}).get("id")): x for x in ((snap or {}).get("exits") or []) if isinstance(x, dict)}
+    for xi, xv in ((snap or {}).get("exit_via") or {}).items():
+        if str(xi) in out and isinstance(xv, str):
+            out[str(xi)] = dict(out[str(xi)], via=xv)
+    return out
+
+
 def devexit_live(snap):
     """{device: {state[, no_traffic]}} — what the node says about each exit DEVICE its routing names (`snap.devexit`), for an
     ADOPTED exit's `live` on /api/state: an adopted device has no row in `snap.exits` (the node did not create it), and its
@@ -22494,6 +22520,48 @@ def _pin_mirror_fetch(arch, want, owner, tag, asset):
 _EXIT_ESCROW_KEYS = ("key_blob", "key_blob_prev", "key_restore", "key_restore_pub", "key_restore_at")
 
 
+def exit_backups(x):
+    """An exit's backups (1.8.12 item 18): the ids it names, in order, or []. What `_validate_exits` stored — read here so a
+    hand-edited record of another shape lowers nothing rather than raising."""
+    b = (x or {}).get("backup") if isinstance(x, dict) else None
+    return [i for i in b if isinstance(i, str) and i] if isinstance(b, list) else []
+
+
+def exit_backup_clean(clean, bk, ids):
+    """Store each exit's `backup` in `clean` (the list being saved) from `bk` {exit id: the list as sent, or as stored when
+    the request did not carry the field}; `ids` maps a request's ids to the ids stored. Returns an error, or None.
+
+    ONE LIST PER EXIT, NEVER FOLLOWED: a table uses its own exit's backups, not theirs, so A → [B] beside B → [A] is
+    allowed (WG and MASQUE WARP backing each other is the request) and no walk can cycle. Refused — no screen offers them:
+    not a list of ids, the exit's own id, one named twice, and an exit or a backup the panel does not create (an adopted
+    device: a pinned address is SNAT, whose connections a move strands, RELEASE-1.8.12-PLAN item 18). An id this list does not
+    hold any more — the exit was deleted in this save — is dropped, as prune_exit_refs drops a reference to a deleted exit.
+    A disabled backup stays (skipped while off, by resolve_exit). An empty list stores nothing."""
+    byid = {x["id"]: x for x in clean}
+    for x in clean:
+        b = bk.get(x["id"])
+        if b is None:
+            continue
+        if not isinstance(b, list) or not all(isinstance(i, str) for i in b):
+            return "an exit's backups must be a list of exit ids"
+        out = []
+        for i in b:
+            bid = ids.get(i.strip().lower(), i.strip().lower())
+            if bid not in byid:
+                continue
+            if bid == x["id"]:
+                return perr("{v1}: an exit cannot be its own backup", v1=x.get("label") or x.get("device") or x["id"])
+            if bid in out:
+                return perr("{v1}: the same backup is named twice", v1=x.get("label") or x.get("device") or x["id"])
+            out.append(bid)
+        if out and (x.get("producer") != "imported" or any((byid.get(i) or {}).get("producer") != "imported" for i in out)):
+            return perr("{v1}: only exits this panel creates can back each other up — not an adopted device",
+                        v1=x.get("label") or x.get("device") or x["id"])
+        if out:
+            x["backup"] = out
+    return None
+
+
 def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan="", gen_snap=None,
                     dialin=None, fo_snaps=()):
     """Clean a node's exit list → [{id, label, producer, device, enabled, killswitch, …}]. (clean, error).
@@ -22528,12 +22596,14 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
         return None, "exits must be a list"
     known = {str(e.get("id") or ""): e for e in (prev or []) if isinstance(e, dict)}
     clean, seen = [], set()
+    _bk, _bkids = {}, {}                                     # each exit's backups as sent (item 18), the request's ids → stored
     for e in exits:
         if not isinstance(e, dict):
             return None, "each exit must be an object"
         eid = str(e.get("id") or "").strip().lower()
         if not EXIT_ID_RE.match(eid) or eid in seen:
             eid = uuid.uuid4().hex[:8]                       # mint on create, and on a collision
+        _bkids.setdefault(str(e.get("id") or "").strip().lower(), eid)
         seen.add(eid)
         dev = str(e.get("device") or "").strip()
         prod = str(e.get("producer") or "adopted").strip()
@@ -22783,6 +22853,12 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                 # would hold the switch for its hour (review F2) — pressed again, it is enrolled for the new kind
                 if _k in _old and not (_k.startswith("key_restore") and out["provider"] != str(_old.get("provider") or "warp")):
                     out[_k] = _old[_k]
+        # its backups (item 18): as sent — or, from a request that does not carry the field at all, as stored, so a screen
+        # that rebuilds a record from the fields it knows cannot drop them; `[]` clears. Judged once the list is whole.
+        if "backup" in e:
+            _bk[eid] = e.get("backup")
+        elif isinstance(_old.get("backup"), list):
+            _bk[eid] = _old["backup"]
         clean.append(out)
     # …and two dial-in exits of this list cannot share a port or an address — read from the NEW list, so removing one
     # and adding another in the same save is judged by what will exist.
@@ -22793,6 +22869,9 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                 return None, perr("two dial-in exits cannot listen on one port ({v1})", v1=str(a["profile"]["listen_port"]))
             if a["profile"].get("address") == b["profile"].get("address"):
                 return None, perr("two dial-in exits cannot have one address ({v1})", v1=str(a["profile"].get("address")))
+    _err = exit_backup_clean(clean, _bk, _bkids) if _bk else None
+    if _err:
+        return None, _err
     return clean, None
 
 
@@ -23060,6 +23139,9 @@ def exit_refs(rec):
     _ps = [rec.get("p2p")] + [(ov or {}).get("p2p") for k in ("ifaces", "wdtt", "csqtt")
                               for ov in ((rec.get(k) or {}).values() if isinstance(rec.get(k), dict) else ()) if isinstance(ov, dict)]
     out |= {str(p.get("exit_id") or "") for p in _ps if isinstance(p, dict) and p.get("action") == "dev"}
+    # …and the backups of every exit used (item 18): a used exit's table may leave by one, so a failover node holds them too
+    _xs = {str((x or {}).get("id") or ""): x for x in (rec.get("exits") or []) if isinstance(x, dict)}
+    out |= {b for i in list(out) for b in exit_backups(_xs.get(i))}
     return out - {""}
 
 
@@ -25152,6 +25234,30 @@ def cascade_plan(nodes, snaps, custom_lists=None, idle=()):
                 e["ret"] = _rbl_lab(P, o)
                 if o == _quiet:
                     e["to"] = False
+
+    # EXIT BACKUPS (1.8.12 item 18): for each exit table a node plans, the exit's own backups, in order, each resolved as an
+    # exit is everywhere (`resolve_exit`: a disabled, unfilled or refused one is left out — no second ladder). The node moves
+    # the table to the first one that is up while the exit is not (swg-noded `_EXIT_VIA`). A PUBLIC KEY ONLY WHEN SOME EXIT
+    # HAS ONE, so a fleet without backups gets a byte-identical plan and reply.
+    for nid, sn in plans.items():
+        _xs = {str(x.get("id") or ""): x for x in ((nodes.get(nid) or {}).get("exits") or [])
+               if isinstance(x, dict) and x.get("backup")}
+        if not _xs:
+            continue
+        _xb = []
+        for key, T in sorted((sn.get("_targets") or {}).items(), key=lambda kv: kv[1]):
+            x = _xs.get(key[5:]) if isinstance(key, str) and key.startswith("exit:") and T <= SWG_RT_MAX else None
+            if not x or x.get("producer") != "imported":
+                continue
+            _b = []
+            for bid in exit_backups(x):
+                _r = resolve_exit(nodes, snaps, nid, bid)
+                if _r and _r[0] not in {m["dev"] for m in _b} | {str(x.get("device") or "")}:
+                    _b.append({"id": bid, "dev": _r[0]})
+            if _b:
+                _xb.append({"table": T, "id": key[5:], "b": _b})
+        if _xb:
+            sn["xbackup"] = _xb
 
     for sn in plans.values():
         for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_leg_seen", "_targets", "_from", "_auto", "_hop2", "_dx_seen"):
@@ -28296,7 +28402,7 @@ def api(method, path, qs, body, deps):
             # …and the exit picker's own, wider question: an egress NIC must merely not be a mesh link, but an
             # EXIT device must also not be this node's own ingress — a managed interface, a WDTT/csqtt server's
             # device, or a qWDTT RAW second TUN. Bound to this node once (§11.1 tier 3).
-            _xlive = {str((x or {}).get("id")): x for x in (snap.get("exits") or []) if isinstance(x, dict)}
+            _xlive = exits_live(snap)
             _dxlive = devexit_live(snap)          # …and about the adopted ones, by device (their health, §5.4)
             # ⚠️ …AND WHETHER THIS NODE HAS EVER HEARD OF EXITS AT ALL, which is not the same question as
             # "what does it say about them". A node whose software predates the whole feature reports no
@@ -39130,7 +39236,9 @@ class Handler(BaseHTTPRequestHandler):
                                 # each side was tested against a fixture and the SEAM against nothing.
                                 # tests/cascade_wire_selftest.py now fails on a plan key nobody carries.
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or [],
-                                            "devexit": my_plan.get("devexit") or []},   # Phase 2: policy-route forwards + exit SNAT + device exits
+                                            "devexit": my_plan.get("devexit") or [],   # Phase 2: policy-route forwards + exit SNAT + device exits
+                                            # an exit's backups (item 18) — only when some exit here has one
+                                            **({"xbackup": my_plan["xbackup"]} if my_plan.get("xbackup") else {})},
                                 # IMPORTED exits — the tunnels this node must CREATE (§1.1's second
                                 # producer). Only the imported ones: an `adopted` exit names a device the
                                 # operator already runs and there is nothing for us to write. The private

@@ -2801,9 +2801,13 @@ def _devexit_sig(cascade):
     # must move this signature the same pass — otherwise the fail-over waits for the 60 s safety sweep.
     # …and a SOCKS exit's UDP flag: the reject and the DNS unmark follow it, and it is this node's own fact, never in the
     # reply — without it a flip would wait for the 60 s sweep (§12.2 item 6)
+    # …and each exit backup's (item 18): a backup coming up or going dead moves a table whose exit is down, the same pass.
+    # Only on a plan that carries `xbackup` — every other node signs exactly what it did.
+    _xd = sorted({d for ds in _xbackup_devs((cascade or {}).get("xbackup")).values() for d in ds})
     return sorted((str((e or {}).get("dev") or ""), _devexit_state(str((e or {}).get("dev") or "")),
                    _dev_gateway(str((e or {}).get("dev") or "")))
-                  for e in ((cascade or {}).get("devexit") or [])) + sorted((_EXITS.get("socks") or {}).items())
+                  for e in ((cascade or {}).get("devexit") or [])) + sorted((_EXITS.get("socks") or {}).items()) \
+        + ([["xbk"] + [(d, _devexit_state(d)) for d in _xd]] if _xd else [])
 
 
 def _dev_is_ether(dev):
@@ -9353,10 +9357,11 @@ def _p2p_iface_entries(p2p):
     return ok, bad
 
 
-def _p2p_groups(p2p, strict):
+def _p2p_groups(p2p, strict, xdevs=None):
     """iface: the panel's {entries, direct, block} → groups [{name, subnets, mark, oif, table}], v4 only. Fails CLOSED and
     strictest wins: `block`, and every entry that is not a usable route (`_p2p_entry`) or reuses a table an earlier one
-    took, join `strict` (in place); a group may overlap strict (cls drops strict first), never another group."""
+    took, join `strict` (in place); a group may overlap strict (cls drops strict first), never another group. A routed
+    group's `oif` takes its exit's backups (`xdevs`, item 18) after its own device."""
     def v4(lst):
         out = []
         for x in (lst if isinstance(lst, list) else []):
@@ -9388,12 +9393,12 @@ def _p2p_groups(p2p, strict):
     take("d", p2p.get("direct"), P2P_BIT, _p2p_wan_devs() if v4(p2p.get("direct")) else [], None)
     for e in ents:
         T = int(e["table"])
-        take("r%d" % T, e.get("subnets"), T | P2P_BIT, [e["via_iface"]], T)
+        take("r%d" % T, e.get("subnets"), T | P2P_BIT, [e["via_iface"]] + list((xdevs or {}).get(T) or ()), T)
     strict[:] = sorted(set(strict))
     return groups
 
 
-def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None):
+def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None, xdevs=None):
     """Reconcile the P2P policy (see the block comment above). Signature-gated like _ensure_mech_block, and the gate asks
     the property that matters — the table is there AND still drops — not only our own memo (the flushed-in-place lesson,
     _ensure_mech_block). Never raises; never touches another table; nothing wanted → only ours is deleted."""
@@ -9421,7 +9426,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None):
                     if n.version == 4 and str(n) not in strict:   # strictest wins: a strict subnet is never routed
                         routable.append(str(n))
             route = {"mark": T | P2P_BIT, "routable": sorted(set(routable))}
-        groups = _p2p_groups(p2p, strict) if mode == "iface" else []   # adds to `strict` what fails closed
+        groups = _p2p_groups(p2p, strict, xdevs) if mode == "iface" else []   # adds to `strict` what fails closed
         if mode == "iface" and not strict and not groups:     # nothing v4 left to judge (a v6-only wire): legacy's nothing, not
             mode = _P2P["mode"] = "legacy"                    # an empty set nft refuses as a syntax error (S11 review F7)
         if mode == "iface":
@@ -9441,7 +9446,10 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None):
                 os.unlink(sigf)
             return
         ih = _p2p_ih_ok()
-        oif = _p2p_wan_devs() if mode == "direct" else ([ent["via_iface"]] if ent else [])
+        # a routed exit's backups too (item 18, `xdevs` {table: [device]}): its table may leave by one of them, and the route's
+        # `oifname !=` drop must not take P2P its table sends there — fixed for the whole chain, so a move rebuilds nothing
+        oif = _p2p_wan_devs() if mode == "direct" else ([ent["via_iface"]] + list((xdevs or {}).get(int(ent["table"])) or ())
+                                                        if ent else [])
         # A route whose table has no way out right now drops every P2P flow (fail closed) — correct, and invisible unless
         # said: reported as route "down" so the node's card names it. Read after the band was reconciled above, and judged
         # by a line that IS a way out — `default dev …` / `default via …` — never by the word: a kill-switch exit's table
@@ -13635,6 +13643,40 @@ def _devexit_state(dev):
     return "dead" if s == "up" and (_EXIT_HEALTH.get(str(dev or "")) or {}).get("dead") else s
 
 
+# ── EXIT BACKUPS (1.8.12 item 18; docs/RELEASE-1.8.12-PLAN.md "Exit failover" → Design) ───────────────────────────────
+# An exit may name backup exits on this node, in order. While its device is not up (dead, down or absent), the table it
+# owns leaves by the first backup whose own `_devexit_state` is "up" — every entry of that table follows (a whole
+# interface, a rule, arrivals, the P2P route), so no user of the exit needs a change of its own. The list is the exit's
+# OWN, never followed into a backup's list: A → [B] beside B → [A] is two flat lists, not a loop. No backup up → nothing
+# changes: the route is withheld and the exit's own kill switch decides. A plan without `xbackup` reads exactly as before.
+_EXIT_VIA = {"m": {}, "carried": set()}   # m: owner exit id -> the member id carrying its table, "" none (snap.exit_via);
+                                          # carried: owner devices whose table a member carries now (the P2P route status)
+
+
+def _xbackup_take(xb):
+    """{table: (owner exit id, [(member exit id, member device), …])} from a plan's `xbackup`, or {}. Malformed entries are
+    dropped: a device name reaches `ip` argv, iptables comments and nft text — a plain interface name only."""
+    out = {}
+    for e in xb if isinstance(xb, list) else ():
+        if not isinstance(e, dict):
+            continue
+        T, oid, b = e.get("table"), e.get("id"), e.get("b")
+        if not (isinstance(T, int) and not isinstance(T, bool) and SWG_RT_BASE <= T <= SWG_RT_MAX
+                and isinstance(oid, str) and oid and isinstance(b, list)):
+            continue
+        ms = [(m["id"], m["dev"]) for m in b if isinstance(m, dict) and isinstance(m.get("id"), str)
+              and isinstance(m.get("dev"), str) and _WANIF_RE.match(m["dev"])]
+        if ms:
+            out[T] = (oid, ms)
+    return out
+
+
+def _xbackup_devs(xb):
+    """{table: [member device, …]} — every device a table may leave by besides its own exit's, whether up or not: what is
+    installed for the whole chain up front (SNAT, clamp, the P2P route's allowed devices), so a move touches the route only."""
+    return {T: [d for _i, d in ms] for T, (_o, ms) in _xbackup_take(xb).items()}
+
+
 def reconcile_exits(desired, res, devexit=None, managed=()):
     """Materialise the exits the panel says this node should CREATE (`imported`), and reap the ones it no
     longer lists. `devexit` (the reply's `cascade.devexit`) and `managed` (this node's own interfaces) name the ADOPTED
@@ -14327,6 +14369,33 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                          # it means MASQUERADE, i.e. whatever source the kernel picks out this device.
                          "egress_ip": str(e.get("egress_ip") or "").strip(),
                          **({"arr": True} if (e.get("subnet") or "") in _arr_raw else {})} for e in _dx_rep]
+    # EXIT BACKUPS (item 18, see _EXIT_VIA): decided HERE, after the report (which keeps the exit's own device and state)
+    # and before anything is lowered from `_dxs` — so every reader below sees the device the table leaves by this pass. A
+    # backup is an exit this node creates (the panel sends no other): point-to-point, so no gateway and no `egress_ip`.
+    _xb = _xbackup_take(plan.get("xbackup"))
+    _via, _xvia, _own_seen = {}, {}, {}
+    for T, (oid, ms) in sorted(_xb.items()):
+        own = next((e for e in _dxs if e.get("table") == T), None)
+        if own is None or own["state"] == "up":
+            continue
+        _xvia[oid] = ""
+        _own_seen[own["dev"]] = _dev_seen(own["dev"], own["state"])
+        for mid, md in ms:
+            if md != own["dev"] and not _dev_is_ether(md) and _devexit_state(md) == "up":
+                _via[T], _xvia[oid] = md, mid
+                break
+    _EXIT_VIA["m"] = _xvia
+    _EXIT_VIA["carried"] = {e["dev"] for e in _dxs if e.get("table") in _via}
+    if _via:
+        _dxs = [dict(e, dev=_via[e["table"]], state="up", needs_gw=False, gw="", egress_ip="")
+                if e.get("table") in _via else e for e in _dxs]
+
+    def _xd(T, dev):
+        """The device table T leaves by this pass: its exit's own, or the backup carrying it."""
+        if _via:
+            with contextlib.suppress(TypeError, ValueError):
+                return _via.get(int(T), dev)
+        return dev
     # ONLY A LIVE DEVICE IS FOLDED IN. A dead one used to be folded anyway, which meant `ip route replace
     # default dev <D>` failing every pass (ENETDOWN/ENODEV), an rp_filter sysctl written for a device that
     # is not there, and — the part that matters — a table left EMPTY under a rule, i.e. a silent fall-through
@@ -14394,6 +14463,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # With each device's index, and recorded for the trigger (`_routed_devs_moved`), which re-reads exactly these once
     # the pass has completed (the main loop commits "pending" beside `last_route_sig`).
     _lst = {e["dev"]: _dev_seen(e["dev"], e["state"]) for e in _dxs if e.get("dev")}
+    _lst.update({d: v for d, v in _own_seen.items() if d not in _lst})   # an exit a backup carries for: its return is a move
     def _withheld(dev):
         if dev not in _lst:
             _lst[dev] = _dev_seen(dev)
@@ -14409,14 +14479,15 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # and a backstop listed after that rule never matches (the live reader signs that order as drift). A stable sort, so a
     # plan without one keeps its order exactly.
     exit_ = sorted(exit_, key=lambda e: e.get("to") is not False)
+    smart_exit = [dict(e, via_iface=_xd(e.get("table"), e.get("via_iface"))) for e in smart_exit] if _via else smart_exit
     smart_exit = [dict(e, gw=_dxgw.get(e.get("via_iface"), ""),
                        _noroute=_withheld(e.get("via_iface"))) for e in smart_exit]
     # ARRIVALS (P3, §4.3) — this node's default list for the traffic other nodes cascade out through it. Its exit entries get
     # what a smart one gets — the table, its route, the fwmark rule and rp_filter (T9) — with the same gateway and dead-tunnel
     # answers, and NOT an upstream mark (that band is for a relay's own sockets, and an arrival has no relay here: §3.7).
     arr_subs, arr_e = _arrivals_parse((smart or {}).get("arrivals"))
-    arr_exit = [dict(e, gw=_dxgw.get(e["via_iface"], ""), _noroute=_withheld(e["via_iface"]))
-                for e in arr_e if e["action"] == "exit"]
+    arr_exit = [dict(e, via_iface=_xd(e["table"], e["via_iface"])) for e in arr_e if e["action"] == "exit"]
+    arr_exit = [dict(e, gw=_dxgw.get(e["via_iface"], ""), _noroute=_withheld(e["via_iface"])) for e in arr_exit]
     # ⚠️ THE P2P ROUTE'S TABLE IS INSTALLED HERE, NOT BORROWED. A rule-scoped device exit adds no `from S` rule and a mesh
     # leg's table is otherwise filled only by smart/arrival exit entries — so a route whose target no routing rule also
     # used had an EMPTY table: P2P dropped instead of routed, the node reporting "route". Found in the P3 retrospective
@@ -14425,15 +14496,17 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # tunnel answers, and the drift signature.
     _pe = _p2p_entry((smart or {}).get("p2p")) if ((smart or {}).get("p2p") or {}).get("action") == "route" else None
     if _pe:
-        arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _pe["via_iface"],
-                                "table": int(_pe["table"]), "gw": _dxgw.get(_pe["via_iface"], ""),
-                                "_noroute": _withheld(_pe["via_iface"])}]
+        _pd = _xd(_pe["table"], _pe["via_iface"])
+        arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _pd,
+                                "table": int(_pe["table"]), "gw": _dxgw.get(_pd, ""),
+                                "_noroute": _withheld(_pd)}]
     _pi = (smart or {}).get("p2p") if isinstance((smart or {}).get("p2p"), dict) else {}
     if _pi.get("action") == "iface":                          # …and each per-interface route's (IFACE-P2P-PICK §3): the entries
         for _ie in _p2p_iface_entries(_pi)[0]:                # the renderer keeps, read by the same function
-            arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _ie["via_iface"],
-                                    "table": int(_ie["table"]), "gw": _dxgw.get(_ie["via_iface"], ""),
-                                    "_noroute": _withheld(_ie["via_iface"])}]
+            _pd = _xd(_ie["table"], _ie["via_iface"])
+            arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _pd,
+                                    "table": int(_ie["table"]), "gw": _dxgw.get(_pd, ""),
+                                    "_noroute": _withheld(_pd)}]
     _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}   # every device this pass judged (the last `_withheld` is above)
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni | sni_kernel — the CONFIGURED host-match mode
     _SMART_MODE["m"] = mode                                     # report the configured mode for the panel's host-layer health
@@ -14485,7 +14558,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _troutes += [(p, dev) for p, dev in _cascade_local_routes(node_cfg) if p not in _taken]
     _net_tables = _tbls if _troutes else []
     # A dial-in exit's private cut, in each table whose default route actually leaves by one (EXIT_PRIVATE_CUT)
-    _cut = _dialin_cut(fwd + smart_exit + arr_exit, exit_, _troutes if _net_tables else (), set(_net_tables))
+    # …and in a table whose exit has backups, the cut stays whichever member carries (item 18): a move then changes one route,
+    # never the cut's `prohibit` routes, which only a rebuild of the band could change. A public exit serves no private range.
+    _xcut = [{"via_iface": d, "table": T} for T, (_o, ms) in sorted(_xb.items())
+             for d in sorted({str(e0.get("dev") or "") for e0 in devexit if e0.get("table") == T} | {md for _m, md in ms})
+             if any(e0.get("table") == T for e0 in devexit)] if _xb else []
+    _cut = _dialin_cut(fwd + smart_exit + arr_exit + _xcut, exit_, _troutes if _net_tables else (), set(_net_tables))
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard,
                                  nets=_troutes, net_tables=_net_tables, arr=arr_exit, cut=_cut)   # only exit entries create fwmark→table policy routing
     # ⚠️ ONLY THE PRIORITIES THAT ARE ALSO TABLES. `band` now spans both bands, and an upstream priority
@@ -14526,10 +14604,15 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _um = lambda m: len(m) == 4 and m[:2] == ["R", "upmark"]
     _fixed = False
     if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):
+        # A route a `replace` below puts on another device or gateway in the same table and destination is taken over in
+        # one step, never deleted first: an exit moving to its backup (item 18) has no moment without a default, so no packet
+        # falls through to `main` (and leaves direct) with the kill switch off. `ip route del … dev D` would also delete the
+        # new route had it run after, when only the gateway changes.
+        _took = {(m[1], m[2]) for m in _miss if not _um(m)}
         for m in sorted(_xtra):
             if _um(m):
                 run(["ip", "rule", "del", "pref", m[2]])
-            else:
+            elif (m[1], m[2]) not in _took:
                 run(["ip", "route", "del", m[2], "dev", m[3], "table", m[1]])
         for m in sorted(_miss):
             if _um(m):
@@ -14626,8 +14709,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 run(["ip", "rule", "add", "fwmark", str(_u), "lookup", str(_t), "priority", str(_u)])
                 res["changed"] += 1
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
-    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip, devexit=devexit)
-    _s5x_rules(devexit, nets, res)        # a SOCKS5 exit's DNS redirect, UDP refusal and rule-DNS unmark (§6.6)
+    # an exit's backups get their SNAT, clamp and accept up front, for every entry of its table (item 18): a move is the route
+    # alone, with no moment where a packet leaves a backup un-NATed. A SOCKS backup's DNS redirect follows the move (`_dxs`).
+    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip,
+                         devexit=devexit + [dict(e, dev=md, egress_ip="", gw="") for e in devexit
+                                            if e.get("table") in _xb for _m, md in _xb[e["table"]][1]])
+    _s5x_rules(_dxs if _via else devexit, nets, res)   # a SOCKS5 exit's DNS redirect, UDP refusal and rule-DNS unmark (§6.6)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e + arr_e})
     _smart_subs = {e["subnet"] for e in smart_e}                # smart interfaces (by subnet) → IPv6 fail-closed drop
@@ -14833,7 +14920,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _ensure_p2p((smart or {}).get("p2p"), _mech, node_cfg, res,   # P2P policy: node-wide, every egress (P2P-POLICY-PLAN P1)
                 routers=(smart or {}).get("p2p_routers") or [],   # router peers: never flagged (S11b)
                 portok=(smart or {}).get("p2p_portok"),           # the operator's never-cut ports (S11c); absent → built-in
-                fwd=(smart or {}).get("p2p_fwd"))                 # devices' incoming ports (Part C), kept where P2P leaves Direct
+                fwd=(smart or {}).get("p2p_fwd"),                 # devices' incoming ports (Part C), kept where P2P leaves Direct
+                xdevs=_xbackup_devs(plan.get("xbackup")))         # a routed exit's backups may carry it too (item 18)
     _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)
     # RETURN BY LINK (§14.7) — outside the band (its own priority and tables), so the band's flush never touches it. LAST:
     # every writer and restore above has just been rendered with the label masked, so no labelled connection meets an
@@ -15967,14 +16055,16 @@ def smart_status():
             "allow": 1,                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
             "p2pi": 1,                            # runs smart.p2p {action: iface} — each interface's own torrent choice (IFACE-P2P-PICK)
             "ports": 1,                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
-            "portok_none": 1}                     # reads smart.p2p_portok "none" (No exceptions) — the node card says when it does not
+            "portok_none": 1,                     # reads smart.p2p_portok "none" (No exceptions) — the node card says when it does not
+            "xbk": 1}                             # runs cascade.xbackup — an exit's backups carry its table while it is down (item 18)
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         # whether its way out is up — the last pass's answer, corrected on EVERY report by each device itself (sysfs + the
         # exit judge, no fork). Under iface the devices whose way out is down are named (`down`): the panel and the sub page
         # judge each interface by its own route (S11 backlog F48).
         _rd = _P2P.get("route_devs") or ([_P2P["route_dev"]] if _P2P.get("route_dev") else [])   # every route group's device
-        _dn = sorted({d for d in _rd if d in (_P2P.get("route_down") or ()) or _devexit_state(d) != "up"}) if _r else []
+        _dn = sorted({d for d in _rd if d in (_P2P.get("route_down") or ())
+                      or (_devexit_state(d) != "up" and d not in _EXIT_VIA["carried"])}) if _r else []   # a backup carries it (item 18)
         if _dn:
             _r = "down"
         base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"], **({"route": _r} if _r else {}),
@@ -20994,6 +21084,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     # sync's devices — which is the stale-by-one-cycle bug this ordering exists to prevent.
     snap["exit_candidates"] = list(_EXIT_CAND["list"])
     snap["devexit"] = _devexit_report()               # decision 2: per-exit device state → the node's Issues tag
+    if _EXIT_VIA["m"]:                                 # item 18: while an exit with backups is down, which one carries it ("" none)
+        snap["exit_via"] = dict(_EXIT_VIA["m"])
     snap["exits"] = list(_EXITS["list"])              # imported exits: what we registered/wrote, their health — never a private key
     snap["exit_kinds"] = [k for k in EXIT_KINDS if k != "warp-masque" or _turn_arch() in USQ_SHA256]   # the kinds this
     # node can make, by name: the panel sends no other (s9a F17) — MASQUE only where a usque build exists (review F8)
@@ -28768,7 +28860,10 @@ def main():
                         # nodes using the feature. Taken from the plan we were just handed rather than from
                         # `_DEVEXIT`, so the chain is built from the same answer the routing was.
                         reconcile_inet_chain(node_cfg, {e.get("dev") for e in
-                                                        ((reply.get("cascade") or {}).get("devexit") or [])})
+                                                        ((reply.get("cascade") or {}).get("devexit") or [])}
+                                             # an exit's backups count what they carry for it (item 18), installed up front
+                                             | {d for ds in _xbackup_devs((reply.get("cascade") or {}).get("xbackup")).values()
+                                                for d in ds})
                     last_route_sig = _route_sig; last_route_t = time.time(); last_desired_sig = _route_sig
                     _ROUTED["judged"] = _ROUTED["pending"]    # …with what it judged: a pass that raised is retried next sync
                 else:
