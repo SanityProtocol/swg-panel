@@ -126,6 +126,12 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **Moving the panel from its IP address to a domain with a Let's Encrypt certificate works.** A panel installed with a
+  self-signed certificate (or none) had no acme.sh, the program that gets Let's Encrypt certificates, so the move failed
+  with "acme.sh not found". The panel now installs acme.sh the first time it needs it, the same way the installer does
+  (cron first, so the certificate renews on its own). A server that cannot reach GitHub gets the two commands that
+  install it by hand. And on the same port, the move asked Let's Encrypt for a certificate naming the old IP address
+  too, which Let's Encrypt refuses, so the whole request failed; the old IP address is now left out.
 - **A WARP exit can be created on networks that block Cloudflare's WARP registration address.** Some Russian
   providers block `api.cloudflareclient.com` by name while the WARP tunnel itself works, so the node could never
   register and the exit stayed "registration failed". When the registration gets no answer, the node now tries once more

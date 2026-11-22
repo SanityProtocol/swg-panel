@@ -55,6 +55,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -277,7 +278,7 @@ def v_domain(s):
 
 
 # ── low-level helpers ─────────────────────────────────────────────────────────────
-def run(argv, env=None, timeout=None):
+def run(argv, env=None, timeout=None, cwd=None):
     """Run an argv list (never a shell string). Returns (rc, combined_output).
 
     `timeout` (seconds) bounds it: this helper drains ONE queue, one request at a time, so a command that hangs
@@ -287,7 +288,7 @@ def run(argv, env=None, timeout=None):
     log(LOG_INFO if DRYRUN else LOG_DEBUG, "exec: %s", " ".join(argv))   # before: a command that hangs is still named
     if DRYRUN:
         return 0, "(dry-run)"
-    p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    p = subprocess.Popen(argv, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                          start_new_session=timeout is not None)
     try:
         out, _ = p.communicate(timeout=timeout)
@@ -331,8 +332,9 @@ def load_conf():
 # PATH (a distro package, or a custom install) was found at INSTALL time and then not at RUNTIME,
 # and the panel's issue-cert button failed on a box the installer had called ready. `shutil.which`
 # is the missing arm; /opt stays because only this side ever had it.
-_ACME_CANDIDATES = ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
-                    os.path.expanduser("~/.acme.sh/acme.sh"))
+# De-duplicated, order kept: under root `~` IS /root, and the "not found" message named /root/.acme.sh twice.
+_ACME_CANDIDATES = tuple(dict.fromkeys(("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
+                                        os.path.expanduser("~/.acme.sh/acme.sh"))))
 
 
 # ⚠️ THE STORE IS NOT THE BINARY'S DIRECTORY, and it is not $HOME either. acme.sh keeps state in
@@ -349,18 +351,115 @@ def acme_argv(acme, *args):
     return [acme, "--home", ACME_HOME] + list(args)
 
 
-def find_acme():
+def _locate_acme():
+    """The acme.sh to run, or None."""
     for a in _ACME_CANDIDATES:
         if os.path.isfile(a) and os.access(a, os.X_OK):
             return a
-    onpath = shutil.which("acme.sh")           # what install-host.sh's find_acme() also accepts
-    if onpath:
-        return onpath
+    return shutil.which("acme.sh")             # what install-host.sh's find_acme() also accepts
+
+
+def find_acme():
+    a = _locate_acme()
+    if a:
+        return a
     if DRYRUN:
         return "/root/.acme.sh/acme.sh"      # so the argv is visible without a live install
     # Name every place actually looked. The old message listed two of the three paths it tried,
     # so an operator with acme.sh in ~/.acme.sh was told it had not been looked for there.
     raise Reject("acme.sh not found (looked in %s, and on PATH)" % ", ".join(_ACME_CANDIDATES))
+
+
+# ⚠️ AN ISSUANCE THAT FINDS NO acme.sh INSTALLS IT (1.8.12 item 19). install-host.sh installs acme.sh only for the TLS
+# modes that issue through it, and update.sh heals only those — so a panel installed with a self-signed certificate
+# (or none, or a Cloudflare Origin one) had none, and moving it to a domain with Let's Encrypt answered "acme.sh not
+# found" (a user's report, 2026-11-21). These are install-host.sh ensure_acme's steps for a box without it, as argv
+# lists: cron first (lib/common.sh ensure_acme_cron), get.acme.sh, acme.sh's renewal entry, the version floor —
+# tests/acme_on_demand_selftest.py holds the two in step. Only issuance installs: sync-acme / renew-acme / drop-cert have
+# nothing to act on without acme.sh, and the 6-hourly sync-acme must not reach GitHub on a panel that never uses it.
+# The installer and update.sh's heal already run this script as root from this URL, so running it for an issuance the
+# operator asked for trusts nothing new; the panel names no URL, argv or path here — only the email, checked below.
+ACME_GET_URL = "https://get.acme.sh"
+ACME_MIN = (3, 1, 4)        # install-host.sh's ACME_MIN: ≤3.1.3 records a failed issuance as a certificate
+# get.acme.sh turns `email=<x>` into `--email <x>` with `tr '=' ' '` and expands it UNQUOTED (word-split and globbed), so
+# a space, '=', a glob character or a backslash would hand acme.sh's installer arguments of the value's choosing.
+_ACME_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
+
+
+def _acme_manual(email):
+    return ("install it by hand as root and retry: apt-get install -y cron curl, then curl -fsSL %s | sh -s email=%s"
+            % (ACME_GET_URL, email))
+
+
+def _last_line(out):
+    lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
+    return lines[-1][-200:] if lines else ""
+
+
+def _acme_prereqs(email):
+    """cron FIRST, as lib/common.sh ensure_acme_cron does: acme.sh's installer refuses to install without crontab
+    (`_precheck`, 3.1.4) and registers its daily renewal — the certificate's ONLY renewer — only where crontab is.
+    And curl, which fetches get.acme.sh here (and the script fetches acme.sh with)."""
+    want = (("cron", "crontab"), ("curl", "curl"))
+    missing = [pkg for pkg, binary in want if not shutil.which(binary)]
+    if not missing:
+        return
+    if not shutil.which("apt-get"):
+        raise Reject("acme.sh is not installed, and this box has no %s and no apt-get to install it — %s"
+                     % (" or ".join(missing), _acme_manual(email)))
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    run(["apt-get", "update", "-qq"], env=env, timeout=120)
+    rc, out = run(["apt-get", "install", "-y"] + missing, env=env, timeout=180)
+    still = [pkg for pkg, binary in want if not shutil.which(binary)]
+    if still and not DRYRUN:
+        err = [l for l in out.splitlines() if l.startswith("E: ")]
+        raise Reject("acme.sh is not installed, and %s could not be installed (%s) — %s"
+                     % (" and ".join(still), err[-1] if err else "apt-get rc %d" % rc, _acme_manual(email)))
+    if "cron" in missing and run(["systemctl", "enable", "--now", "cron"], timeout=60)[0]:
+        log(LOG_WARNING, "cron is installed but did not start — acme.sh renews the certificate only from its daily cron "
+            "entry: systemctl enable --now cron")
+
+
+def _acme_install(email):
+    """Install acme.sh into ACME_HOME, as install-host.sh's ensure_acme does on a box without it. Returns its path."""
+    if not _ACME_EMAIL_RE.match(email or ""):
+        raise Reject("the ACME account email %r is not a plain email address — set one in Access & TLS" % (email,))
+    log(LOG_NOTICE, "acme.sh is not installed — installing it from %s for this certificate" % ACME_GET_URL)
+    _acme_prereqs(email)
+    # A fresh root-only directory: get.acme.sh's installOnline downloads its tarball to the CWD and unpacks it there —
+    # under this unit that is / — and the script itself must not sit anywhere the panel can write.
+    tmp = os.path.join(tempfile.gettempdir(), "swg-acme-XXXXXX") if DRYRUN else tempfile.mkdtemp(prefix="swg-acme-")
+    # HOME: the unit has none, and acme.sh installs into "$HOME/.acme.sh" unless LE_WORKING_DIR says otherwise — both set,
+    # so the program lands in the store every other call pins with --home (and its profile line in root's, as the installer's).
+    env = dict(os.environ, HOME=pwd.getpwuid(0).pw_dir, LE_WORKING_DIR=ACME_HOME)
+    try:
+        script = os.path.join(tmp, "get.acme.sh")
+        rc, out = run(["curl", "-fsSL", "--max-time", "60", "-o", script, ACME_GET_URL], timeout=90)
+        if rc and not DRYRUN:
+            raise Reject("acme.sh is not installed, and its installer could not be downloaded from %s (curl rc %d: %s) — "
+                         "does this box reach GitHub? %s" % (ACME_GET_URL, rc, _last_line(out), _acme_manual(email)))
+        rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=180)
+    finally:
+        if not DRYRUN:
+            shutil.rmtree(tmp, ignore_errors=True)
+    # get.acme.sh exits 0 even when its own download fails — the program being there is the only success
+    acme = _locate_acme() or ("/root/.acme.sh/acme.sh" if DRYRUN else None)
+    if not acme:
+        raise Reject("acme.sh is not installed, and its installer did not install it (%s) — does this box reach GitHub? %s"
+                     % (_last_line(out) or "rc %d" % rc, _acme_manual(email)))
+    # ensure_acme_cron's second half: the installer registers the daily renewal itself where crontab exists; this makes
+    # sure (acme.sh skips an entry already there), and says so when it could not — the certificate would not renew.
+    run(acme_argv(acme, "--install-cronjob"), env=env, timeout=30)
+    if not DRYRUN and "acme.sh --cron" not in run(["crontab", "-l"], timeout=30)[1]:
+        log(LOG_WARNING, "acme.sh's daily renewal entry is not in root's crontab and could not be added — the certificate "
+            "will NOT renew on its own. Fix: %s --install-cronjob --home %s" % (acme, ACME_HOME))
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", run([acme, "--version"], timeout=30)[1])
+    if m and tuple(int(x) for x in m.groups()) < ACME_MIN:
+        if run(acme_argv(acme, "--upgrade"), env=env, timeout=180)[0]:
+            log(LOG_WARNING, "acme.sh %s is older than %s and could not be upgraded — continuing on it"
+                % (".".join(m.groups()), ".".join(map(str, ACME_MIN))))
+    log(LOG_NOTICE, "acme.sh installed at %s" % acme)
+    return acme
 
 
 # ⚠️ AN ACME ENTRY WITH NO CERTIFICATE IS A TRAP, NOT STATE WORTH KEEPING — and it is self-perpetuating.
@@ -728,7 +827,16 @@ def _issue_selfsigned(svc, domains):
 
 
 def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
-    acme = find_acme()
+    # ⚠️ NO IP LITERAL BESIDE A NAME. Let's Encrypt's default profile refuses IP identifiers, and one refused name fails the
+    # whole order — a same-port IP→domain move asked for "<domain>,<old IP>" and got nothing (a user's report,
+    # 2026-11-21). The panel leaves the IP out itself (_apply_panel_cert_only); this keeps any other caller from
+    # reaching the CA with one. An order of IPs alone is left for the CA to answer.
+    names = [d for d in domains if not _ip_norm(d)]
+    if names and len(names) < len(domains):
+        log(LOG_NOTICE, "left %s out of the certificate order for %s — Let's Encrypt's default profile refuses IP "
+            "addresses" % (", ".join(d for d in domains if d not in names), ",".join(names)))
+        domains = names
+    acme = _locate_acme() or _acme_install(creds["email"] or "admin@" + domains[0])
     env = dict(os.environ)
     # ⚠️ ANOTHER PROGRAM'S ENTRY IS ASKED ABOUT FIRST — before anything is cleared or issued. `--issue` saves OUR
     # challenge method (`--standalone`, or our DNS hook) into the entry whenever its certificate is due, over whatever

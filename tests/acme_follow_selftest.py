@@ -521,6 +521,7 @@ def fake_run(argv, env=None, timeout=None):
     return (2, "") if "--issue" in argv else (0, "")
 N.run = fake_run
 N.find_acme = lambda: "/fake/acme.sh"
+N._locate_acme = lambda: "/fake/acme.sh"     # issuance asks this one (it installs acme.sh when nothing is found)
 CREDS = {"cf_token": "", "cf_account": "", "email": ""}
 
 serve(*OLD)
