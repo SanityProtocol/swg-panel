@@ -3711,7 +3711,7 @@ export function exitHealth(x, node) {
   if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) };
   // a backup carrying this exit's traffic while it is down (item 18): said after whatever the row says about the exit itself
   const _bk = exitViaName(ex, node) ? " " + exitFellSay(ex, node) : "";
-  if (l.error) return { state: "failed", tone: "bad", dot: "bad", bk: !!_bk,
+  if (l.error) return { state: "failed", tone: "bad", dot: "bad",
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
     // ⚠️ THROUGH T(), like every other sentence the SPA shows. The node's own words arrived verbatim, so a
     // Russian panel read «Не удалось: the escrowed key did not open…» on the screen this release leads
@@ -3741,7 +3741,7 @@ export function exitHealth(x, node) {
     : ulOff6 ? T("It dials over IPv4 now: IPv6 got no answer.")
     : ul.via === "v6" && l.handshake === 0 ? T("It dials over IPv6.") : "";
   const said = (t, fam) => [t, fam ? "" : ulSay, probe ? T("The node reports: {v1}", { v1: probe }) : ""].filter(Boolean).join(" ");
-  if (!l.up) return { state: "down", tone: "warn", dot: "down", bk: !!_bk,
+  if (!l.up) return { state: "down", tone: "warn", dot: "down",
                       why: said(T("The node reports this device is not up.")) + _bk };
   // ⚠️ A DIAL-IN EXIT WAITS FOR THE ROUTER, and the sentences below are written for a server we dial — "check the
   // endpoint" names a field this exit does not have. Never a handshake: the router has not connected (its config, its
@@ -3769,7 +3769,7 @@ export function exitHealth(x, node) {
   // has already routed around it (`no_traffic` is only reported once it did), so the row states what happened to
   // the traffic, which depends on this exit's own kill-switch. Absent on a node too old to judge: it falls
   // through to the tests below exactly as before.
-  if (l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down", bk: !!_bk,
+  if (l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
     why: said(exitStalledSay(ex, node)) };
   // ⚠️ UP IS NOT WORKING. This returned "ok" the moment the device existed, whatever was at the other end —
   // so a pasted AmneziaWG profile brought up as plain WireGuard was drawn GREEN while carrying nothing: the

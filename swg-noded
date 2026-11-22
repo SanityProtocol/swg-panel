@@ -14373,13 +14373,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # and before anything is lowered from `_dxs` — so every reader below sees the device the table leaves by this pass. A
     # backup is an exit this node creates (the panel sends no other): point-to-point, so no gateway and no `egress_ip`.
     _xb = _xbackup_take(plan.get("xbackup"))
-    _via, _xvia, _own_seen = {}, {}, {}
+    _via, _xvia = {}, {}
     for T, (oid, ms) in sorted(_xb.items()):
         own = next((e for e in _dxs if e.get("table") == T), None)
         if own is None or own["state"] == "up":
             continue
         _xvia[oid] = ""
-        _own_seen[own["dev"]] = _dev_seen(own["dev"], own["state"])
         for mid, md in ms:
             if md != own["dev"] and not _dev_is_ether(md) and _devexit_state(md) == "up":
                 _via[T], _xvia[oid] = md, mid
@@ -14463,7 +14462,6 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # With each device's index, and recorded for the trigger (`_routed_devs_moved`), which re-reads exactly these once
     # the pass has completed (the main loop commits "pending" beside `last_route_sig`).
     _lst = {e["dev"]: _dev_seen(e["dev"], e["state"]) for e in _dxs if e.get("dev")}
-    _lst.update({d: v for d, v in _own_seen.items() if d not in _lst})   # an exit a backup carries for: its return is a move
     def _withheld(dev):
         if dev not in _lst:
             _lst[dev] = _dev_seen(dev)
