@@ -3394,6 +3394,32 @@ export const STR = {
   "two dial-in exits cannot have one address ({v1})": "у двух обратных выходов не может быть одного адреса ({v1})",
   "Meanwhile the kill-switch is holding everything that uses this exit.": "Пока что kill-switch держит всё, что идёт через этот выход.",
   "Meanwhile everything that uses this exit goes out through this node's own IP.": "Пока что всё, что идёт через этот выход, уходит с собственного IP этой ноды.",
+  // exit backups (1.8.12 item 18): «запасной выход» — never «резерв» (Primary/Backup deployments) nor «нода-зеркало» (failover node)
+  "Meanwhile everything that uses this exit goes out through its backup, {v1}.": "Пока что всё, что идёт через этот выход, уходит через его запасной выход {v1}.",
+  "Its backup exits are not carrying either.": "Его запасные выходы тоже не пропускают трафик.",
+  "This exit has stopped carrying traffic, so everything that uses it goes out through its backup, {v1}. It moves back by itself once the exit works again.":
+    "Этот выход перестал пропускать трафик, поэтому всё, что идёт через него, уходит через его запасной выход {v1}. Трафик сам вернётся обратно, как только выход снова заработает.",
+  "(off)": "(выключен)",
+  "If this exit fails, use": "Если этот выход упадёт, использовать",
+  "If that one fails too": "Если упадёт и он",
+  "No backup": "Без запасного",
+  "Nothing else": "Больше ничего",
+  "While this exit is down, everything that uses it goes out through the first of these that works, and moves back by itself once this exit works again. If none works, the kill-switch decides.":
+    "Пока этот выход не работает, всё, что идёт через него, уходит через первый из них, который работает, и само возвращается, как только этот выход снова заработает. Если не работает ни один — решает kill-switch.",
+  "A backup carries everything that uses this exit while it is down. Without one, the kill-switch decides.":
+    "Запасной выход берёт на себя всё, что идёт через этот выход, пока тот не работает. Без запасного решает kill-switch.",
+  "This node needs the 1.8.12 update to use a backup — until then a failed exit falls back as before.":
+    "Для запасных выходов этой ноде нужно обновление 1.8.12 — до тех пор упавший выход откатывается как раньше.",
+  "It is also removed from the backups of: {v1}.": "Он также уберётся из запасных выходов у: {v1}.",
+  "{v1}: the tunnel through {v2} has stopped carrying traffic — {v3} is going out through its backup exit {v4} meanwhile, and moves back by itself once it works again.":
+    "{v1}: туннель через {v2} перестал пропускать трафик — {v3} пока уходит через его запасной выход {v4} и сам вернётся обратно, как только выход снова заработает.",
+  "{v1}: the exit device {v2} is not up — {v3} is going out through its backup exit {v4} meanwhile, and moves back by itself once the device is up.":
+    "{v1}: устройство выхода {v2} не поднято — {v3} пока уходит через его запасной выход {v4} и сам вернётся обратно, как только устройство поднимется.",
+  "an exit's backups must be a list of exit ids": "запасные выходы должны быть списком id выходов",
+  "{v1}: an exit cannot be its own backup": "{v1}: выход не может быть запасным сам для себя",
+  "{v1}: the same backup is named twice": "{v1}: один и тот же запасной выход указан дважды",
+  "{v1}: only exits this panel creates can back each other up — not an adopted device":
+    "{v1}: подменять друг друга могут только выходы, созданные этой панелью, — не стороннее устройство",
   "Other exits": "Другие выходы",
   "the dial-in exit {v1}": "обратный выход {v1}",
   "{v1}: this dial-in exit listens on UDP {v2}, outside this node's declared firewall range ({v3}) — the router cannot connect until the range covers that port":

@@ -4014,6 +4014,9 @@ a.tg:hover{filter:brightness(1.25)}
 /* a WARP exit's transport, then — over MASQUE only — its HTTP: two groups a wider gap apart, which wrap whole on a phone */
 .segrow.wtr{flex-wrap:wrap;column-gap:22px;row-gap:8px}
 .wtr-g{display:flex;gap:6px}
+/* an exit's backups (1.8.12 item 18): one picker a row, in order — each row's label is the field label's, a step apart */
+.exbk-r>label{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}
+.exbk-r+.exbk-r{margin-top:12px}
 /* ── Datapath switch ───────────────────────────────────────────────────────────────────────────────────
    ONE control with two halves, not two buttons that happen to be adjacent: a single track, equal-width
    sides, and the chosen one filled. Equal widths are fixed rather than content-sized, so the switch does

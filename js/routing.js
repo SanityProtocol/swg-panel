@@ -3604,12 +3604,25 @@ export const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).d
 
 /** Where the traffic of an exit the NODE is routing around goes meanwhile, by its kill-switch — and the plain stalled
  *  sentence — shared by the imported and the adopted arm, so both say it in one set of words (and one set of RU keys). */
-const exitFellSay = ex => ex.killswitch
-  ? T("Meanwhile the kill-switch is holding everything that uses this exit.")
-  : T("Meanwhile everything that uses this exit goes out through this node's own IP.");
-const exitStalledSay = ex => ex.killswitch
-  ? T("This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.")
-  : T("This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.");
+/** The backup exit carrying this one's traffic while it is down (1.8.12 item 18): its title, from the node's `live.via` —
+ *  "" when the node says none, or says nothing (no backups, or a node too old to have them). */
+export const exitViaName = (ex, node) => {
+  const v = String((((ex || {}).live) || {}).via || "");
+  const b = v ? ((node || {}).exits || []).find(x => String(x.id) === v) : null;
+  return v ? (b ? (b.label || exitDefaultTitle(b)) : v) : "";
+};
+// …and the node said it has backups and none of them is up: today's sentence stands, and this one beside it
+const exitViaNone = ex => (((ex || {}).live) || {}).via === "" ? " " + T("Its backup exits are not carrying either.") : "";
+const exitFellSay = (ex, node) => exitViaName(ex, node)
+  ? T("Meanwhile everything that uses this exit goes out through its backup, {v1}.", { v1: exitViaName(ex, node) })
+  : (ex.killswitch
+    ? T("Meanwhile the kill-switch is holding everything that uses this exit.")
+    : T("Meanwhile everything that uses this exit goes out through this node's own IP.")) + exitViaNone(ex);
+const exitStalledSay = (ex, node) => exitViaName(ex, node)
+  ? T("This exit has stopped carrying traffic, so everything that uses it goes out through its backup, {v1}. It moves back by itself once the exit works again.", { v1: exitViaName(ex, node) })
+  : (ex.killswitch
+    ? T("This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.")
+    : T("This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.")) + exitViaNone(ex);
 const exitRecoveringSay = () => T("Traffic crosses it again — the node routes back through it within a minute.");
 
 export function exitHealth(x, node) {
@@ -3651,8 +3664,8 @@ export function exitHealth(x, node) {
     const nt = l.no_traffic;
     const fresh = !nodeStale((node || {}).id);       // a stale node's last `back_in` is not believed (as for an imported exit)
     if (nt && Number.isFinite(nt.back_in) && fresh)
-      return { state: "recovering", tone: "busy", icon: "refresh", dot: "down", why: exitRecoveringSay() + " " + exitFellSay(ex) };
-    if (nt) return { state: "stalled", tone: "warn", icon: "warn", dot: "down", why: exitStalledSay(ex)
+      return { state: "recovering", tone: "busy", icon: "refresh", dot: "down", why: exitRecoveringSay() + " " + exitFellSay(ex, node) };
+    if (nt) return { state: "stalled", tone: "warn", icon: "warn", dot: "down", why: exitStalledSay(ex, node)
       + (String(nt.why || "").trim() ? " " + T("The node reports: {v1}", { v1: String(nt.why).trim() }) : "") };
     return { state: "ok", tone: "", dot: "up", why: T("Up on the node.") };
   }
@@ -3696,14 +3709,16 @@ export function exitHealth(x, node) {
   }
   // A SOCKS exit whose tunnel program is still being fetched: progress, not a fault (review F13)
   if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) };
-  if (l.error) return { state: "failed", tone: "bad", dot: "bad",
+  // a backup carrying this exit's traffic while it is down (item 18): said after whatever the row says about the exit itself
+  const _bk = exitViaName(ex, node) ? " " + exitFellSay(ex, node) : "";
+  if (l.error) return { state: "failed", tone: "bad", dot: "bad", bk: !!_bk,
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
     // ⚠️ THROUGH T(), like every other sentence the SPA shows. The node's own words arrived verbatim, so a
     // Russian panel read «Не удалось: the escrowed key did not open…» on the screen this release leads
     // with. Sentence-as-key is the convention here, so T() translates the ones the catalogue knows and
     // returns the rest unchanged — nothing regresses, and the fixed ones stop being English.
     why: T(l.error) + (l.retry_in ? " " + T("Retrying in {v1}.", { v1: l.retry_in >= 60
-      ? T("{v1} min", { v1: Math.round(l.retry_in / 60) }) : T("{v1} s", { v1: l.retry_in }) }) : "") };
+      ? T("{v1} min", { v1: Math.round(l.retry_in / 60) }) : T("{v1} s", { v1: l.retry_in }) }) : "") + _bk };
   // ⚠️ PROGRESS IS NOT A FAULT. A WARP account the node has not finished registering wore the same amber
   // warning triangle as a failed one, so the first thing an operator saw after creating an exit was a
   // panel telling them something was wrong with it. `busy` renders the circling-arrows icon the panel
@@ -3726,8 +3741,8 @@ export function exitHealth(x, node) {
     : ulOff6 ? T("It dials over IPv4 now: IPv6 got no answer.")
     : ul.via === "v6" && l.handshake === 0 ? T("It dials over IPv6.") : "";
   const said = (t, fam) => [t, fam ? "" : ulSay, probe ? T("The node reports: {v1}", { v1: probe }) : ""].filter(Boolean).join(" ");
-  if (!l.up) return { state: "down", tone: "warn", dot: "down",
-                      why: said(T("The node reports this device is not up.")) };
+  if (!l.up) return { state: "down", tone: "warn", dot: "down", bk: !!_bk,
+                      why: said(T("The node reports this device is not up.")) + _bk };
   // ⚠️ A DIAL-IN EXIT WAITS FOR THE ROUTER, and the sentences below are written for a server we dial — "check the
   // endpoint" names a field this exit does not have. Never a handshake: the router has not connected (its config, its
   // power, or this node's UDP port). A handshake and no traffic: it connected but forwards nothing — NAT on the router is
@@ -3736,7 +3751,7 @@ export function exitHealth(x, node) {
   // Only a handshake KNOWN to be fresh is "connected" (an unreadable one, null, is not); only a pass whose trace crossed
   // nothing blames NAT (a router that just came back carries while the judge waits out its hysteresis); and what the
   // failover did with the traffic is said too, by this exit's kill-switch, as the plain `stalled` row says it.
-  const _fell = l.no_traffic ? " " + exitFellSay(ex) : "";
+  const _fell = l.no_traffic ? " " + exitFellSay(ex, node) : "";
   if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
     why: T("Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.",
            { v1: (ex.profile || {}).listen_port }) + _fell };
@@ -3754,8 +3769,8 @@ export function exitHealth(x, node) {
   // has already routed around it (`no_traffic` is only reported once it did), so the row states what happened to
   // the traffic, which depends on this exit's own kill-switch. Absent on a node too old to judge: it falls
   // through to the tests below exactly as before.
-  if (l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
-    why: said(exitStalledSay(ex)) };
+  if (l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down", bk: !!_bk,
+    why: said(exitStalledSay(ex, node)) };
   // ⚠️ UP IS NOT WORKING. This returned "ok" the moment the device existed, whatever was at the other end —
   // so a pasted AmneziaWG profile brought up as plain WireGuard was drawn GREEN while carrying nothing: the
   // interface was up, and up was the whole question. A handshake is the first fact that is only true if the

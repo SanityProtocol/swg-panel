@@ -45,7 +45,7 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitIsWarp, WARP_RU_COLOS, exitDefaultTitle, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitIsWarp, WARP_RU_COLOS, exitDefaultTitle, exitViaName, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
   p2pVal, p2pRec, p2pTarget, p2pLabel, p2pTargetOpts, p2pTargetHints,
@@ -2450,6 +2450,8 @@ export function PanelSettingsScreen() {
                                         dial_src: x.dial_src || "",
                                         // a MASQUE exit's HTTP/3 or HTTP/2 — carried by every list save, or saving another exit resets it
                                         ...(x.transport ? { transport: x.transport } : {}),
+                                        // its backups (1.8.12 item 18), in order — the sheet edits them, and every list save carries them
+                                        ...(Array.isArray(x.backup) && x.backup.length ? { backup: x.backup.map(String) } : {}),
                                         profile: x.profile || null, profile_text: "",
                                         // a SOCKS exit's address as the browser has it (no password — T7); the paste box and
                                         // the password field are empty = keep what is stored, as `profile_text` is
@@ -4847,11 +4849,15 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
   };
   const dinAwgSet = d => { for (const k of dinKeys) if (String(d[k] ?? "") !== String(dinAwg[k] ?? "")) dinLine(k, d[k]); };
   const stored = (node.exits || []).find(x => String(x.id) === String(ex.id)) || {};
+  // the exits that can back this one up (item 18), and its list as it stands — an id no longer among them (deleted) dropped
+  const bkOpts = (node.exits || []).filter(x => (x.producer || "adopted") === "imported" && String(x.id) !== String(ex.id));
+  const bkVal = (Array.isArray(v.backup) ? v.backup : []).map(String).filter(i => bkOpts.some(x => String(x.id) === i));
   // The three things this sheet can edit, plus the config box. A NEW exit is always dirty: there is nothing
   // to compare against and the operator has to be able to press Save.
   const dirty = isNew || txt !== txt0 || Object.values(dinBlank).some(Boolean)   // a "-" cleared changes no line yet (F12)
     || (isSocks && (sTxt !== sTxt0 || !!sPass))
-    || ["label", "dial_src", "licence", "provider", "transport"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""));
+    || ["label", "dial_src", "licence", "provider", "transport"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""))
+    || JSON.stringify(v.backup || []) !== JSON.stringify(ex.backup || []);
   // A SWITCH between the WARP kinds (§4.10) keeps the account and restarts the tunnel: said, and asked, before it is saved (Q11)
   const switching = !isNew && isWarp && exitIsWarp(ex) && exitProv(v) !== exitProv(ex);
   const save = () => (!switching ? commit(false) : openConfirm({
@@ -4951,6 +4957,9 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
             placeholder=${T("WARP+ licence key — optional")}
             onInput=${e => set({ licence: e.target.value })}/>
           <div class="hint">${T("A free account is registered without one. Paste a key from the WARP mobile app to upgrade this exit to WARP+.")}</div></div>`}
+    ${/* its backups (item 18): the node's other exits this panel created — never on a failover node's copy (they follow) */""}
+    ${fill || !bkOpts.length ? null : html`<${ExitBackupPick} node=${node} opts=${bkOpts} value=${bkVal}
+      onChange=${b => set({ backup: b })}/>`}
     ${/* ⚠️ ONLY THE RECOVERY SURVIVES HERE. The escrow STATUS and the "turn it on" button are gone — escrow
           is on by default and lives on the Interfaces screen, so restating it per exit was noise. But
           "this node has no key for this exit, restore the escrowed one" is not status: it is the one
@@ -4960,6 +4969,31 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
       <${ExitEscrow} node=${node} ex=${v} stored=${stored} live=${stored.live} goSection=${goSection} escrowOn=${escrowOn}/>
     </div>
   <//>`;
+}
+
+/* An exit's BACKUPS (1.8.12 item 18): while it is down, the first of these that works carries everything that uses it, and the
+   traffic moves back by itself once it works again; with none working, its kill-switch decides as before. Chained pickers — the
+   order is the position, and the next appears once one is chosen. The list is this exit's own: a backup's own backups are not
+   followed, so two exits may back each other up. Only exits this panel creates take part (the server refuses the rest). */
+function ExitBackupPick({ node, opts, value, onChange }) {
+  const name = x => (x.label || exitDefaultTitle(x)) + (x.enabled === false ? " " + T("(off)") : "");
+  const sr = ((Store.stats || {})[node.id] || {}).smartroute;
+  const rows = [...value, ...(opts.some(x => !value.includes(String(x.id))) ? [""] : [])];
+  const pick = (i, id) => onChange(id ? value.map((x, j) => (j === i ? id : x)).concat(i === value.length ? [id] : [])
+    : value.filter((_, j) => j !== i));
+  return html`<div class="field exbk">
+    ${rows.map((cur, i) => html`<div class="exbk-r" key=${i + ":" + cur}>
+      <label>${i ? T("If that one fails too") : T("If this exit fails, use")}</label>
+      <${Dropdown} value=${cur} ariaLabel=${i ? T("If that one fails too") : T("If this exit fails, use")}
+        onChange=${id => pick(i, id)}
+        options=${[{ value: "", label: i ? T("Nothing else") : T("No backup") },
+                   ...opts.filter(x => String(x.id) === cur || !value.includes(String(x.id))).map(x => ({ value: String(x.id), label: name(x) }))]}/>
+    </div>`)}
+    <div class="hint">${value.length
+      ? T("While this exit is down, everything that uses it goes out through the first of these that works, and moves back by itself once this exit works again. If none works, the kill-switch decides.")
+      : T("A backup carries everything that uses this exit while it is down. Without one, the kill-switch decides.")}</div>
+    ${sr && !sr.xbk ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${T("This node needs the 1.8.12 update to use a backup — until then a failed exit falls back as before.")}</span></div>` : null}
+  </div>`;
 }
 
 /* A WARP exit's transport (WARP-MASQUE-PLAN Q1, Q2): WireGuard or MASQUE — chosen at create, and an edit is a switch that keeps
@@ -5143,13 +5177,17 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   ];
   const del = ex => openConfirm({
     title: T("Remove this exit?"), confirmLabel: T("Remove"), danger: true,
-    body: exitProv(ex) === "profile"
+    body: (exitProv(ex) === "profile"
       ? T("{v1} is removed from this node and its tunnel comes down. The profile and its key are deleted from the panel — you would have to paste it again.", { v1: ex.label || ex.device })
       : exitIsWarp(ex)
       ? T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device })
       : exitProv(ex) === "socks5"
       ? T("{v1} is removed from this node and its tunnel to the proxy comes down. The proxy's address and password are deleted from the panel.", { v1: ex.label || ex.device })
-      : T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device }),
+      : T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device }))
+      // …and the exits it backs up lose it (item 18): the save drops it from their lists
+      + ((b => b.length ? " " + T("It is also removed from the backups of: {v1}.", { v1: b.join(", ") }) : "")(
+        exits.filter(x => String(x.id) !== String(ex.id) && (x.backup || []).map(String).includes(String(ex.id)))
+             .map(x => x.label || exitDefaultTitle(x)))),
     onConfirm: () => write(exits.filter(x => String(x.id) !== String(ex.id))),
   });
   // Health, from what the node reports about the exit it was told to create. Four states, same vocabulary
@@ -5199,6 +5237,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
               : T("UDP: not checked yet")) : ""}>
             ${/* a failover node's copy with no config of its own (§14.3): said where its address would be — the one empty cell */""}
             ${unfilled(ex) ? html`<span class="tg tg-warn" title=${T("This server needs its own config for this exit before it can take over")}><${Ic} i="warn"/>${T("fill in for failover")}</span>`
+              /* down, and a backup carries its traffic (item 18): that is what leaves by here now — said instead of an IP */
+              : exitViaName(stored(ex.id), node) ? html`<span class="tg tg-warn" title=${exitHealth(stored(ex.id), node).why}>${T("via {v1}", { v1: exitViaName(stored(ex.id), node) })}</span>`
               : (l.trace || {}).ip || html`<span class="faint">—</span>`}${exitProv(ex) === "socks5" && (l.trace || {}).loc
               ? html` <span class="faint">${l.trace.loc}</span>` : null}${l.colo ? html`<${ExitColo} colo=${l.colo}/>` : null}</div>
           ${/* ⚠️ THE HOP TO THE EXIT'S OWN SERVER, not a request made through it. This first showed the time

@@ -261,7 +261,10 @@ class _Kernel:
                 dev = a[a.index("dev") + 1]
                 if dev not in k.up:
                     r = _R(""); r.returncode = 2; return r        # ENETDOWN / ENODEV — the route is NOT created
-                k.tables.setdefault(T, []).append("default dev %s scope link" % dev)
+                # `replace` REPLACES the table's default whatever its device — one command moves it (measured, item 18 rig
+                # .campaign/rigs/xbk): the reconciler no longer deletes the old route first, and appending here read two
+                k.tables[T] = [r for r in k.tables.get(T, []) if not r.startswith("default dev")]
+                k.tables[T].append("default dev %s scope link" % dev)
             else:
                 k.tables.setdefault(T, []).append("prohibit default metric %d" % N.DEVEXIT_GUARD_METRIC)
             return _R("")
