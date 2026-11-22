@@ -332,9 +332,8 @@ def load_conf():
 # PATH (a distro package, or a custom install) was found at INSTALL time and then not at RUNTIME,
 # and the panel's issue-cert button failed on a box the installer had called ready. `shutil.which`
 # is the missing arm; /opt stays because only this side ever had it.
-# De-duplicated, order kept: under root `~` IS /root, and the "not found" message named /root/.acme.sh twice.
-_ACME_CANDIDATES = tuple(dict.fromkeys(("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
-                                        os.path.expanduser("~/.acme.sh/acme.sh"))))
+_ACME_CANDIDATES = ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
+                    os.path.expanduser("~/.acme.sh/acme.sh"))
 
 
 # ⚠️ THE STORE IS NOT THE BINARY'S DIRECTORY, and it is not $HOME either. acme.sh keeps state in
@@ -351,9 +350,16 @@ def acme_argv(acme, *args):
     return [acme, "--home", ACME_HOME] + list(args)
 
 
+def _acme_paths():
+    """Every place acme.sh is looked for, in order. The store's own program first: _acme_install puts it there
+    (LE_WORKING_DIR), and an ACME_HOME other than /root/.acme.sh is in none of the fixed candidates. De-duplicated, order
+    kept: under root `~` IS /root, and the "not found" message named /root/.acme.sh twice."""
+    return tuple(dict.fromkeys((os.path.join(ACME_HOME, "acme.sh"),) + _ACME_CANDIDATES))
+
+
 def _locate_acme():
     """The acme.sh to run, or None."""
-    for a in _ACME_CANDIDATES:
+    for a in _acme_paths():
         if os.path.isfile(a) and os.access(a, os.X_OK):
             return a
     return shutil.which("acme.sh")             # what install-host.sh's find_acme() also accepts
@@ -367,7 +373,7 @@ def find_acme():
         return "/root/.acme.sh/acme.sh"      # so the argv is visible without a live install
     # Name every place actually looked. The old message listed two of the three paths it tried,
     # so an operator with acme.sh in ~/.acme.sh was told it had not been looked for there.
-    raise Reject("acme.sh not found (looked in %s, and on PATH)" % ", ".join(_ACME_CANDIDATES))
+    raise Reject("acme.sh not found (looked in %s, and on PATH)" % ", ".join(_acme_paths()))
 
 
 # ⚠️ AN ISSUANCE THAT FINDS NO acme.sh INSTALLS IT (1.8.12 item 19). install-host.sh installs acme.sh only for the TLS
@@ -381,6 +387,12 @@ def find_acme():
 # operator asked for trusts nothing new; the panel names no URL, argv or path here — only the email, checked below.
 ACME_GET_URL = "https://get.acme.sh"
 ACME_MIN = (3, 1, 4)        # install-host.sh's ACME_MIN: ≤3.1.3 records a failed issuance as a certificate
+# ⚠️ ONE BUDGET FOR THE WHOLE INSTALL. The panel waits 300 s for the issuance this is part of (_place_cert); separate step
+# limits added up past it (apt's index, apt, the fetch, the installer, an upgrade), and a box with slow apt and a slow
+# GitHub — the boxes this is for — then read "timed out waiting for the root helper" instead of this helper's own answer,
+# while the request ran on behind the panel's restore-cert. Every network step gets what is left of these seconds (or its
+# own cap, if smaller); the local steps are a second or two each, and the order itself keeps the rest of the panel's wait.
+ACME_INSTALL_BUDGET = 150
 # get.acme.sh turns `email=<x>` into `--email <x>` with `tr '=' ' '` and expands it UNQUOTED (word-split and globbed), so
 # a space, '=', a glob character or a backslash would hand acme.sh's installer arguments of the value's choosing.
 _ACME_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
@@ -396,7 +408,12 @@ def _last_line(out):
     return lines[-1][-200:] if lines else ""
 
 
-def _acme_prereqs(email):
+def _left(deadline, cap):
+    """A step's timeout: its own cap, or what is left of the install's budget, whichever is less."""
+    return max(1, min(cap, int(deadline - time.monotonic())))
+
+
+def _acme_prereqs(email, deadline):
     """cron FIRST, as lib/common.sh ensure_acme_cron does: acme.sh's installer refuses to install without crontab
     (`_precheck`, 3.1.4) and registers its daily renewal — the certificate's ONLY renewer — only where crontab is.
     And curl, which fetches get.acme.sh here (and the script fetches acme.sh with)."""
@@ -408,8 +425,8 @@ def _acme_prereqs(email):
         raise Reject("acme.sh is not installed, and this box has no %s and no apt-get to install it — %s"
                      % (" or ".join(missing), _acme_manual(email)))
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
-    run(["apt-get", "update", "-qq"], env=env, timeout=120)
-    rc, out = run(["apt-get", "install", "-y"] + missing, env=env, timeout=180)
+    run(["apt-get", "update", "-qq"], env=env, timeout=_left(deadline, 120))
+    rc, out = run(["apt-get", "install", "-y"] + missing, env=env, timeout=_left(deadline, 180))
     still = [pkg for pkg, binary in want if not shutil.which(binary)]
     if still and not DRYRUN:
         err = [l for l in out.splitlines() if l.startswith("E: ")]
@@ -425,7 +442,8 @@ def _acme_install(email):
     if not _ACME_EMAIL_RE.match(email or ""):
         raise Reject("the ACME account email %r is not a plain email address — set one in Access & TLS" % (email,))
     log(LOG_NOTICE, "acme.sh is not installed — installing it from %s for this certificate" % ACME_GET_URL)
-    _acme_prereqs(email)
+    deadline = time.monotonic() + ACME_INSTALL_BUDGET
+    _acme_prereqs(email, deadline)
     # A fresh root-only directory: get.acme.sh's installOnline downloads its tarball to the CWD and unpacks it there —
     # under this unit that is / — and the script itself must not sit anywhere the panel can write.
     tmp = os.path.join(tempfile.gettempdir(), "swg-acme-XXXXXX") if DRYRUN else tempfile.mkdtemp(prefix="swg-acme-")
@@ -434,11 +452,11 @@ def _acme_install(email):
     env = dict(os.environ, HOME=pwd.getpwuid(0).pw_dir, LE_WORKING_DIR=ACME_HOME)
     try:
         script = os.path.join(tmp, "get.acme.sh")
-        rc, out = run(["curl", "-fsSL", "--max-time", "60", "-o", script, ACME_GET_URL], timeout=90)
+        rc, out = run(["curl", "-fsSL", "--max-time", "60", "-o", script, ACME_GET_URL], timeout=_left(deadline, 90))
         if rc and not DRYRUN:
             raise Reject("acme.sh is not installed, and its installer could not be downloaded from %s (curl rc %d: %s) — "
                          "does this box reach GitHub? %s" % (ACME_GET_URL, rc, _last_line(out), _acme_manual(email)))
-        rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=180)
+        rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=_left(deadline, 180))
     finally:
         if not DRYRUN:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -455,7 +473,7 @@ def _acme_install(email):
             "will NOT renew on its own. Fix: %s --install-cronjob --home %s" % (acme, ACME_HOME))
     m = re.search(r"(\d+)\.(\d+)\.(\d+)", run([acme, "--version"], timeout=30)[1])
     if m and tuple(int(x) for x in m.groups()) < ACME_MIN:
-        if run(acme_argv(acme, "--upgrade"), env=env, timeout=180)[0]:
+        if run(acme_argv(acme, "--upgrade"), env=env, timeout=_left(deadline, 180))[0]:
             log(LOG_WARNING, "acme.sh %s is older than %s and could not be upgraded — continuing on it"
                 % (".".join(m.groups()), ".".join(map(str, ACME_MIN))))
     log(LOG_NOTICE, "acme.sh installed at %s" % acme)

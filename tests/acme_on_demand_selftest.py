@@ -42,14 +42,14 @@ PLANTS = [
      "    missing = []\n    if not missing:", "[1] the steps in order: cron + curl from apt, the fetch, the installer, the renewal entry, the floor, the order"),
     ("home", "NETCTL", "    env = dict(os.environ, HOME=pwd.getpwuid(0).pw_dir, LE_WORKING_DIR=ACME_HOME)",
      "    env = dict(os.environ)", "[1] the installer runs with HOME=/root and LE_WORKING_DIR=<the store>"),
-    ("cwd", "NETCTL", 'rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=180)',
-     'rc, out = run(["sh", script, "email=" + email], env=env, timeout=180)',
+    ("cwd", "NETCTL", 'rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=_left(deadline, 180))',
+     'rc, out = run(["sh", script, "email=" + email], env=env, timeout=_left(deadline, 180))',
      "[1] …in a fresh temp dir (installOnline unpacks into its cwd), gone afterwards"),
     ("cleanup", "NETCTL", "        if not DRYRUN:\n            shutil.rmtree(tmp, ignore_errors=True)", "        pass",
      "[1] …in a fresh temp dir (installOnline unpacks into its cwd), gone afterwards"),
     ("cronjob", "NETCTL", '    run(acme_argv(acme, "--install-cronjob"), env=env, timeout=30)\n', "",
      "[1] the steps in order: cron + curl from apt, the fetch, the installer, the renewal entry, the floor, the order"),
-    ("floor", "NETCTL", '        if run(acme_argv(acme, "--upgrade"), env=env, timeout=180)[0]:', "        if False:",
+    ("floor", "NETCTL", '        if run(acme_argv(acme, "--upgrade"), env=env, timeout=_left(deadline, 180))[0]:', "        if False:",
      "[1] an acme.sh older than 3.1.4 → --upgrade, before the order"),
     ("offline", "NETCTL", "        if rc and not DRYRUN:\n            raise Reject(\"acme.sh is not installed, and its installer could not be downloaded",
      "        if False:\n            raise Reject(\"acme.sh is not installed, and its installer could not be downloaded",
@@ -68,10 +68,15 @@ PLANTS = [
     ("wait", "PANEL", 'def _place_cert(deps, service, domain, reload_flag="reload", timeout=300):',
      'def _place_cert(deps, service, domain, reload_flag="reload", timeout=180):',
      "[3] _place_cert waits ≥ 300 s (the first issuance may install acme.sh)"),
-    ("dedupe", "NETCTL", '_ACME_CANDIDATES = tuple(dict.fromkeys(("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",\n'
-                         '                                        os.path.expanduser("~/.acme.sh/acme.sh"))))',
-     '_ACME_CANDIDATES = ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",\n                    os.path.expanduser("~/.acme.sh/acme.sh"))',
+    ("dedupe", "NETCTL", '    return tuple(dict.fromkeys((os.path.join(ACME_HOME, "acme.sh"),) + _ACME_CANDIDATES))',
+     '    return (os.path.join(ACME_HOME, "acme.sh"),) + _ACME_CANDIDATES',
      "[4] the message names /root/.acme.sh once (under root `~` is /root)"),
+    # review F2: the store the installer was pointed at is where the program is looked for
+    ("store", "NETCTL", "    for a in _acme_paths():", "    for a in _ACME_CANDIDATES:",
+     "[1] no acme.sh: installed, then the certificate ordered"),
+    # review F1: the network steps share one budget, so the panel hears this helper's answer, not its own timeout
+    ("budget", "NETCTL", "    deadline = time.monotonic() + ACME_INSTALL_BUDGET\n", "    deadline = time.monotonic() + 10 ** 6\n",
+     "[1] the install's network steps share one budget: a slow installer is stopped when it runs out, and the Reject says so"),
 ]
 
 if "--perturb" in sys.argv:
@@ -117,7 +122,7 @@ _l = importlib.machinery.SourceFileLoader("netctl_aod", PATHS["NETCTL"])
 N = importlib.util.module_from_spec(importlib.util.spec_from_loader("netctl_aod", _l))
 _l.exec_module(N)
 os.environ["HOME"] = _h
-SHIPPED_CANDIDATES = N._ACME_CANDIDATES
+SHIPPED_CANDIDATES, SHIPPED_BUDGET = N._ACME_CANDIDATES, N.ACME_INSTALL_BUDGET
 
 # ── the sandbox ──────────────────────────────────────────────────────────────────────────────────────────────────────
 LOG = os.path.join(SB, "calls.log")
@@ -155,6 +160,7 @@ GETACME_STUB = r'''#!/bin/sh
 echo "installer $* HOME=$HOME LE_WORKING_DIR=${LE_WORKING_DIR:-} PWD=$PWD" >> "$AOD_LOG"
 echo partial > ./master.tar.gz
 command -v crontab >/dev/null 2>&1 || { echo "Pre-check failed, cannot install."; echo "Install error"; exit 0; }
+[ -n "${AOD_INSTALL_SLEEP:-}" ] && sleep "$AOD_INSTALL_SLEEP"
 [ -n "${AOD_INSTALL_NOTHING:-}" ] && { echo "Download error."; echo "Install error"; exit 0; }
 home="${LE_WORKING_DIR:-$HOME/.acme.sh}"
 mkdir -p "$home" && cp "$AOD_STUBS/acme.sh" "$home/acme.sh" && chmod 755 "$home/acme.sh"
@@ -179,7 +185,7 @@ for name, body in (("crontab", CRONTAB_STUB), ("apt-get", APT_STUB), ("systemctl
     with open(os.path.join(STUBS, name), "w") as f:
         f.write(body)
     os.chmod(os.path.join(STUBS, name), 0o755)
-TOOLS = ("sh", "cat", "cp", "chmod", "mkdir", "grep", "printf")
+TOOLS = ("sh", "cat", "cp", "chmod", "mkdir", "grep", "printf", "sleep")
 
 
 def sandbox(cron=False, curl=True, apt=True, acme=False, **env):
@@ -203,7 +209,8 @@ def sandbox(cron=False, curl=True, apt=True, acme=False, **env):
     os.environ.update(PATH=bindir, AOD_LOG=LOG, AOD_BIN=bindir, AOD_STUBS=STUBS, AOD_CRONTAB=os.path.join(box, "crontab"),
                       LE_WORKING_DIR=store, **{"AOD_" + k.upper(): v for k, v in env.items()})
     N.ACME_HOME = store
-    N._ACME_CANDIDATES = (os.path.join(store, "acme.sh"),)
+    N._ACME_CANDIDATES = (os.path.join(box, "decoy", "acme.sh"),)   # the store itself must be where it is looked for
+    N.ACME_INSTALL_BUDGET = SHIPPED_BUDGET
     N.DRYRUN = False
     tempfile.tempdir = tmp
     open(LOG, "w").close()
@@ -287,6 +294,16 @@ err, calls, _ = issue(["new.example.com"])
 check("[1] an installer that installs nothing (get.acme.sh exits 0 anyway): the Reject, no order",
       "its installer did not install it (Install error)" in err and "curl -fsSL https://get.acme.sh | sh -s email=" in err
       and idx(calls, r"--issue") < 0, (err, calls))
+
+box, store, tmp = sandbox(cron=True, install_sleep="6")
+N.ACME_INSTALL_BUDGET = 2
+t0 = __import__("time").monotonic()
+err, calls, _ = issue(["new.example.com"])
+took = __import__("time").monotonic() - t0
+check("[1] the install's network steps share one budget: a slow installer is stopped when it runs out, and the Reject says so",
+      took < 5 and "stopped: still running after" in err and "curl -fsSL https://get.acme.sh | sh -s email=" in err
+      and idx(calls, r"--issue") < 0, (round(took, 1), err, calls))
+check("[5] the budget leaves the order room inside the panel's 300 s wait", 0 < SHIPPED_BUDGET <= 180, SHIPPED_BUDGET)
 
 box, store, tmp = sandbox(cron=True, acme_ver="3.1.2")
 err, calls, _ = issue(["new.example.com"])
@@ -372,7 +389,7 @@ check("[3] _place_cert waits ≥ 300 s (the first issuance may install acme.sh)"
 
 # ── [4] the message ──────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] the \"not found\" message")
-N._ACME_CANDIDATES = SHIPPED_CANDIDATES
+N._ACME_CANDIDATES, N.ACME_HOME = SHIPPED_CANDIDATES, "/root/.acme.sh"   # the shipped list, the shipped store
 _loc = N._locate_acme
 N._locate_acme = lambda: None
 try:
@@ -381,8 +398,9 @@ except N.Reject as e:
     msg = str(e)
 N._locate_acme = _loc
 check("[4] the message names /root/.acme.sh once (under root `~` is /root)",
-      msg.count("/root/.acme.sh/acme.sh") == 1 and "/opt/acme.sh/acme.sh" in msg
-      and len(set(SHIPPED_CANDIDATES)) == len(SHIPPED_CANDIDATES), (msg, SHIPPED_CANDIDATES))
+      msg.count("/root/.acme.sh/acme.sh") == 1 and "/opt/acme.sh/acme.sh" in msg, (msg, SHIPPED_CANDIDATES))
+N.ACME_HOME = "/opt/le"
+check("[4] …and names a store set elsewhere (ACME_HOME), first", N._acme_paths()[0] == "/opt/le/acme.sh", N._acme_paths())
 
 # ── [5] parity with the installer ────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] the same steps as install-host.sh's ensure_acme")
