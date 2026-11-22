@@ -121,7 +121,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "rt-prohibit":  ('            return any(ln.split()[:1] == ["default"] for ln in _rt.splitlines())',
                      '            return "default" in _rt'),
     "withhold-down":('        return dev in _dxnogw or _lst[dev][0] != "up"', '        return dev in _dxnogw'),
-    "rp-gate":      ('        if fwd or smart_e or exit_ or arr_exit:', '        if fwd or smart_e or exit_:'),
+    "rp-gate":      ('    if _drift and (fwd or smart_e or exit_ or arr_exit):', '    if _drift and (fwd or smart_e or exit_):'),   # 9502fe61
     "status-stale": ('if d in (_P2P.get("route_down") or ()) or _devexit_state(d) != "up"}) if _r else []', 'if d in (_P2P.get("route_down") or ())}) if _r else []'),
     "route-stale":  ('        _P2P.update(route="", route_dev="", route_devs=[], route_down=[], fwd=[])', '        pass'),
     "read-table":   ('            cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")',

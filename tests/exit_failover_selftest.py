@@ -135,7 +135,8 @@ PLANTS = {
     "--perturb-adopted-mesh": ('or dev in mine or dev in managed or dev.startswith("swg_"):', 'or dev in mine:'),
     "--perturb-adopted-idle": ("or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S)", "or True)"),
     "--perturb-adopted-pop": ("            _EXIT_HEALTH.pop(k, None); _EXIT_PROBED_AT.pop(k, None)", "            pass"),
-    "--perturb-reap-pop": ("                    _m.pop(od, None)", "                    pass"),
+    "--perturb-reap-pop": ("                _mqx_forget(od, _EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT, _EXIT_OFF_V6)",
+                           "                pass"),   # the reap's pops moved into _mqx_forget (1fe053e8)
     "--perturb-adopted-snap": ("        out.append(dict(e, no_traffic=nt) if nt else e)", "        out.append(e)"),
     "--perturb-adopted-batch": ("+ [(d, {}) for d, due in _ad if due])", ")"),
     "--perturb-reach-tls": ("            t.do_handshake()\n            return True", "            return True"),
