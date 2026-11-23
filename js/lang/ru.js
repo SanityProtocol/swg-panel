@@ -3400,6 +3400,8 @@ export const STR = {
   "This exit has stopped carrying traffic, so everything that uses it goes out through its backup, {v1}. It moves back by itself once the exit works again.":
     "Этот выход перестал пропускать трафик, поэтому всё, что идёт через него, уходит через его запасной выход {v1}. Трафик сам вернётся обратно, как только выход снова заработает.",
   "(off)": "(выключен)",
+  "On: if this exit stops working (and its backups too, if it has any), traffic using it is refused. Off: it falls back to this node's own address.":
+    "Включено: если выход перестанет работать (и его запасные тоже, если они есть), трафик через него получит отказ. Выключено — он уйдёт своим адресом этой ноды.",
   "If this exit fails, use": "Если этот выход упадёт, использовать",
   "If that one fails too": "Если упадёт и он",
   "No backup": "Без запасного",
@@ -3582,10 +3584,6 @@ export const STR = {
   // The two switches on the exits grid. «Отказ» not «блокировка» — the traffic is refused, not filtered;
   // «своим адресом» is the whole point of the off state. For Active, «аккаунт и ключи сохраняются» is the
   // fact that had to be said: this is the switch that once destroyed the account it claimed to pause.
-  "On: if this exit stops working, traffic using it is refused. Off: it falls back to this node's own address.":
-    "Включено: если выход перестанет работать, трафик через него получит отказ. Выключено — он уйдёт своим адресом этой ноды.",
-  "On: if this exit stops working and none of its backups is up, traffic using it is refused. Off: it falls back to this node's own address.":
-    "Включено: если выход перестанет работать и ни один его запасной не поднят, трафик через него получит отказ. Выключено — он уйдёт своим адресом этой ноды.",
   "Off pauses this exit — its account and keys are kept, and anything pointing at it stays pointed at it and uses the node's default meanwhile.":
     "Выключение ставит выход на паузу: аккаунт и ключи сохраняются, всё, что на него указывает, продолжает на него указывать и пока идёт через выход ноды по умолчанию.",
   // A node whose swg-noded predates the exits feature. «Слишком старая» about the software, not the box —

@@ -425,8 +425,11 @@ N._EXITS["dialin"] = _dl
 print("[11] the P2P route follows, and its drop allows every member")
 _cap = []
 _p2p_nft = N._p2p_nft
-N._p2p_nft = lambda mode, strict, oif, *a, **kw: (_cap.append((mode, list(oif), [g.get("oif") for g in kw.get("groups") or []])),
-                                                  _p2p_nft(mode, strict, oif, *a, **kw))[1]
+def _p2p_cap(mode, strict, oif, *a, **kw):
+    t = _p2p_nft(mode, strict, oif, *a, **kw)
+    _cap.append((mode, list(oif), [g.get("oif") for g in kw.get("groups") or []], t))
+    return t
+N._p2p_nft = _p2p_cap
 _sm = {"p2p": {"action": "route", "entry": {"table": T, "via_iface": DA, "subnets": [S]}}}
 # a P2P route out of an exit is a RULE-scoped plan entry (cascade_plan's p2p_items): no `from S` route of its own, so the
 # table's default comes from the P2P route alone — the one this checks
@@ -443,6 +446,12 @@ del _cap[:]
 pas(K11, _p11, smart=_sm)
 check("the owner carrying: the same list — a move reloads nothing, so the guard keeps its flags (review F21)",
       _cap and _cap[-1][1] == [DA, DB, DC], _cap[-1:])
+_t_up = _cap[-1][3] if _cap else None
+set_state(N, K11, {DA: "dead", DB: "up", DC: "up"})
+del _cap[:]
+pas(K11, _p11, smart=_sm)
+check("…the guard's whole table text is the same across the move — the one thing that would reload it (review F27)",
+      _cap and _t_up is not None and _cap[-1][3] == _t_up, (_t_up or "")[:80])
 del _cap[:]
 pas(Kernel({}), plan(xb=None), smart=_sm)
 check("without backups: the owner alone, as today", _cap and _cap[-1][1] == [DA], _cap[-1:])
