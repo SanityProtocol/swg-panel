@@ -18,7 +18,8 @@ Panel (the real /api/nodes/update door and the real _node_sync_apply, on a temp 
   [3p] a proxy busy at the move follows later (§21.3): the old address is kept (`endpoint_host_prev`); a proxy stopped
        then started is moved on the next sync, with its own event; a pending install's address is rewritten at the move;
        a proxy asked once is not asked again inside FO_TP_RETRY, and after INGRESS_TP_TRIES asks it is given up with one
-       event; the kept addresses are a list (a proxy stopped across two moves still follows) and a later move asks at once;
+       event; the kept addresses are a list (a proxy stopped across two moves still follows); every move and every pin
+       forgets the node's asks, so a later move asks at once — moving BACK to an address given up on included;
        nothing while the old address is back on the box or the node reports no addresses; a pin clears the flag and the
        kept addresses; the fingerprint leaves the kept addresses out (review F4)
   [4] no public address reported (NAT, or the node said nothing) → nothing moves, never to ""; a carrier-NAT /
@@ -39,7 +40,7 @@ Run: python3 tests/ingress_auto_selftest.py   (0 = pass)
      --perturb-pin · --perturb-ifaces · --perturb-event · --perturb-publish · --perturb-cgnat · --perturb-unchanged ·
      --perturb-servers · --perturb-proxies · --perturb-stopped · --perturb-inflight · --perturb-installing ·
      --perturb-pinonly · --perturb-evnames · --perturb-later · --perturb-retry · --perturb-prevback · --perturb-nonips ·
-     --perturb-pending · --perturb-prevpin · --perturb-laterev · --perturb-prevlist · --perturb-cap · --perturb-target ·
+     --perturb-pending · --perturb-prevpin · --perturb-laterev · --perturb-prevlist · --perturb-cap · --perturb-forget · --perturb-pinforget ·
      --perturb-fpx · --perturb-quitev · --perturb-evaddr · --perturb-draft · --perturb-sheet —
      each plants one regression (PLANTS below), RED.
 """
@@ -88,13 +89,15 @@ PLANTS = {
     "--perturb-nonips": ("P", 'node.get("endpoint_host_auto") and nips) or not', 'node.get("endpoint_host_auto")) or not'),
     "--perturb-prevlist": ("P", ' + [a for a in _ingress_prev(node) if a not in (old, pub)][:INGRESS_PREV_KEEP - 1]', ""),
     "--perturb-cap": ("P", "        if n >= INGRESS_TP_TRIES:", "        if False:"),
-    "--perturb-target": ("P", "        k = (nid, svc, new) ", "        k = (nid, svc) "),
+    "--perturb-forget": ("P", "[:INGRESS_PREV_KEEP - 1]\n    _ingress_forget(nid)\n", "[:INGRESS_PREV_KEEP - 1]\n"),
+    "--perturb-pinforget": ("P", "# …and what Auto moved away from (§21.3)\n                    _ingress_forget(nid)",
+                            "# …and what Auto moved away from (§21.3)\n                    pass"),
     "--perturb-fpx": ("P", '    ("endpoint_host_prev",      "Auto', '    ("endpoint_host_prev_x",    "Auto'),
     "--perturb-quitev": ("P", '                    ev_append(Handler.deps["roster_path"], "node", nid, "Could not move turn-proxy to the ingress address",',
                          '                    (lambda *a, **k: None)(Handler.deps["roster_path"], "node", nid, "Could not move turn-proxy to the ingress address",'),
     "--perturb-evaddr": ("P", '"→ %s (%s)" % (node.get("endpoint_host"), ", ".join(_tq)))', '", ".join(_tq))'),
     "--perturb-pending": ("P", '                req["listen"] = "%s:%s" % (pub, p)\n', "                pass\n"),
-    "--perturb-prevpin": ("P", '                _nd.pop("endpoint_host_prev", None)', "                pass"),
+    "--perturb-prevpin": ("P", '                if _nd.pop("endpoint_host_prev", None) is not None:', '                if _nd.get("endpoint_host_prev") is None:'),
     "--perturb-laterev": ("P", '                    ev_append(Handler.deps["roster_path"], "node", nid, "Moving turn-proxy to the ingress address",',
                           '                    (lambda *a, **k: None)(Handler.deps["roster_path"], "node", nid, "Moving turn-proxy to the ingress address",'),
     "--perturb-draft": ("S", 'endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),', 'endpoint_host: n.endpoint_host || "",'),
@@ -379,13 +382,35 @@ for _ in range(N):
 r = rec(deps)
 check("a second move keeps both addresses it left, newest first", r.get("endpoint_host") == C1
       and r.get("endpoint_host_prev") == [B1, A1], r.get("endpoint_host_prev"))
-check("a later move asks at once, to the new address (the retry window is per target)",
+check("a later move asks at once, to the new address (a new move forgets the last one's asks)",
       ((r.get("turn") or {}).get(S10) or {}).get("listen") == C1 + ":56010", r.get("turn"))
 sync(deps, [C1], turn_proxies=[{"service": S11, "listen": A1 + ":56011", "running": True}])
 check("a proxy stopped across both moves follows when started", ((rec(deps).get("turn") or {}).get(S11) or {}).get("listen")
       == C1 + ":56011", rec(deps).get("turn"))
 check("the fingerprint leaves the kept addresses out (Auto's bookkeeping, not configuration)",
       "endpoint_host_prev" in P._FP_EXCLUDE_PATS)
+deps = fixture("t3r", endpoint_host=A1, endpoint_host_auto=True)
+mod_for(deps)
+TP3 = [{"service": S10, "listen": A1 + ":56010", "running": True}]
+def fails(ips):                                           # the node takes the ask and never applies it
+    edit(deps, lambda n: (n.get("turn") or {}).pop(S10, None)); age_tries(); sync(deps, ips, turn_proxies=TP3)
+for _ in range(N):
+    sync(deps, [B1], turn_proxies=TP3)
+for _ in range(3):
+    fails([B1])
+check("asked three times to B, then given up", len(gaveup(deps)) == 1 and S10 not in (rec(deps).get("turn") or {}),
+      (gaveup(deps), rec(deps).get("turn")))
+check("the retry memory holds one entry per proxy of the node", [k for k in P._INGRESS_TP_TRIED if k[0] == X] == [(X, S10)],
+      sorted(P._INGRESS_TP_TRIED))
+for _ in range(N):
+    sync(deps, [C1], turn_proxies=TP3)
+edit(deps, lambda n: (n.get("turn") or {}).pop(S10, None))
+for _ in range(N):
+    sync(deps, [B1], turn_proxies=TP3)                    # the pool hands B out again
+check("moving BACK to an address given up on asks again at once",
+      ((rec(deps).get("turn") or {}).get(S10) or {}).get("listen") == B1 + ":56010", rec(deps).get("turn"))
+save(deps, A2)
+check("a pin forgets the node's asks", not [k for k in P._INGRESS_TP_TRIED if k[0] == X], sorted(P._INGRESS_TP_TRIED))
 
 print("[4] no public address reported → nothing moves, never to \"\"")
 deps = fixture("t4", endpoint_host=A1, endpoint_host_auto=True)

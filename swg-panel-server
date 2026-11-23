@@ -17543,6 +17543,7 @@ def _ingress_follow(nid, node, snap):
     # rewritten here, port kept, and its "Listen on" pin with it (a failover mirror follows by FO_TURN_FOLLOW); each one
     # moved restarts once on the node, so it is named in the move's event. A vk-turn-proxy is the node's: _ingress_proxies.
     node["endpoint_host_prev"] = [old] + [a for a in _ingress_prev(node) if a not in (old, pub)][:INGRESS_PREV_KEEP - 1]
+    _ingress_forget(nid)
     moved = []
     for kind in ("wdtt", "csqtt"):
         for name, inst in (node.get(kind) or {}).items():
@@ -17569,8 +17570,16 @@ def _ingress_follow(nid, node, snap):
 
 
 INGRESS_PREV_KEEP = 8        # addresses an Auto ingress moved away from, kept for the proxies (newest first)
-INGRESS_TP_TRIES = 3         # asks per proxy and target address before giving up (one event says so)
-_INGRESS_TP_TRIED = {}       # (nid, service, target) → (when last asked, how many times) — memory only
+INGRESS_TP_TRIES = 3         # asks per proxy and move before giving up (one event says so)
+_INGRESS_TP_TRIED = {}       # (nid, service) → (when last asked, how many times) for the CURRENT move — memory only;
+                             # emptied for the node at every move and every pin (_ingress_forget), so it stays small
+
+
+def _ingress_forget(nid):
+    """A new move — or a pin, which ends Auto — starts every proxy's asks afresh: moving back to an address left earlier
+    (a DHCP pool hands it out again) is a new question, not one already given up on."""
+    for k in [k for k in _INGRESS_TP_TRIED if k[0] == nid]:
+        _INGRESS_TP_TRIED.pop(k, None)
 
 
 def _ingress_prev(node):
@@ -17587,8 +17596,8 @@ def _ingress_proxies(nid, node, snap):
     box, gets one, to the node's current ingress address, port kept. Every sync, not only the move's: a proxy that was
     stopped (the node answers `manage` with a restart), installing, mid-request or unreported at the move is moved when it
     is next seen fit. One that was asked and did not move (a `manage` that failed, or a reply the node never got) is asked
-    again only after FO_TP_RETRY, the mirror pass's window, and at most INGRESS_TP_TRIES times for one target address —
-    never a restart a minute, never for ever. Returns (services asked, services given up on now)."""
+    again only after FO_TP_RETRY, the mirror pass's window, and at most INGRESS_TP_TRIES times per move — never a restart
+    a minute, never for ever. Returns (services asked, services given up on now)."""
     new = (node.get("endpoint_host") or "").strip()
     nips = snap.get("node_ips") or []
     gone = [a for a in _ingress_prev(node) if a not in nips and a != new]   # an address back on the box works as it is
@@ -17604,7 +17613,7 @@ def _ingress_proxies(nid, node, snap):
         if not (mv_l or mv_pin) or tp.get("stopped") or tp.get("installing") or not _TURN_SVC_RE.match(svc) \
                 or svc in (node.get("turn") or {}):
             continue
-        k = (nid, svc, new)                       # per target: a later move is a new question, asked at once
+        k = (nid, svc)                            # this move's asks (a new move forgets them: asked at once)
         at, n = _INGRESS_TP_TRIED.get(k, (0, 0))
         if n >= INGRESS_TP_TRIES:                 # given up: said once, then left to the operator's Edit
             if n == INGRESS_TP_TRIES and now_ - at >= FO_TP_RETRY:
@@ -33164,7 +33173,8 @@ def api(method, path, qs, body, deps):
             if _eh_in:
                 _nd["endpoint_host"] = _eh_in
                 _nd.pop("endpoint_host_auto", None)
-                _nd.pop("endpoint_host_prev", None)      # …and what Auto moved away from (§21.3)
+                if _nd.pop("endpoint_host_prev", None) is not None:   # …and what Auto moved away from (§21.3)
+                    _ingress_forget(nid)
             elif _nd.get("endpoint_host_auto"):
                 pass        # already Auto: a "" again (the picker, another tab, an API client) changes nothing — only the sync moves it
             elif (_nd.get("endpoint_host") or "").strip():
