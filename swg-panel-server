@@ -17513,8 +17513,9 @@ def _ingress_follow(nid, node, snap):
     syncs in a row, so a transient report cannot re-point the mesh and every config issued after it. Only AWAY from a gone
     address: a list that reorders, or a new address that sorts first, leaves a working one alone. The interfaces' own copies
     of the old address move with it (the create sheet copies the node's address in, and an interface's own outranks the
-    node's in apply_iface_meta), and so do the servers' (below). Returns (old, new, [servers moved]) when it moved, else
-    None. Called under _api_lock."""
+    node's in apply_iface_meta), and so do the servers' (below). The old address is kept as `endpoint_host_prev` for the
+    proxies, which _ingress_proxies moves (this sync and later ones). Returns (old, new, [servers moved]) when it moved,
+    else None. Called under _api_lock."""
     if not node.get("endpoint_host_auto"):
         _INGRESS_SEEN.pop(nid, None)
         return None
@@ -17535,10 +17536,9 @@ def _ingress_follow(nid, node, snap):
             ov["endpoint_host"] = pub
     # …and the servers' own copies (§21.2): what their links print. Since 1.8.9 a `listen` host the box no longer has binds
     # every address, so they still ANSWER — only the address they hand out is dead. A WDTT / csqtt record is the panel's:
-    # rewritten here, port kept, and its "Listen on" pin with it (a failover mirror follows by FO_TURN_FOLLOW). A
-    # vk-turn-proxy is the node's: the Edit sheet's own `manage` request, once — never for a stopped one (the node answers
-    # `manage` with a restart), one still installing, or over a request already in flight (the mirror pass's rules, _FoTP).
-    # Each server moved is named in the move's event: each restarts once on the node.
+    # rewritten here, port kept, and its "Listen on" pin with it (a failover mirror follows by FO_TURN_FOLLOW); each one
+    # moved restarts once on the node, so it is named in the move's event. A vk-turn-proxy is the node's: _ingress_proxies.
+    node["endpoint_host_prev"] = old
     moved = []
     for kind in ("wdtt", "csqtt"):
         for name, inst in (node.get(kind) or {}).items():
@@ -17552,24 +17552,54 @@ def _ingress_follow(nid, node, snap):
                 inst["bind_ip"] = pub
             if mv_l or mv_pin:
                 moved.append(str(name))
-    if _turn_can_manage(snap):
-        for tp in snap.get("turn_proxies") or []:
-            if not isinstance(tp, dict):
-                continue
-            svc = str(tp.get("service") or "")
-            h, p = _hostport_split(str(tp.get("listen") or ""))
-            mv_l, mv_pin = bool(h == old and p), str(tp.get("bind_ip") or "").strip() == old
-            if not (mv_l or mv_pin) or tp.get("stopped") or tp.get("installing") or not _TURN_SVC_RE.match(svc) \
-                    or svc in (node.get("turn") or {}):
-                continue
-            rq = {"action": "manage", "at": int(time.time())}
-            if mv_l:
-                rq["listen"] = "%s:%s" % (pub, p)
-            if mv_pin:
-                rq["bind_ip"] = pub
-            node.setdefault("turn", {})[svc] = rq
-            moved.append(svc)
+    # a proxy install / edit still waiting for the node carries the old address too: the panel's own record, rewritten in
+    # place (no new request, no restart) — §21.3, review F5
+    for req in (node.get("turn") or {}).values():
+        if isinstance(req, dict) and req.get("action") in ("install", "manage"):
+            h, p = _hostport_split(str(req.get("listen") or ""))
+            if h == old and p:
+                req["listen"] = "%s:%s" % (pub, p)
+            if str(req.get("bind_ip") or "").strip() == old:
+                req["bind_ip"] = pub
     return old, pub, moved
+
+
+_INGRESS_TP_TRIED = {}       # (nid, service) → when _ingress_proxies last asked it to move — memory only
+
+
+def _ingress_proxies(nid, node, snap):
+    """THE PROXIES FOLLOW AN AUTO MOVE (1.8.12 item 21 §21.2–21.3). A vk-turn-proxy is the node's — the panel stores nothing
+    about it — so it moves by the Edit sheet's own `manage` request: each one the node reports with its listen host or its
+    "Listen on" pin on the address Auto moved away from (`endpoint_host_prev`), while that address is still gone from the
+    box, gets one, to the node's current ingress address, port kept. Every sync, not only the move's: a proxy that was
+    stopped (the node answers `manage` with a restart), installing, mid-request or unreported at the move is moved when it
+    is next seen fit. One that was asked and did not move (a `manage` that failed, or a reply the node never got) is asked
+    again only after FO_TP_RETRY, the mirror pass's window — never a restart a minute. Returns the services asked."""
+    prev = str(node.get("endpoint_host_prev") or "").strip()
+    new = (node.get("endpoint_host") or "").strip()
+    nips = snap.get("node_ips") or []
+    if not (prev and new and new != prev and node.get("endpoint_host_auto") and nips) or prev in nips \
+            or not _turn_can_manage(snap):
+        return []
+    now_, out = time.time(), []
+    for tp in snap.get("turn_proxies") or []:
+        if not isinstance(tp, dict):
+            continue
+        svc = str(tp.get("service") or "")
+        h, p = _hostport_split(str(tp.get("listen") or ""))
+        mv_l, mv_pin = bool(h == prev and p), str(tp.get("bind_ip") or "").strip() == prev
+        if not (mv_l or mv_pin) or tp.get("stopped") or tp.get("installing") or not _TURN_SVC_RE.match(svc) \
+                or svc in (node.get("turn") or {}) or now_ - _INGRESS_TP_TRIED.get((nid, svc), 0) < FO_TP_RETRY:
+            continue
+        rq = {"action": "manage", "at": int(now_)}
+        if mv_l:
+            rq["listen"] = "%s:%s" % (new, p)
+        if mv_pin:
+            rq["bind_ip"] = new
+        node.setdefault("turn", {})[svc] = rq
+        _INGRESS_TP_TRIED[(nid, svc)] = now_
+        out.append(svc)
+    return out
 
 
 def mesh_advertised_host(snap, iface):
@@ -33112,6 +33142,7 @@ def api(method, path, qs, body, deps):
             if _eh_in:
                 _nd["endpoint_host"] = _eh_in
                 _nd.pop("endpoint_host_auto", None)
+                _nd.pop("endpoint_host_prev", None)      # …and what Auto moved away from (§21.3)
             elif _nd.get("endpoint_host_auto"):
                 pass        # already Auto: a "" again (the picker, another tab, an API client) changes nothing — only the sync moves it
             elif (_nd.get("endpoint_host") or "").strip():
@@ -37880,12 +37911,18 @@ class Handler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         _moved = _ingress_follow(nid, node, snap)        # an Auto ingress follows the box's public IP (item 21)
-        if _moved:
+        _tq = _ingress_proxies(nid, node, snap) if node.get("endpoint_host_prev") else []   # …and so do its proxies (§21.3)
+        if _moved or _tq:
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
             with contextlib.suppress(Exception):
-                ev_append(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",
-                          node.get("name", nid), "%s → %s" % _moved[:2] + (" (%s)" % ", ".join(_moved[2]) if _moved[2] else ""))
+                if _moved:                               # every server it restarts is named: the records and the proxies
+                    _all = _moved[2] + _tq
+                    ev_append(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",
+                              node.get("name", nid), "%s → %s" % _moved[:2] + (" (%s)" % ", ".join(_all) if _all else ""))
+                else:                                    # a proxy moved after the move (it was stopped or busy then)
+                    ev_append(Handler.deps["roster_path"], "node", nid, "Moved turn-proxy to the ingress address",
+                              node.get("name", nid), ", ".join(_tq))
         if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
         # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the

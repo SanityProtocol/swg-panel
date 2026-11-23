@@ -6573,6 +6573,7 @@ export const STR = {
   "Installed turn-proxy": "Установлен turn-прокси",
   "Linked node": "Ноды связаны",
   "Ingress address followed the public IP": "Адрес входа перешёл на новый внешний IP",
+  "Moved turn-proxy to the ingress address": "Turn-прокси перенесён на адрес входа",
   "Removed unused mesh links": "Неиспользуемые меш-линки удалены",
   "{count} · on demand, {nodes}": "{count} · по требованию, {nodes}",
   "Linked more node pairs": "Связаны ещё пары нод",
