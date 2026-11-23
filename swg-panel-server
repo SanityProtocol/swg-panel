@@ -17488,6 +17488,21 @@ def node_public_ip(snap):
     return ""
 
 
+def _ingress_ip(snap):
+    """The address an Auto ingress takes (1.8.12 item 21): the node's first GLOBALLY routable IPv4. Stricter than
+    node_public_ip, which also passes 100.64.0.0/10 (a carrier NAT or a Tailscale address — Python calls it neither private
+    nor global): Auto that landed there while the box's public NIC was renumbering would never move on, since the address
+    stays on the box. node_public_ip is left as it is for the fill-once and the mesh, which work on such nodes today."""
+    for ip in (snap or {}).get("node_ips") or []:
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if a.version == 4 and a.is_global:
+            return ip
+    return ""
+
+
 INGRESS_FOLLOW_SYNCS = 6     # syncs in a row (~30 s at the 5 s interval) an Auto address must be gone before it moves
 _INGRESS_SEEN = {}           # nid → (the public IP waiting, syncs seen) — memory only; a restart just counts again
 
@@ -17503,7 +17518,7 @@ def _ingress_follow(nid, node, snap):
         _INGRESS_SEEN.pop(nid, None)
         return None
     old = (node.get("endpoint_host") or "").strip()
-    pub = node_public_ip(snap)
+    pub = _ingress_ip(snap)
     if not (old and pub and old != pub and old not in (snap.get("node_ips") or [])):
         _INGRESS_SEEN.pop(nid, None)
         return None
@@ -33064,7 +33079,7 @@ def api(method, path, qs, body, deps):
                 pass        # already Auto: every Settings save of this node posts "" — the sync alone moves the address
             elif (_nd.get("endpoint_host") or "").strip():
                 _nd["endpoint_host_auto"] = True
-                _nd["endpoint_host"] = (node_public_ip((deps.get("node_snaps") or {}).get(nid))
+                _nd["endpoint_host"] = (_ingress_ip((deps.get("node_snaps") or {}).get(nid))
                                         or (_nd.get("endpoint_host") or "").strip())
             else:
                 _nd["endpoint_host"] = ""

@@ -11,20 +11,23 @@ Panel (the real /api/nodes/update door and the real _node_sync_apply, on a temp 
   [2] already Auto + a Settings save of anything ("" again) → nothing moves, even when the box's first address changed
   [3] the address gone → moves only after 6 syncs in a row, once, with the interfaces' copies and one event;
       a gap of 5 then a return moves nothing; a still-present address never moves
-  [4] no public address reported (NAT, or the node said nothing) → nothing moves, never to ""
+  [4] no public address reported (NAT, or the node said nothing) → nothing moves, never to ""; a carrier-NAT /
+      Tailscale address (100.64.0.0/10) is never taken — not at the pick, not on a follow (review F2/F4)
   [5] an IP or a hostname picked → the flag cleared, nothing follows
   [6] a node never on Auto: "" on an empty record stays "" with no flag (today's fill-once)
   [7] /api/nodes publishes the flag only when set
   [8] the stale-IP Issues line: unchanged — it fires for a pinned gone address
 SPA (source, as shipped):
-  [9] the Settings draft reads "" for an Auto node; the node gear sheet sends no `endpoint_host`
+  [9] the Settings draft reads "" for an Auto node, and its save sends the address only when the draft changed it (a
+      draft taken before the first sync must not pick Auto — review F3); the node gear sheet sends no `endpoint_host`
 Optional:
   [B] SWG_INGRESS_BASE=<commit>: a node never on Auto — the store, the events and the sync reply after a run of syncs and
       a Settings save are byte-identical to that commit's panel.
 
 Run: python3 tests/ingress_auto_selftest.py   (0 = pass)
      --perturb-flag · --perturb-resolve · --perturb-already · --perturb-count · --perturb-gone · --perturb-empty ·
-     --perturb-pin · --perturb-ifaces · --perturb-event · --perturb-publish · --perturb-draft · --perturb-sheet —
+     --perturb-pin · --perturb-ifaces · --perturb-event · --perturb-publish · --perturb-cgnat · --perturb-unchanged ·
+     --perturb-draft · --perturb-sheet —
      each plants one regression (PLANTS below), RED.
 """
 import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, tempfile, time
@@ -40,7 +43,7 @@ for _v in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy"
 # (file, anchor, replacement) — each must match exactly once, or the run would FALSE-PASS
 PLANTS = {
     "--perturb-flag": ("P", '                _nd["endpoint_host_auto"] = True\n', "                pass\n"),
-    "--perturb-resolve": ("P", '                _nd["endpoint_host"] = (node_public_ip((deps.get("node_snaps") or {}).get(nid))\n'
+    "--perturb-resolve": ("P", '                _nd["endpoint_host"] = (_ingress_ip((deps.get("node_snaps") or {}).get(nid))\n'
                                '                                        or (_nd.get("endpoint_host") or "").strip())',
                           '                _nd["endpoint_host"] = (_nd.get("endpoint_host") or "").strip()'),
     "--perturb-already": ("P", '            elif _nd.get("endpoint_host_auto"):\n                pass',
@@ -53,6 +56,10 @@ PLANTS = {
     "--perturb-event": ("P", '                ev_append(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",',
                         '                (lambda *a, **k: None)(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",'),
     "--perturb-publish": ("P", '**({"endpoint_host_auto": True} if c.get("endpoint_host_auto") else {}),', ""),
+    "--perturb-cgnat": ("P", "        if a.version == 4 and a.is_global:",
+                        "        if a.version == 4 and not (a.is_private or a.is_loopback or a.is_link_local):"),
+    "--perturb-unchanged": ("S", '...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),',
+                            'endpoint_host: (e.endpoint_host || "").trim(),'),
     "--perturb-draft": ("S", 'endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),', 'endpoint_host: n.endpoint_host || "",'),
     "--perturb-sheet": ("C", "name: name.trim(), color, mesh_port: ovPort,", "name: name.trim(), color, endpoint_host: node.endpoint_host, mesh_port: ovPort,"),
 }
@@ -208,6 +215,18 @@ check("behind NAT: the address stays", rec(deps).get("endpoint_host") == A1 and 
 for _ in range(N + 2):
     sync(deps, [])
 check("the node said nothing: the address stays", rec(deps).get("endpoint_host") == A1, rec(deps))
+CG = "100.101.2.3"
+for _ in range(N + 2):
+    sync(deps, [CG, "10.0.0.5"])            # the public NIC renumbering; a Tailscale address is all that is left
+check("a carrier-NAT / Tailscale address is not followed", rec(deps).get("endpoint_host") == A1 and not follows(deps), rec(deps))
+for _ in range(N):
+    sync(deps, [CG, B1, "10.0.0.5"])
+check("the new public address is, past the 100.64/10 one listed first", rec(deps).get("endpoint_host") == B1, rec(deps))
+deps = fixture("t4c", endpoint_host="vpn.example.com")
+mod_for(deps)
+deps["node_snaps"][X] = {"node_ips": [CG, A2], "interfaces": {}}
+save(deps, "")
+check("picking Auto resolves past a 100.64/10 address", rec(deps).get("endpoint_host") == A2, rec(deps))
 
 print("[5] an IP or a hostname picked → the flag cleared, nothing follows")
 for pick in (A2, "node.example.com"):
@@ -254,6 +273,10 @@ print("[9] SPA, as shipped")
 sjs = _src(SETTINGS_JS, "S")
 check("the Settings draft reads \"\" for an Auto node (the picker shows Auto; a move is never an edit)",
       'endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),' in sjs)
+check("the Settings save sends the address only when the draft changed it (a pre-sync \"\" must not pick Auto)",
+      '...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),' in sjs
+      and 'endpoint_host: (e.endpoint_host || "").trim(),' not in sjs.replace(
+          '...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),', ""))
 cjs = _src(SHEETS_JS, "C")
 a = cjs.find("export function NodeEditSheet(")
 body = cjs[a:cjs.find("\n}\n", a)] if a >= 0 else ""

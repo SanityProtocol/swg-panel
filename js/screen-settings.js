@@ -2577,7 +2577,10 @@ export function PanelSettingsScreen() {
       // only those edits (setNV), and only they are posted — the followed fields would be refused
       const own = Store.isMirror(n.id) ? FO_NODE_OWN : null;
       if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
-      const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
+      // the ingress address only when this draft changed it: the draft is taken when Settings opens, and "" on a node the sync
+      // has filled since is read as picking Auto (item 21) — an untouched field must not speak
+      const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false,
+        ...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),
         dns_upstream: String(e.dns_upstream || "").split(/[\s,]+/).filter(Boolean),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
