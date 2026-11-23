@@ -11,6 +11,9 @@ Panel (the real /api/nodes/update door and the real _node_sync_apply, on a temp 
   [2] already Auto + a Settings save of anything ("" again) → nothing moves, even when the box's first address changed
   [3] the address gone → moves only after 6 syncs in a row, once, with the interfaces' copies and one event;
       a gap of 5 then a return moves nothing; a still-present address never moves
+  [3s] the servers' own copies (§21.2): a WDTT/csqtt `listen` (and "Listen on" pin) on the old address moves, port kept; a
+       hostname or a wildcard does not; each vk-turn-proxy on it gets one `manage` request — not a stopped one, not one with
+       a request in flight, nothing on a node that cannot manage proxies
   [4] no public address reported (NAT, or the node said nothing) → nothing moves, never to ""; a carrier-NAT /
       Tailscale address (100.64.0.0/10) is never taken — not at the pick, not on a follow (review F2/F4)
   [5] an IP or a hostname picked → the flag cleared, nothing follows
@@ -27,7 +30,7 @@ Optional:
 Run: python3 tests/ingress_auto_selftest.py   (0 = pass)
      --perturb-flag · --perturb-resolve · --perturb-already · --perturb-count · --perturb-gone · --perturb-empty ·
      --perturb-pin · --perturb-ifaces · --perturb-event · --perturb-publish · --perturb-cgnat · --perturb-unchanged ·
-     --perturb-draft · --perturb-sheet —
+     --perturb-servers · --perturb-proxies · --perturb-stopped · --perturb-inflight · --perturb-draft · --perturb-sheet —
      each plants one regression (PLANTS below), RED.
 """
 import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, tempfile, time
@@ -60,6 +63,10 @@ PLANTS = {
                         "        if a.version == 4 and not (a.is_private or a.is_loopback or a.is_link_local):"),
     "--perturb-unchanged": ("S", 'const ehSend = eq(e.endpoint_host, o.endpoint_host) ? undefined : (e.endpoint_host || "").trim();',
                             'const ehSend = (e.endpoint_host || "").trim();'),
+    "--perturb-servers": ("P", '                inst["listen"] = "%s:%s" % (pub, p)\n', "                pass\n"),
+    "--perturb-proxies": ("P", '            node.setdefault("turn", {})[svc] = rq\n', "            pass\n"),
+    "--perturb-stopped": ("P", " or tp.get(\"stopped\") or ", " or "),
+    "--perturb-inflight": ("P", " or svc in (node.get(\"turn\") or {}):", ":"),
     "--perturb-draft": ("S", 'endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),', 'endpoint_host: n.endpoint_host || "",'),
     "--perturb-sheet": ("C", "name: name.trim(), color, mesh_port: ovPort,", "name: name.trim(), color, endpoint_host: node.endpoint_host, mesh_port: ovPort,"),
 }
@@ -125,9 +132,9 @@ class _Sync:
     headers = {}
 
 
-def sync(deps, node_ips, mod=None):
+def sync(deps, node_ips, mod=None, **extra):
     mod = mod or P
-    snap = {"node_ips": list(node_ips), "interfaces": {}}
+    snap = dict({"node_ips": list(node_ips), "interfaces": {}}, **extra)
     deps["node_snaps"][X] = snap
     nodes = json.load(open(deps["nodes_path"]))
     return mod.Handler._node_sync_apply(_Sync(), X, nodes[X], nodes, snap, None)
@@ -205,6 +212,49 @@ mod_for(deps)
 for i in range(N + 2):
     sync(deps, [B1 if i % 2 else A2, "10.0.0.5"])   # the gone address, and a new first one that keeps changing
 check("a new address that does not hold for %d syncs moves nothing" % N, rec(deps).get("endpoint_host") == A1, rec(deps).get("endpoint_host"))
+
+print("[3s] the servers' own copies of the address")
+_srv = {"wdtt": {"wdtt1": {"iface": "wdtt1", "listen": A1 + ":56000", "bind_ip": A1},
+                 "wdtt2": {"iface": "wdtt2", "listen": "0.0.0.0:56004"}},
+        "csqtt": {"csqtt1": {"iface": "csqtt1", "listen": "vpn.example.com:56020"},
+                  "csqtt2": {"iface": "csqtt2", "listen": A1 + ":56002"}},
+        # a request in flight: a fresh `stop` stays until the node reports the proxy stopped (or 30 s)
+        "turn": {"vk-turn-proxy-anton48-56013": {"action": "stop", "at": int(time.time())}}}
+TP = [{"service": "vk-turn-proxy-anton48-56010", "listen": A1 + ":56010", "bind_ip": A1},
+      {"service": "vk-turn-proxy-anton48-56011", "listen": A1 + ":56011", "stopped": True},
+      {"service": "vk-turn-proxy-anton48-56012", "listen": "0.0.0.0:56012"},
+      {"service": "vk-turn-proxy-anton48-56013", "listen": A1 + ":56013"},
+      {"service": "vk-turn-proxy-samosvalishe-56014", "listen": "vpn.example.com:56014"}]
+deps = fixture("t3s", endpoint_host=A1, endpoint_host_auto=True, **copy.deepcopy(_srv))
+mod_for(deps)
+for _ in range(N - 1):
+    sync(deps, [B1], turn_proxies=TP)
+check("before the move: no server touched, no request", rec(deps).get("wdtt") == _srv["wdtt"] and rec(deps).get("turn") == _srv["turn"], rec(deps))
+sync(deps, [B1], turn_proxies=TP)
+r = rec(deps)
+check("WDTT on the old address: listen and its Listen-on pin moved, port kept",
+      r["wdtt"]["wdtt1"].get("listen") == B1 + ":56000" and r["wdtt"]["wdtt1"].get("bind_ip") == B1, r["wdtt"]["wdtt1"])
+check("csqtt on the old address moved; a hostname and a wildcard did not",
+      r["csqtt"]["csqtt2"].get("listen") == B1 + ":56002" and r["csqtt"]["csqtt1"].get("listen") == "vpn.example.com:56020"
+      and r["wdtt"]["wdtt2"].get("listen") == "0.0.0.0:56004", (r["csqtt"], r["wdtt"]["wdtt2"]))
+_t = r.get("turn") or {}
+_q = _t.get("vk-turn-proxy-anton48-56010") or {}
+check("the proxy on the old address gets one `manage` with the new address and its pin",
+      _q.get("action") == "manage" and _q.get("listen") == B1 + ":56010" and _q.get("bind_ip") == B1
+      and set(_q) == {"action", "listen", "bind_ip", "at"}, _q)
+check("no request for a stopped proxy, a wildcard one or a hostname one",
+      not {"vk-turn-proxy-anton48-56011", "vk-turn-proxy-anton48-56012", "vk-turn-proxy-samosvalishe-56014"} & set(_t), sorted(_t))
+check("a request already in flight is left as it is", _t.get("vk-turn-proxy-anton48-56013") == _srv["turn"]["vk-turn-proxy-anton48-56013"],
+      _t.get("vk-turn-proxy-anton48-56013"))
+for _ in range(N + 2):
+    sync(deps, [B1], turn_proxies=TP)            # the node has not applied yet: it still reports the old listen
+check("one-shot: no second request while the node applies", rec(deps).get("turn") == _t and len(follows(deps)) == 1,
+      (rec(deps).get("turn"), follows(deps)))
+deps = fixture("t3t", endpoint_host=A1, endpoint_host_auto=True)
+mod_for(deps)
+for _ in range(N):
+    sync(deps, [B1], turn_proxies=TP, turn_manage=False)
+check("a node that cannot manage proxies gets no request", rec(deps).get("endpoint_host") == B1 and not rec(deps).get("turn"), rec(deps))
 
 print("[4] no public address reported → nothing moves, never to \"\"")
 deps = fixture("t4", endpoint_host=A1, endpoint_host_auto=True)

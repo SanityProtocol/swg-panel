@@ -17532,6 +17532,32 @@ def _ingress_follow(nid, node, snap):
     for ov in (node.get("ifaces") or {}).values():
         if isinstance(ov, dict) and (ov.get("endpoint_host") or "").strip() == old:
             ov["endpoint_host"] = pub
+    # …and the servers' own copies (§21.2): what their links print. Since 1.8.9 a `listen` host the box no longer has binds
+    # every address, so they still ANSWER — only the address they hand out is dead. A WDTT / csqtt record is the panel's:
+    # rewritten here, port kept, and its "Listen on" pin with it (a failover mirror follows by FO_TURN_FOLLOW). A
+    # vk-turn-proxy is the node's: the Edit sheet's own `manage` request, once — never for a stopped one (the node answers
+    # `manage` with a restart) nor over a request already in flight, which the mirror pass's rule also leaves alone.
+    for kind in ("wdtt", "csqtt"):
+        for inst in (node.get(kind) or {}).values():
+            if not isinstance(inst, dict):
+                continue
+            h, p = _hostport_split(str(inst.get("listen") or ""))
+            if h == old and p:
+                inst["listen"] = "%s:%s" % (pub, p)
+            if str(inst.get("bind_ip") or "").strip() == old:
+                inst["bind_ip"] = pub
+    if _turn_can_manage(snap):
+        for tp in snap.get("turn_proxies") or []:
+            if not isinstance(tp, dict):
+                continue
+            svc = str(tp.get("service") or "")
+            h, p = _hostport_split(str(tp.get("listen") or ""))
+            if h != old or not p or tp.get("stopped") or not _TURN_SVC_RE.match(svc) or svc in (node.get("turn") or {}):
+                continue
+            rq = {"action": "manage", "listen": "%s:%s" % (pub, p), "at": int(time.time())}
+            if str(tp.get("bind_ip") or "").strip() == old:
+                rq["bind_ip"] = pub
+            node.setdefault("turn", {})[svc] = rq
     return old, pub
 
 
