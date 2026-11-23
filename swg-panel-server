@@ -11622,6 +11622,9 @@ def _fp_is_unknown(v):
 _FP_EXCLUDE = (
     ("token_hash",              "the lockout itself — rotation is how a rebuild takes over (§1.2)"),
     ("token_sha",               "same, the lookup index for it"),
+    ("endpoint_host_prev",      "Auto's bookkeeping (item 21): the addresses an Auto ingress moved away from, kept so "
+                                "a proxy busy at the move can follow later — not configuration, and a rebuild onto a new "
+                                "box moves it by design"),
     ("rebuild",                 "in-flight ack: the rebuild adapter's own state — the captured turn set "
                                 "and the interfaces it armed, consumed once the box comes back"),
     ("transfer",                "in-flight ack: T-10's candidate — the far panel's address and token, held "
@@ -17514,7 +17517,8 @@ def _ingress_follow(nid, node, snap):
     address: a list that reorders, or a new address that sorts first, leaves a working one alone. The interfaces' own copies
     of the old address move with it (the create sheet copies the node's address in, and an interface's own outranks the
     node's in apply_iface_meta), and so do the servers' (below). The old address is kept as `endpoint_host_prev` for the
-    proxies, which _ingress_proxies moves (this sync and later ones). Returns (old, new, [servers moved]) when it moved,
+    proxies, which _ingress_proxies moves (this sync and later ones) — a short list, newest first, so a proxy that stays
+    stopped across two moves still matches. Returns (old, new, [servers moved]) when it moved,
     else None. Called under _api_lock."""
     if not node.get("endpoint_host_auto"):
         _INGRESS_SEEN.pop(nid, None)
@@ -17538,7 +17542,7 @@ def _ingress_follow(nid, node, snap):
     # every address, so they still ANSWER — only the address they hand out is dead. A WDTT / csqtt record is the panel's:
     # rewritten here, port kept, and its "Listen on" pin with it (a failover mirror follows by FO_TURN_FOLLOW); each one
     # moved restarts once on the node, so it is named in the move's event. A vk-turn-proxy is the node's: _ingress_proxies.
-    node["endpoint_host_prev"] = old
+    node["endpoint_host_prev"] = [old] + [a for a in _ingress_prev(node) if a not in (old, pub)][:INGRESS_PREV_KEEP - 1]
     moved = []
     for kind in ("wdtt", "csqtt"):
         for name, inst in (node.get(kind) or {}).items():
@@ -17564,7 +17568,16 @@ def _ingress_follow(nid, node, snap):
     return old, pub, moved
 
 
-_INGRESS_TP_TRIED = {}       # (nid, service) → when _ingress_proxies last asked it to move — memory only
+INGRESS_PREV_KEEP = 8        # addresses an Auto ingress moved away from, kept for the proxies (newest first)
+INGRESS_TP_TRIES = 3         # asks per proxy and target address before giving up (one event says so)
+_INGRESS_TP_TRIED = {}       # (nid, service, target) → (when last asked, how many times) — memory only
+
+
+def _ingress_prev(node):
+    """`endpoint_host_prev` as a list of addresses (a hand edit or a single string read as one)."""
+    v = node.get("endpoint_host_prev")
+    v = [v] if isinstance(v, str) else (v if isinstance(v, list) else [])
+    return [a.strip() for a in v if isinstance(a, str) and a.strip()]
 
 
 def _ingress_proxies(nid, node, snap):
@@ -17574,22 +17587,31 @@ def _ingress_proxies(nid, node, snap):
     box, gets one, to the node's current ingress address, port kept. Every sync, not only the move's: a proxy that was
     stopped (the node answers `manage` with a restart), installing, mid-request or unreported at the move is moved when it
     is next seen fit. One that was asked and did not move (a `manage` that failed, or a reply the node never got) is asked
-    again only after FO_TP_RETRY, the mirror pass's window — never a restart a minute. Returns the services asked."""
-    prev = str(node.get("endpoint_host_prev") or "").strip()
+    again only after FO_TP_RETRY, the mirror pass's window, and at most INGRESS_TP_TRIES times for one target address —
+    never a restart a minute, never for ever. Returns (services asked, services given up on now)."""
     new = (node.get("endpoint_host") or "").strip()
     nips = snap.get("node_ips") or []
-    if not (prev and new and new != prev and node.get("endpoint_host_auto") and nips) or prev in nips \
-            or not _turn_can_manage(snap):
-        return []
-    now_, out = time.time(), []
+    gone = [a for a in _ingress_prev(node) if a not in nips and a != new]   # an address back on the box works as it is
+    if not (gone and new and node.get("endpoint_host_auto") and nips) or not _turn_can_manage(snap):
+        return [], []
+    now_, out, quit_ = time.time(), [], []
     for tp in snap.get("turn_proxies") or []:
         if not isinstance(tp, dict):
             continue
         svc = str(tp.get("service") or "")
         h, p = _hostport_split(str(tp.get("listen") or ""))
-        mv_l, mv_pin = bool(h == prev and p), str(tp.get("bind_ip") or "").strip() == prev
+        mv_l, mv_pin = bool(h in gone and p), str(tp.get("bind_ip") or "").strip() in gone
         if not (mv_l or mv_pin) or tp.get("stopped") or tp.get("installing") or not _TURN_SVC_RE.match(svc) \
-                or svc in (node.get("turn") or {}) or now_ - _INGRESS_TP_TRIED.get((nid, svc), 0) < FO_TP_RETRY:
+                or svc in (node.get("turn") or {}):
+            continue
+        k = (nid, svc, new)                       # per target: a later move is a new question, asked at once
+        at, n = _INGRESS_TP_TRIED.get(k, (0, 0))
+        if n >= INGRESS_TP_TRIES:                 # given up: said once, then left to the operator's Edit
+            if n == INGRESS_TP_TRIES and now_ - at >= FO_TP_RETRY:
+                _INGRESS_TP_TRIED[k] = (at, n + 1)
+                quit_.append(svc)
+            continue
+        if now_ - at < FO_TP_RETRY:
             continue
         rq = {"action": "manage", "at": int(now_)}
         if mv_l:
@@ -17597,9 +17619,9 @@ def _ingress_proxies(nid, node, snap):
         if mv_pin:
             rq["bind_ip"] = new
         node.setdefault("turn", {})[svc] = rq
-        _INGRESS_TP_TRIED[(nid, svc)] = now_
+        _INGRESS_TP_TRIED[k] = (now_, n + 1)
         out.append(svc)
-    return out
+    return out, quit_
 
 
 def mesh_advertised_host(snap, iface):
@@ -37911,8 +37933,8 @@ class Handler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         _moved = _ingress_follow(nid, node, snap)        # an Auto ingress follows the box's public IP (item 21)
-        _tq = _ingress_proxies(nid, node, snap) if node.get("endpoint_host_prev") else []   # …and so do its proxies (§21.3)
-        if _moved or _tq:
+        _tq, _tquit = _ingress_proxies(nid, node, snap) if node.get("endpoint_host_prev") else ([], [])   # …and its proxies (§21.3)
+        if _moved or _tq or _tquit:
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
             with contextlib.suppress(Exception):
@@ -37920,9 +37942,12 @@ class Handler(BaseHTTPRequestHandler):
                     _all = _moved[2] + _tq
                     ev_append(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",
                               node.get("name", nid), "%s → %s" % _moved[:2] + (" (%s)" % ", ".join(_all) if _all else ""))
-                else:                                    # a proxy moved after the move (it was stopped or busy then)
-                    ev_append(Handler.deps["roster_path"], "node", nid, "Moved turn-proxy to the ingress address",
-                              node.get("name", nid), ", ".join(_tq))
+                elif _tq:                                # a proxy asked after the move (it was stopped or busy then)
+                    ev_append(Handler.deps["roster_path"], "node", nid, "Moving turn-proxy to the ingress address",
+                              node.get("name", nid), "→ %s (%s)" % (node.get("endpoint_host"), ", ".join(_tq)))
+                if _tquit:                               # asked INGRESS_TP_TRIES times and still on the old address
+                    ev_append(Handler.deps["roster_path"], "node", nid, "Could not move turn-proxy to the ingress address",
+                              node.get("name", nid), "→ %s (%s)" % (node.get("endpoint_host"), ", ".join(_tquit)))
         if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
         # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the
