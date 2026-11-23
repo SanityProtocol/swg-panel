@@ -17488,6 +17488,38 @@ def node_public_ip(snap):
     return ""
 
 
+INGRESS_FOLLOW_SYNCS = 6     # syncs in a row (~30 s at the 5 s interval) an Auto address must be gone before it moves
+_INGRESS_SEEN = {}           # nid → (the public IP waiting, syncs seen) — memory only; a restart just counts again
+
+
+def _ingress_follow(nid, node, snap):
+    """AUTO THAT FOLLOWS (1.8.12 item 21). For a node whose ingress is Auto (`endpoint_host_auto`): when its stored address
+    is no longer among the addresses it reports and it reports a public one, move to that one — after INGRESS_FOLLOW_SYNCS
+    syncs in a row, so a transient report cannot re-point the mesh and every config issued after it. Only AWAY from a gone
+    address: a list that reorders, or a new address that sorts first, leaves a working one alone. The interfaces' own copies
+    of the old address move with it (the create sheet copies the node's address in, and an interface's own outranks the
+    node's in apply_iface_meta). Returns (old, new) when it moved, else None. Called under _api_lock."""
+    if not node.get("endpoint_host_auto"):
+        _INGRESS_SEEN.pop(nid, None)
+        return None
+    old = (node.get("endpoint_host") or "").strip()
+    pub = node_public_ip(snap)
+    if not (old and pub and old != pub and old not in (snap.get("node_ips") or [])):
+        _INGRESS_SEEN.pop(nid, None)
+        return None
+    seen = _INGRESS_SEEN.get(nid)
+    n = seen[1] + 1 if seen and seen[0] == pub else 1
+    if n < INGRESS_FOLLOW_SYNCS:
+        _INGRESS_SEEN[nid] = (pub, n)
+        return None
+    _INGRESS_SEEN.pop(nid, None)
+    node["endpoint_host"] = pub
+    for ov in (node.get("ifaces") or {}).values():
+        if isinstance(ov, dict) and (ov.get("endpoint_host") or "").strip() == old:
+            ov["endpoint_host"] = pub
+    return old, pub
+
+
 def mesh_advertised_host(snap, iface):
     """The host a node ADVERTISES on one of its interfaces — what it tells that interface's clients to dial (its agent
     config's endpoint, reported with the interface as `meta.endpoint`). "" for a wildcard, a loopback, or an IPv6
@@ -28515,6 +28547,7 @@ def api(method, path, qs, body, deps):
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
                         "turn_order": c.get("turn_order") or [],
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
+                        **({"endpoint_host_auto": True} if c.get("endpoint_host_auto") else {}),   # item 21: Auto that follows
                         "default_egress_ip": c.get("default_egress_ip") or "", "panel_ip": c.get("panel_ip") or "",
                         "default_exit": c.get("default_exit") or "",   # decision 4: the node's default way out
                         # D2 — the default made smart, and the exit IP of its "Forward to node" rules. ⚠️ PUBLISHED, or the
@@ -33019,7 +33052,22 @@ def api(method, path, qs, body, deps):
         if "color" in body:
             nodes[nid]["color"] = sanitize_color(body.get("color"), nodes[nid].get("color"))
         if "endpoint_host" in body:
-            nodes[nid]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
+            # AUTO THAT STAYS AUTO (1.8.12 item 21). "" is the picker's Auto. On a node that has an address, or is already Auto,
+            # it is stored as the flag, with the address resolved now from the last snapshot (else kept) — the sync then
+            # follows it (_ingress_follow). A node with nothing stored keeps today's "" and fill-once: no flag, byte-identical.
+            _eh_in = (body.get("endpoint_host") or "").strip()
+            _nd = nodes[nid]
+            if _eh_in:
+                _nd["endpoint_host"] = _eh_in
+                _nd.pop("endpoint_host_auto", None)
+            elif _nd.get("endpoint_host_auto"):
+                pass        # already Auto: every Settings save of this node posts "" — the sync alone moves the address
+            elif (_nd.get("endpoint_host") or "").strip():
+                _nd["endpoint_host_auto"] = True
+                _nd["endpoint_host"] = (node_public_ip((deps.get("node_snaps") or {}).get(nid))
+                                        or (_nd.get("endpoint_host") or "").strip())
+            else:
+                _nd["endpoint_host"] = ""
         if "endpoint_hosts" in body:
             # OTHER NAMES THIS NODE ANSWERS TO. `endpoint_host` stays the one that goes into a config —
             # a WireGuard peer carries exactly one Endpoint, so a list cannot mean "use them all". It is a
@@ -37779,6 +37827,13 @@ class Handler(BaseHTTPRequestHandler):
                 node["endpoint_host"] = _pub
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        _moved = _ingress_follow(nid, node, snap)        # an Auto ingress follows the box's public IP (item 21)
+        if _moved:
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
+            with contextlib.suppress(Exception):
+                ev_append(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",
+                          node.get("name", nid), "%s → %s" % _moved)
         if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
         # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the

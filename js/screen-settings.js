@@ -14,7 +14,7 @@ import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import { awgDict3, nodeStale, P2P_PORTOK_DEFAULT, PORTOK_WIDE, portokNone, portokRead, portokSame, portokText, foRoWhy, foSrcOf } from "./model.js";
 import {
-  BASE, ago, dur, ipChoices, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
+  BASE, ago, dur, ipChoices, isPrivIp, seen, url, fmtBytes, panelNow, panelNowS, isMobile,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -2412,7 +2412,9 @@ export function PanelSettingsScreen() {
   // per-node pending edits (mode / mesh / egress) — lifted here so switching node or section keeps unsaved
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
-  const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false, endpoint_host: n.endpoint_host || "",
+  const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false,
+    // an Auto ingress (item 21) drafts as "" — the picker shows Auto, and a move the sync makes never reads as an edit
+    endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),
     log_mb: String(n.log_mb || 100),   // Settings → Logs, the node's disk budget (published by the panel, or a save of anything else posts 100)
     dns_upstream: (n.dns_upstream || []).join(", "),   // Force-DNS resolver's upstream, as typed ("" = the default)
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
@@ -5330,8 +5332,13 @@ export function NodeIngressForm({ node, vals, set }) {
   return html`<div>
     <p class="hint" style="margin:0 0 12px">${Trich("How peers, clients and turn-proxy links reach *{v1}*.", { v1: node.name })}</p>
     <div class="field"><label>${T("Ingress address")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— what peers and clients dial to reach this node")}</span></label>
-      <${NodeIpPick} ips=${ipChoices(node)} value=${v.endpoint_host || ""} onChange=${ip => set({ endpoint_host: ip })} auto=${T("Auto (public IP)")} customPlaceholder=${T("Hostname or IP — e.g. node.example.com")}/>
-      <div class="hint">${T("This is the host in every client config and turn-proxy link for this node. Prefer a hostname: moving the box then costs one DNS change, and nothing a client already holds has to be re-issued.")}</div></div>
+      <${NodeIpPick} ips=${ipChoices(node)} value=${v.endpoint_host || ""} onChange=${ip => set({ endpoint_host: ip })} customPlaceholder=${T("Hostname or IP — e.g. node.example.com")}
+        auto=${node.endpoint_host_auto && node.endpoint_host ? T("Auto (public IP {v1})", { v1: node.endpoint_host }) : T("Auto (public IP)")}/>
+      <div class="hint">${T("This is the host in every client config and turn-proxy link for this node. Prefer a hostname: moving the box then costs one DNS change, and nothing a client already holds has to be re-issued.")}</div>
+      ${/* Auto FOLLOWS the box's public IP (item 21) — what that does not reach, said where it is chosen */ ""}
+      ${!(v.endpoint_host || "") ? html`<div class="hint">${(node.ips || []).some(ip => !isPrivIp(ip))
+        ? T("Auto moves to this node's new public IP once the old one is gone from it. Configs and links already handed out keep the old address: re-issue them after a change.")
+        : T("This node reports no public address, so Auto has nothing to follow.")}</div>` : null}</div>
     ${/* OTHER NAMES THIS NODE ANSWERS TO. Not a second Endpoint — a peer carries exactly one, so this
           cannot mean "use them all". It is the pool every host picker offers: a second domain, or the new
           name during a DNS move, typed once here instead of retyped from memory into the interface, the

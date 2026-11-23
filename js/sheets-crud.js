@@ -2576,7 +2576,6 @@ export function NodeEditSheet({ node }) {
   const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults (used when the node has no override)
   const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
   const [name, setName] = useState(node.name || ""); const [color, setColor] = useState(() => toThemed(node.color, NODE_COLOR_DEFAULT)); const [msg, setMsg] = useState(null);
-  const [ingress, setIngress] = useState(node.endpoint_host || "");
   // mesh fields show the EFFECTIVE value in use (the node's override, else the panel default). Leaving it at
   // the default normalizes to "inherit" on save (no spurious override / re-provision).
   const [meshPort, setMeshPort] = useState(node.mesh_port ? String(node.mesh_port) : dPort);
@@ -2607,7 +2606,7 @@ export function NodeEditSheet({ node }) {
   const doSave = async () => {
     // Sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept — it used to
     // close the sheet (and the re-provision confirm on top) first and lose them all. Accepted, both close.
-    const r = await sheetSend(() => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort,
+    const r = await sheetSend(() => api.nodeUpdate({ id: node.id, name: name.trim(), color, mesh_port: ovPort,   // no ingress address: this sheet does not show it, and an echo would end Auto
         mesh_egress_ip: meshEgress, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp,
         ...(fastLane !== fl0 ? { fast_lane: fastLane } : {}) }),
       t => setMsg(t ? { k: "err", t } : null), setBusy);

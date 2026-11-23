@@ -5620,6 +5620,9 @@ export const STR = {
   "Setting up…": "Настраиваем…",
   "Updating…": "Обновляем…",
   "Auto (public IP)": "Авто (внешний IP)",
+  "Auto (public IP {v1})": "Авто (внешний IP {v1})",
+  "Auto moves to this node's new public IP once the old one is gone from it. Configs and links already handed out keep the old address: re-issue them after a change.": "Авто переходит на новый внешний IP ноды, как только старого на ней больше нет. Уже выданные конфиги и ссылки сохраняют старый адрес: после смены выдайте их заново.",
+  "This node reports no public address, so Auto has nothing to follow.": "Нода не сообщает ни одного внешнего адреса, так что Авто следовать не за чем.",
   "WDTT server": "Сервер WDTT",
   "not a valid IPv4 address": "неверный адрес IPv4",
   "You've unchecked every interface, so there's nothing left to deploy this peer to — saving will completely delete it. Its access is revoked everywhere and its config / QR stops working. This action is irreversible. Are you sure you want to continue?":
@@ -6569,6 +6572,7 @@ export const STR = {
   "Imported WDTT user from adopted server": "Пользователь WDTT перенесён с принятого сервера",
   "Installed turn-proxy": "Установлен turn-прокси",
   "Linked node": "Ноды связаны",
+  "Ingress address followed the public IP": "Адрес входа перешёл на новый внешний IP",
   "Removed unused mesh links": "Неиспользуемые меш-линки удалены",
   "{count} · on demand, {nodes}": "{count} · по требованию, {nodes}",
   "Linked more node pairs": "Связаны ещё пары нод",
