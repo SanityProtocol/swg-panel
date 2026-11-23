@@ -58,8 +58,8 @@ PLANTS = {
     "--perturb-publish": ("P", '**({"endpoint_host_auto": True} if c.get("endpoint_host_auto") else {}),', ""),
     "--perturb-cgnat": ("P", "        if a.version == 4 and a.is_global:",
                         "        if a.version == 4 and not (a.is_private or a.is_loopback or a.is_link_local):"),
-    "--perturb-unchanged": ("S", '...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),',
-                            'endpoint_host: (e.endpoint_host || "").trim(),'),
+    "--perturb-unchanged": ("S", 'const ehSend = eq(e.endpoint_host, o.endpoint_host) ? undefined : (e.endpoint_host || "").trim();',
+                            'const ehSend = (e.endpoint_host || "").trim();'),
     "--perturb-draft": ("S", 'endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),', 'endpoint_host: n.endpoint_host || "",'),
     "--perturb-sheet": ("C", "name: name.trim(), color, mesh_port: ovPort,", "name: name.trim(), color, endpoint_host: node.endpoint_host, mesh_port: ovPort,"),
 }
@@ -274,9 +274,8 @@ sjs = _src(SETTINGS_JS, "S")
 check("the Settings draft reads \"\" for an Auto node (the picker shows Auto; a move is never an edit)",
       'endpoint_host: n.endpoint_host_auto ? "" : (n.endpoint_host || ""),' in sjs)
 check("the Settings save sends the address only when the draft changed it (a pre-sync \"\" must not pick Auto)",
-      '...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),' in sjs
-      and 'endpoint_host: (e.endpoint_host || "").trim(),' not in sjs.replace(
-          '...(eq(e.endpoint_host, o.endpoint_host) ? {} : { endpoint_host: (e.endpoint_host || "").trim() }),', ""))
+      'const ehSend = eq(e.endpoint_host, o.endpoint_host) ? undefined : (e.endpoint_host || "").trim();' in sjs
+      and "ip_learning: e.ip_learning !== false, endpoint_host: ehSend," in sjs)
 cjs = _src(SHEETS_JS, "C")
 a = cjs.find("export function NodeEditSheet(")
 body = cjs[a:cjs.find("\n}\n", a)] if a >= 0 else ""
