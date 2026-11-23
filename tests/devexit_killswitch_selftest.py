@@ -51,7 +51,7 @@ PERTURB = "--perturb" in sys.argv
 INTENT = "--perturb-intent" in sys.argv
 # B1's plants: the in-place route repair taken out, so a purged route rebuilds the whole band again; a repair never read
 # back, so one that did not take is repeated for ever; rp_filter no longer said on a repair (each expects RED in 2f).
-_B1 = {"--perturb-repair": ("    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):", "    if False:"),
+_B1 = {"--perturb-repair": ("    if _drift and all(_rt(m) or _ct(m) or _um(m) for m in _miss + _xtra):", "    if False:"),
        "--perturb-verify": ("        _fixed = _cascade_live_sig(_ltables) == want_sig", "        _fixed = True"),
        "--perturb-rpf": ("    if _drift and (fwd or smart_e or exit_ or arr_exit):", "    if _drift and not all(t.startswith((\"T|\", \"R|upmark|\")) for t in want_sig ^ live_sig) and (fwd or smart_e or exit_ or arr_exit):")}
 REPAIR = next((a for a in sys.argv[1:] if a in _B1), None)

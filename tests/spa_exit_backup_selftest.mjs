@@ -112,7 +112,10 @@ const sheet = SET.slice(SET.indexOf("function ExitEditSheet("), SET.indexOf("fun
 check("the sheet's change test sees a backup change", sheet.includes("JSON.stringify(v.backup || []) !== JSON.stringify(ex.backup || [])"));
 check("a failover node's copy shows no picker", sheet.includes("${fill || !bkOpts.length ? null : html`<${ExitBackupPick}"));
 check("the picker writes through exitBackupPick", SET.includes("const pick = (i, id) => onChange(exitBackupPick(value, i, id));"));
-check("the kill-switch's words say a backup carries first (review F11)",
-      SET.includes('T("On: if this exit stops working and none of its backups is up, traffic using it is refused.'));
+check("the kill-switch's words say a backup carries first — on an exit that names backups only (review F11, F24)",
+      SET.includes('const KS_TITLE = ex => (((ex || {}).backup || []).length')
+      && SET.includes('T("On: if this exit stops working and none of its backups is up, traffic using it is refused.')
+      && SET.includes('T("On: if this exit stops working, traffic using it is refused.')
+      && SET.includes("title=${KS_TITLE(ex)}"));
 
 done(!!RMODE || !!SMODE, SMODE || RMODE);

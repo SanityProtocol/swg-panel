@@ -5024,8 +5024,10 @@ function WarpTransport({ node, v, ex, set, live }) {
 /* The two switches every exits grid carries, worded once. Both grids render the same pair, and a second
    copy of a sentence is how the two come to say different things about one control. Functions rather than
    constants so the language switch reaches them — `T` resolves at call time. */
-// (with backups, they carry first — item 18, review F11: the switch decides only once none of them is up)
-const KS_TITLE = () => T("On: if this exit stops working and none of its backups is up, traffic using it is refused. Off: it falls back to this node's own address.");
+// (an exit with backups: they carry first — item 18, review F11, F24: the switch decides only once none of them is up)
+const KS_TITLE = ex => (((ex || {}).backup || []).length
+  ? T("On: if this exit stops working and none of its backups is up, traffic using it is refused. Off: it falls back to this node's own address.")
+  : T("On: if this exit stops working, traffic using it is refused. Off: it falls back to this node's own address."));
 const ACTIVE_TITLE = () => T("Off pauses this exit — its account and keys are kept, and anything pointing at it stays pointed at it and uses the node's default meanwhile.");
 
 export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, saveExits }) {
@@ -5276,7 +5278,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
               ? T("~{v1} ms", { v1: Math.round(l.trace.tcp_ms * 10) / 10 })
               : html`<span class="faint">—</span>`;
               return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`; })()}</div>
-          <div class="exg-c c" data-lbl=${T("Kill-switch")} onClick=${stop}><${Switch} on=${!!ex.killswitch} disabled=${ro} title=${KS_TITLE()}
+          <div class="exg-c c" data-lbl=${T("Kill-switch")} onClick=${stop}><${Switch} on=${!!ex.killswitch} disabled=${ro} title=${KS_TITLE(ex)}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, killswitch: x } : y)))}/></div>
           <div class="exg-c c" data-lbl=${T("Active")} onClick=${stop}><${Switch} on=${!off} disabled=${ro} title=${ACTIVE_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, enabled: x } : y)))}/></div>

@@ -35,7 +35,7 @@ Run: python3 tests/exit_backup_selftest.py   (0 = pass)
      SWG_XBK_BASE=<commit> … also compares, for plans WITHOUT backups, the node's every command and report and the panel's
      plan against that commit's programs (the byte-identical claim; needs git and the commit).
      --perturb-noswap · --perturb-order · --perturb-anystate · --perturb-delfirst · --perturb-snat · --perturb-s5x ·
-     --perturb-cutrepair · --perturb-cutorder · --perturb-p2p · --perturb-p2proute · --perturb-p2pstatic · --perturb-count ·
+     --perturb-cutrepair · --perturb-cutorder · --perturb-p2p · --perturb-p2proute · --perturb-p2pfixed · --perturb-count ·
      --perturb-carried · --perturb-sig · --perturb-report · --perturb-smart · --perturb-arr · --perturb-self ·
      --perturb-prune · --perturb-keep · --perturb-resolve · --perturb-refs · --perturb-closure · --perturb-fillkeep ·
      --perturb-part · --perturb-issue · --perturb-live · --perturb-follow — each plants one regression (PLANTS below), RED.
@@ -62,8 +62,8 @@ PLANTS = {
     "--perturb-cutrepair": ("N", "    if _drift and all(_rt(m) or _ct(m) or _um(m) for m in _miss + _xtra):",
                             "    if _drift and all(_rt(m) or _um(m) for m in _miss + _xtra):"),
     "--perturb-cutorder": ("N", "        for m in sorted(_miss, key=lambda m: (not _ct(m), m)):", "        for m in sorted(_miss, key=lambda m: (_ct(m), m)):"),
-    "--perturb-p2pstatic": ("N", "                xdevs={T: [d] for T, d in _via.items()})",
-                            "                xdevs=_xbackup_devs(plan.get(\"xbackup\")))"),
+    "--perturb-p2pfixed": ("N", "                xdevs=_xbackup_devs(plan.get(\"xbackup\")))",
+                           "                xdevs={T: [d] for T, d in _via.items()})"),
     "--perturb-count": ("N", "    _EXIT_VIA[\"devs\"] = set(_via.values())", "    _EXIT_VIA[\"devs\"] = set()"),
     "--perturb-p2p": ("N", "        take(\"r%d\" % T, e.get(\"subnets\"), T | P2P_BIT, [e[\"via_iface\"]] + list((xdevs or {}).get(T) or ()), T)",
                       "        take(\"r%d\" % T, e.get(\"subnets\"), T | P2P_BIT, [e[\"via_iface\"]], T)"),
@@ -436,12 +436,13 @@ K11 = Kernel({})
 set_state(N, K11, {DA: "dead", DB: "up", DC: "up"})
 del _cap[:]
 pas(K11, _p11, smart=_sm)
-check("the route's allowed devices: the owner and the backup CARRYING it", _cap and _cap[-1][1] == [DA, DB], _cap[-1:])
+check("the route's allowed devices: the owner and its whole chain", _cap and _cap[-1][1] == [DA, DB, DC], _cap[-1:])
 check("…and its table defaults via the live backup", table(K11) == ["default dev %s scope link" % DB], table(K11))
 set_state(N, K11, {DA: "up", DB: "up", DC: "up"})
 del _cap[:]
 pas(K11, _p11, smart=_sm)
-check("the owner carrying: the owner alone — a backup's own traffic stays guarded (review F2)", _cap and _cap[-1][1] == [DA], _cap[-1:])
+check("the owner carrying: the same list — a move reloads nothing, so the guard keeps its flags (review F21)",
+      _cap and _cap[-1][1] == [DA, DB, DC], _cap[-1:])
 del _cap[:]
 pas(Kernel({}), plan(xb=None), smart=_sm)
 check("without backups: the owner alone, as today", _cap and _cap[-1][1] == [DA], _cap[-1:])

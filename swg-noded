@@ -9460,7 +9460,9 @@ def _ensure_p2p(p2p, mech, node_cfg, res, routers=(), portok=None, fwd=None, xde
             return
         ih = _p2p_ih_ok()
         # a routed exit's backups too (item 18, `xdevs` {table: [device]}): its table may leave by one of them, and the route's
-        # `oifname !=` drop must not take P2P its table sends there — fixed for the whole chain, so a move rebuilds nothing
+        # `oifname !=` drop must not take P2P its table sends there — the whole chain, fixed, so a move reloads nothing: a reload
+        # would empty the flag sets (review F21, the operator's choice over F2: a torrent detected late may leave by one of the
+        # exit's backups — a tunnel the operator chose to carry this exit's traffic — never by this node's own address)
         oif = _p2p_wan_devs() if mode == "direct" else ([ent["via_iface"]] + list((xdevs or {}).get(int(ent["table"])) or ())
                                                         if ent else [])
         # A route whose table has no way out right now drops every P2P flow (fail closed) — correct, and invisible unless
@@ -13663,7 +13665,8 @@ def _devexit_state(dev):
 # OWN, never followed into a backup's list: A → [B] beside B → [A] is two flat lists, not a loop. No backup up → nothing
 # changes: the route is withheld and the exit's own kill switch decides. A plan without `xbackup` reads exactly as before.
 _EXIT_VIA = {"m": {}, "carried": set(), "devs": set()}   # m: owner exit id -> the member id carrying its table, "" none
-# (snap.exit_via); carried: owner devices whose table a member carries now (the P2P route status); devs: those members
+# (snap.exit_via); carried: owner devices whose table a member carries now (the P2P route status); devs: the members carrying
+# (the internet lane counts them only while they carry — review F16)
 
 
 def _xbackup_take(xb):
@@ -13686,7 +13689,8 @@ def _xbackup_take(xb):
 
 def _xbackup_devs(xb):
     """{table: [member device, …]} — every device a table may leave by besides its own exit's, whether up or not: the routing
-    trigger watches each (`_devexit_sig`), so a backup coming up or going dead moves the table the same sync."""
+    trigger watches each (`_devexit_sig`), so a backup coming up or going dead moves the table the same sync, and the P2P route's
+    guard allows each (`_ensure_p2p`), so a move reloads nothing."""
     return {T: [d for _i, d in ms] for T, (_o, ms) in _xbackup_take(xb).items()}
 
 
@@ -14936,7 +14940,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 routers=(smart or {}).get("p2p_routers") or [],   # router peers: never flagged (S11b)
                 portok=(smart or {}).get("p2p_portok"),           # the operator's never-cut ports (S11c); absent → built-in
                 fwd=(smart or {}).get("p2p_fwd"),                 # devices' incoming ports (Part C), kept where P2P leaves Direct
-                xdevs={T: [d] for T, d in _via.items()})          # the backup carrying a routed exit's table (item 18, F2)
+                xdevs=_xbackup_devs(plan.get("xbackup")))         # a routed exit's backups (item 18): the whole chain, fixed
     _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)
     # RETURN BY LINK (§14.7) — outside the band (its own priority and tables), so the band's flush never touches it. LAST:
     # every writer and restore above has just been rendered with the label masked, so no labelled connection meets an
