@@ -17513,7 +17513,8 @@ def _ingress_follow(nid, node, snap):
     syncs in a row, so a transient report cannot re-point the mesh and every config issued after it. Only AWAY from a gone
     address: a list that reorders, or a new address that sorts first, leaves a working one alone. The interfaces' own copies
     of the old address move with it (the create sheet copies the node's address in, and an interface's own outranks the
-    node's in apply_iface_meta). Returns (old, new) when it moved, else None. Called under _api_lock."""
+    node's in apply_iface_meta), and so do the servers' (below). Returns (old, new, [servers moved]) when it moved, else
+    None. Called under _api_lock."""
     if not node.get("endpoint_host_auto"):
         _INGRESS_SEEN.pop(nid, None)
         return None
@@ -17536,29 +17537,39 @@ def _ingress_follow(nid, node, snap):
     # every address, so they still ANSWER — only the address they hand out is dead. A WDTT / csqtt record is the panel's:
     # rewritten here, port kept, and its "Listen on" pin with it (a failover mirror follows by FO_TURN_FOLLOW). A
     # vk-turn-proxy is the node's: the Edit sheet's own `manage` request, once — never for a stopped one (the node answers
-    # `manage` with a restart) nor over a request already in flight, which the mirror pass's rule also leaves alone.
+    # `manage` with a restart), one still installing, or over a request already in flight (the mirror pass's rules, _FoTP).
+    # Each server moved is named in the move's event: each restarts once on the node.
+    moved = []
     for kind in ("wdtt", "csqtt"):
-        for inst in (node.get(kind) or {}).values():
+        for name, inst in (node.get(kind) or {}).items():
             if not isinstance(inst, dict):
                 continue
             h, p = _hostport_split(str(inst.get("listen") or ""))
-            if h == old and p:
+            mv_l, mv_pin = bool(h == old and p), str(inst.get("bind_ip") or "").strip() == old
+            if mv_l:
                 inst["listen"] = "%s:%s" % (pub, p)
-            if str(inst.get("bind_ip") or "").strip() == old:
+            if mv_pin:
                 inst["bind_ip"] = pub
+            if mv_l or mv_pin:
+                moved.append(str(name))
     if _turn_can_manage(snap):
         for tp in snap.get("turn_proxies") or []:
             if not isinstance(tp, dict):
                 continue
             svc = str(tp.get("service") or "")
             h, p = _hostport_split(str(tp.get("listen") or ""))
-            if h != old or not p or tp.get("stopped") or not _TURN_SVC_RE.match(svc) or svc in (node.get("turn") or {}):
+            mv_l, mv_pin = bool(h == old and p), str(tp.get("bind_ip") or "").strip() == old
+            if not (mv_l or mv_pin) or tp.get("stopped") or tp.get("installing") or not _TURN_SVC_RE.match(svc) \
+                    or svc in (node.get("turn") or {}):
                 continue
-            rq = {"action": "manage", "listen": "%s:%s" % (pub, p), "at": int(time.time())}
-            if str(tp.get("bind_ip") or "").strip() == old:
+            rq = {"action": "manage", "at": int(time.time())}
+            if mv_l:
+                rq["listen"] = "%s:%s" % (pub, p)
+            if mv_pin:
                 rq["bind_ip"] = pub
             node.setdefault("turn", {})[svc] = rq
-    return old, pub
+            moved.append(svc)
+    return old, pub, moved
 
 
 def mesh_advertised_host(snap, iface):
@@ -37874,7 +37885,7 @@ class Handler(BaseHTTPRequestHandler):
                 nodes_save(Handler.deps["nodes_path"], nodes)
             with contextlib.suppress(Exception):
                 ev_append(Handler.deps["roster_path"], "node", nid, "Ingress address followed the public IP",
-                          node.get("name", nid), "%s → %s" % _moved)
+                          node.get("name", nid), "%s → %s" % _moved[:2] + (" (%s)" % ", ".join(_moved[2]) if _moved[2] else ""))
         if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
         # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the
