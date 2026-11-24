@@ -34,10 +34,13 @@ binary is `mrtt`: `CSQTT_BIN`). Beyond the 2.5 patch the port:
 - under `--desired`, lets the newest device take a password over, on the same address (the store's `max_devices` is unset —
   one device — and nothing could unbind the old one with the REST API closed: a reinstalled app was locked out). The cost,
   chosen by the operator (2026-11-24): two devices running ONE config take it from each other on every reconnect, an MRTT
-  app and a Rawline (which sends no device id) as well — the rule this build gives csqtt 2.1 (the rebind below), and as
-  on csqtt 2.5, where two devices on one config share one address and break each other too. The panel gives each device
-  its own config. Refusing a second device only while the first has a live session was tried and dropped: MRTT keeps a
-  dead device's session for 10 h (so a sleeping phone keeps its tunnel), which locked a reinstalled phone out that long;
+  app and a Rawline (which sends no device id) as well. It is the rule our 2.1.9-4 build gives csqtt 2.1 (the rebind
+  below) without 2.1's two guards: MRTT drops the old device's sessions after the store lock, not under it, and has no 5 s
+  move-back hold, so two devices started together can also cut the winner's newest workers. On csqtt 2.5 too the newer of
+  two devices on one config cuts the older off (csqtt25 rig phase D, 2026-11-24: on both servers the first device gets no
+  round trip for the minute after the second connects). The panel gives each device its own config. Refusing a second
+  device only while the first has a live session was tried and dropped: MRTT keeps a dead device's session for 10 h (so a
+  sleeping phone keeps its tunnel), which locked a reinstalled phone out that long;
 - labels itself `mrtt 1.0.0` (Cargo said 2.5.0).
 
 `cargo test`: 160 pass; 4 fail — the same 4 fail on unpatched v1.0 (its protocol GETCONF fixtures). Rig
@@ -91,8 +94,9 @@ ported to it and one datapath fix, so it carries our own version, the same as ou
 
 - **A new protocol.** A 2.1 app cannot connect to a 2.5 server, nor a 2.5 app to a 2.1 one (both directions refused on the
   rig). The panel offers each server only apps of its line.
-- **Built into 2.5:** no devices — the address is the password's own, so one config works on several devices and no
-  password can borrow another's address; the uplink source check is upstream's own.
+- **Built into 2.5:** no devices — the address is the password's own, so one config connects from any device (one at a
+  time: the newer of two cuts the older off) and no password can borrow another's address; the uplink source check is
+  upstream's own.
 - **Ported:** `--iface`, `--tun-addr`, `--no-web`, `--desired` as in 2.1.9-4. `--max-passwords` is accepted and does
   nothing: 2.5 has no password limit. `--no-nat` now stops 2.5's own host changes at start (host-wide sysctls, `FORWARD` /
   `MASQUERADE`, the TCPMSS purge). Under `--desired` IPv6 uplink is dropped, and the pre-tunnel path gets the source check
