@@ -457,7 +457,7 @@
       ios: "https://apps.apple.com/app/wireguard/id1441195209", macos: "https://apps.apple.com/app/wireguard/id1451685025",
       windows: "https://download.wireguard.com/windows-client/wireguard-installer.exe", linux: "https://www.wireguard.com/install/" },   // Linux = per-distro
     // MCRF imports a WG / AWG config too (AWG 3.1 included). Android and Windows, and no `page`: wgGetApp falls back to app[os],
-    // so the row is offered nowhere else. The direct APK comes from the panel's wg_catalog (WG_APPS, its tag_re).
+    // so the row is offered nowhere else. The direct installer (APK / exe) comes from the panel's wg_catalog (WG_APPS, its tag_re).
     mcrf: { name: "MCRF", android: "https://github.com/vnenapravo7-source/mcrf/releases", windows: "https://github.com/vnenapravo7-source/mcrf-desktop/releases" }
   };
   var WG_ORDER = { awg: ["amneziavpn", "amneziawg", "mcrf"], wg: ["amneziavpn", "amneziawg", "wireguard", "mcrf"] };
@@ -529,6 +529,13 @@
   }
   // Installer assets only — drop checksums / signatures / patch-deltas / source archives / server-role binaries, which
   // aren't things a user installs. Leaves the real .apk/.exe/.deb/.dmg/… + extensionless CLI client binaries.
+  // Can this app scan a QR on this OS? The catalog's `qr` is the app's; its platform may say otherwise (MCRF's Windows app
+  // imports a pasted link only) — the cell then opens on the link, with no QR to switch to.
+  function appScans(cid) {
+    var cl = ((_lastData && _lastData.turn_catalog && _lastData.turn_catalog.clients) || {})[cid];
+    var p = cl && cl.platforms && cl.platforms[subOs()];
+    return !(p && p.qr === false);
+  }
   function installerAssets(assets) {
     return (assets || []).filter(function (a) {
       var n = (a && a.name) || "";
@@ -536,6 +543,7 @@
       if (/(^|[-_.])sources?([-_.]|$)/i.test(n)) return false;
       if (/^server[-_]/i.test(n)) return false;
       if (/^lib[a-z0-9]|\.aar$|xcframework/i.test(n)) return false;   // dev libraries/frameworks (libfreeturn-*, mobile.aar, Mobile.xcframework.zip) — not user-run clients
+      if (/\.bin$|[-_]app[-_]update\.zip$/i.test(n)) return false;   // an app's own update payload (mcrf-desktop: ~33 runtime-<sha256>.bin + mcrf-app-update.zip)
       return true;
     });
   }
@@ -1968,7 +1976,7 @@
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
-          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, cga && cga.enc, cd.line);   // 2.5 → the sealed link + a QR
+          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [], version: cd.version }, cga && cga.enc, cd.line);   // 2.5 → the sealed link + a QR
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
@@ -2011,7 +2019,7 @@
         // asynchronously (Web Crypto) — the same draw-then-apply as a turn proxy's buildAsync artifact.
         var capply = function (text) {
           ctrl.payload = text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
-          ctrl.isLink = true; ctrl.hasQR = !!cart.qr; ctrl.cmd = null; ctrl.wrapCfg = true;
+          ctrl.isLink = true; ctrl.hasQR = !!cart.qr && appScans(cga && cga.cid); ctrl.cmd = null; ctrl.wrapCfg = true;
           ctrl.stepList = !cga ? null : cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)
             : (cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null;   // La Lune's Add dialog defaults to 2.1
           // the steps show where Start copies the link (the desktop); a one-tap app (La Lune on Android) is handed the link as
@@ -2033,7 +2041,7 @@
         var wclients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
         var wga = turnGetApp(wfork, wd.version);   // the operator's per-OS default client for THIS fork → encoder + app name + download (this server's release)
         var wasClient = (wga && wga.enc) ? wga.enc : ((subOs() === "ios") ? "anton48" : "wdtt");
-        var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr);   // only some clients scan a QR; the rest import a pasted link
+        var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr) && appScans(wga.cid);   // only some clients scan a QR; the rest import a pasted link
         // SETTINGS SPLIT: qWDTT is the one WDTT-family app whose link carries a client knob (`workers`), so the
         // admin's saved value for (fork, qWDTT, this visitor's OS) rides along. Blank stays blank — the encoder
         // omits the parameter and the app uses its own default. No other family encoder reads client values.

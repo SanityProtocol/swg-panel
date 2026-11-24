@@ -786,6 +786,15 @@
     });
   }
   // `line` — the csqtt line the server runs ("" / "2.1" = the plain link every 2.1 app takes; 2.5 = the sealed one).
+  // A 2.1-line build → the MCRF Windows engine that speaks it (mcrf-desktop CsqttGenerations: 2.0, 2.1.5, 2.1.9); no version
+  // known = the 2.1.9 the panel installs; any other build → none (the app asks rather than dial the wrong wire).
+  function mcrfGeneration(ver) {
+    var v = String(ver || "").trim();
+    if (!v || /^2\.1\.9([.-]|$)/.test(v)) return "2.1.9";
+    if (/^2\.1\.5([.-]|$)/.test(v)) return "2.1.5";
+    if (/^2\.0([.-]|$)/.test(v)) return "2.0";
+    return null;
+  }
   function csqttArtifact(c, asClient, line) {
     c = c || {};
     // TURN-credential hashes: the peer's own vk_hash + every VK call link on the user (each stripped to its bare
@@ -841,7 +850,8 @@
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
     // MCRF (its encoder is wdttplus — no WDTT-Plus app speaks csqtt): its Windows app asks which csqtt generation a plain link
     // is unless the link says (mcrf-desktop CsqttGenerations.Hint); its Android app reads a plain link as 2.1.9 and ignores it.
-    if (asClient === "wdttplus") qp.push("mcrf_generation=2.1.9");
+    // The generation is the build the server runs (mcrfGeneration); a build it has no engine for names none, so the app asks.
+    if (asClient === "wdttplus") { var mg = mcrfGeneration(c.version); if (mg) qp.push("mcrf_generation=" + mg); }
     var uri = "csqtt://connect?" + qp.join("&");
     // qr:false — the CSQTT app has no scanner yet, so a QR is a dead end for the user. Link only until it does.
     // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE SEVERAL. This link serves the CSQTT app (Android) and FOCSQ /

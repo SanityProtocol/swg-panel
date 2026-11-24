@@ -18195,7 +18195,8 @@ TURN_CLIENTS = {
     # published 2.5.0, whose wire our 2.5 servers take (the csqtt25 / mrtt rigs); a plain 2.1 link carries its generation.
     "mcrf":        {"name": "MCRF", "author": "vnenapravo7-source", "encoder": "wdttplus", "csqtt_lines": ["2.1", "2.5"], "qr": True, "platforms": {
                        "android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "autostart": True, "tag_re": r"^android-v\d+\.\d+\.\d+$"},
-                       "windows": {"github": "https://github.com/vnenapravo7-source/mcrf-desktop/releases", "tag_re": r"^v\d+\.\d+(\.\d+)?$"}}},
+                       "windows": {"github": "https://github.com/vnenapravo7-source/mcrf-desktop/releases", "tag_re": r"^v\d+\.\d+(\.\d+)?$",
+                                   "qr": False}}},   # mcrf-desktop imports a pasted link only: no QR view on Windows
     # Rawline (desktop) / RawlineMobile (Android) — ttrroyy's Throne forks that run the ORIGINAL protocol clients at pinned
     # commits: csqtt 2.5 (amurcanov's 2.5.0 `shared/`, the tree ours keeps), qWDTT, WDTT Plus, FreeTurn v4.2.1 (their
     # transport-sources.lock.json / native-transports.lock.json). One entry, a product name per OS (as WINGS V / DeX).

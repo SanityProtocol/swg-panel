@@ -1430,7 +1430,7 @@ export function csqttArtInput(peer, t) {
   const port = String(rb.listen || "").split(":").pop() || "46000";
   // Raw VK inputs — csqttArtifact strips/dedupes/caps them into the link's `hashes` (one place, shared with the sub page).
   return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [],
-           line: rb.line || "" };   // the line the server RUNS: 2.5 takes a sealed link (+ a QR), 2.1 the plain one
+           line: rb.line || "", version: rb.version || "" };   // the line the server RUNS: 2.5 takes a sealed link (+ a QR), 2.1 the plain one; its build names MCRF's generation
 }
 // One client's link, by its catalog id: the encoder decides. csqtt apps take the csqtt:// link; anton48's iOS
 // VK TURN Proxy is handed its own vkturnproxy:// one, because it reads only the first VK hash of a csqtt:// link.

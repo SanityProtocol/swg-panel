@@ -705,7 +705,8 @@ swgPanel использует несколько прекрасных проек
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
-- [vnenapravo7-source](https://github.com/vnenapravo7-source/mcrf) — MCRF, Android-клиент для csqtt, WDTT и WireGuard
+- [vnenapravo7-source](https://github.com/vnenapravo7-source/mcrf) — MCRF, клиент csqtt, WDTT и WireGuard для Android и
+  [Windows](https://github.com/vnenapravo7-source/mcrf-desktop)
 - [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (версия csqtt со своим приложением и звонками MAX), [Rawline](https://github.com/ttrroyy/Rawline) (десктоп) и [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), клиенты для csqtt 2.5, MRTT, WDTT и hack-diaz
 
 **Списки маршрутизации / гео-данные** — доменные и IP-списки, на которых работает умная маршрутизация:

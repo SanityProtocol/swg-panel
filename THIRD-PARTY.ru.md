@@ -129,9 +129,11 @@ csqtt в личных или иных некоммерческих целях л
 Страница подписки и карточка пира дают ссылки на приложения для подключения — на **собственные GitHub releases их
 авторов**; мы их не собираем и не выкладываем у себя. У двух из них, добавленных в 1.8.12, лицензии стоит знать:
 
-- **MCRF** ([vnenapravo7-source/mcrf](https://github.com/vnenapravo7-source/mcrf)) не содержит файла лицензии, поэтому
-  все права у автора: мы называем приложение и даём ссылку на его релизы, не больше. У его движков свои лицензии (csqtt:
-  PolyForm Noncommercial), и оно запускает наше клиентское ядро csqtt 2.5.
+- **MCRF** ([vnenapravo7-source/mcrf](https://github.com/vnenapravo7-source/mcrf), Android, и
+  [vnenapravo7-source/mcrf-desktop](https://github.com/vnenapravo7-source/mcrf-desktop), Windows) не содержит файла лицензии
+  ни в одном из репозиториев, поэтому все права у автора: мы называем приложение и даём ссылку на его релизы, не больше. У
+  его движков свои лицензии (csqtt: PolyForm Noncommercial). Приложение для Android запускает наше клиентское ядро csqtt 2.5;
+  приложение для Windows — csqtt-rebirth от ttrroyy (`fd936ef`) для 2.5 и csqtt от amurcanov для 2.0 / 2.1.5 / 2.1.9.
 - **Rawline** ([ttrroyy/Rawline](https://github.com/ttrroyy/Rawline)) и **RawlineMobile**
   ([ttrroyy/RawlineMobile](https://github.com/ttrroyy/RawlineMobile)) — под **GPL-3.0**.
 

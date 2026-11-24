@@ -122,9 +122,11 @@ runs one keeps it.
 The subscription page and the peer sheet link the apps people connect with to **their authors' own GitHub releases**;
 we neither build nor rehost them. Two of them, added in 1.8.12, carry licences worth knowing:
 
-- **MCRF** ([vnenapravo7-source/mcrf](https://github.com/vnenapravo7-source/mcrf)) has no licence file, so all rights
-  are its author's: we name it and link its releases, nothing more. Its engines carry their own licences (csqtt:
-  PolyForm Noncommercial), and it runs our csqtt 2.5 client core.
+- **MCRF** ([vnenapravo7-source/mcrf](https://github.com/vnenapravo7-source/mcrf), Android, and
+  [vnenapravo7-source/mcrf-desktop](https://github.com/vnenapravo7-source/mcrf-desktop), Windows) has no licence file in
+  either repository, so all rights are its author's: we name it and link its releases, nothing more. Its engines carry
+  their own licences (csqtt: PolyForm Noncommercial). The Android app runs our csqtt 2.5 client core; the Windows app runs
+  ttrroyy's csqtt-rebirth (`fd936ef`) for 2.5 and amurcanov's csqtt for 2.0 / 2.1.5 / 2.1.9.
 - **Rawline** ([ttrroyy/Rawline](https://github.com/ttrroyy/Rawline)) and **RawlineMobile**
   ([ttrroyy/RawlineMobile](https://github.com/ttrroyy/RawlineMobile)) are **GPL-3.0**.
 
