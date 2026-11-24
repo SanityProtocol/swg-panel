@@ -1434,16 +1434,19 @@ export function csqttArtInput(peer, t) {
 }
 // One client's link, by its catalog id: the encoder decides. csqtt apps take the csqtt:// link; anton48's iOS
 // VK TURN Proxy is handed its own vkturnproxy:// one, because it reads only the first VK hash of a csqtt:// link.
-export function csqttClientCfg(inp, cid) {
+// Does this app scan a QR on this OS? The catalog's `qr` is the app's; its platform may say otherwise (MCRF's Windows app
+// imports a pasted link only) — the subscription page asks the same (sub.js appScans). No OS given = the app's own word.
+const platformScans = (cl, os) => !(os && (((cl || {}).platforms || {})[os] || {}).qr === false);
+export function csqttClientCfg(inp, cid, os) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
   const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp, cl.encoder || "csqtt", inp.line) : null;
-  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides; a 2.5 link is a QR, a 2.1 one is not
+  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) && platformScans(cl, os) };   // the encoder decides; a 2.5 link is a QR, a 2.1 one is not
 }
 // csqttClientCfg for a component: a 2.5 link is sealed with Web Crypto, so it arrives a tick later — `uri` is null and
 // `pending` true until then. Keyed by the payload the link seals (`art.src`), so a stale link is never shown for a new one.
 // `inp` null → nothing (lets a component call it unconditionally, as hooks must be).
-export function useCsqttCfg(inp, cid) {
-  const dc = inp ? csqttClientCfg(inp, cid) : { cl: {}, art: null, uri: null, qr: false };
+export function useCsqttCfg(inp, cid, os) {
+  const dc = inp ? csqttClientCfg(inp, cid, os) : { cl: {}, art: null, uri: null, qr: false };
   const src = dc.art && dc.art.text == null && dc.art.buildAsync ? (dc.art.src || "") : null;
   const [sealed, setSealed] = useState({ src: null, uri: null, err: null });
   useEffect(() => {
@@ -1532,7 +1535,7 @@ export function wdttClientCfg(w, cid, fork, os) {
   // other encoders take no client values at all, so there is nothing to pass them.
   const wIn = (enc === "qwdtt" && fork) ? { ...w, ...pickDefined(turnClientSettingsFor(fork, enc, os), ["workers"]) } : w;
   const art = (typeof SWGTurn !== "undefined" && SWGTurn.wdttArtifact) ? SWGTurn.wdttArtifact(wIn, enc) : null;
-  return { cl, qr: !!cl.qr, art, uri: art && art.text };   // qr = the app scans a QR; else it imports a pasted link
+  return { cl, qr: !!cl.qr && platformScans(cl, os), art, uri: art && art.text };   // qr = the app scans a QR (on this OS); else it imports a pasted link
 }
 // Only the keys that carry a real value: the encoder omits a blank `workers` entirely (the app then uses its own
 // default), so an empty saved value must not become `workers=` in the link.
@@ -1636,7 +1639,7 @@ export function WdttConfigSheet({ peer, t, kind }) {
 }
 export function WdttCfgItem({ w, cid, base, fork, os, kind }) {
   const cs = kind === "csqtt";
-  const dcs = useCsqttCfg(cs ? w : null, cid);   // called either way — a hook
+  const dcs = useCsqttCfg(cs ? w : null, cid, os);   // called either way — a hook
   const dc = cs ? dcs : wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
   const copied = cs ? T("csqtt link copied") : T("WDTT link copied");
   const [view, setView] = useState(dc.qr ? "qr" : "text");

@@ -527,8 +527,6 @@
     document.body.appendChild(a); a.click();
     setTimeout(function () { try { a.remove(); } catch (_) {} }, 0);
   }
-  // Installer assets only — drop checksums / signatures / patch-deltas / source archives / server-role binaries, which
-  // aren't things a user installs. Leaves the real .apk/.exe/.deb/.dmg/… + extensionless CLI client binaries.
   // Can this app scan a QR on this OS? The catalog's `qr` is the app's; its platform may say otherwise (MCRF's Windows app
   // imports a pasted link only) — the cell then opens on the link, with no QR to switch to.
   function appScans(cid) {
@@ -536,6 +534,8 @@
     var p = cl && cl.platforms && cl.platforms[subOs()];
     return !(p && p.qr === false);
   }
+  // Installer assets only — drop checksums / signatures / patch-deltas / source archives / server-role binaries, which
+  // aren't things a user installs. Leaves the real .apk/.exe/.deb/.dmg/… + extensionless CLI client binaries.
   function installerAssets(assets) {
     return (assets || []).filter(function (a) {
       var n = (a && a.name) || "";
@@ -543,7 +543,7 @@
       if (/(^|[-_.])sources?([-_.]|$)/i.test(n)) return false;
       if (/^server[-_]/i.test(n)) return false;
       if (/^lib[a-z0-9]|\.aar$|xcframework/i.test(n)) return false;   // dev libraries/frameworks (libfreeturn-*, mobile.aar, Mobile.xcframework.zip) — not user-run clients
-      if (/\.bin$|[-_]app[-_]update\.zip$/i.test(n)) return false;   // an app's own update payload (mcrf-desktop: ~33 runtime-<sha256>.bin + mcrf-app-update.zip)
+      if (/^runtime-[0-9a-f]{64}\.bin$|[-_]app[-_]update\.zip$/i.test(n)) return false;   // an app's own update payload (mcrf-desktop: ~33 runtime-<sha256>.bin + mcrf-app-update.zip)
       return true;
     });
   }

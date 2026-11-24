@@ -25,6 +25,7 @@
  *      --perturb   routes the iOS client back to the csqtt:// link — expects RED in [1] [2] [4].
  *      --perturb-line  serves a catalog whose apps declare no csqtt line — expects RED in [6].
  *      --perturb-seal  seals with encodeURIComponent's escaping (leaves !'()* bare) — expects RED in [7].
+ *      --perturb-qros  serves a catalog whose MCRF Windows platform does not say it scans no QR — expects RED in [8].
  */
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -34,7 +35,8 @@ import { spa, check, done, ROOT } from "./spa_env.mjs";
 
 const PERTURB_LINE = process.argv.includes("--perturb-line");
 const PERTURB_SEAL = process.argv.includes("--perturb-seal");
-const PERTURB = process.argv.includes("--perturb") || PERTURB_LINE || PERTURB_SEAL;
+const PERTURB_QROS = process.argv.includes("--perturb-qros");
+const PERTURB = process.argv.includes("--perturb") || PERTURB_LINE || PERTURB_SEAL || PERTURB_QROS;
 
 let src = readFileSync(path.join(ROOT, "turn-artifacts.js"), "utf8");
 const ANCHOR = '    if (asClient === "anton48" || asClient === "vkturnproxy") {\n      // anton48\'s iOS VK TURN Proxy reads a csqtt:// link too';
@@ -46,7 +48,7 @@ if (src.split(ANCHOR).length - 1 !== 1) {
 const SEAL_ANCHOR = "  function csqttUrlEnc(v) {\n";
 if (src.split(SEAL_ANCHOR).length - 1 !== 1) { console.log("SEAL ANCHOR MISSING OR NOT UNIQUE — this run would FALSE-PASS"); process.exit(1); }
 if (PERTURB_SEAL) src = src.replace(SEAL_ANCHOR, SEAL_ANCHOR + "    return encodeURIComponent(String(v == null ? \"\" : v));\n");
-if (PERTURB && !PERTURB_LINE && !PERTURB_SEAL) src = src.replace(ANCHOR, '    if (false) {\n      //');
+if (PERTURB && !PERTURB_LINE && !PERTURB_SEAL && !PERTURB_QROS) src = src.replace(ANCHOR, '    if (false) {\n      //');
 // turn-artifacts.js is a classic script: evaluate it into the SAME global the SPA modules read SWGTurn from.
 vm.runInThisContext(src, { filename: "turn-artifacts.js" });
 const SWGTurn = globalThis.SWGTurn;
@@ -62,7 +64,8 @@ if (py.status !== 0) { console.log("could not load the catalog from swg-panel-se
 const { Store } = await spa("store.js");
 Store.turnCatalog = JSON.parse(py.stdout);
 if (PERTURB_LINE) Object.values(Store.turnCatalog.clients).forEach(c => { delete c.csqtt_lines; });
-const { csqttClientCfg, wdttClientIds, csqttClientIds } = await spa("peer-ui.js");
+if (PERTURB_QROS) delete Store.turnCatalog.clients.mcrf.platforms.windows.qr;
+const { csqttClientCfg, wdttClientCfg, wdttClientIds, csqttClientIds } = await spa("peer-ui.js");
 
 const J = "https://vk.ru/call/join/";
 const INP = { host: "1.2.3.4", port: 46000, password: "p@ss", vk_hash: "AAA",
@@ -134,4 +137,13 @@ check("2.1 (and a node that reports no line): the plain csqtt://connect link, no
 const dc25 = csqttClientCfg({ ...V25[0][0], line: "2.5" }, "csqttapp");
 check("the panel card's helper hands the line through (a sealed artifact, a QR)", dc25.qr === true && !!(dc25.art && dc25.art.buildAsync) && dc25.uri == null, dc25);
 
-done(PERTURB, PERTURB_LINE ? "apps declare no csqtt line" : PERTURB_SEAL ? "sealed with encodeURIComponent" : "iOS client routed back to csqtt://");
+// [8] a platform's word on QR (card mcrf-win round 2, F7): MCRF's Windows app imports a pasted link only, so the panel's sheet
+// opens it on the link and says so — on a csqtt 2.5 server and on a WDTT one; on Android MCRF scans, and no OS = the app's word
+const W8 = { password: "p", endpoint_host: "1.2.3.4", vk_links: [J + "h1"] };
+const q8 = { c25win: csqttClientCfg({ ...V25[0][0], line: "2.5" }, "mcrf", "windows").qr, c25and: csqttClientCfg({ ...V25[0][0], line: "2.5" }, "mcrf", "android").qr,
+  wwin: wdttClientCfg(W8, "mcrf", "amurcanov", "windows").qr, wand: wdttClientCfg(W8, "mcrf", "amurcanov", "android").qr,
+  c25none: csqttClientCfg({ ...V25[0][0], line: "2.5" }, "mcrf").qr };
+check("[8] MCRF on Windows: the panel's sheet opens on the link (csqtt 2.5 and WDTT); on Android a QR; no OS = the app's own word",
+  q8.c25win === false && q8.wwin === false && q8.c25and === true && q8.wand === true && q8.c25none === true, q8);
+
+done(PERTURB, PERTURB_LINE ? "apps declare no csqtt line" : PERTURB_SEAL ? "sealed with encodeURIComponent" : PERTURB_QROS ? "MCRF's Windows platform says nothing of QR" : "iOS client routed back to csqtt://");

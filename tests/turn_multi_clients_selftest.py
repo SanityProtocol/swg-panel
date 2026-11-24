@@ -42,7 +42,7 @@ PLANTS = {
     "--perturb-wrap":  ("sub.js", 'subOs() === "android" ? link : JSON.stringify([link])', "JSON.stringify([link])"),
     "--perturb-gen":   ("turn-artifacts.js", 'if (asClient === "wdttplus") { var mg = mcrfGeneration(c.version); if (mg) qp.push("mcrf_generation=" + mg); }', ""),
     "--perturb-genver": ("turn-artifacts.js", "var mg = mcrfGeneration(c.version);", 'var mg = "2.1.9";'),
-    "--perturb-blobs": ("sub.js", "      if (/\\.bin$|[-_]app[-_]update\\.zip$/i.test(n)) return false;", ""),
+    "--perturb-blobs": ("sub.js", "      if (/^runtime-[0-9a-f]{64}\\.bin$|[-_]app[-_]update\\.zip$/i.test(n)) return false;", ""),
     "--perturb-qr":    ("sub.js", "    return !(p && p.qr === false);", "    return true;"),
 }
 PERTURB = [a for a in ARGS if a in PLANTS]
@@ -147,10 +147,10 @@ subsrc = source("sub.js")
 fa = subsrc[subsrc.index("  function installerAssets("):]
 fa = fa[:fa.index("\n  }\n") + 4]
 pr5 = subprocess.run(["node", "-e", fa + "\nconsole.log(JSON.stringify(installerAssets(JSON.parse(process.argv[1])).map(a => a.name)));",
-                      json.dumps([{"name": n} for n in MD + ["Rawline-1.2-windows64.zip", "Amnezia.apk"]])], capture_output=True, text=True, timeout=60)
+                      json.dumps([{"name": n} for n in MD + ["Rawline-1.2-windows64.zip", "Amnezia.apk", "Foo-1.0-linux-x64.bin"]])], capture_output=True, text=True, timeout=60)
 kept = (pr5.stdout.strip().splitlines() or ["null"])[-1]
-check("…and its download bubble lists the app only, not its update payload or the runtime blobs (other zips stay)",
-      json.loads(kept) == ["mcrf.exe", "Rawline-1.2-windows64.zip", "Amnezia.apk"], (kept, pr5.stderr[-200:]))
+check("…and its download bubble lists the app only, not its update payload or the runtime blobs (other zips and an app's own .bin installer stay)",
+      json.loads(kept) == ["mcrf.exe", "Rawline-1.2-windows64.zip", "Amnezia.apk", "Foo-1.0-linux-x64.bin"], (kept, pr5.stderr[-200:]))
 
 print("\n[6] the links")
 JS = r"""
