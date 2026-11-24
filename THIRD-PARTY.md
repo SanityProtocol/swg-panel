@@ -30,6 +30,7 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
 | csqtt 2.5 | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) (amurcanov's csqtt 2.5) | **PolyForm Noncommercial 1.0.0** | `001caa4` | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.3` ¶ |
 | csqtt Android app 2.5 (our build of amurcanov's app) | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) `app/` | **PolyForm Noncommercial 1.0.0** | `001caa4` | in the release: `csqtt-app-2.5.3.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.3` ¶ |
+| MRTT — csqtt line `mrtt` (ttrroyy's fork of csqtt 2.5.0) | [ttrroyy/MRTT](https://github.com/ttrroyy/MRTT) | **PolyForm Noncommercial 1.0.0** | `17259c2` (v1.0) | [`forks/csqtt/mrtt/`](forks/csqtt/mrtt/) | `csqtt-mrtt-1.0-1` |
 | csqtt Android app 2.1.9 (amurcanov's APKs, unmodified) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (a mirror: his signed APKs, digests checked) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (userspace AmneziaWG datapath — bare-metal nodes' fallback) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
@@ -83,6 +84,8 @@ why they stay in the repository rather than living only on a build machine.
 csqtt is published by its author under the **PolyForm Noncommercial License 1.0.0**, whose notice reads:
 
 > Copyright 2026 amurcanov. Commercial use of CSQTT requires a separate written license from the licensor.
+
+MRTT, ttrroyy's fork of csqtt that the `mrtt` line runs, carries the same licence and notice.
 
 That restriction travels with the software: it applies to our build too, and therefore to you. Use csqtt for
 personal or other noncommercial purposes, or obtain a commercial licence from the author. Every other server

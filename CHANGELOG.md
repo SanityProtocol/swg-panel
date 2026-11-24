@@ -7,6 +7,11 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **MRTT, a third csqtt version.** A csqtt server's Version can now be MRTT (ttrroyy's csqtt, built by us with the
+  panel's integration): for the MRTT app (Android, with MAX calls) and Rawline, which open its mrtt:// link in one tap on
+  the subscription page. The server keeps its users and their passwords across a switch; the iPhone app does not connect
+  to it.
+
 - **Two more client apps: MCRF and Rawline.** MCRF (Android 10+) connects to csqtt 2.1 and 2.5 and every WDTT server
   one-tap, and imports plain WireGuard / AmneziaWG configs; its download is the app's own newest release, never a beta
   or an engine pack. Rawline (Windows, Linux, macOS) and RawlineMobile (Android) connect to csqtt 2.5, WDTT and

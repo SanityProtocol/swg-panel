@@ -35,6 +35,7 @@
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
 | csqtt 2.5 | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) (csqtt 2.5 от amurcanov) | **PolyForm Noncommercial 1.0.0** | `001caa4` | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.3` ¶ |
 | Приложение csqtt 2.5 для Android (наша сборка приложения amurcanov) | [Afteroid/csqttr](https://github.com/Afteroid/csqttr) `app/` | **PolyForm Noncommercial 1.0.0** | `001caa4` | в релизе: `csqtt-app-2.5.3.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.3` ¶ |
+| MRTT — линия csqtt `mrtt` (форк csqtt 2.5.0 от ttrroyy) | [ttrroyy/MRTT](https://github.com/ttrroyy/MRTT) | **PolyForm Noncommercial 1.0.0** | `17259c2` (v1.0) | [`forks/csqtt/mrtt/`](forks/csqtt/mrtt/) | `csqtt-mrtt-1.0-1` |
 | Приложение csqtt 2.1.9 для Android (APK amurcanov без изменений) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (зеркало: его подписанные APK, хэши сверены) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (датапас AmneziaWG в пользовательском пространстве — запасной вариант bare-metal-нод) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
@@ -89,6 +90,8 @@ XXcipherX, скрытый в панели с 1.8.9, больше не предл
 csqtt публикуется его автором под **PolyForm Noncommercial License 1.0.0**, уведомление которой гласит:
 
 > Copyright 2026 amurcanov. Commercial use of CSQTT requires a separate written license from the licensor.
+
+MRTT, форк csqtt от ttrroyy, на котором работает линия `mrtt`, распространяется под той же лицензией и с тем же уведомлением.
 
 Это ограничение следует за программой: оно распространяется и на нашу сборку, а значит и на вас. Используйте
 csqtt в личных или иных некоммерческих целях либо получите коммерческую лицензию у автора. Все остальные виды

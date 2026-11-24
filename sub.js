@@ -1986,7 +1986,7 @@
         if (multi && crl) crole.appendChild(document.createTextNode(t(crl) + " "));
         // 2.1 and 2.5 cannot reach each other's servers, and their cards were alike until the app was downloaded: the chip
         // names the server's version (operator, 2026-10-20). No line = a node too old to say = 2.1 (swg-sub _running_lines).
-        crole.appendChild(el("span", "scell-role-if", "CSQTT " + (cd.line || "2.1")));
+        crole.appendChild(el("span", "scell-role-if", cd.line === "mrtt" ? "MRTT" : "CSQTT " + (cd.line || "2.1")));   // MRTT: its own name
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
         ctrl.forkId = "csqtt"; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;

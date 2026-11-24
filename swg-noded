@@ -26345,7 +26345,7 @@ def _csqtt_dir(iface): return CSQTT_ROOT + "/" + iface
 # `<cfgdir>/server` symlink says which slot it runs — the unit and the docker argv exec the symlink, so a switch
 # is a repoint + one restart. The line is a path component: only a member of CSQTT_KNOWN_LINES ever becomes one.
 CSQTT_DEFAULT_LINE = "2.1"
-CSQTT_KNOWN_LINES = ("2.1", "2.5")               # what this noded can run — advertised as snap["csqtt_lines"]
+CSQTT_KNOWN_LINES = ("2.1", "2.5", "mrtt")       # what this noded can run — advertised as snap["csqtt_lines"]; mrtt = MRTT 1.0 (1.8.12)
 def _csqtt_line_ok(line):   # membership in the fixed tuple IS the path-safety gate: nothing else reaches a path
     return line in CSQTT_KNOWN_LINES
 def _csqtt_bin_shared(line=CSQTT_DEFAULT_LINE):

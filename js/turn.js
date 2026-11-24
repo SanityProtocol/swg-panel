@@ -2474,6 +2474,7 @@ const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_D
 // of its own line. A switch keeps the users and their passwords, but every device needs the app of the new line; the
 // iPhone app (Anton48) and the other third-party apps speak 2.1 only.
 const csqttLineNote = l => l === CSQTT_DEFAULT_LINE ? T("Stable. For the csqtt {v1} apps, iPhone included.", { v1: l })
+  : l === "mrtt" ? T("MRTT: needs the MRTT app (Android) or Rawline on every device. The iPhone app does not connect to it.")
   : T("Needs the csqtt {v1} app on every device. No {v2} app connects to it, the iPhone app included.", { v1: l, v2: CSQTT_DEFAULT_LINE });
 // The switch as the node reports it: `want` = what the panel asked, `run` = what the server runs, `failed` = why the
 // node put it back (it reverts a version that will not start, and waits for a Restart or a new build to try again).
@@ -2500,7 +2501,7 @@ export function CsqttVersionField({ node, value, onChange }) {
   if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;
   const can = csqttNodeLines(node);
   const ids = (Store.csqttLines || []).includes(value) ? (Store.csqttLines || []) : [...(Store.csqttLines || []), value];
-  const opts = ids.map(id => ({ value: id, label: "csqtt " + id,
+  const opts = ids.map(id => ({ value: id, label: id === "mrtt" ? "MRTT" : "csqtt " + id,   // MRTT: its own product name
     ...(id !== value && !can.includes(id) ? { refuse: T("Update this node to run csqtt {v1}.", { v1: id }) } : {}) }));
   const old = !can.some(l => l !== CSQTT_DEFAULT_LINE);
   return html`<div class="field"><label>${T("Version")}</label>
@@ -2516,7 +2517,8 @@ function confirmCsqttSwitch(node, iface, cfg, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
   const arOn = csqttArDropAsk(cfg, CSQTT_DEFAULT_LINE);
   pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${true}
-    body=${n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
+    body=${n && to === "mrtt" ? T("The server restarts on MRTT. Its {v1} keep their passwords, but every device needs the MRTT app (Android) or Rawline. If MRTT won't start, the node puts the server back on {v2} by itself.", { v1: plural(n, "user"), v2: from })
+      : n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
     note=${!csqttArLine(to) ? (arOn ? html`<p class="hint">${T("Its App routing is removed: csqtt {v1} has none.", { v1: to })}</p>` : null)
       : !n ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}

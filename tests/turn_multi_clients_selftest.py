@@ -34,7 +34,7 @@ PLANTS = {
     "--perturb-tagre": ("swg-panel-server", "10 if tag_re else 1", "1"),
     "--perturb-udp":   ("turn-artifacts.js", 'if (!csR.transport || csR.transport === "auto") csR.transport = "udp";', ""),
     "--perturb-qt":    ("swg-panel-server", 'cands.sort(key=lambda nu: bool(re.search(r"system-qt", nu[0], re.I)))', "pass"),
-    "--perturb-lines": ("swg-panel-server", '"encoder": "rawline", "csqtt_lines": ["2.5"]', '"encoder": "rawline", "csqtt_lines": ["2.1", "2.5"]'),
+    "--perturb-lines": ("swg-panel-server", '"encoder": "rawline", "csqtt_lines": ["2.5", "mrtt"]', '"encoder": "rawline", "csqtt_lines": ["2.1", "2.5", "mrtt"]'),
     "--perturb-wrap":  ("sub.js", 'subOs() === "android" ? link : JSON.stringify([link])', "JSON.stringify([link])"),
 }
 PERTURB = [a for a in ARGS if a in PLANTS]
@@ -66,7 +66,7 @@ m, r = TC.get("mcrf") or {}, TC.get("rawline") or {}
 check("MCRF reuses the wdttplus encoder, csqtt 2.1 + 2.5", m.get("encoder") == "wdttplus" and m.get("csqtt_lines") == ["2.1", "2.5"], m)
 check("…Android only, one-tap, its app releases only", list(m.get("platforms") or {}) == ["android"]
       and m["platforms"]["android"].get("autostart") is True and m["platforms"]["android"].get("tag_re") == MCRF_RE, m.get("platforms"))
-check("Rawline: its own encoder, csqtt 2.5 only", r.get("encoder") == "rawline" and r.get("csqtt_lines") == ["2.5"], r)
+check("Rawline: its own encoder, csqtt 2.5 and MRTT (never 2.1)", r.get("encoder") == "rawline" and r.get("csqtt_lines") == ["2.5", "mrtt"], r)
 check("…desktop + RawlineMobile on Android", sorted(r.get("platforms") or {}) == ["android", "linux", "macos", "windows"]
       and r["platforms"]["android"].get("name") == "RawlineMobile" and "RawlineMobile" in r["platforms"]["android"].get("github", ""), r.get("platforms"))
 check("…one-tap on every OS (rawline:// registered there)", all(p.get("autostart") is True for p in (r.get("platforms") or {}).values()), r.get("platforms"))

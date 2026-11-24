@@ -1602,7 +1602,11 @@ CSQTT_DEFAULT_LINE = "2.1"
 # minute (2.5.1-2 refused only new ones), no scheduled self-restart in headless mode, and the server refuses a --tun-addr
 # whose host number is .2–.250 (its own address would be handed to a client) — such a server is sent .1 of its /24
 # (_csqtt_tun_for_line). 2.5.1-2 and 2.5.1 stay listed for a rollback.
-CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.3", "csqtt-2.5.3"), ("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")]}
+# mrtt (1.8.12 item 10, operator 2026-11-24: "Keep the mrtt line"): ttrroyy's MRTT 1.0 with our 2.5.3 integration ported onto
+# it (forks/csqtt/mrtt, release csqtt-mrtt-1.0-1 — the node fetches "csqtt-" + version). Its own apps (the MRTT app, Rawline)
+# take mrtt:// links (turn-artifacts.js); its store is csqtt.db with 2.5's schema, so the node reads it as a 2.5 store.
+CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.3", "csqtt-2.5.3"), ("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")],
+               "mrtt": [("mrtt-1.0-1", "csqtt-mrtt-1.0-1")]}
 def _csqtt_tun_for_line(addr):
     """The --tun-addr a 2.5 server is sent. 2.5.3 does not start on a host number in .2–.250 (the client range): such an
     address becomes .1 of the same /24 — the same subnet, so routing, mesh and the fleet's uniqueness check are untouched,
@@ -3777,7 +3781,7 @@ def is_keyless_kind(kind):
 # pool changes this table with it. `max_passwords` is not the cap: it limits only the server's own web create.
 _WDTT_POOL = 249
 _WDTT_POOL_FORKS = ("amurcanov", "xxcipherx", "ildarmaga", "wdttplus")
-_CSQTT_POOL = {"2.1": 249, "2.5": 248}
+_CSQTT_POOL = {"2.1": 249, "2.5": 248, "mrtt": 248}   # mrtt: 2.5's pool (.3–.250), ported as is
 
 def turn_cap(kind, inst):
     """The address pool of one wdtt / csqtt instance record, or None when this table does not know its fork or line (then
@@ -7085,7 +7089,7 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
                                                   # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
-    "csqtt":     {"raw": ("2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
+    "csqtt":     {"raw": ("mrtt-1.0-1", "2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
                                                   # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 8911aa11 = the published
                                                   # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
@@ -7098,6 +7102,9 @@ KEYLESS_SHARE_BUILDS = {
                                                   # deactivate/revoke cut + refused, stable address, two instances, App routing
                                                   # 2.5.3 (187224d9 = the published amd64 bytes, 2026-10-28): csqtt25.sh A I X S M R
                                                   # with the 2.5.1 test client — every result as 2.5.1-2's
+                                                  # mrtt-1.0-1 (line mrtt, the build csqtt-mrtt-1.0-1 publishes, 2026-11-24): csqtt25.sh A I M R W
+                                                  # with MRTT v1.0's own client — reach, spoof +0, IPv6 uplink +0, deactivate /
+                                                  # revoke cut + refused, stable address, two instances, App routing
 }
 
 
@@ -18189,11 +18196,16 @@ TURN_CLIENTS = {
     # one tap for csqtt 2.5, WDTT and FreeTurn alike (operator, 2026-11-24: deep links where the app takes them). Its
     # own encoder id serves the turn-proxy branch only (turn-artifacts.js), so the peer sheet names Rawline, not the
     # FreeTurn app; on csqtt the line decides the link, on WDTT the colon form (both apps read it).
-    "rawline":     {"name": "Rawline", "author": "ttrroyy", "encoder": "rawline", "csqtt_lines": ["2.5"], "qr": True, "platforms": {
+    "rawline":     {"name": "Rawline", "author": "ttrroyy", "encoder": "rawline", "csqtt_lines": ["2.5", "mrtt"], "qr": True, "platforms": {
                        "windows": {"github": "https://github.com/ttrroyy/Rawline/releases", "autostart": True},
                        "linux":   {"github": "https://github.com/ttrroyy/Rawline/releases", "autostart": True},
                        "macos":   {"github": "https://github.com/ttrroyy/Rawline/releases", "autostart": True},
                        "android": {"name": "RawlineMobile", "github": "https://github.com/ttrroyy/RawlineMobile/releases", "autostart": True}}},
+    # The MRTT app (ttrroyy/MRTT, Android + TV): the app of the csqtt line `mrtt`, MAX-call TURN chosen in the app (never in a
+    # link). One-tap: its BROWSABLE filter takes mrtt:// (AndroidManifest.xml:61-66), the link csqttArtifact seals for that
+    # line. Its releases also carry v2.5.0-legacy / v2.1.9-legacy (CSQTT APKs) and betas, hence `tag_re`.
+    "mrttapp":     {"name": "MRTT", "author": "ttrroyy", "encoder": "csqtt", "csqtt_lines": ["mrtt"], "qr": True, "platforms": {
+                       "android": {"github": "https://github.com/ttrroyy/MRTT/releases", "autostart": True, "tag_re": r"^v\d+\.\d+$"}}},
 }
 # The plain WG/AWG client apps (NOT turn forks) — Amnezia VPN / AmneziaWG / WireGuard. Same `platforms[os]` shape as
 # TURN_CLIENTS so they ride the SAME latest-release resolver (_turn_warm_assets → _client_platforms_resolved): where an
@@ -18467,7 +18479,7 @@ _TURN_CLIENT_COMPAT = {
     # author's app, which here is csqttapp. That classing also produces the right DEFAULTS by itself: on Android
     # csqttapp wins on the native band, and on desktop (where csqttapp does not exist) the two friendlies tie and
     # sort alphabetically, so FOCSQ leads — the operator's choice, reached without mislabelling anything.
-    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
+    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly", "mrttapp": "friendly"},
 }
 # The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
 # ExecStart's extra-flags box) appended to the client command.

@@ -64,6 +64,9 @@ Fixture — node q-node, three deployments per device:
       saved, hack-diaz on Linux hands out Rawline; on the desktop the first Start asks Open / Get, and once it is known
       installed Start opens rawline://add/ with the desktop's form (a JSON list holding the freeturn:// link); RawlineMobile
       on Android is fired at once with the app's form (the plain link) — never the import steps
+  [17] the MRTT line (1.8.12 item 10): Eve's MRTT server gets the MRTT app on Android (chip MRTT; Start fires an mrtt:// link
+      MRTT's own decoder opens), Rawline on Linux (rawline://add/ around that mrtt:// link), nothing on iOS; Dana's 2.1 and
+      2.5 servers are not offered the MRTT app
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
@@ -229,7 +232,7 @@ J("subs/serve.json", {"enabled": True, "turn_enabled": True, "turn_catalog": cat
                       "languages": {"enabled": ["en", "ru"], "default": "en"}})
 VK = ["https://vk.ru/call/join/AAAAbbbbCCCCddddEEEEffffGGGGhhhh1234567890", "https://vk.ru/call/join/ZZZZyyyyXXXXwwwwVVVVuuuuTTTTssss0987654321"]
 J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"},
-                           "u4": {"name": "Dana", "vk_links": VK[:1]}},
+                           "u4": {"name": "Dana", "vk_links": VK[:1]}, "u5": {"name": "Eve", "vk_links": VK[:1]}},
                  "peers": {
                      "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt", "p2p_port": 20016,
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
@@ -247,12 +250,15 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      "p5": {"id": "p5", "user_id": "u4", "title": "tablet", "csqtt_password": "pw5csqtt",
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "csqtt2", "type": "csqtt"}]},
+                     # [17] a device on an MRTT server (csqtt line mrtt, 1.8.12 item 10)
+                     "p6": {"id": "p6", "user_id": "u5", "title": "phone", "csqtt_password": "pw6csqtt",
+                            "targets": [{"node": "n1", "iface": "csqtt3", "type": "csqtt"}]},
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
                      "p4": {"id": "p4", "user_id": "u1", "title": "old tablet", "disabled": True,
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
 # [12] torrents leave q-node directly, except from awg1, whose own Torrents / P2P block is on
 J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7", "p2p": {"action": "direct"}, "ifaces": {"awg1": {"block": ["torrents"]}},
-                        "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}},
+                        "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}, "csqtt3": {"listen": "0.0.0.0:56005"}},
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}}})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
 b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
@@ -261,7 +267,8 @@ J("stats/stats-n1.json", {"interfaces": {
         "awg1": {"meta": {"public_key": b64(32), "listen_port": 51821, "endpoint": "203.0.113.7:51821", "subnet": "10.9.0.0/24", "awg_params": AWG}},
         "wg0": {"meta": {"public_key": b64(32), "listen_port": 51830, "endpoint": "203.0.113.7:51830", "subnet": "10.7.0.0/24"}}},
     "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"},   # an older node's row: no line (2.1, filters nothing)
-              {"iface": "csqtt2", "fork": "csqtt", "version": "2.5.1", "line": "2.5"}],
+              {"iface": "csqtt2", "fork": "csqtt", "version": "2.5.1", "line": "2.5"},
+              {"iface": "csqtt3", "fork": "csqtt", "version": "mrtt-1.0-1", "line": "mrtt"}],
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64, "version": "v4.0.3"},
                      {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64, "version": "v4.0.3"},
@@ -281,7 +288,7 @@ const all = new Uint8Array(12 + ct.length); all.set(iv); all.set(ct, 12);
 console.log(Buffer.from(all).toString('base64'));
 """
 users_sub, links = {}, {}
-for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5")):
+for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5"), ("u5", "p6")):
     key, token = os.urandom(32), secrets.token_urlsafe(24)
     sec = subprocess.run(["node", "--input-type=module", "-e", SEAL, key.hex(), json.dumps({"k": b64(32), "p": b64(32)})],
                          capture_output=True, text=True, timeout=60).stdout.strip()
@@ -770,6 +777,40 @@ try:
     tab.close()
     serve["turn_client_default"] = keep_default
     J("subs/serve.json", serve)
+    # [17] the MRTT line: its own app on Android (one-tap, the link sealed under MRTT's seed), Rawline on the desktop, none on iOS
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+    UNSEAL_M = r"""const l = process.argv[1].slice(7), b = Buffer.from(l.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+      const kh = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('mrtt-chiper-key'));
+      const k = await crypto.subtle.importKey('raw', kh, {name: 'AES-GCM'}, false, ['decrypt']);
+      try { console.log(new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv: b.subarray(0, 12)}, k, b.subarray(12)))); }
+      catch (e) { console.log(''); }"""
+    unseal_m = lambda link: subprocess.run(["node", "--input-type=module", "-e", UNSEAL_M, link], capture_output=True, text=True, timeout=30).stdout.strip()
+    tab, rd = render("u5", "android", "en")
+    cells = turn_cells(rd)
+    check("[17] Android, an MRTT server: one cell, the MRTT app, its chip says MRTT",
+          len(cells) == 1 and "MRTT" in (cells[0]["tag"] or "") and cells[0]["role"] == "MRTT", [(c["tag"], c["role"]) for c in cells])
+    res, clip, steps, navs = start_on(tab, "turn", "MRTT")
+    ml = next((u for u in navs if u.startswith("mrtt://")), "")
+    check("[17] …Start fires the mrtt:// link one-tap, sealed under MRTT's seed (MRTT's own decoder opens it to the server)",
+          not steps and unseal_m(ml).startswith("connect?v=2&host=203.0.113.7&peer=56005&password=pw6csqtt"), (res, steps, [u[:30] for u in navs]))
+    tab.close()
+    tab, rd = render("u5", "linux", "en")
+    cells = turn_cells(rd)
+    tab.ev("localStorage.setItem('swgsub-hasapp-rawline', '1'), 1")
+    res, clip, steps, navs = start_on(tab, "turn", "Rawline")
+    pl = rl_payload(next((u for u in navs if u.startswith("rawline://add/")), ""))
+    check("[17] Linux, an MRTT server: Rawline, opened with rawline://add/ around the mrtt:// link",
+          len(cells) == 1 and "Rawline" in (cells[0]["tag"] or "") and pl.startswith('["mrtt://')
+          and unseal_m(json.loads(pl)[0]).startswith("connect?v=2&host=203.0.113.7&peer=56005"), ([c["tag"] for c in cells], pl[:40]))
+    tab.close()
+    tab, rd = render("u5", "ios", "en")
+    check("[17] iOS, an MRTT server: no app exists, no cell", not turn_cells(rd), [c["tag"] for c in turn_cells(rd)])
+    tab.close()
+    tab, rd = render("u4", "android", "en")
+    check("[17] …and Dana's 2.1 and 2.5 servers are not offered the MRTT app", not any("MRTT" in (c["tag"] or "") for c in turn_cells(rd)),
+          [c["tag"] for c in turn_cells(rd)])
+    tab.close()
     serve["turn_client_default"] = dict(keep_default, samosvalishe={"linux": "sidecar@samosvalishe"})   # the operator picks the CLI
     J("subs/serve.json", serve)
     tab, _ = render("u1", "linux", "en")

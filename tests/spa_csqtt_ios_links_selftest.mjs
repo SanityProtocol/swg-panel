@@ -111,7 +111,7 @@ check("a node whose row carries no line runs 2.1: Rawline (2.5 only) not offered
 const ids21 = csqttClientIds({ fork: "csqtt", line: "2.1" });
 check("a 2.1 server: every app, the iOS one included", ["csqttapp", "focsq", "lalune", "vkturnproxy"].every(i => ids21.includes(i)), ids21);
 check("no report yet (no row): a 2.1 server — the 2.1 apps, Rawline not (its link would be a 2.1 one)",
-      !csqttClientIds({ fork: "csqtt" }).includes("rawline") && JSON.stringify(csqttClientIds({ fork: "csqtt" })) === JSON.stringify(ids.filter(i => i !== "rawline")),
+      !csqttClientIds({ fork: "csqtt" }).includes("rawline") && JSON.stringify(csqttClientIds({ fork: "csqtt" })) === JSON.stringify(ids.filter(i => i !== "rawline" && i !== "mrttapp")),
       csqttClientIds({ fork: "csqtt" }));
 
 console.log("\n[7] a 2.5 server's link is sealed, as the 2.5 app requires");

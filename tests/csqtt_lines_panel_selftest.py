@@ -222,7 +222,7 @@ try:
     d = st.get("data") or st
     nn = next((n for n in (d.get("nodes") or []) if n.get("id") == "nnew"), {})
     check("csqtt_cfg publishes the line", ((nn.get("csqtt_cfg") or {}).get("csqtt1") or {}).get("line") == "2.5", nn.get("csqtt_cfg"))
-    check("/api/state offers 2.1 and 2.5", d.get("csqtt_lines") == ["2.1", "2.5"], d.get("csqtt_lines"))
+    check("/api/state offers 2.1, 2.5 and mrtt (1.8.12 item 10)", d.get("csqtt_lines") == ["2.1", "2.5", "mrtt"], d.get("csqtt_lines"))
 
     section("[5] versions and holds per line")
     put_csqtt("nnew", "csqtt2", dict(C1, tun_addr="10.66.91.1/24", listen="0.0.0.0:46020"))
@@ -279,8 +279,8 @@ try:
           ((sync("nnew", rows).get("csqtt7") or {}).get("line") == "2.5"), rr.get("csqtt7"))
 
     section("[9] the default: the released lines")
-    check("2.1 and 2.5 on offer", list(P1.CSQTT_LINES) == ["2.1", "2.5"], list(P1.CSQTT_LINES))
-    check("a stand-in naming an unpublished build adds nothing", (P1._csqtt_standin("2.6=9.9.9") or True) and list(P1.CSQTT_LINES) == ["2.1", "2.5"])
+    check("2.1, 2.5 and mrtt on offer", list(P1.CSQTT_LINES) == ["2.1", "2.5", "mrtt"], list(P1.CSQTT_LINES))
+    check("a stand-in naming an unpublished build adds nothing", (P1._csqtt_standin("2.6=9.9.9") or True) and list(P1.CSQTT_LINES) == ["2.1", "2.5", "mrtt"])
     check("a stand-in cannot replace 2.1", (P1._csqtt_standin("2.1=2.0.1") or True) and P1.CSQTT_LINES["2.1"][0][0] == "2.1.9-4")
     P1._csqtt_standin("2.5=2.1.9-3")
     check("a stand-in cannot replace the released 2.5", P1.CSQTT_LINES["2.5"] == L25, P1.CSQTT_LINES["2.5"])

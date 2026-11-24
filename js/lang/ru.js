@@ -7123,6 +7123,9 @@ export const STR = {
      translates what it renders, the way it does for catalog and server sentences. The label is composed
      there from a fork and an author, so it arrives as parts and goes through the placeholder key below. */
   "CSQTT (csqtt://connect)": "CSQTT (csqtt://connect)",
+  "MRTT (mrtt://)": "MRTT (mrtt://)",
+  "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.":
+    "Откройте ссылку mrtt:// в приложении MRTT или Rawline либо отсканируйте QR.",
   "Open the csqtt:// link in your csqtt app, or paste it in.":
     "Откройте ссылку csqtt:// в своём csqtt-приложении или вставьте её туда.",
   "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in WRAP-A mode.":
@@ -7609,6 +7612,10 @@ export const STR = {
   "tag|switching": "переход",
   // csqtt versions (docs/CSQTT-LINES-PLAN.md): which csqtt a server runs, switchable both ways while its users stay
   "Version": "Версия",
+  "MRTT: needs the MRTT app (Android) or Rawline on every device. The iPhone app does not connect to it.":
+    "MRTT: на каждом устройстве нужно приложение MRTT (Android) или Rawline. Приложение для iPhone к нему не подключается.",
+  "The server restarts on MRTT. Its {v1} keep their passwords, but every device needs the MRTT app (Android) or Rawline. If MRTT won't start, the node puts the server back on {v2} by itself.":
+    "Сервер перезапустится на MRTT. Его пользователи ({v1}) сохранят пароли, но на каждом устройстве нужно приложение MRTT (Android) или Rawline. Если MRTT не запустится, нода сама вернёт сервер на {v2}.",
   "Stable. For the csqtt {v1} apps, iPhone included.": "Стабильная. Для приложений csqtt {v1}, включая iPhone.",
   "Needs the csqtt {v1} app on every device. No {v2} app connects to it, the iPhone app included.": "Нужно приложение csqtt {v1} на каждом устройстве. Приложения {v2}, включая приложение для iPhone, к ней не подключатся.",
   "Update this node to run another csqtt version.": "Чтобы запускать другую версию csqtt, обновите эту ноду.",

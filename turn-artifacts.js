@@ -755,6 +755,9 @@
   // The payload's escaping is the server's url_encode: everything but A–Z a–z 0–9 - _ . ~ as %XX (encodeURIComponent
   // would leave !'()* bare). Web Crypto is async, so this artifact is a buildAsync one.
   var CSQTT_LINK_SEED = "csqtt-chiper-key";   // sic — the authors' spelling, byte for byte
+  // MRTT (csqtt line `mrtt`): the same seal under its own seed and scheme — MRTT's web_panel.rs encrypt_mrtt_link, read by
+  // the MRTT app (UiUtils.kt), Rawline (mrtt.cpp) and RawlineMobile (Mrtt.kt). A csqtt:// link means nothing to them.
+  var MRTT_LINK_SEED = "mrtt-chiper-key";
   function csqttUrlEnc(v) {
     var b = new TextEncoder().encode(String(v == null ? "" : v)), out = "";
     for (var i = 0; i < b.length; i++) {
@@ -764,11 +767,11 @@
     }
     return out;
   }
-  function csqttSeal(payload) {
+  function csqttSeal(payload, mrtt) {
     var sub = typeof crypto !== "undefined" && crypto.subtle;
     if (!sub) return Promise.reject(new Error("this browser can't build a csqtt 2.5 link (no Web Crypto — open the page over HTTPS)"));
     var enc = new TextEncoder(), pt = enc.encode(payload);
-    return sub.digest("SHA-256", enc.encode(CSQTT_LINK_SEED)).then(function (kh) {
+    return sub.digest("SHA-256", enc.encode(mrtt ? MRTT_LINK_SEED : CSQTT_LINK_SEED)).then(function (kh) {
       return Promise.all([sub.importKey("raw", kh, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
                           sub.importKey("raw", kh, { name: "AES-GCM" }, false, ["encrypt"])]);
     }).then(function (ks) {
@@ -777,7 +780,7 @@
         return sub.encrypt({ name: "AES-GCM", iv: iv }, ks[1], pt).then(function (ct) {
           var all = new Uint8Array(12 + ct.byteLength); all.set(iv); all.set(new Uint8Array(ct), 12);
           var bin = ""; for (var i = 0; i < all.length; i++) bin += String.fromCharCode(all[i]);
-          return "csqtt://" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+          return (mrtt ? "mrtt://" : "csqtt://") + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
         });
       });
     });
@@ -814,10 +817,16 @@
     hs = hs.slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
     if (line && line !== "2.1") {
-      // 2.5: the sealed link, and a QR — the 2.5 app scans one. `src` is the payload it seals: what the link IS, for a
-      // caller that must tell two links apart before the async seal resolves.
+      // 2.5 (and mrtt): the sealed link, and a QR — the 2.5 app scans one. `src` is the payload it seals: what the link IS,
+      // for a caller that must tell two links apart before the async seal resolves. mrtt seals the same payload under its own
+      // seed and scheme (MRTT_LINK_SEED) — before 2.5's, since every line but 2.1 lands here.
       var p25 = "connect?v=2&host=" + csqttUrlEnc(c.host) + "&peer=" + (parseInt(c.port, 10) || 46000)
         + (c.password ? "&password=" + csqttUrlEnc(c.password) : "") + (hs.length ? "&hashes=" + hs.map(csqttUrlEnc).join("+") : "");
+      if (line === "mrtt") {
+        return { fork: "csqtt", app: "MRTT", label: "MRTT (mrtt://)", ext: "txt", uri: true, qr: true,
+          vkMissing: vkMissing, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: p25,
+          buildAsync: function () { return csqttSeal(p25, true); } };
+      }
       return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: true,
         vkMissing: vkMissing, hint: "Open the csqtt:// link in your csqtt app, or paste it in.", src: p25,
         buildAsync: function () { return csqttSeal(p25); } };

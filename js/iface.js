@@ -887,7 +887,8 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // A JS comment must stay OUT of the template below: inside an html`` literal it is text — one rendered in this
   // page's header ("// i18n-keys: …", 1.8.8 qualification).
   const kindLabel = isCsq ? "CSQTT" : "WDTT";   // i18n-keys: product names, the same in every language
-  const lineSuffix = isCsq ? " " + csqttRunLine(node, iface) : "";   // "amurcanov 2.5" — the badge carries the csqtt line
+  const runLine = isCsq ? csqttRunLine(node, iface) : "";
+  const lineSuffix = isCsq ? " " + (runLine === "mrtt" ? "MRTT" : runLine) : "";   // "amurcanov 2.5" — the badge carries the csqtt line
   return html`<div class="screen">
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
