@@ -1126,7 +1126,7 @@ export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   const savedDefault = (o) => savedOf(dkey, o);
   // 2.5 with no choice of its own hands out what the sub page does: 2.1's choice if it speaks 2.5 (or "not offered"), else
   // the line's top app — shown, so an operator sees that FOCSQ on Windows becomes La Lune there
-  const inherited = (o) => dkey === "csqtt@2.5" && savedDefault(o) === undefined;
+  const inherited = (o) => dkey !== fork && line !== "mrtt" && savedDefault(o) === undefined;
   // NONE_KEY = "don't offer this server on this OS": a real, storable choice, not the absence of one — so it is
   // valid wherever a client id is, and it round-trips through settings. It has no `cid`, so anything keyed by
   // client id must skip it (see save()).
@@ -2473,10 +2473,10 @@ export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
 // A line as the operator reads it, whole: MRTT by its product name, a csqtt version as "csqtt 2.5" — strings take it as
 // one value ("Switch to {v1}?"), so no string reads "csqtt MRTT". csqttLineTag is the short form a badge puts beside the
 // fork's name ("amurcanov 2.5", "ttrroyy MRTT"); csqttLineAuthor names the fork a line is the work of, where it is not
-// the csqtt fork's own author (MRTT is ttrroyy's).
+// the csqtt fork's own author (MRTT is ttrroyy's) — from the catalog: csqtt's line_authors.
 export const csqttLineName = l => l === "mrtt" ? "MRTT" : "csqtt " + (l || CSQTT_DEFAULT_LINE);
 export const csqttLineTag = l => l === "mrtt" ? "MRTT" : (l || CSQTT_DEFAULT_LINE);
-export const csqttLineAuthor = l => l === "mrtt" ? "ttrroyy" : null;
+export const csqttLineAuthor = l => (((turnForkList().find(x => x.id === "csqtt") || {}).line_authors || {})[l]) || null;
 const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_DEFAULT_LINE];
 // What each version means to the people on it.
 // csqtt 2.1 and 2.5 do not speak to each other, either way (csqtt25 rig, 2026-10-16): an app connects only to a server
@@ -2639,7 +2639,7 @@ export function CsqttCard({ node, c, reorder }) {
       ${tag}
     </div>
     <div class="ifcard-rows">
-      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">${forkLabel(c.fork || "csqtt")} ${sw.run}</span></div>
+      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">${csqttLineAuthor(sw.run) || forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a></span></div>
     </div></div>`;

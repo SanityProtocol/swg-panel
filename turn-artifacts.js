@@ -825,10 +825,11 @@
       if (line === "mrtt") {
         // `src` names the scheme too: a sheet that caches the sealed link by `src` (js/peer-ui.js useCsqttCfg) seals again when
         // its server moves between 2.5 and MRTT — the payload alone is the same on both.
-        // no VK-link warning: with no VK hash in the link the MRTT app takes its TURN from a MAX call or the user's own VK
-        // account, chosen in the app (MRTT v1.0 ConnectionTab / TunnelService) — the link still authenticates
+        // no VK-link warning for the MRTT app: with no VK hash in the link it takes its TURN from a MAX call or the user's own
+        // VK account, chosen in the app (MRTT v1.0 ConnectionTab / TunnelService). Rawline gets the same link and is not known
+        // to — it keeps the warning.
         return { fork: "csqtt", app: "MRTT", label: "MRTT (mrtt://)", ext: "txt", uri: true, qr: true,
-          vkMissing: false, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: "mrtt:" + p25,
+          vkMissing: asClient === "rawline" ? vkMissing : false, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: "mrtt:" + p25,
           buildAsync: function () { return csqttSeal(p25, true); } };
       }
       return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: true,

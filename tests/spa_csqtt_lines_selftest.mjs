@@ -36,7 +36,7 @@
  *      so it shows the take-over notice instead of "missing" with Recreate, and a failed attempt is not "never created"
  *      (seen live on swgt, 10-24). Read from the source: both are components with hooks, not rendered here
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho|nodeby|cardby|lineauthor> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -76,6 +76,9 @@ const PLANTS = {
   picksame: ["turn.js", "export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);", "export const csqttPickOf = (v, cfg) => v || null;"],
   pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
   ifpick: ["turn.js", " pick=${lineDirty ? line : null}/>", "/>"],
+  nodeby: ["screen-nodes.js", 'label=${csqttLineAuthor(csqttRunLine(name, c.iface))} suffix=', 'suffix='],
+  cardby: ["turn.js", '<span class="r">${csqttLineAuthor(sw.run) || forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>', '<span class="r">${forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>'],
+  lineauthor: ["turn.js", 'export const csqttLineAuthor = l => (((turnForkList().find(x => x.id === "csqtt") || {}).line_authors || {})[l]) || null;', 'export const csqttLineAuthor = l => null;'],
   askgo: ["turn.js", "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${go}/>`);",
           "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${() => {}}/>`);"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
@@ -283,5 +286,17 @@ check("[12] the server's page reads the csqtt take-over list (adopting wins over
 check("[12] …and a take-over's failed attempt is not \"never created\" with a live Remove", ISRC.includes("  const never = !adopting && !!missing && !!failErr"));
 check("[12] …it says why it failed and how it ends, in the take-over notice itself (the node's error, the 5-minute give-up)",
       /\$\{adopting && failErr[^\n]*\n\s*\? html`<div class="notice warn">[^\n]*The node couldn't take this server over yet: \*\{err\}\*[^\n]*\{ err: failErr \}\)\}<\/span><\/div>`\n\s*: adopting \? /.test(ISRC));
+
+// [13] MRTT, a line that is another author's work (1.8.12 item 10, card mrtt-line3 round 2): named whole, its author from
+// the catalog (csqtt's line_authors) on the node page's badge and the csqtt card's fork row, as on the server's page
+ST.Store.turnCatalog = { ...(ST.Store.turnCatalog || {}), servers: [{ id: "csqtt", label: "amurcanov", kind: "csqtt", line_authors: { mrtt: "ttrroyy" } }] };
+check("[13] a line reads whole — csqtt 2.5, MRTT (never \"csqtt MRTT\") — and short on a badge (2.5, MRTT)",
+      TU.csqttLineName("2.5") === "csqtt 2.5" && TU.csqttLineName("mrtt") === "MRTT" && TU.csqttLineTag("2.5") === "2.5" && TU.csqttLineTag("mrtt") === "MRTT");
+check("[13] MRTT's author comes from the catalog (ttrroyy); a csqtt line has none of its own",
+      TU.csqttLineAuthor("mrtt") === "ttrroyy" && TU.csqttLineAuthor("2.5") === null, [TU.csqttLineAuthor("mrtt"), TU.csqttLineAuthor("2.5")]);
+check("[13] the node page's csqtt badge names the line's author and line",
+      NSRC.includes('<${ForkTag} fork=${c.fork || "csqtt"} label=${csqttLineAuthor(csqttRunLine(name, c.iface))} suffix=${" " + csqttLineTag(csqttRunLine(name, c.iface))}/>'));
+check("[13] …and so does the csqtt card's CSQTT fork row",
+      TSRC.includes('<span class="r">${csqttLineAuthor(sw.run) || forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>'));
 
 done(!!MODE, MODE || "");

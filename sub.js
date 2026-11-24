@@ -325,11 +325,11 @@
     // 1) the admin's chosen END-USER default for this (fork, OS): a client id, or "sidecar@<author>" (a CLI build).
     //    Honoured ONLY if that client is still COMPATIBLE with the fork — a saved default goes stale when a pairing is
     //    retired (e.g. VK TURN Proxy dropped from MYSOREZ), and a stale default must never resurrect a dead pairing.
-    // A csqtt 2.5 or MRTT server reads the operator's default for its line first (turn_client_default["csqtt@2.5"] /
-    // ["csqtt@mrtt"]; operator, 2026-10-29): "none" hides only that line's servers on this OS, an app of the line is handed
-    // out, and anything else — unset, stale, of another line — falls through to the path below, unchanged (the "csqtt"
-    // default if it speaks the line, else the rank).
-    if (forkId === "csqtt" && (line === "2.5" || line === "mrtt")) {
+    // A csqtt server on a line other than 2.1 (2.5, MRTT) reads the operator's default for its line first
+    // (turn_client_default["csqtt@<line>"]; operator, 2026-10-29): "none" hides only that line's servers on this OS, an app
+    // of the line is handed out, and anything else — unset, stale, of another line — falls through to the path below,
+    // unchanged (the "csqtt" default if it speaks the line, else the rank).
+    if (forkId === "csqtt" && line && line !== "2.1") {
       var d25 = (((_lastData && _lastData.turn_client_default) || {})["csqtt@" + line] || {})[os];
       if (d25 === "none") return null;
       if (d25 && clients[d25] && (compat[d25] || !hasCompat)) { var b25 = build(d25); if (b25) return b25; }
@@ -1972,7 +1972,7 @@
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
-        var csfork = cd.line === "mrtt" ? "ttrroyy" : forkLabel(cd.fork || "csqtt");   // the catalog's name (amurcanov); MRTT is ttrroyy's fork
+        var csfork = ((turnServer("csqtt") || {}).line_authors || {})[cd.line] || forkLabel(cd.fork || "csqtt");   // the catalog's names: a line's own author (MRTT: ttrroyy), else the fork's (amurcanov)
         var cffork = forkColor("csqtt");   // the csqtt FORK colour (catalog key "csqtt"), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");

@@ -65,6 +65,7 @@ export function turnForkList() {
       reach_vouched: s.reach_vouched === true,   // DEVICE ACCESS §11.2 F4: the build a create installs proves a device's owner (else the create sheet warns)
       awg3: s.awg3 !== false,   // can its app carry AmneziaWG 3.1? The catalog says false for WINGS-N only; absent = yes (docs/AWG3-PLAN.md D-apps)
       client_dns: s.client_dns || "",   // the DNS a WDTT / csqtt server hands its clients when the panel sets none (docs/DNS-SETTINGS-PLAN.md §3.3)
+      line_authors: s.line_authors || {},   // csqtt: a line that is another author's work ({mrtt: "ttrroyy"}) — its badges name them
       cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
   return TURN_FORKS_FALLBACK;
 }

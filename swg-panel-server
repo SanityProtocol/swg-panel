@@ -1642,6 +1642,11 @@ def _csqtt_current_version(line=CSQTT_DEFAULT_LINE):
     b = CSQTT_LINES.get(line) or []
     return b[0][0] if b else ""
 CSQTT_MIRROR_OWNER = "amurcanov/csqtt"        # the mirror KEY the node asks under — NOT where the binary lives
+def _csqtt_line_name(line):
+    """A csqtt line as the operator reads it, whole — "csqtt 2.5", or MRTT by its own name (the SPA's csqttLineName)."""
+    return "MRTT" if line == "mrtt" else "csqtt " + str(line)
+
+
 def _csqtt_tag_for(ver):                      # our release tag for an author version ("" / "csqtt" -> current 2.1 build), any line
     if not CSQTT_BUILDS:
         return ""
@@ -18375,7 +18380,7 @@ TURN_SERVERS = {
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
-    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "csqsocks", "vkturnproxy"], "reload": "sighup",
+    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "line_authors": {"mrtt": "ttrroyy"}, "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "csqsocks", "vkturnproxy"], "reload": "sighup",
                      # NO client settings. This carried the shared WDTT-family placeholder (workers/dns), which the panel saved and
                      # NOTHING ever delivered: csqttArtifact builds `csqtt://connect?v=2&host=&peer=&password=&hashes=`
                      # and takes no client values at all. Verified against the app itself (amurcanov/csqtt,
@@ -35109,11 +35114,11 @@ def api(method, path, qs, body, deps):
         if "line" in body:
             _ln = str(body.get("line") or "").strip() or CSQTT_DEFAULT_LINE
             if _ln not in CSQTT_LINES:
-                return 400, {"ok": False, **perr("csqtt {v1} isn't a version this panel offers", v1=_ln[:16]), "code": "bad_request"}
+                return 400, {"ok": False, **perr("{v1} isn't a version this panel offers", v1=_csqtt_line_name(_ln[:16])), "code": "bad_request"}
             if _ln != _line_from and _ln != CSQTT_DEFAULT_LINE:
                 _lsnap = (deps.get("node_snaps") or {}).get(nid) or {}
                 if _ln not in (_lsnap.get("csqtt_lines") or []):
-                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \"update node to …\")", v1=_ln), "code": "node_too_old"}
+                    return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \"update node to …\")", v1=_csqtt_line_name(_ln)), "code": "node_too_old"}
             if _ln == CSQTT_DEFAULT_LINE:
                 inst.pop("line", None)                   # 2.1 is the absent value — a 2.1-only record stays byte-identical
             else:
@@ -35581,7 +35586,7 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, **perr("this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients", v1=(_cd.get("version") or _ln)[:16]), "code": "bad_request"}
             if _ln != CSQTT_DEFAULT_LINE:
                 if _ln not in (_snap.get("csqtt_lines") or []):
-                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \"update node to …\")", v1=_ln), "code": "node_too_old"}
+                    return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \"update node to …\")", v1=_csqtt_line_name(_ln)), "code": "node_too_old"}
                 inst["line"] = _ln
         fork = (body.get("fork") or "").strip() or _csqtt_default_fork()
         if (TURN_SERVERS.get(fork) or {}).get("kind") != "csqtt":
@@ -35807,7 +35812,7 @@ def api(method, path, qs, body, deps):
         if _vl not in CSQTT_LINES:
             # a server on a line this panel does not offer: no build of it is listed here, so say WHY instead of "isn't a
             # published build" (and a release without a ver would only clear a hold no reply reads)
-            return 400, {"ok": False, **perr("csqtt {v1} isn't a version this panel offers", v1=_vl[:16]), "code": "bad_request"}
+            return 400, {"ok": False, **perr("{v1} isn't a version this panel offers", v1=_csqtt_line_name(_vl[:16])), "code": "bad_request"}
         if ver:
             if ver not in [v for v, _ in (CSQTT_LINES.get(_vl) or [])]:
                 return 400, {"ok": False, "error": "that version isn't a published csqtt build", "code": "bad_request"}

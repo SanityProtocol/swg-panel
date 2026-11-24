@@ -59,8 +59,8 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "nolabel21": ("[2]", "noded", '''    if not m:\n        return ""\n    mm = ''', '''    if not m:\n        return CSQTT_DEFAULT_LINE\n    mm = '''),
     "strictre": ("[2]", "noded", r"""rb'aria-label="v(\d{1,3}\.\d{1,3}[0-9A-Za-z.+~-]{0,24}) by amurcanov"'""", r"""rb'aria-label="v(\d{1,3}\.\d{1,3}\.\d{1,4}) by amurcanov"'"""),
     "mid21": ("[2]", "noded", '''    return CSQTT_DEFAULT_LINE if mm in ("2.0", "2.1") else mm''', '''    return CSQTT_DEFAULT_LINE if mm < "2.5" else mm'''),
-    "adopt21": ("[5]", "panel", '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
-                inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
+    "adopt21": ("[5]", "panel", '''                    return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_csqtt_line_name(_ln)), "code": "node_too_old"}
+                inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_csqtt_line_name(_ln)), "code": "node_too_old"}
                 pass'''),
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
     "nobackoff": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid', '            if False and (_csqtt_foreign_pid'),

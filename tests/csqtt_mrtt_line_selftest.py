@@ -17,6 +17,8 @@ Hermetic (node for [4]). Run: python3 tests/csqtt_mrtt_line_selftest.py   (0 = p
      --perturb-store  the node reads an mrtt store as a 2.1 one (through devices) → RED in [2]
      --perturb-src    the MRTT link's cache key is the bare payload again (an open sheet keeps the 2.5 link) → RED in [4]
      --perturb-vk     an MRTT link with no VK hash warns that it won't authenticate (the app takes MAX / its own VK) → RED in [4]
+     --perturb-vkraw  Rawline's MRTT link with no VK hash loses the warning too (not known to manage without one) → RED in [4]
+     --perturb-author csqtt's catalog entry names no line author (MRTT's badges credit amurcanov) → RED in [3]
      --perturb-tag    the MRTT app's tags are two-part only again (a v1.0.1 fix release is never handed out) → RED in [3]
 """
 import json, os, re, sqlite3, subprocess, sys, tempfile, types
@@ -29,7 +31,9 @@ PLANTS = {
     "--perturb-store": ("swg-noded", 'if "device_id" in cols and ((line or "2.1") == "2.1" or "ip" not in cols):',
                         'if True:'),
     "--perturb-src":   ("turn-artifacts.js", 'src: "mrtt:" + p25,', 'src: p25,'),
-    "--perturb-vk":    ("turn-artifacts.js", '          vkMissing: false, hint: "Open the mrtt:// link', '          vkMissing: vkMissing, hint: "Open the mrtt:// link'),
+    "--perturb-vk":    ("turn-artifacts.js", 'vkMissing: asClient === "rawline" ? vkMissing : false, hint: "Open the mrtt:// link', 'vkMissing: vkMissing, hint: "Open the mrtt:// link'),
+    "--perturb-vkraw": ("turn-artifacts.js", 'vkMissing: asClient === "rawline" ? vkMissing : false, hint: "Open the mrtt:// link', 'vkMissing: false, hint: "Open the mrtt:// link'),
+    "--perturb-author": ("swg-panel-server", '"product": "CSQTT", "line_authors": {"mrtt": "ttrroyy"}, ', '"product": "CSQTT", '),
     "--perturb-tag":   ("swg-panel-server", '"autostart": True, "tag_re": r"^v\\d+\\.\\d+(\\.\\d+)?$"}}},', '"autostart": True, "tag_re": r"^v\\d+\\.\\d+$"}}},'),
 }
 PERTURB = [a for a in sys.argv[1:] if a in PLANTS]
@@ -65,6 +69,7 @@ check("…its build mrtt-1.0-1 from release csqtt-mrtt-1.0-1 (the node asks for 
 check("…its current build", P._csqtt_current_version("mrtt") == "mrtt-1.0-1")
 check("its pool is 2.5's", P.turn_cap("csqtt", {"line": "mrtt"}) == P.turn_cap("csqtt", {"line": "2.5"}) == 248)
 check("the share table vouches for the rigged build", "mrtt-1.0-1" in P.KEYLESS_SHARE_BUILDS["csqtt"]["raw"])
+check("its refusals name it whole (MRTT; a csqtt line as csqtt 2.5)", P._csqtt_line_name("mrtt") == "MRTT" and P._csqtt_line_name("2.5") == "csqtt 2.5")
 
 print("\n[2] the node")
 check("it advertises mrtt", "mrtt" in N.CSQTT_KNOWN_LINES, N.CSQTT_KNOWN_LINES)
@@ -103,6 +108,8 @@ speakers = sorted(cid for cid, c in TC.items() if "mrtt" in (c.get("csqtt_lines"
 check("no other app speaks mrtt", speakers == ["mrttapp", "rawline"], speakers)
 cm = P._turn_compat("csqtt")
 check("csqtt servers list both, with no client settings", cm.get("mrttapp") == "friendly" and P._client_schema_for("csqtt", "mrttapp") == [], cm)
+cs = next((s for s in P.turn_catalog_view()["servers"] if s["id"] == "csqtt"), {})
+check("the catalog names MRTT's author on csqtt's entry (line_authors), the one source both pages read", cs.get("line_authors") == {"mrtt": "ttrroyy"}, cs.get("line_authors"))
 
 print("\n[4] the link")
 JS = r"""
@@ -120,7 +127,8 @@ const open = async (link, seed, pre) => { try {
   console.log(JSON.stringify({ m, r, v25, mOpen: await open(m, "mrtt-chiper-key", "mrtt://"), mByCsqtt: await open(m, "csqtt-chiper-key", "mrtt://"),
     v25Open: await open(v25, "csqtt-chiper-key", "csqtt://"), app: T.csqttArtifact(c, "csqtt", "mrtt").app,
     srcM: T.csqttArtifact(c, "csqtt", "mrtt").src, src25: T.csqttArtifact(c, "csqtt", "2.5").src,
-    vkM: T.csqttArtifact(nohash, "csqtt", "mrtt").vkMissing, vk25: T.csqttArtifact(nohash, "csqtt", "2.5").vkMissing }));
+    vkM: T.csqttArtifact(nohash, "csqtt", "mrtt").vkMissing, vk25: T.csqttArtifact(nohash, "csqtt", "2.5").vkMissing,
+    vkR: T.csqttArtifact(nohash, "rawline", "mrtt").vkMissing }));
 })();
 """
 with tempfile.TemporaryDirectory() as td:
@@ -140,8 +148,9 @@ if o:
     check("a 2.5 server's link stays csqtt:// under csqtt's seed", o["v25"].startswith("csqtt://") and o["v25Open"].startswith("connect?v=2&"), o["v25"][:20])
     check("…and the two links' cache keys differ, so a sheet left open across a 2.5 ⇄ MRTT switch seals again",
           o["srcM"] != o["src25"] and o["srcM"].endswith(o["src25"]), (o["srcM"][:20], o["src25"][:20]))
-    check("no VK hash: an MRTT link raises no \"won't authenticate\" warning (MAX or the user's own VK, in the app); a 2.5 one still does",
+    check("no VK hash: the MRTT app's link raises no \"won't authenticate\" warning (MAX or the user's own VK, in the app); a 2.5 one still does",
           o["vkM"] is False and o["vk25"] is True, (o["vkM"], o["vk25"]))
+    check("…while Rawline's MRTT link keeps the warning (it is not known to manage without a hash)", o["vkR"] is True, o["vkR"])
 
 print()
 if PERTURB:

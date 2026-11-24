@@ -354,11 +354,11 @@ if P_PICKMARK:
 if P_CSQRANK:
     perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
 if P_LINE25:
-    perturbed_web('    if (forkId === "csqtt" && (line === "2.5" || line === "mrtt")) {', '    if (forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
+    perturbed_web('    if (forkId === "csqtt" && line && line !== "2.1") {', '    if (forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
 if P_LINEMRTT:
-    perturbed_web('    if (forkId === "csqtt" && (line === "2.5" || line === "mrtt")) {', '    if (forkId === "csqtt" && line === "2.5") {', "the MRTT line's own default")
+    perturbed_web('    if (forkId === "csqtt" && line && line !== "2.1") {', '    if (forkId === "csqtt" && line === "2.5") {', "the MRTT line's own default")
 if P_MRTTBY:
-    perturbed_web('var csfork = cd.line === "mrtt" ? "ttrroyy" : forkLabel(', 'var csfork = false ? "ttrroyy" : forkLabel(', "MRTT's own author on its tag")
+    perturbed_web('var csfork = ((turnServer("csqtt") || {}).line_authors || {})[cd.line] || forkLabel(', 'var csfork = forkLabel(', "MRTT's own author on its tag")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
