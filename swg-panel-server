@@ -18205,7 +18205,7 @@ TURN_CLIENTS = {
     # link). One-tap: its BROWSABLE filter takes mrtt:// (AndroidManifest.xml:61-66), the link csqttArtifact seals for that
     # line. Its releases also carry v2.5.0-legacy / v2.1.9-legacy (CSQTT APKs) and betas, hence `tag_re`.
     "mrttapp":     {"name": "MRTT", "author": "ttrroyy", "encoder": "csqtt", "csqtt_lines": ["mrtt"], "qr": True, "platforms": {
-                       "android": {"github": "https://github.com/ttrroyy/MRTT/releases", "autostart": True, "tag_re": r"^v\d+\.\d+$"}}},
+                       "android": {"github": "https://github.com/ttrroyy/MRTT/releases", "autostart": True, "tag_re": r"^v\d+\.\d+(\.\d+)?$"}}},
 }
 # The plain WG/AWG client apps (NOT turn forks) — Amnezia VPN / AmneziaWG / WireGuard. Same `platforms[os]` shape as
 # TURN_CLIENTS so they ride the SAME latest-release resolver (_turn_warm_assets → _client_platforms_resolved): where an
@@ -29641,9 +29641,11 @@ def api(method, path, qs, body, deps):
             dmerged = dict(cur.get("turn_client_default") or {})
             for fk, osmap_in in list(tcd.items())[:32]:
                 fk = str(fk)
-                # "csqtt@2.5": csqtt's default for its 2.5 line (operator, 2026-10-29) — the plain "csqtt" key stays 2.1's. Only
-                # an app that speaks 2.5 (catalog csqtt_lines) can be stored under it; validated against csqtt's own compat.
-                line = fk.split("@", 1)[1] if fk == "csqtt@2.5" else None
+                # "csqtt@<line>": csqtt's default for another line on offer — 2.5, MRTT (operator, 2026-10-29) — the plain "csqtt"
+                # key stays 2.1's. Only an app that speaks the line (catalog csqtt_lines) can be stored under it; validated
+                # against csqtt's own compat. Any other "@" key names no fork and is dropped below.
+                _l = fk.split("@", 1)[1] if fk.startswith("csqtt@") else ""
+                line = _l if _l in CSQTT_LINES and _l != CSQTT_DEFAULT_LINE else None
                 base = "csqtt" if line else fk
                 if base not in TURN_SERVERS or not isinstance(osmap_in, dict):
                     continue

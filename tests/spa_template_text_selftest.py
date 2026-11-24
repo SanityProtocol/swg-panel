@@ -57,7 +57,6 @@ ALLOWED_CHUNKS = {
         "DNS", "MTU", "IP", "AS", "HeaderProtectionKey", "RandomTrailers", "nginx", "Caddy",
         "swg", "Panel",                                   # the brand, "swgPanel", split for its two colours
         "docker",                                         # the run-model tag beside a node's name (log budget table)
-        "csqtt",                                          # "csqtt 2.5" — a server's csqtt version line (turn.js, 1.8.9)
         "turn",                                           # "turn ×2" — a node page's interface summary on a phone (S13)
     },
     "commands, paths and files the operator types or greps": {

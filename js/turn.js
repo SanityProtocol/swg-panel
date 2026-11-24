@@ -1104,13 +1104,14 @@ export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   useStore();
   const f = turnForkList().find(x => x.id === fork) || {};
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  // csqtt's two lines do not speak to each other, so each has its own default (operator, 2026-10-29): 2.1's is stored under
-  // "csqtt", 2.5's under "csqtt@2.5". The switch exists only while more than one line is on offer, or a server already runs
+  // csqtt's lines do not speak to each other, so each has its own default (operator, 2026-10-29): 2.1's is stored under
+  // "csqtt", another line's under "csqtt@<line>" (2.5, MRTT). The switch exists only while more than one line is on offer, or a server already runs
   // a line other than 2.1 — a one-line panel sees exactly what it saw before.
   const isCsq = fork === "csqtt";
   const linesOn = isCsq && (csqttLinesOn() || (Store.nodes || []).some(n => Object.values(n.csqtt_cfg || {}).some(c => c && c.line && c.line !== CSQTT_DEFAULT_LINE)));
-  const [line, setLineRaw] = useState(linesOn && initialLine === "2.5" ? "2.5" : CSQTT_DEFAULT_LINE);
-  const dkey = isCsq && line === "2.5" ? "csqtt@2.5" : fork;                   // the turn_client_default key this line's choice lives under
+  const pickLines = [...new Set([CSQTT_DEFAULT_LINE, "2.5", ...(Store.csqttLines || [])])];   // a tab per line: 2.1 and 2.5 always, MRTT once offered
+  const [line, setLineRaw] = useState(linesOn && initialLine && initialLine !== CSQTT_DEFAULT_LINE && pickLines.includes(initialLine) ? initialLine : CSQTT_DEFAULT_LINE);
+  const dkey = isCsq && line !== CSQTT_DEFAULT_LINE ? "csqtt@" + line : fork;   // the turn_client_default key this line's choice lives under
   const speaks = cid => (((cmap[cid] || {}).csqtt_lines) || [CSQTT_DEFAULT_LINE]).includes(line);
   const byOs = {};
   _OS_TABS.forEach(([o]) => { byOs[o] = pickerEntries(f, o).filter(en => !isCsq || speaks(en.cid)); });   // rich entries, native-first; a csqtt line lists only its apps (one line on offer = 2.1's: no Rawline)
@@ -1173,7 +1174,7 @@ export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   // a switch of line drops the staged picks: each line saves its own key, and a pick shown under the other line was never its
   const setLine = l => { setSel({}); setLineRaw(l); };
   return { f, byOs, os, setOs, setSel, selEntry, entries, e, cSchema, osLabel, cName, appColor, effVals, stageSetting, dirty, isDefault, settingsDirty, save, busy, flash,
-           linesOn, line, setLine, inherited };
+           linesOn, pickLines, line, setLine, inherited };
 }
 // The app picker — OS tabs + the styled client dropdown (the app the fork's sub page hands out). Shown inline, right
 // under "Forwards to", so the choice is visible without opening a section.
@@ -1190,7 +1191,7 @@ export function clientAppLabel(e) {
 // reveals the tags + "offered to <OS> users"; clicking a button makes that OS active (drives the Client-parameters
 // body) and expands its app list to pick from. `offered` → phrase the bubble as an end-user offer (proxy sheets).
 export function TurnAppsPicker({ ctl, offered }) {
-  const { f, byOs, os, setOs, setSel, selEntry, linesOn, line, setLine } = ctl;
+  const { f, byOs, os, setOs, setSel, selEntry, linesOn, pickLines, line, setLine } = ctl;
   const [openOs, setOpenOs] = useState(null);
   useEffect(() => { if (!openOs) return; const h = () => setOpenOs(null); document.addEventListener("click", h); document.addEventListener("m-outside-tap", h);   // a phone eats the outside click (ui.js)
     return () => { document.removeEventListener("click", h); document.removeEventListener("m-outside-tap", h); }; }, [openOs]);
@@ -1200,9 +1201,10 @@ export function TurnAppsPicker({ ctl, offered }) {
   const openCur = openOs ? selEntry(openOs) : null;
   const pick = (o, key) => { setSel(m => ({ ...m, [o]: key })); setOs(o); setOpenOs(null); };
   return html`<${Fragment}>
-    ${linesOn ? html`<div class="dpsw awgsw csq-linesw" role="radiogroup" aria-label=${T("csqtt version")}>${["2.1", "2.5"].map(l =>
-        html`<button type="button" role="radio" aria-checked=${line === l} class=${line === l ? "on" : ""} onClick=${() => { setOpenOs(null); setLine(l); }}>csqtt ${l}</button>`)}</div>
-      <div class="hint csq-linehint">${line === "2.5"
+    ${linesOn ? html`<div class="dpsw awgsw csq-linesw" role="radiogroup" aria-label=${T("csqtt version")}>${pickLines.map(l =>
+        html`<button type="button" role="radio" aria-checked=${line === l} class=${line === l ? "on" : ""} onClick=${() => { setOpenOs(null); setLine(l); }}>${csqttLineName(l)}</button>`)}</div>
+      <div class="hint csq-linehint">${line === "mrtt" ? T("The apps MRTT servers hand out. Where you haven't chosen, the first below that speaks MRTT; csqtt's own choices never apply to it.")
+        : line === "2.5"
         ? T("The apps 2.5 servers hand out. Where you haven't chosen, 2.5 gets 2.1's app if it speaks 2.5, else the first that does — shown below.")
         : T("The apps 2.1 servers hand out — and 2.5 servers too, where you haven't chosen for 2.5 and the app speaks it.")}</div>` : null}
     <div class="osapp-hd">${T("Select an app for each OS")}</div>
@@ -1522,7 +1524,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     return html`<div class="fvp-node" key=${nid}>
       <div class="fvp-head">
         <span class="fvp-dot" style=${"background:" + (Store.nodeColor(nodeOf(nid)) || "var(--ink)")}></span>
-        <b class="fvp-nm">${Store.nodeName(nodeOf(nid))}</b>${csqtt && (csqttLinesOn() || running[nid].line !== CSQTT_DEFAULT_LINE) ? html` <span class="faint">${running[nid].line === "mrtt" ? "MRTT" : "csqtt " + running[nid].line}</span>` : null}
+        <b class="fvp-nm">${Store.nodeName(nodeOf(nid))}</b>${csqtt && (csqttLinesOn() || running[nid].line !== CSQTT_DEFAULT_LINE) ? html` <span class="faint">${csqttLineName(running[nid].line)}</span>` : null}
         <span class="fvp-ver">${T("Installed")} <span class="mono">${inst}</span>${running[nid].ids.length > 1 ? html` · <span class="faint">${plural(running[nid].ids.length, "server")}</span>` : ""}</span>
         ${held ? html`<span class="tg" style=${"color:var(--" + (mismatch ? "dangling" : "warn") + ");background:color-mix(in srgb,var(--" + (mismatch ? "dangling" : "warn") + ") 16%,transparent)"}>${T("held · {v1}", { v1: held })}</span>` : null}
       </div>
@@ -2468,8 +2470,13 @@ export { CSQTT_DEFAULT_LINE };   // defined in turn-catalog.js (ui.js reads it t
 // a stand-in line read "switching" for ever).
 export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || "").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };
 export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
-// A line as the operator reads it: MRTT by its product name, the csqtt versions by number ("csqtt {v1}" strings read "csqtt MRTT").
-export const csqttLineName = l => l === "mrtt" ? "MRTT" : l;
+// A line as the operator reads it, whole: MRTT by its product name, a csqtt version as "csqtt 2.5" — strings take it as
+// one value ("Switch to {v1}?"), so no string reads "csqtt MRTT". csqttLineTag is the short form a badge puts beside the
+// fork's name ("amurcanov 2.5", "ttrroyy MRTT"); csqttLineAuthor names the fork a line is the work of, where it is not
+// the csqtt fork's own author (MRTT is ttrroyy's).
+export const csqttLineName = l => l === "mrtt" ? "MRTT" : "csqtt " + (l || CSQTT_DEFAULT_LINE);
+export const csqttLineTag = l => l === "mrtt" ? "MRTT" : (l || CSQTT_DEFAULT_LINE);
+export const csqttLineAuthor = l => l === "mrtt" ? "ttrroyy" : null;
 const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_DEFAULT_LINE];
 // What each version means to the people on it.
 // csqtt 2.1 and 2.5 do not speak to each other, either way (csqtt25 rig, 2026-10-16): an app connects only to a server
@@ -2503,8 +2510,8 @@ export function CsqttVersionField({ node, value, onChange }) {
   if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;
   const can = csqttNodeLines(node);
   const ids = (Store.csqttLines || []).includes(value) ? (Store.csqttLines || []) : [...(Store.csqttLines || []), value];
-  const opts = ids.map(id => ({ value: id, label: id === "mrtt" ? "MRTT" : "csqtt " + id,   // MRTT: its own product name
-    ...(id !== value && !can.includes(id) ? { refuse: T("Update this node to run csqtt {v1}.", { v1: csqttLineName(id) }) } : {}) }));
+  const opts = ids.map(id => ({ value: id, label: csqttLineName(id),
+    ...(id !== value && !can.includes(id) ? { refuse: T("Update this node to run {v1}.", { v1: csqttLineName(id) }) } : {}) }));
   const old = !can.some(l => l !== CSQTT_DEFAULT_LINE);
   return html`<div class="field"><label>${T("Version")}</label>
     <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Version")}/>
@@ -2518,12 +2525,13 @@ export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && (cf
 function confirmCsqttSwitch(node, iface, cfg, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
   const arOn = csqttArDropAsk(cfg, CSQTT_DEFAULT_LINE);
-  pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: csqttLineName(to) })} confirmLabel=${T("Switch to {v1}", { v1: csqttLineName(to) })} warn=${true}
+  pushModal(html`<${ConfirmSheet} title=${T("Switch to {v1}?", { v1: csqttLineName(to) })} confirmLabel=${T("Switch to {v1}", { v1: csqttLineName(to) })} warn=${true}
     body=${n && to === "mrtt" ? T("The server restarts on MRTT. Its {v1} keep their passwords, but every device needs the MRTT app (Android) or Rawline. If MRTT won't start, the node puts the server back on {v2} by itself.", { v1: plural(n, "user"), v2: csqttLineName(from) })
-      : n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: csqttLineName(to), v2: plural(n, "user"), v3: csqttLineName(from) })
-      : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: csqttLineName(to), v2: csqttLineName(from) })}
-    note=${!csqttArLine(to) ? (arOn ? html`<p class="hint">${T("Its App routing is removed: csqtt {v1} has none.", { v1: csqttLineName(to) })}</p>` : null)
-      : !n ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: csqttLineName(to) })}</p>`}
+      : n && from === "mrtt" ? T("The server restarts on {v1}. Its {v2} keep their passwords, but every device needs an app for {v1} and a new link: the MRTT app cannot connect to it. If {v1} won't start, the node puts the server back on MRTT by itself.", { v1: csqttLineName(to), v2: plural(n, "user") })
+      : n ? T("The server restarts on {v1}. Its {v2} keep their passwords, but every device needs the {v1} app: a {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: csqttLineName(to), v2: plural(n, "user"), v3: csqttLineName(from) })
+      : T("The server restarts on {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: csqttLineName(to), v2: csqttLineName(from) })}
+    note=${!csqttArLine(to) ? (arOn ? html`<p class="hint">${T("Its App routing is removed: {v1} has none.", { v1: csqttLineName(to) })}</p>` : null)
+      : !n ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to {v1}: iPhone users lose access until you switch back.", { v1: csqttLineName(to) })}</p>`}
     onConfirm=${onConfirm}/>`);
 }
 // The questions a version change asks before `go` saves it — one place for both sheets that offer the Version (the
@@ -2535,7 +2543,7 @@ export function askCsqttLine(sw, node, iface, cfg, line, go) {
   if (line !== sw.run) { confirmCsqttSwitch(node, iface, cfg, sw.run, line, go); return true; }
   if (csqttArDropAsk(cfg, line)) {
     pushModal(html`<${ConfirmSheet} title=${T("Remove App routing?")} confirmLabel=${T("Remove and save")} warn=${true}
-      body=${T("Its App routing is removed: csqtt {v1} has none.", { v1: csqttLineName(line) })} onConfirm=${go}/>`);
+      body=${T("Its App routing is removed: {v1} has none.", { v1: csqttLineName(line) })} onConfirm=${go}/>`);
     return true;
   }
   return false;
@@ -2554,8 +2562,8 @@ export function useCsqttPick(cfg, pick) {
 }
 // What the node said about the last switch — shown under the Version while nothing new is picked.
 export const CsqttLineNotices = ({ sw, dirty }) => dirty ? null : html`
-  ${sw.blocked ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: csqttLineName(sw.want), v2: csqttLineName(sw.run) })}</span></div>` : null}
-  ${sw.failed ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Switching to csqtt {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: csqttLineName(sw.want), v2: sw.failed.why || T("it did not start"), v3: csqttLineName(sw.run) })}</span></div>` : null}`;
+  ${sw.blocked ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: csqttLineName(sw.want), v2: csqttLineName(sw.run) })}</span></div>` : null}
+  ${sw.failed ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: csqttLineName(sw.want), v2: sw.failed.why || T("it did not start"), v3: csqttLineName(sw.run) })}</span></div>` : null}`;
 
 export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }) {
   const used = (() => {
@@ -2613,9 +2621,9 @@ export function CsqttCard({ node, c, reorder }) {
   const tag = deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
     : converting ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
     : _opTag ? _opTag
-    : sw.switching ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label=${T("tag|switching")} title=${T("Moving to csqtt {v1} on the node's next sync", { v1: csqttLineName(sw.want) })}/>`
-    : sw.failed ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|switch failed")} title=${T("Switch to csqtt {v1} failed", { v1: csqttLineName(sw.want) })} msg=${sw.failed.why || ""}/>`
-    : sw.blocked ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|update node")} title=${T("This node can't run csqtt {v1} — update the node", { v1: csqttLineName(sw.want) })}/>`
+    : sw.switching ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label=${T("tag|switching")} title=${T("Moving to {v1} on the node's next sync", { v1: csqttLineName(sw.want) })}/>`
+    : sw.failed ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|switch failed")} title=${T("Switch to {v1} failed", { v1: csqttLineName(sw.want) })} msg=${sw.failed.why || ""}/>`
+    : sw.blocked ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|update node")} title=${T("This node can't run {v1} — update the node", { v1: csqttLineName(sw.want) })}/>`
     : active ? null
     : cstopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
@@ -2973,11 +2981,11 @@ export function EditCsqttSheet({ node, iface, pick }) {
 // A WDTT fork chip: the fork's own colour, with the WDTT colour as the fallback until applyThemeColors has
 // injected the tunable one. The style string, the `turnColor(fork) || WDTT_COLOR` fallback and the label lookup
 // were written out at four separate sites, which is how they drifted (some showed the raw id, some the label).
-export function ForkTag({ fork, suffix, title }) {
+export function ForkTag({ fork, suffix, title, label: author }) {   // `label`: a line's own author in place of the fork's (csqttLineAuthor)
   if (!fork) return null;
   const col = turnColor(fork) || WDTT_COLOR;
   const fk = turnForkList().find(x => x.id === fork) || {};
-  const label = forkLabel(fork);
+  const label = author || forkLabel(fork);
   // Both amurcanov forks now read "amurcanov"; the kind-specific title (and the fork colour) tell them apart.
   const defTitle = fk.kind === "csqtt" ? T("CSQTT fork: {v1}", { v1: label }) : T("WDTT fork: {v1}", { v1: label });
   return html`<span class="tg" style=${"color:" + col + ";background:color-mix(in srgb," + col + " 16%,transparent)"}

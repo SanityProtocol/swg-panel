@@ -16,6 +16,8 @@ Hermetic (node for [4]). Run: python3 tests/csqtt_mrtt_line_selftest.py   (0 = p
      --perturb-seed   an mrtt link sealed under csqtt's seed → RED in [4]
      --perturb-store  the node reads an mrtt store as a 2.1 one (through devices) → RED in [2]
      --perturb-src    the MRTT link's cache key is the bare payload again (an open sheet keeps the 2.5 link) → RED in [4]
+     --perturb-vk     an MRTT link with no VK hash warns that it won't authenticate (the app takes MAX / its own VK) → RED in [4]
+     --perturb-tag    the MRTT app's tags are two-part only again (a v1.0.1 fix release is never handed out) → RED in [3]
 """
 import json, os, re, sqlite3, subprocess, sys, tempfile, types
 
@@ -27,6 +29,8 @@ PLANTS = {
     "--perturb-store": ("swg-noded", 'if "device_id" in cols and ((line or "2.1") == "2.1" or "ip" not in cols):',
                         'if True:'),
     "--perturb-src":   ("turn-artifacts.js", 'src: "mrtt:" + p25,', 'src: p25,'),
+    "--perturb-vk":    ("turn-artifacts.js", '          vkMissing: false, hint: "Open the mrtt:// link', '          vkMissing: vkMissing, hint: "Open the mrtt:// link'),
+    "--perturb-tag":   ("swg-panel-server", '"autostart": True, "tag_re": r"^v\\d+\\.\\d+(\\.\\d+)?$"}}},', '"autostart": True, "tag_re": r"^v\\d+\\.\\d+$"}}},'),
 }
 PERTURB = [a for a in sys.argv[1:] if a in PLANTS]
 FAILS = []
@@ -92,7 +96,8 @@ TC = P.TURN_CLIENTS
 m = TC.get("mrttapp") or {}
 check("the MRTT app speaks mrtt only, one-tap on Android", m.get("csqtt_lines") == ["mrtt"] and m["platforms"]["android"].get("autostart") is True, m)
 tre = m["platforms"]["android"].get("tag_re", "")
-check("…its stable releases, not -legacy or a beta", [t for t in ("v1.0", "v1.1", "v1.0-beta1", "v2.5.0-legacy", "v2.1.9-legacy") if re.search(tre, t)] == ["v1.0", "v1.1"], tre)
+check("…its stable releases, a fix release too, not -legacy or a beta",
+      [t for t in ("v1.0", "v1.1", "v1.0.1", "v1.0-beta1", "v2.5.0-legacy", "v2.1.9-legacy") if re.search(tre, t)] == ["v1.0", "v1.1", "v1.0.1"], tre)
 check("Rawline speaks 2.5 and mrtt", TC["rawline"].get("csqtt_lines") == ["2.5", "mrtt"])
 speakers = sorted(cid for cid, c in TC.items() if "mrtt" in (c.get("csqtt_lines") or []))
 check("no other app speaks mrtt", speakers == ["mrttapp", "rawline"], speakers)
@@ -103,6 +108,7 @@ print("\n[4] the link")
 JS = r"""
 global.window = global; require(process.argv[1]); const T = global.SWGTurn;
 const c = { host: "203.0.113.7", port: 56005, password: "pw6", vk_links: ["https://vk.ru/call/join/h1"] };
+const nohash = { host: "203.0.113.7", port: 56005, password: "pw6", vk_links: [] };
 const open = async (link, seed, pre) => { try {
   const b = Buffer.from(link.slice(pre.length).replace(/-/g, "+").replace(/_/g, "/"), "base64");
   const k = await crypto.subtle.importKey("raw", await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seed)), {name: "AES-GCM"}, false, ["decrypt"]);
@@ -113,7 +119,8 @@ const open = async (link, seed, pre) => { try {
   const v25 = await T.csqttArtifact(c, "csqtt", "2.5").buildAsync();
   console.log(JSON.stringify({ m, r, v25, mOpen: await open(m, "mrtt-chiper-key", "mrtt://"), mByCsqtt: await open(m, "csqtt-chiper-key", "mrtt://"),
     v25Open: await open(v25, "csqtt-chiper-key", "csqtt://"), app: T.csqttArtifact(c, "csqtt", "mrtt").app,
-    srcM: T.csqttArtifact(c, "csqtt", "mrtt").src, src25: T.csqttArtifact(c, "csqtt", "2.5").src }));
+    srcM: T.csqttArtifact(c, "csqtt", "mrtt").src, src25: T.csqttArtifact(c, "csqtt", "2.5").src,
+    vkM: T.csqttArtifact(nohash, "csqtt", "mrtt").vkMissing, vk25: T.csqttArtifact(nohash, "csqtt", "2.5").vkMissing }));
 })();
 """
 with tempfile.TemporaryDirectory() as td:
@@ -133,6 +140,8 @@ if o:
     check("a 2.5 server's link stays csqtt:// under csqtt's seed", o["v25"].startswith("csqtt://") and o["v25Open"].startswith("connect?v=2&"), o["v25"][:20])
     check("…and the two links' cache keys differ, so a sheet left open across a 2.5 ⇄ MRTT switch seals again",
           o["srcM"] != o["src25"] and o["srcM"].endswith(o["src25"]), (o["srcM"][:20], o["src25"][:20]))
+    check("no VK hash: an MRTT link raises no \"won't authenticate\" warning (MAX or the user's own VK, in the app); a 2.5 one still does",
+          o["vkM"] is False and o["vk25"] is True, (o["vkM"], o["vk25"]))
 
 print()
 if PERTURB:

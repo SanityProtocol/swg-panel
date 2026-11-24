@@ -76,8 +76,8 @@ const PLANTS = {
   picksame: ["turn.js", "export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);", "export const csqttPickOf = (v, cfg) => v || null;"],
   pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
   ifpick: ["turn.js", " pick=${lineDirty ? line : null}/>", "/>"],
-  askgo: ["turn.js", "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${go}/>`);",
-          "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${() => {}}/>`);"],
+  askgo: ["turn.js", "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${go}/>`);",
+          "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${() => {}}/>`);"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };

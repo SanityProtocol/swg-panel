@@ -769,7 +769,7 @@
   }
   function csqttSeal(payload, mrtt) {
     var sub = typeof crypto !== "undefined" && crypto.subtle;
-    if (!sub) return Promise.reject(new Error("this browser can't build a csqtt 2.5 link (no Web Crypto — open the page over HTTPS)"));
+    if (!sub) return Promise.reject(new Error("this browser can't build " + (mrtt ? "an MRTT" : "a csqtt 2.5") + " link (no Web Crypto — open the page over HTTPS)"));
     var enc = new TextEncoder(), pt = enc.encode(payload);
     return sub.digest("SHA-256", enc.encode(mrtt ? MRTT_LINK_SEED : CSQTT_LINK_SEED)).then(function (kh) {
       return Promise.all([sub.importKey("raw", kh, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
@@ -825,8 +825,10 @@
       if (line === "mrtt") {
         // `src` names the scheme too: a sheet that caches the sealed link by `src` (js/peer-ui.js useCsqttCfg) seals again when
         // its server moves between 2.5 and MRTT — the payload alone is the same on both.
+        // no VK-link warning: with no VK hash in the link the MRTT app takes its TURN from a MAX call or the user's own VK
+        // account, chosen in the app (MRTT v1.0 ConnectionTab / TunnelService) — the link still authenticates
         return { fork: "csqtt", app: "MRTT", label: "MRTT (mrtt://)", ext: "txt", uri: true, qr: true,
-          vkMissing: vkMissing, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: "mrtt:" + p25,
+          vkMissing: false, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: "mrtt:" + p25,
           buildAsync: function () { return csqttSeal(p25, true); } };
       }
       return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: true,

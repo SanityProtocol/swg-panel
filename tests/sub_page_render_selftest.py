@@ -64,7 +64,8 @@ Fixture — node q-node, three deployments per device:
       saved, hack-diaz on Linux hands out Rawline; on the desktop the first Start asks Open / Get, and once it is known
       installed Start opens rawline://add/ with the desktop's form (a JSON list holding the freeturn:// link); RawlineMobile
       on Android is fired at once with the app's form (the plain link) — never the import steps
-  [17] the MRTT line (1.8.12 item 10): Eve's MRTT server gets the MRTT app on Android (chip MRTT; Start fires an mrtt:// link
+  [17] the MRTT line (1.8.12 item 10): Eve's MRTT server gets the MRTT app on Android (chip MRTT, tag by ttrroyy; its own
+       default "csqtt@mrtt" picks the app or hides it per OS, csqtt's 2.1 "none" does not; Start fires an mrtt:// link
       MRTT's own decoder opens), Rawline on Linux (rawline://add/ around that mrtt:// link), nothing on iOS; Dana's 2.1 and
       2.5 servers are not offered the MRTT app
 
@@ -100,6 +101,8 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-csqrank    serves a sub.js that ranks csq-socks as an app (it sorts first on a 2.1 desktop) → RED on [13]
      --perturb-csqsteps   serves a sub.js whose csq-socks cell shows the generic app steps → RED on [13]
      --perturb-line25     serves a sub.js that ignores the 2.5 line's own default ("csqtt@2.5") → RED on [14]
+     --perturb-linemrtt   serves a sub.js that ignores the MRTT line's own default ("csqtt@mrtt") → RED on [17]
+     --perturb-mrttby     serves a sub.js that credits an MRTT server to csqtt's author (amurcanov) → RED on [17]
      --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
      --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
      --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
@@ -144,11 +147,13 @@ P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
 P_CSQRANK = "--perturb-csqrank" in sys.argv
 P_CSQSTEPS = "--perturb-csqsteps" in sys.argv
 P_LINE25 = "--perturb-line25" in sys.argv
+P_LINEMRTT = "--perturb-linemrtt" in sys.argv
+P_MRTTBY = "--perturb-mrttby" in sys.argv
 P_LL25 = "--perturb-ll25" in sys.argv
 P_LLFIRE = "--perturb-llfire" in sys.argv
 P_LL21 = "--perturb-ll21" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25)
+           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -349,7 +354,11 @@ if P_PICKMARK:
 if P_CSQRANK:
     perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
 if P_LINE25:
-    perturbed_web('    if (forkId === "csqtt" && line === "2.5") {', '    if (false) {', "the 2.5 line's own default")
+    perturbed_web('    if (forkId === "csqtt" && (line === "2.5" || line === "mrtt")) {', '    if (forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
+if P_LINEMRTT:
+    perturbed_web('    if (forkId === "csqtt" && (line === "2.5" || line === "mrtt")) {', '    if (forkId === "csqtt" && line === "2.5") {', "the MRTT line's own default")
+if P_MRTTBY:
+    perturbed_web('var csfork = cd.line === "mrtt" ? "ttrroyy" : forkLabel(', 'var csfork = false ? "ttrroyy" : forkLabel(', "MRTT's own author on its tag")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -790,6 +799,8 @@ try:
     cells = turn_cells(rd)
     check("[17] Android, an MRTT server: one cell, the MRTT app, its chip says MRTT",
           len(cells) == 1 and "MRTT" in (cells[0]["tag"] or "") and cells[0]["role"] == "MRTT", [(c["tag"], c["role"]) for c in cells])
+    check("[17] …its tag credits MRTT's author, ttrroyy, not csqtt's (amurcanov)",
+          len(cells) == 1 and (cells[0]["tag"] or "").startswith("ttrroyy") and "amurcanov" not in (cells[0]["tag"] or ""), [c["tag"] for c in cells])
     res, clip, steps, navs = start_on(tab, "turn", "MRTT")
     ml = next((u for u in navs if u.startswith("mrtt://")), "")
     check("[17] …Start fires the mrtt:// link one-tap, sealed under MRTT's seed (MRTT's own decoder opens it to the server)",
@@ -820,6 +831,15 @@ try:
     tab, rd = render("u4", "android", "en")
     check("[17] …while it still hides Dana's 2.1 server there", not any(c["role"] == "CSQTT 2.1" for c in turn_cells(rd)),
           [(c["tag"], c["role"]) for c in turn_cells(rd)])
+    tab.close()
+    serve["turn_client_default"] = {"csqtt@mrtt": {"android": "rawline", "linux": "none"}}   # MRTT's own key (card mrtt-line3, F2)
+    J("subs/serve.json", serve)
+    tab, rd = render("u5", "android", "en")
+    check("[17] MRTT's own default (csqtt@mrtt) on Android names Rawline: the MRTT server hands out RawlineMobile, not the MRTT app",
+          len(turn_cells(rd)) == 1 and "Rawline" in (turn_cells(rd)[0]["tag"] or ""), [c["tag"] for c in turn_cells(rd)])
+    tab.close()
+    tab, rd = render("u5", "linux", "en")
+    check("[17] …and its \"Don't offer\" on Linux hides the MRTT server there", not turn_cells(rd), [c["tag"] for c in turn_cells(rd)])
     tab.close()
     serve["turn_client_default"] = {}
     J("subs/serve.json", serve)

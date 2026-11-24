@@ -32,7 +32,8 @@ import { orphCount, OnlinePeersTag, foCountTag, peersView, searchMatch, DropsPop
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
-         enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback, CsqttVersionField, CSQTT_DEFAULT_LINE, csqttRunLine } from "./turn.js";
+         enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback, CsqttVersionField, CSQTT_DEFAULT_LINE, csqttRunLine,
+         csqttLineTag, csqttLineAuthor } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -888,12 +889,13 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // page's header ("// i18n-keys: …", 1.8.8 qualification).
   const kindLabel = isCsq ? "CSQTT" : "WDTT";   // i18n-keys: product names, the same in every language
   const runLine = isCsq ? csqttRunLine(node, iface) : "";
-  const lineSuffix = isCsq ? " " + (runLine === "mrtt" ? "MRTT" : runLine) : "";   // "amurcanov 2.5" — the badge carries the csqtt line
+  const lineSuffix = isCsq ? " " + csqttLineTag(runLine) : "";   // "amurcanov 2.5" — the badge carries the csqtt line
+  const lineAuthor = isCsq ? csqttLineAuthor(runLine) : null;    // "ttrroyy MRTT": MRTT is ttrroyy's fork of csqtt, not amurcanov's
   return html`<div class="screen">
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when">${foCountTag(node, iface, "head", foC) || html`<${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/>`}</span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} label=${lineAuthor} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when">${foCountTag(node, iface, "head", foC) || html`<${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/>`}</span></div>
       <div class="grow"></div>
     </div>
     ${roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}   ${/* a failover node's copy: its controls are not there at all (operator, 2026-11-17: hidden reads cleaner than disabled) — this says why */""}
@@ -929,7 +931,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Traffic")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node, node, cfg.exit_id)}</span></div>
-        <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork} suffix=${lineSuffix}/></span></div>
+        <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork} label=${lineAuthor} suffix=${lineSuffix}/></span></div>
       </div>
     <//>
 

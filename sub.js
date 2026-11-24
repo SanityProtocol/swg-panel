@@ -325,12 +325,12 @@
     // 1) the admin's chosen END-USER default for this (fork, OS): a client id, or "sidecar@<author>" (a CLI build).
     //    Honoured ONLY if that client is still COMPATIBLE with the fork — a saved default goes stale when a pairing is
     //    retired (e.g. VK TURN Proxy dropped from MYSOREZ), and a stale default must never resurrect a dead pairing.
-    // A csqtt 2.5 server reads the operator's default for its line first (turn_client_default["csqtt@2.5"]; operator,
-    // 2026-10-29): "none" hides only 2.5 servers on this OS, an app of the line is handed out, and anything else — unset,
-    // stale, of the other line — falls through to the path below, unchanged (the "csqtt" default if it speaks 2.5, else
-    // the rank).
-    if (forkId === "csqtt" && line === "2.5") {
-      var d25 = (((_lastData && _lastData.turn_client_default) || {})["csqtt@2.5"] || {})[os];
+    // A csqtt 2.5 or MRTT server reads the operator's default for its line first (turn_client_default["csqtt@2.5"] /
+    // ["csqtt@mrtt"]; operator, 2026-10-29): "none" hides only that line's servers on this OS, an app of the line is handed
+    // out, and anything else — unset, stale, of another line — falls through to the path below, unchanged (the "csqtt"
+    // default if it speaks the line, else the rank).
+    if (forkId === "csqtt" && (line === "2.5" || line === "mrtt")) {
+      var d25 = (((_lastData && _lastData.turn_client_default) || {})["csqtt@" + line] || {})[os];
       if (d25 === "none") return null;
       if (d25 && clients[d25] && (compat[d25] || !hasCompat)) { var b25 = build(d25); if (b25) return b25; }
     }
@@ -339,7 +339,7 @@
     // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the
     // intent. It must short-circuit BEFORE the compat-ranked fallback below, or the deliberate choice would
     // silently resolve to some other app instead.
-    // …a csqtt choice is 2.1's (2.5 has its own key above): MRTT servers, with no key of their own, are not hidden by it
+    // …a csqtt choice is 2.1's (2.5 and MRTT have their own keys above); MRTT, new beside 2.1, is not hidden by 2.1's "none"
     if (def === "none" && !(forkId === "csqtt" && line === "mrtt")) return null;
     if (def) {
       // a CLI build is honoured only while this fork still offers its author (a hidden fork's build is withdrawn)
@@ -1972,7 +1972,7 @@
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
-        var csfork = forkLabel(cd.fork || "csqtt");   // the catalog's name (amurcanov), never a copy of it here
+        var csfork = cd.line === "mrtt" ? "ttrroyy" : forkLabel(cd.fork || "csqtt");   // the catalog's name (amurcanov); MRTT is ttrroyy's fork
         var cffork = forkColor("csqtt");   // the csqtt FORK colour (catalog key "csqtt"), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");
