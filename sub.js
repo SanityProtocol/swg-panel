@@ -339,7 +339,8 @@
     // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the
     // intent. It must short-circuit BEFORE the compat-ranked fallback below, or the deliberate choice would
     // silently resolve to some other app instead.
-    if (def === "none") return null;
+    // …a csqtt choice is 2.1's (2.5 has its own key above): MRTT servers, with no key of their own, are not hidden by it
+    if (def === "none" && !(forkId === "csqtt" && line === "mrtt")) return null;
     if (def) {
       // a CLI build is honoured only while this fork still offers its author (a hidden fork's build is withdrawn)
       if (def.indexOf("sidecar@") === 0) { if ((compat.sidecar && cliAuthors.indexOf(def.split("@")[1]) >= 0) || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }

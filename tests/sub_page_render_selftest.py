@@ -811,6 +811,18 @@ try:
     check("[17] …and Dana's 2.1 and 2.5 servers are not offered the MRTT app", not any("MRTT" in (c["tag"] or "") for c in turn_cells(rd)),
           [c["tag"] for c in turn_cells(rd)])
     tab.close()
+    serve["turn_client_default"] = {"csqtt": {"android": "none"}}   # 2.1 not offered on Android: MRTT has no key of its own
+    J("subs/serve.json", serve)
+    tab, rd = render("u5", "android", "en")
+    check("[17] csqtt's \"Don't offer\" on Android (a 2.1 choice) leaves the MRTT server offered",
+          len(turn_cells(rd)) == 1 and "MRTT" in (turn_cells(rd)[0]["tag"] or ""), [c["tag"] for c in turn_cells(rd)])
+    tab.close()
+    tab, rd = render("u4", "android", "en")
+    check("[17] …while it still hides Dana's 2.1 server there", not any(c["role"] == "CSQTT 2.1" for c in turn_cells(rd)),
+          [(c["tag"], c["role"]) for c in turn_cells(rd)])
+    tab.close()
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
     serve["turn_client_default"] = dict(keep_default, samosvalishe={"linux": "sidecar@samosvalishe"})   # the operator picks the CLI
     J("subs/serve.json", serve)
     tab, _ = render("u1", "linux", "en")

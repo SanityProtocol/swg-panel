@@ -15,6 +15,7 @@ Hermetic (node for [4]). Run: python3 tests/csqtt_mrtt_line_selftest.py   (0 = p
      --perturb-noded  the node does not know the line (it is never sent there) → RED in [2]
      --perturb-seed   an mrtt link sealed under csqtt's seed → RED in [4]
      --perturb-store  the node reads an mrtt store as a 2.1 one (through devices) → RED in [2]
+     --perturb-src    the MRTT link's cache key is the bare payload again (an open sheet keeps the 2.5 link) → RED in [4]
 """
 import json, os, re, sqlite3, subprocess, sys, tempfile, types
 
@@ -25,6 +26,7 @@ PLANTS = {
     "--perturb-seed":  ("turn-artifacts.js", 'var MRTT_LINK_SEED = "mrtt-chiper-key";', 'var MRTT_LINK_SEED = "csqtt-chiper-key";'),
     "--perturb-store": ("swg-noded", 'if "device_id" in cols and ((line or "2.1") == "2.1" or "ip" not in cols):',
                         'if True:'),
+    "--perturb-src":   ("turn-artifacts.js", 'src: "mrtt:" + p25,', 'src: p25,'),
 }
 PERTURB = [a for a in sys.argv[1:] if a in PLANTS]
 FAILS = []
@@ -110,7 +112,8 @@ const open = async (link, seed, pre) => { try {
   const m = await T.csqttArtifact(c, "csqtt", "mrtt").buildAsync(), r = await T.csqttArtifact(c, "rawline", "mrtt").buildAsync();
   const v25 = await T.csqttArtifact(c, "csqtt", "2.5").buildAsync();
   console.log(JSON.stringify({ m, r, v25, mOpen: await open(m, "mrtt-chiper-key", "mrtt://"), mByCsqtt: await open(m, "csqtt-chiper-key", "mrtt://"),
-    v25Open: await open(v25, "csqtt-chiper-key", "csqtt://"), app: T.csqttArtifact(c, "csqtt", "mrtt").app }));
+    v25Open: await open(v25, "csqtt-chiper-key", "csqtt://"), app: T.csqttArtifact(c, "csqtt", "mrtt").app,
+    srcM: T.csqttArtifact(c, "csqtt", "mrtt").src, src25: T.csqttArtifact(c, "csqtt", "2.5").src }));
 })();
 """
 with tempfile.TemporaryDirectory() as td:
@@ -128,6 +131,8 @@ if o:
     check("…csqtt's decoder does not (another seed)", o["mByCsqtt"] == "", o["mByCsqtt"])
     check("…the same link for Rawline, named for MRTT", o["r"] == o["m"] and o["app"] == "MRTT", (o["r"][:20], o["app"]))
     check("a 2.5 server's link stays csqtt:// under csqtt's seed", o["v25"].startswith("csqtt://") and o["v25Open"].startswith("connect?v=2&"), o["v25"][:20])
+    check("…and the two links' cache keys differ, so a sheet left open across a 2.5 ⇄ MRTT switch seals again",
+          o["srcM"] != o["src25"] and o["srcM"].endswith(o["src25"]), (o["srcM"][:20], o["src25"][:20]))
 
 print()
 if PERTURB:

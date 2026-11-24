@@ -823,8 +823,10 @@
       var p25 = "connect?v=2&host=" + csqttUrlEnc(c.host) + "&peer=" + (parseInt(c.port, 10) || 46000)
         + (c.password ? "&password=" + csqttUrlEnc(c.password) : "") + (hs.length ? "&hashes=" + hs.map(csqttUrlEnc).join("+") : "");
       if (line === "mrtt") {
+        // `src` names the scheme too: a sheet that caches the sealed link by `src` (js/peer-ui.js useCsqttCfg) seals again when
+        // its server moves between 2.5 and MRTT — the payload alone is the same on both.
         return { fork: "csqtt", app: "MRTT", label: "MRTT (mrtt://)", ext: "txt", uri: true, qr: true,
-          vkMissing: vkMissing, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: p25,
+          vkMissing: vkMissing, hint: "Open the mrtt:// link in the MRTT app or Rawline, or scan the QR.", src: "mrtt:" + p25,
           buildAsync: function () { return csqttSeal(p25, true); } };
       }
       return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: true,
