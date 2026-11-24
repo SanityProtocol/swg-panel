@@ -18173,8 +18173,9 @@ TURN_CLIENTS = {
     # choice (2026-11-24: "Let them become default wherever no default is set").
     # MCRF (vnenapravo7-source/mcrf) — an Android client (sing-box / Xray) whose on-demand engine pack runs the csqtt 2.1 /
     # 2.5 and WDTT clients; its 2.5 core is OUR csqtt-app core (2.5.1–2.5.3, pinned by SHA-256). It reads the links every
-    # csqtt / WDTT app takes, so it reuses `wdttplus`: wdtt://connect on a WDTT server (a valid URI, which its BROWSABLE
-    # filter opens one-tap), and csqttArtifact gives every encoder but anton48 its line's link. No client settings: the
+    # csqtt / WDTT app takes, so it reuses `wdttplus`: wdtt://connect on a WDTT server (a valid URI), and csqttArtifact gives
+    # every encoder but anton48 its line's link. One-tap on both: its BROWSABLE filter takes csqtt://, wdtt:// and qwdtt://
+    # (ports/android/app/src/main/AndroidManifest.xml, main 868736b). No client settings: the
     # link is the whole configuration. Its releases mix the app, betas and engine catalogues (`android-engines-v*`, whose
     # .apk files are engines), hence `tag_re`. Android 10+; its first csqtt / WDTT server downloads an engine (sub.js dlNotes).
     "mcrf":        {"name": "MCRF", "author": "vnenapravo7-source", "encoder": "wdttplus", "csqtt_lines": ["2.1", "2.5"], "qr": True, "platforms": {

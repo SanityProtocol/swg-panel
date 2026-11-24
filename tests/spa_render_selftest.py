@@ -1414,8 +1414,8 @@ try:
             c21 = tab.ev(CELL)
             tab.ev("[...document.querySelectorAll('.overlay.show .csq-linesw button')][1].click()"); settle(tab, 400)
             c25 = tab.ev(CELL)
-            check("[B20] %s %s: Windows shows FOCSQ for 2.1 and, with nothing chosen for 2.5, La Lune (FOCSQ speaks 2.1 only)" % (lang, "390" if vp else "desktop"),
-                  (c21 or "").startswith("FOCSQ") and (c25 or "").startswith("La Lune"), [c21, c25])
+            check("[B20] %s %s: Windows shows FOCSQ for 2.1 and, with nothing chosen for 2.5, Rawline (one-tap, 1.8.12 item 10; FOCSQ speaks 2.1 only)" % (lang, "390" if vp else "desktop"),
+                  (c21 or "").startswith("FOCSQ") and (c25 or "").startswith("Rawline"), [c21, c25])
             tab.ev("document.querySelector('.overlay.show .osapp-cell.on').click()"); settle(tab, 400)
             menu = tab.ev(MENU)
             check("[B20] %s %s: 2.5's Windows list holds only apps of the line (La Lune, csq-socks — no FOCSQ)" % (lang, "390" if vp else "desktop"),

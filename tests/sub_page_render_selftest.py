@@ -749,6 +749,17 @@ try:
     check("[16] RawlineMobile on Android: Start fires rawline://add/ holding the plain freeturn:// link (the app's form), no steps",
           res == "clicked" and not steps and pl.startswith("freeturn://"), (res, steps, navs[:2], pl[:60]))
     tab.close()
+    serve["turn_client_default"] = {"csqtt@2.5": {"android": "rawline"}}
+    J("subs/serve.json", serve)
+    tab, _ = render("u4", "android", "en")
+    res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+    pl = rl_payload(next((u for u in navs if u.startswith("rawline://add/")), ""))
+    check("[16] RawlineMobile on a csqtt 2.5 server: it opens rawline://add/ with the sealed link, and the clipboard keeps the plain sealed link (every app reads it)",
+          pl.startswith("csqtt://") and not pl.startswith("csqtt://connect") and pl in clip and not any(x.startswith("rawline:") for x in clip),
+          (res, [x[:30] for x in clip], [u[:30] for u in navs], pl[:40]))
+    tab.close()
+    serve["turn_client_default"] = keep_default
+    J("subs/serve.json", serve)
     serve["turn_client_default"] = dict(keep_default, samosvalishe={"linux": "sidecar@samosvalishe"})   # the operator picks the CLI
     J("subs/serve.json", serve)
     tab, _ = render("u1", "linux", "en")

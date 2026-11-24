@@ -2682,14 +2682,17 @@
       // once (Open / Get), as on iOS Safari, since a desktop browser gives no sign of whether an app took the link.
       var _dos = subOs();
       if (_dos === "macos" || _dos === "windows" || _dos === "linux") {
-        if (c.noAutoFire === false) { askThenOpen(c); return; }
+        if (c.noAutoFire === false) {
+          if (c.copyOnOpen && navigator.clipboard) navigator.clipboard.writeText(c.payload || c.openUri).catch(function () {});   // as on mobile: the csqtt link survives "Get"
+          askThenOpen(c); return;
+        }
         if (navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {});
         showLinkImportHint(c); return;
       }
       // freeturn/samosvalishe: the app imports the config via its scheme but CAN'T auto-receive the VK call link →
       // copy the primary VK link so the user can paste it, THEN fire the scheme (below) as usual.
       if (c.vkPrimary) { if (navigator.clipboard) navigator.clipboard.writeText(c.vkPrimary).catch(function () {}); showToast(t("vkCopied")); }
-      else if (c.copyOnOpen && navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {});   // csqtt: the link survives an install detour
+      else if (c.copyOnOpen && navigator.clipboard) navigator.clipboard.writeText(c.payload || c.openUri).catch(function () {});   // csqtt: the link survives an install detour (the plain link: every app reads it, not only Rawline its rawline:// form)
       // Safari-on-iOS (+ in-app webviews it can't be told apart from): firing an unregistered scheme pops an
       // un-suppressable "address is invalid" modal, so ASK — Open (deliberate) fires the scheme with NO fallback,
       // Get goes to the store. Every OTHER browser fails silently → keep the clean auto-fire + fallback.

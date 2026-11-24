@@ -1517,10 +1517,11 @@ export function wdttClientIds(fork) {
 }
 // The apps a csqtt server can be reached with: its fork's, minus those of another csqtt line — 2.1 and 2.5 do not speak
 // to each other (csqtt_lines in the catalog; absent = 2.1 only). A node that reports no line runs 2.1, so an app without
-// 2.1 (Rawline) is not offered there.
+// 2.1 (Rawline) is not offered there; with no row for the server yet (a snapshot not in) nothing is filtered.
 export function csqttClientIds(rb) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  return wdttClientIds(rb.fork || "csqtt").filter(cid => (cmap[cid].csqtt_lines || ["2.1"]).includes(rb.line || "2.1"));
+  const known = !!(rb.iface || rb.line);
+  return wdttClientIds(rb.fork || "csqtt").filter(cid => !known || (cmap[cid].csqtt_lines || ["2.1"]).includes(rb.line || "2.1"));
 }
 export function wdttClientCfg(w, cid, fork, os) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
