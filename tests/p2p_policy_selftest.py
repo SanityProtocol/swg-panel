@@ -158,10 +158,16 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
 }
 
 
+_CODE = [None, None]   # (source, its code): the last one compiled — a pass loads one source ~33 times, a compile is ~0.23 s
+
+
 def load(src):
-    ld = importlib.machinery.SourceFileLoader("noded_p2p", NODED)
+    """A fresh module from `src` each call; its code object is compiled once per source (a code object is immutable — each
+    exec still makes its own globals and functions). Compiling every call made a --perturb run ~550 s of runperturb's 600."""
+    if _CODE[0] != src:
+        _CODE[:] = [src, compile(src, NODED, "exec")]
     m = types.ModuleType("noded_p2p"); m.__file__ = NODED
-    exec(compile(src, NODED, "exec"), m.__dict__)
+    exec(_CODE[1], m.__dict__)
     return m
 
 
