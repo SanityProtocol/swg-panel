@@ -24,6 +24,7 @@ Hermetic (node for [6]). Run: python3 tests/turn_multi_clients_selftest.py   (0 
      --perturb-qt     the -system-qt package is not ranked last → RED in [5]
      --perturb-lines  Rawline is offered on csqtt 2.1 → RED in [1]
      --perturb-wrap   RawlineMobile is handed the desktop's JSON list (it rejects a string inside an array) → RED in [7]
+     --perturb-gen    MCRF's 2.1 link names no generation (its Windows app asks the user) → RED in [6]
 """
 import json, os, re, subprocess, sys, tempfile, types
 
@@ -36,6 +37,7 @@ PLANTS = {
     "--perturb-qt":    ("swg-panel-server", 'cands.sort(key=lambda nu: bool(re.search(r"system-qt", nu[0], re.I)))', "pass"),
     "--perturb-lines": ("swg-panel-server", '"encoder": "rawline", "csqtt_lines": ["2.5", "mrtt"]', '"encoder": "rawline", "csqtt_lines": ["2.1", "2.5", "mrtt"]'),
     "--perturb-wrap":  ("sub.js", 'subOs() === "android" ? link : JSON.stringify([link])', "JSON.stringify([link])"),
+    "--perturb-gen":   ("turn-artifacts.js", 'if (asClient === "wdttplus") qp.push("mcrf_generation=2.1.9");', ""),
 }
 PERTURB = [a for a in ARGS if a in PLANTS]
 
@@ -60,18 +62,22 @@ P.__dict__.update({"__name__": "p", "__file__": os.path.join(ROOT, "swg-panel-se
 exec(compile(src.split("\nif __name__ ==")[0], "swg-panel-server", "exec"), P.__dict__)
 TC, WG = P.TURN_CLIENTS, P.WG_APPS
 MCRF_RE = r"^android-v\d+\.\d+\.\d+$"
+MCRFD_RE = r"^v\d+\.\d+(\.\d+)?$"
 
 print("[1] the catalog")
 m, r = TC.get("mcrf") or {}, TC.get("rawline") or {}
 check("MCRF reuses the wdttplus encoder, csqtt 2.1 + 2.5", m.get("encoder") == "wdttplus" and m.get("csqtt_lines") == ["2.1", "2.5"], m)
-check("…Android only, one-tap, its app releases only", list(m.get("platforms") or {}) == ["android"]
-      and m["platforms"]["android"].get("autostart") is True and m["platforms"]["android"].get("tag_re") == MCRF_RE, m.get("platforms"))
+check("…Android one-tap with its app releases only, Windows (mcrf-desktop, no scheme) with its own",
+      sorted(m.get("platforms") or {}) == ["android", "windows"] and m["platforms"]["android"].get("autostart") is True
+      and m["platforms"]["android"].get("tag_re") == MCRF_RE and not m["platforms"]["windows"].get("autostart")
+      and "mcrf-desktop" in m["platforms"]["windows"].get("github", "") and m["platforms"]["windows"].get("tag_re") == MCRFD_RE, m.get("platforms"))
 check("Rawline: its own encoder, csqtt 2.5 and MRTT (never 2.1)", r.get("encoder") == "rawline" and r.get("csqtt_lines") == ["2.5", "mrtt"], r)
 check("…desktop + RawlineMobile on Android", sorted(r.get("platforms") or {}) == ["android", "linux", "macos", "windows"]
       and r["platforms"]["android"].get("name") == "RawlineMobile" and "RawlineMobile" in r["platforms"]["android"].get("github", ""), r.get("platforms"))
 check("…one-tap on every OS (rawline:// registered there)", all(p.get("autostart") is True for p in (r.get("platforms") or {}).values()), r.get("platforms"))
-check("MCRF in WG_APPS, Android only, the same tag_re", list((WG.get("mcrf") or {}).get("platforms") or {}) == ["android"]
-      and WG["mcrf"]["platforms"]["android"].get("tag_re") == MCRF_RE, WG.get("mcrf"))
+check("MCRF in WG_APPS, Android and Windows, each repository's tag_re", sorted((WG.get("mcrf") or {}).get("platforms") or {}) == ["android", "windows"]
+      and WG["mcrf"]["platforms"]["android"].get("tag_re") == MCRF_RE and WG["mcrf"]["platforms"]["windows"].get("tag_re") == MCRFD_RE, WG.get("mcrf"))
+check("…mcrf-desktop's tag_re takes v1.2, not its engine catalogue", [t for t in ("v1.2", "v1.1.2", "windows-engines-2026-11-16") if re.search(MCRFD_RE, t)] == ["v1.2", "v1.1.2"])
 
 print("\n[2] compat")
 for sid in ("csqtt", "amurcanov", "ildarmaga", "wdttplus", "qwdtt"):
@@ -142,7 +148,7 @@ const w = { password: "p", endpoint_host: "1.2.3.4", vk_links: ["https://vk.ru/c
 out.wdttRawline = T.wdttArtifact(w, "rawline").text; out.wdttMcrf = T.wdttArtifact(w, "wdttplus").text;
 const c = { host: "1.2.3.4", port: 46000, password: "p", vk_links: ["https://vk.ru/call/join/h1"] };
 out.c25 = [T.csqttArtifact(c, "rawline", "2.5"), T.csqttArtifact(c, "wdttplus", "2.5")].map(a => !!(a.src && a.buildAsync));
-out.c21 = T.csqttArtifact(c, "wdttplus", "2.1").text;
+out.c21 = T.csqttArtifact(c, "wdttplus", "2.1").text; out.c21other = T.csqttArtifact(c, "lalune", "2.1").text;
 console.log(JSON.stringify(out));
 """
 with tempfile.TemporaryDirectory() as td:
@@ -164,6 +170,8 @@ if o:
     check("WDTT: Rawline the colon form, MCRF wdtt://connect", o["wdttRawline"].startswith("wdtt://1.2.3.4:") and o["wdttMcrf"].startswith("wdtt://connect?"),
           (o["wdttRawline"], o["wdttMcrf"]))
     check("csqtt 2.5: both sealed; 2.1: MCRF the plain link", o["c25"] == [True, True] and o["c21"].startswith("csqtt://connect?v=2"), (o["c25"], o["c21"]))
+    check("…MCRF's 2.1 link names its generation (its Windows app would ask), no other app's does",
+          o["c21"].endswith("&mcrf_generation=2.1.9") and "mcrf_generation" not in o["c21other"], (o["c21"][-30:], o["c21other"][-30:]))
 
 print("\n[7] the sub page")
 sub = source("sub.js")
@@ -192,11 +200,12 @@ for os_ in ("android", "windows"):
     check("%s: Rawline gets rawline://add/ with %s" % (os_, "the plain link" if os_ == "android" else "a JSON list of the link"),
           [unwrap(u) for u in o7["r"]] == want and not any(c in u[len("rawline://add/"):] for u in o7["r"] for c in "+/="), o7["r"])
     check("%s: another app's link is handed over unchanged" % os_, o7["o"] == LINKS, o7["o"])
-for key in ("rawlineNote25:", "dlNotes: { mcrf:"):
+for key in ("rawlineNote25:", 'dlNotes: { "mcrf@android":'):
     check("%s in English and Russian" % key.split(":")[0], sub.count(key) == 2, sub.count(key))
 check("Start hands every cell's app its own form (csqtt, WDTT, turn)", sub.count("appOpenUri(") == 4, sub.count("appOpenUri("))
 check("the 2.5 note rides Rawline's download bubble on a 2.5 server", 'cga.cid === "rawline" && cd.line === "2.5") cshown.note' in sub)
 check("MCRF in both WG/AWG lists", '"amneziawg", "mcrf"]' in sub and '"wireguard", "mcrf"]' in sub)
+check("a download note can be per OS (MCRF's Android one is not shown on Windows)", 'dnotes[ga.cid + "@" + ga.platform]' in sub)
 
 print()
 if PERTURB:

@@ -18190,8 +18190,12 @@ TURN_CLIENTS = {
     # (ports/android/app/src/main/AndroidManifest.xml, main 868736b). No client settings: the
     # link is the whole configuration. Its releases mix the app, betas and engine catalogues (`android-engines-v*`, whose
     # .apk files are engines), hence `tag_re`. Android 10+; its first csqtt / WDTT server downloads an engine (sub.js dlNotes).
+    # Windows (card B): mcrf-desktop, one portable mcrf.exe; its releases also carry `windows-engines-*` catalogues. It
+    # registers no URL scheme, so Start copies the link there. Its csqtt 2.5 core is ttrroyy's csqtt-rebirth fd936ef = the
+    # published 2.5.0, whose wire our 2.5 servers take (the csqtt25 / mrtt rigs); a plain 2.1 link carries its generation.
     "mcrf":        {"name": "MCRF", "author": "vnenapravo7-source", "encoder": "wdttplus", "csqtt_lines": ["2.1", "2.5"], "qr": True, "platforms": {
-                       "android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "autostart": True, "tag_re": r"^android-v\d+\.\d+\.\d+$"}}},
+                       "android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "autostart": True, "tag_re": r"^android-v\d+\.\d+\.\d+$"},
+                       "windows": {"github": "https://github.com/vnenapravo7-source/mcrf-desktop/releases", "tag_re": r"^v\d+\.\d+(\.\d+)?$"}}},
     # Rawline (desktop) / RawlineMobile (Android) — ttrroyy's Throne forks that run the ORIGINAL protocol clients at pinned
     # commits: csqtt 2.5 (amurcanov's 2.5.0 `shared/`, the tree ours keeps), qWDTT, WDTT Plus, FreeTurn v4.2.1 (their
     # transport-sources.lock.json / native-transports.lock.json). One entry, a product name per OS (as WINGS V / DeX).
@@ -18236,7 +18240,8 @@ WG_APPS = {
                                  "linux":   {"page": "https://www.wireguard.com/install/"}}},   # per-distro instructions (no single file)
     # MCRF imports a plain WireGuard / AmneziaWG config too (AWG 3.1 fields included). Its `tag_re` is TURN_CLIENTS["mcrf"]'s:
     # the release cache is keyed by repository, so every platform of one repository must pick its release the same way.
-    "mcrf":       {"name": "MCRF", "platforms": {"android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "tag_re": r"^android-v\d+\.\d+\.\d+$"}}},
+    "mcrf":       {"name": "MCRF", "platforms": {"android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "tag_re": r"^android-v\d+\.\d+\.\d+$"},
+                                                 "windows": {"github": "https://github.com/vnenapravo7-source/mcrf-desktop/releases", "tag_re": r"^v\d+\.\d+(\.\d+)?$"}}},
 }
 # Per-fork `settings` = the typed schema for the obfuscation knobs (Axis 1). The SPA renders a form from it and
 # SERIALIZES it back to the ExecStart params tail (the wire truth the node still applies verbatim); a raw textarea

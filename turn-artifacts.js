@@ -839,6 +839,9 @@
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
+    // MCRF (its encoder is wdttplus — no WDTT-Plus app speaks csqtt): its Windows app asks which csqtt generation a plain link
+    // is unless the link says (mcrf-desktop CsqttGenerations.Hint); its Android app reads a plain link as 2.1.9 and ignores it.
+    if (asClient === "wdttplus") qp.push("mcrf_generation=2.1.9");
     var uri = "csqtt://connect?" + qp.join("&");
     // qr:false — the CSQTT app has no scanner yet, so a QR is a dead end for the user. Link only until it does.
     // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE SEVERAL. This link serves the CSQTT app (Android) and FOCSQ /

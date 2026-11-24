@@ -62,7 +62,7 @@
       // Rawline / RawlineMobile on a csqtt 2.5 server: its download bubble's caveat (their 2.5.0 client lacks our small-UDP fixes)
       rawlineNote25: "On a CSQTT 2.5 server, uploads of many small packets (QUIC, a VPN inside the VPN) are slower in {app} than in the CSQTT app.",
       // a note in an app's download bubble, by catalog id
-      dlNotes: { mcrf: "Needs Android 10 or newer. On first start MCRF downloads its engines (the CSQTT / WDTT one is about 11 MB) — allow it." },
+      dlNotes: { "mcrf@android": "Needs Android 10 or newer. On first start MCRF downloads its engines (the CSQTT / WDTT one is about 11 MB) — allow it." },
       mzBtn1: "Download the GUI app", mzBtn2: "Install TURN Proxy core", mzBtn3: "Assemble and connect", mzBtn3Sub: "Follow the instructions",
       mzCopied: "Config string copied", mzGetCore: "Don't forget to download the core",
       mzStep1: "1. Open the *TURN Proxy* app", mzStep2: "2. Go to *Settings*", mzStep3: "3. Click on *Core (Binary)*", mzStep4: "4. Press *Import*",
@@ -141,7 +141,7 @@
                        windows: ["1. Скачайте *csq-socks* и распакуйте архив", "2. Откройте *PowerShell* в этой папке", "3. Выполните .\\csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните .\\csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или .\\csq-socks tun в PowerShell от имени администратора, чтобы весь трафик шёл через туннель"] },
       laluneSteps25: ["1. Откройте *{app}*", "2. Добавьте профиль и выберите протокол *CSQTTR*", "3. *Вставьте* скопированную ссылку", "4. Сохраните и подключитесь"],
       rawlineNote25: "На сервере CSQTT 2.5 отдача множества мелких пакетов (QUIC, VPN внутри VPN) в {app} медленнее, чем в приложении CSQTT.",
-      dlNotes: { mcrf: "Нужен Android 10 или новее. При первом запуске MCRF скачивает свои движки (для CSQTT / WDTT — около 11 МБ) — разрешите это." },
+      dlNotes: { "mcrf@android": "Нужен Android 10 или новее. При первом запуске MCRF скачивает свои движки (для CSQTT / WDTT — около 11 МБ) — разрешите это." },
       mzBtn1: "Скачать приложение (GUI)", mzBtn2: "Установить ядро TURN Proxy", mzBtn3: "Собрать и подключиться", mzBtn3Sub: "Следуйте инструкциям",
       mzCopied: "Строка конфигурации скопирована", mzGetCore: "Не забудьте скачать ядро",
       mzStep1: "1. Откройте приложение *TURN Proxy*", mzStep2: "2. Перейдите в *«Настройки»*", mzStep3: "3. Нажмите *«Ядро (Binary)»*", mzStep4: "4. Нажмите *«Импорт»*",
@@ -456,9 +456,9 @@
       android: "https://play.google.com/store/apps/details?id=com.wireguard.android",
       ios: "https://apps.apple.com/app/wireguard/id1441195209", macos: "https://apps.apple.com/app/wireguard/id1451685025",
       windows: "https://download.wireguard.com/windows-client/wireguard-installer.exe", linux: "https://www.wireguard.com/install/" },   // Linux = per-distro
-    // MCRF imports a WG / AWG config too (AWG 3.1 included). Android only, and no `page`: wgGetApp falls back to app[os], so
-    // the row is offered nowhere else. The direct APK comes from the panel's wg_catalog (WG_APPS, its tag_re).
-    mcrf: { name: "MCRF", android: "https://github.com/vnenapravo7-source/mcrf/releases" }
+    // MCRF imports a WG / AWG config too (AWG 3.1 included). Android and Windows, and no `page`: wgGetApp falls back to app[os],
+    // so the row is offered nowhere else. The direct APK comes from the panel's wg_catalog (WG_APPS, its tag_re).
+    mcrf: { name: "MCRF", android: "https://github.com/vnenapravo7-source/mcrf/releases", windows: "https://github.com/vnenapravo7-source/mcrf-desktop/releases" }
   };
   var WG_ORDER = { awg: ["amneziavpn", "amneziawg", "mcrf"], wg: ["amneziavpn", "amneziawg", "wireguard", "mcrf"] };
   // Real Safari on iOS/iPadOS specifically — the ONLY browser that pops a modal "Safari cannot open the page because
@@ -894,7 +894,7 @@
       head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
       b.appendChild(head);
       if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
-      var dnote = ga.note || (t("dlNotes") || {})[ga.cid];   // what to know before installing (MCRF: Android 10+ and its engines; Rawline on csqtt 2.5)
+      var dnotes = t("dlNotes") || {}, dnote = ga.note || dnotes[ga.cid + "@" + ga.platform] || dnotes[ga.cid];   // what to know before installing (MCRF on Android: 10+ and its engines; Rawline on csqtt 2.5)
       if (dnote) b.appendChild(el("div", "dl-bubble-ver", dnote));
     }
     var list = el("div", "dl-bubble-list");

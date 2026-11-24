@@ -12,8 +12,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   the subscription page. The server keeps its users and their passwords across a switch; the iPhone app does not connect
   to it.
 
-- **Two more client apps: MCRF and Rawline.** MCRF (Android 10+) connects to csqtt 2.1 and 2.5 and every WDTT server
-  one-tap, and imports plain WireGuard / AmneziaWG configs; its download is the app's own newest release, never a beta
+- **Two more client apps: MCRF and Rawline.** MCRF (Android 10+, Windows) connects to csqtt 2.1 and 2.5 and every WDTT
+  server — one-tap on Android — and imports plain WireGuard / AmneziaWG configs; its download is the app's own newest release, never a beta
   or an engine pack. Rawline (Windows, Linux, macOS) and RawlineMobile (Android) connect to csqtt 2.5, WDTT and
   hack-diaz servers, one-tap too: Start opens the app with the server through its rawline:// link — on the desktop
   after one "Open the app, or install it?" — instead of showing import steps. On hack-diaz their relay transport is
