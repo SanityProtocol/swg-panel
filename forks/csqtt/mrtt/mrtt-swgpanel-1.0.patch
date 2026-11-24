@@ -24,7 +24,7 @@ index 81d1bf9..40471c2 100644
  rust-version = "1.97.1"
  license = "Unlicense"
 diff --git a/rust-server/dataplane.rs b/rust-server/dataplane.rs
-index 2aec8e8..8e27ba2 100644
+index 2aec8e8..139da55 100644
 --- a/rust-server/dataplane.rs
 +++ b/rust-server/dataplane.rs
 @@ -1,5 +1,4 @@
@@ -39,14 +39,14 @@ index 2aec8e8..8e27ba2 100644
              listen,
 -            tun_iface: TUN_IFACE.to_owned(),
 -            tun_addr: TUN_ADDR.to_owned(),
-+            // swg-panel: iface/addr follow --iface / --tun-addr (stock: csqtt1 / 10.66.67.1).
++            // swg-panel: iface/addr follow --iface / --tun-addr (stock: mrtt1 / 10.66.67.1).
 +            tun_iface: crate::swgpanel::iface().to_owned(),
 +            tun_addr: crate::swgpanel::gw_addr().to_owned(),
              command_capacity: 4096,
          }
      }
 diff --git a/rust-server/main.rs b/rust-server/main.rs
-index 2394ffe..e87fa1c 100644
+index 2394ffe..02d44f0 100644
 --- a/rust-server/main.rs
 +++ b/rust-server/main.rs
 @@ -35,6 +35,7 @@ mod packet;
@@ -63,7 +63,7 @@ index 2394ffe..e87fa1c 100644
      samples: usize,
 +
 +    // ── swg-panel integration flags (all optional; absent → stock csqtt behaviour) ──
-+    #[arg(long, help = "swg-panel: TUN interface name for multi-instance (stock: csqtt1)")]
++    #[arg(long, help = "swg-panel: TUN interface name for multi-instance (stock: mrtt1)")]
 +    iface: Option<String>,
 +    #[arg(
 +        long = "tun-addr",
@@ -79,7 +79,7 @@ index 2394ffe..e87fa1c 100644
 +    #[arg(
 +        long = "no-web",
 +        default_value_t = false,
-+        help = "swg-panel: run headless — no web admin panel (it binds 0.0.0.0), no TLS cert, and no DPI/syscalls monitor sockets; the panel owns all state via --desired"
++        help = "swg-panel: run headless — no REST API (127.0.0.1:46002) and no DPI/syscalls monitor sockets; the panel owns all state via --desired"
 +    )]
 +    headless: bool,
 +    #[arg(
@@ -94,7 +94,7 @@ index 2394ffe..e87fa1c 100644
 +    max_passwords: Option<usize>,
 +    #[arg(
 +        long,
-+        help = "this server's name on the host (stock: csqtt) — its systemd unit, netfilter tags, local-proxy table/mark and session cookie; a second server next to a stock one runs as e.g. csqtt25"
++        help = "this server's name on the host (stock: mrtt) — its systemd unit, netfilter tags and local-proxy table/mark; a second server next to a stock one runs as e.g. mrtt2"
 +    )]
 +    instance: Option<String>,
  }
@@ -161,8 +161,8 @@ index 2394ffe..e87fa1c 100644
          let cmd = args_vec[1].as_str();
          match cmd {
              "start" | "stop" | "restart" => {
-+                // The short form names no instance, so it is the stock server's: only a binary installed as `csqtt`
-+                // takes it. A second server's binary (csqtt25) running `systemctl restart csqtt` would restart the
++                // The short form names no instance, so it is the stock server's: only a binary installed as `mrtt`
++                // takes it. A second server's binary (mrtt2) running `systemctl restart mrtt` would restart the
 +                // stock server next to it.
 +                let exe = std::path::Path::new(&args_vec[0])
 +                    .file_name()
@@ -191,7 +191,7 @@ index 2394ffe..e87fa1c 100644
 +    )?);
 +
 +    // As the short form above: without --instance the flag names the stock server's unit, which only a binary
-+    // installed as `csqtt` may act on (`csqtt25 --restart` restarted the stock server next to it).
++    // installed as `mrtt` may act on (`mrtt2 --restart` would restart the stock server next to it).
 +    if (args.start || args.stop || args.restart) && args.instance.is_none() {
 +        let exe = std::env::args()
 +            .next()
@@ -209,7 +209,7 @@ index 2394ffe..e87fa1c 100644
      }
  
 +    // swg-panel: swg-noded hands every csqtt line its client DNS as CSQTT_DNS (its csqtt.env); MRTT reads MRTT_DNS.
-+    let args_dns = args.dns.clone().or_else(|| std::env::var("CSQTT_DNS").ok());
++    let args_dns = args.dns.clone().filter(|v| !v.trim().is_empty()).or_else(|| std::env::var("CSQTT_DNS").ok());
      let runtime_dns = if let Some(configured) =
 -        args.dns.as_deref().filter(|value| !value.trim().is_empty())
 +        args_dns.as_deref().filter(|value| !value.trim().is_empty())
@@ -251,7 +251,7 @@ index 2394ffe..e87fa1c 100644
 -            eprintln!("[DPI] Server listener error: {e}");
 -        }
 -    });
-+    // swg-panel: the DPI (46003) + syscalls (46004) sockets only serve csqtt's own `dpi`/`syscalls` monitor
++    // swg-panel: the DPI (46003) + syscalls (46004) sockets only serve MRTT's own `dpi`/`syscalls` monitor
 +    // CLIs, which we never use; their fixed loopback ports also collide on a multi-instance node.
 +    if !swgpanel::headless() {
 +        let diagnostic_app = app.clone();
@@ -679,7 +679,7 @@ index 2394ffe..e87fa1c 100644
 +    }
 +}
 diff --git a/rust-server/model.rs b/rust-server/model.rs
-index 3a6730c..90ce168 100644
+index 3a6730c..c7c017b 100644
 --- a/rust-server/model.rs
 +++ b/rust-server/model.rs
 @@ -167,7 +167,7 @@ impl Database {
@@ -691,7 +691,21 @@ index 3a6730c..90ce168 100644
              routes.extend(self.main_devices.values().map(|device| (device.ip.clone(), table)));
          }
          for entry in self.passwords.values() {
-@@ -425,11 +425,24 @@ impl Database {
+@@ -407,6 +407,13 @@ impl Database {
+             self.main_sub_uuid = random_uuid_v4();
+             repairs.push("main_sub_uuid regenerated".to_owned());
+         }
++        // swg-panel: the owner's bindings too — its .2 or a pool address of THIS instance's /24 (a --tun-addr that moved)
++        let owner_ip = owner_tunnel_ip();
++        let bound = self.main_devices.len();
++        self.main_devices.retain(|_, device| device.ip == owner_ip || ip_in_pool(&device.ip));
++        if self.main_devices.len() != bound {
++            repairs.push("main device bindings outside this server's subnet dropped".to_owned());
++        }
+         let mut old_keys: Vec<String> = self.passwords.keys().cloned().collect();
+         old_keys.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+         for key in old_keys {
+@@ -425,11 +432,24 @@ impl Database {
              } else {
                  key.clone()
              };
@@ -721,7 +735,7 @@ index 3a6730c..90ce168 100644
              }
              if entry.sub_uuid.trim().is_empty() {
                  entry.sub_uuid = random_uuid_v4();
-@@ -832,19 +845,25 @@ pub fn is_expired(entry: &PasswordEntry) -> bool {
+@@ -832,19 +852,25 @@ pub fn is_expired(entry: &PasswordEntry) -> bool {
      entry.expires_at != 0 && now() > entry.expires_at
  }
  
@@ -755,7 +769,7 @@ index 3a6730c..90ce168 100644
  pub fn import_ip(db: &Database, ip: &str) -> String {
      if ip_in_pool(ip) && !db.passwords.values().any(|entry| entry.ip == ip) {
          return ip.to_owned();
-@@ -857,7 +876,9 @@ pub fn get_next_ip(db: &Database) -> Option<String> {
+@@ -857,7 +883,9 @@ pub fn get_next_ip(db: &Database) -> Option<String> {
      for i in 3..=250u8 {
          buf.clear();
          use std::fmt::Write;
@@ -766,7 +780,7 @@ index 3a6730c..90ce168 100644
          let is_used = db
              .passwords
              .values()
-@@ -884,7 +905,7 @@ pub fn resolve_session_ip(
+@@ -884,7 +912,7 @@ pub fn resolve_session_ip(
          return Some(
              db.main_devices
                  .get(device_id)
@@ -775,7 +789,38 @@ index 3a6730c..90ce168 100644
          );
      }
      if let Some(device) = db
-@@ -931,7 +952,7 @@ pub fn admit_device(
+@@ -909,8 +937,9 @@ pub struct DeviceAdmission {
+     pub ip: String,
+     /// Привязки изменились — снимок БД нужно сохранить.
+     pub changed: bool,
+-    /// Привязка клиента без device_id вытеснена новым устройством — его сессии надо сбросить.
+-    pub evicted_legacy: bool,
++    /// Привязка, вытесненная новым устройством (клиент без device_id; под swg-panel --desired — любое старое устройство):
++    /// его сессии надо сбросить.
++    pub evicted: Option<String>,
+ }
+ 
+ /// Привязать устройство к ссылке (или узнать уже привязанное) и выдать ему IP туннеля.
+@@ -921,6 +950,18 @@ pub fn admit_device(
+     device_id: &str,
+     device_name: &str,
+     now: i64,
++) -> std::result::Result<DeviceAdmission, &'static str> {
++    admit_device_with(db, slot, device_id, device_name, now, crate::swgpanel::desired_path().is_some())
++}
++
++/// `takeover` (swg-panel: under --desired): at the device limit the least recently seen binding gives way to the new device.
++pub fn admit_device_with(
++    db: &mut Database,
++    slot: Option<&str>,
++    device_id: &str,
++    device_name: &str,
++    now: i64,
++    takeover: bool,
+ ) -> std::result::Result<DeviceAdmission, &'static str> {
+     let device_id = if device_id.is_empty() {
+         LEGACY_DEVICE_ID
+@@ -931,7 +972,7 @@ pub fn admit_device(
          // Владелец по умолчанию без лимита устройств: не заданное значение значит 0.
          None => (
              device_limit(db.main_max_devices.or(Some(0))),
@@ -784,7 +829,47 @@ index 3a6730c..90ce168 100644
          ),
          Some(key) => {
              let entry = db.passwords.get(key).ok_or("DENIED:wrong_password")?;
-@@ -1027,7 +1048,9 @@ pub fn unbind_devices(db: &mut Database, password: &str, device_id: &str) -> Vec
+@@ -951,18 +992,27 @@ pub fn admit_device(
+         return Ok(DeviceAdmission {
+             ip: existing.ip.clone(),
+             changed: refresh,
+-            evicted_legacy: false,
++            evicted: None,
+         });
+     }
+     let mut evicted_ip = None;
+-    let mut evicted_legacy = false;
++    let mut evicted = None;
+     if let Some(limit) = limit
+         && devices.len() >= limit
+     {
+         // Клиент без device_id (старая версия) уступает место первому устройству с device_id.
+         if device_id != LEGACY_DEVICE_ID && devices.contains_key(LEGACY_DEVICE_ID) {
+             evicted_ip = devices.remove(LEGACY_DEVICE_ID).map(|device| device.ip);
+-            evicted_legacy = true;
++            evicted = Some(LEGACY_DEVICE_ID.to_owned());
++        } else if takeover {
++            // swg-panel: under --desired a password is one device and the newest takes it over, as on csqtt 2.5 (which
++            // binds none). A reinstalled or replaced phone comes with a new device_id, the store's max_devices is unset
++            // (= one device), and nothing could unbind the old one: --no-web closes the REST API. It takes the old
++            // binding's address — the password's own, the one swg-noded's per-peer limits know.
++            if let Some(oldest) = devices.iter().min_by_key(|(_, device)| device.last_seen).map(|(id, _)| id.clone()) {
++                evicted_ip = devices.remove(&oldest).map(|device| device.ip);
++                evicted = Some(oldest);
++            }
+         } else {
+             return Err("DENIED:device_limit");
+         }
+@@ -991,7 +1041,7 @@ pub fn admit_device(
+     Ok(DeviceAdmission {
+         ip,
+         changed: true,
+-        evicted_legacy,
++        evicted,
+     })
+ }
+ 
+@@ -1027,7 +1077,9 @@ pub fn unbind_devices(db: &mut Database, password: &str, device_id: &str) -> Vec
      }
  }
  
@@ -795,7 +880,7 @@ index 3a6730c..90ce168 100644
  const LEGACY_DATABASE_FILE: &str = "passwords.json";
  const LEGACY_DATABASE_IMPORTED_FILE: &str = "passwords.json.imported";
  const LEGACY_DATABASE_FILES: [&str; 2] = [LEGACY_DATABASE_FILE, LEGACY_DATABASE_IMPORTED_FILE];
-@@ -2237,7 +2260,7 @@ mod tests {
+@@ -2237,7 +2289,7 @@ mod tests {
  
      #[test]
      fn device_binding_respects_limit_unlimited_and_unbind() {
@@ -804,7 +889,7 @@ index 3a6730c..90ce168 100644
          let mut db = Database {
              main_password: "owner12345678901".to_owned(),
              ..Database::default()
-@@ -2292,11 +2315,11 @@ mod tests {
+@@ -2292,11 +2344,11 @@ mod tests {
          // Старый клиент без device_id уступает место устройству с device_id.
          db.main_max_devices = Some(1);
          let legacy = admit_device(&mut db, None, "", "", 105).unwrap();
@@ -812,13 +897,14 @@ index 3a6730c..90ce168 100644
 +        assert_eq!(legacy.ip, owner_tunnel_ip());
          assert!(db.main_devices.contains_key(LEGACY_DEVICE_ID));
          let modern = admit_device(&mut db, None, "phone-a", "", 106).unwrap();
-         assert!(modern.evicted_legacy);
+-        assert!(modern.evicted_legacy);
 -        assert_eq!(modern.ip, OWNER_TUNNEL_IP);
++        assert_eq!(modern.evicted.as_deref(), Some(LEGACY_DEVICE_ID));
 +        assert_eq!(modern.ip, owner_tunnel_ip());
          assert!(!db.main_devices.contains_key(LEGACY_DEVICE_ID));
      }
  
-@@ -2315,12 +2338,12 @@ mod tests {
+@@ -2315,12 +2367,12 @@ mod tests {
  
          // Приоритет сервера: выбор конфига не действует.
          assert_eq!(table_of(&db, "10.66.67.3"), Some(2001));
@@ -833,7 +919,29 @@ index 3a6730c..90ce168 100644
          // «Напрямую» у конфига, удалённый выход и пустой сервер не дают маршрута.
          db.passwords.get_mut("client").unwrap().exit = "direct".to_owned();
          assert_eq!(table_of(&db, "10.66.67.3"), None);
-@@ -2993,7 +3016,7 @@ mod tests {
+@@ -2984,6 +3036,21 @@ mod tests {
+         let _ = std::fs::remove_dir_all(directory);
+     }
+ 
++    #[test]
++    fn swg_desired_takeover_gives_a_password_to_the_newest_device() {
++        use super::{Database, PasswordEntry, admit_device_with};
++        let mut db = Database::default();
++        db.passwords.insert("pw".into(), PasswordEntry { ip: "10.66.67.3".into(), ..Default::default() });
++        let a = admit_device_with(&mut db, Some("pw"), "phone-a", "A", 100, true).unwrap();
++        assert_eq!((a.ip.as_str(), a.evicted.as_deref()), ("10.66.67.3", None));
++        // a reinstalled app (a new device_id) takes the password over, on the same address, and the old binding goes
++        let b = admit_device_with(&mut db, Some("pw"), "phone-b", "B", 200, true).unwrap();
++        assert_eq!((b.ip.as_str(), b.evicted.as_deref()), ("10.66.67.3", Some("phone-a")));
++        assert_eq!(db.passwords["pw"].devices.keys().cloned().collect::<Vec<_>>(), vec!["phone-b".to_string()]);
++        // without --desired (stock MRTT) the limit still refuses
++        assert_eq!(admit_device_with(&mut db, Some("pw"), "phone-c", "C", 300, false), Err("DENIED:device_limit"));
++    }
++
+     #[test]
+     fn test_legacy_slot_migration_sets_vladilets() {
+         let unique = std::time::SystemTime::now()
+@@ -2993,7 +3060,7 @@ mod tests {
          let directory = std::env::temp_dir().join(format!("mrtt-vladilets-test-{unique}"));
          std::fs::create_dir_all(&directory).unwrap();
  
@@ -854,7 +962,7 @@ index d478f78..c9ade56 100644
 +#[allow(dead_code)]
  pub const TUN_ADDR: &str = "10.66.67.1";
 diff --git a/rust-server/protocol.rs b/rust-server/protocol.rs
-index f88130c..533e8af 100644
+index f88130c..5e0de72 100644
 --- a/rust-server/protocol.rs
 +++ b/rust-server/protocol.rs
 @@ -910,7 +910,9 @@ fn insert_bounded_endpoint<T>(
@@ -908,6 +1016,49 @@ index f88130c..533e8af 100644
                      payload,
                  },
              );
+@@ -4962,11 +4973,11 @@ async fn handle_getconf(
+         changed,
+         routing_rule,
+         server_worker_limit,
+-        evicted_legacy,
++        evicted_device,
+     ) = {
+         let mut db = db_write(app).await?;
+         let mut changed = false;
+-        let mut evicted_legacy = false;
++        let mut evicted_device = None;
+         let mut reject_session = false;
+         let access = getconf_credential_access(&db, password);
+         let server_worker_limit = access
+@@ -5034,7 +5045,7 @@ async fn handle_getconf(
+             Ok((access, admission)) => match epoch.admit(generation_id, session_salt) {
+                 PasswordEpochDecision::Current | PasswordEpochDecision::Replaced => {
+                     changed |= admission.changed;
+-                    evicted_legacy = admission.evicted_legacy;
++                    evicted_device = admission.evicted.clone();
+                     *lock_unpoison(&session.device_id) = device_id.to_owned();
+                     set_public_epoch(session, generation_id, session_salt);
+                     session
+@@ -5084,7 +5095,7 @@ async fn handle_getconf(
+             changed,
+             routing_rule,
+             server_worker_limit,
+-            evicted_legacy,
++            evicted_device,
+         )
+     };
+     if authorization_rejected && created_epoch {
+@@ -5093,8 +5104,8 @@ async fn handle_getconf(
+                 Arc::ptr_eq(current, &epoch_lock)
+             });
+     }
+-    if evicted_legacy {
+-        drop_device_sessions(app, password, crate::model::LEGACY_DEVICE_ID);
++    if let Some(evicted) = evicted_device.as_deref() {
++        drop_device_sessions(app, password, evicted);
+     }
+     if !reject_session {
+         command(
 @@ -5518,6 +5529,24 @@ async fn run_password_janitor_cycle(app: &Arc<App>) {
      }
  }
@@ -934,7 +1085,7 @@ index f88130c..533e8af 100644
      let mut timer = tokio::time::interval(Duration::from_secs(3600));
      loop {
 diff --git a/rust-server/proxy_route.rs b/rust-server/proxy_route.rs
-index a751b10..b9df617 100644
+index a751b10..4189cd5 100644
 --- a/rust-server/proxy_route.rs
 +++ b/rust-server/proxy_route.rs
 @@ -17,9 +17,7 @@ const MARK_COMMENT: &str = "MRTT_LOCAL_SOCKS_MARK";
@@ -1010,7 +1161,7 @@ index a751b10..b9df617 100644
      let _ = command_output("sysctl", &["-w", "net.ipv4.conf.all.rp_filter=2"]).await;
      let _ = command_output("sysctl", &["-w", "net.ipv4.conf.default.rp_filter=2"]).await;
 -    let _ = command_output("sysctl", &["-w", "net.ipv4.conf.mrtt1.rp_filter=2"]).await;
-+    // swg-panel: the instance's own TUN (stock: csqtt1).
++    // swg-panel: the instance's own TUN (stock: mrtt1).
 +    let iface_rp_filter = format!("net.ipv4.conf.{}.rp_filter=2", crate::swgpanel::iface());
 +    let _ = command_output("sysctl", &["-w", &iface_rp_filter]).await;
      add_tproxy_shared_rules().await?;
@@ -1253,15 +1404,16 @@ index a751b10..b9df617 100644
              bail!("stale policy rule remains: {}", line.trim());
 diff --git a/rust-server/swgpanel.rs b/rust-server/swgpanel.rs
 new file mode 100644
-index 0000000..e9a79c1
+index 0000000..daa6a50
 --- /dev/null
 +++ b/rust-server/swgpanel.rs
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,259 @@
 +// SPDX-FileCopyrightText: 2026 SanityProtocol
 +// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 +//
 +// swg-panel integration knobs, ported from our csqtt 2.5.3 onto MRTT 1.0. Every field defaults to MRTT's stock value, so a
-+// binary invoked WITHOUT any of the new flags behaves like stock MRTT. Set once at boot from the CLI args (each
++// binary invoked WITHOUT any of the new flags behaves like stock MRTT — except its store, named csqtt.db (model.rs
++// DATABASE_FILE) so swg-noded reads it as a csqtt server's: stock MRTT's mrtt.db is not read. Set once at boot from the CLI args (each
 +// instance is its own process → a process-global OnceLock is the whole config).
 +
 +use std::path::PathBuf;

@@ -29,12 +29,16 @@ binary is `mrtt`: `CSQTT_BIN`). Beyond the 2.5 patch the port:
 - leaves MRTT's exit-route loop off under `--desired` — it deletes every pref-5300 `ip rule` it did not make, every 10 s;
 - names the store `csqtt.db`, so swg-noded reads it as a csqtt server's (the schema is 2.5's plus MRTT's columns);
 - reads `CSQTT_DNS` when `MRTT_DNS` is unset (swg-noded writes the former);
-- routes MRTT-only owner-address uses through the instance's subnet, and drops a device binding outside the pool at load;
+- routes MRTT-only owner-address uses through the instance's subnet, and drops a device binding (a client's or the
+  owner's) outside the instance's subnet at load;
+- under `--desired`, lets the newest device take a password over, on the same address (the store's `max_devices` is unset —
+  one device — and nothing could unbind the old one with the REST API closed: a reinstalled app was locked out);
 - labels itself `mrtt 1.0.0` (Cargo said 2.5.0).
 
-`cargo test`: 159 pass; 4 fail — the same 4 fail on unpatched v1.0 (its protocol GETCONF fixtures). Rig
+`cargo test`: 160 pass; 4 fail — the same 4 fail on unpatched v1.0 (its protocol GETCONF fixtures). Rig
 (`.campaign/rigs/csqtt25.sh`, R25 = this build as `srv-2.5` + MRTT v1.0's own client with
-`.campaign/rigs/csqtt-client-testturn.patch` behind a `client-2.5` env shim): A1–A9, I, M, R, W all pass. ⚠️ In the default
+`.campaign/rigs/csqtt-client-testturn.patch` behind a `client-2.5` env shim): A1–A9, I, M, R, W and D (a second device
+takes the password over; the first build refused it) all pass on the amd64 bytes `94fca6a4…`. ⚠️ In the default
 SRTP mode `auto` (standard DTLS) MRTT and csqtt 2.5 also reach each other both ways; the renamed labels only feed the
 WRAP-SRTP fallback. The operator kept the separate line (2026-11-24).
 
