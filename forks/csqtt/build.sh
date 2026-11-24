@@ -12,6 +12,7 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PIN="${CSQTT_PIN:-446293aa2e873ac5323ef6fd2316d9b81d966c11}"   # amurcanov/csqtt v2.1.9 (2026-09-02)
 PATCH="${CSQTT_PATCH:-$HERE/csqtt-swgpanel.patch}"
 REPO="${CSQTT_REPO:-https://github.com/amurcanov/csqtt.git}"
+BIN="${CSQTT_BIN:-csqtt}"   # the crate's binary: MRTT's (forks/csqtt/mrtt/build.sh) is `mrtt`
 # "<url> <sha256> <patch sha256>" of OUR release's source archive (upstream at PIN with that patch applied): built from
 # when upstream cannot be fetched, and only if PATCH is the very patch the archive carries.
 SRC_FALLBACK="${CSQTT_SRC_FALLBACK:-}"
@@ -76,6 +77,6 @@ export CARGO_TARGET_${ENVA}_RUSTFLAGS="-C link-self-contained=no"
 ( cd "$WORK/csqtt/rust-server" && cargo +1.97.1 zigbuild --release --target "$TARGET" )
 
 mkdir -p "$OUT"
-cp "$WORK/csqtt/rust-server/target/$TARGET/release/csqtt" "$OUT/csqtt-server-linux-$ARCH"
+cp "$WORK/csqtt/rust-server/target/$TARGET/release/$BIN" "$OUT/csqtt-server-linux-$ARCH"
 echo "built: $OUT/csqtt-server-linux-$ARCH"
 file "$OUT/csqtt-server-linux-$ARCH"

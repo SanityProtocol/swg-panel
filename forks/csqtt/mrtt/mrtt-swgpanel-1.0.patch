@@ -1,0 +1,1682 @@
+diff --git a/rust-server/Cargo.lock b/rust-server/Cargo.lock
+index f47e226..5f06ca3 100644
+--- a/rust-server/Cargo.lock
++++ b/rust-server/Cargo.lock
+@@ -1023,7 +1023,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "mrtt"
+-version = "2.5.0"
++version = "1.0.0"
+ dependencies = [
+  "aes",
+  "anyhow",
+diff --git a/rust-server/Cargo.toml b/rust-server/Cargo.toml
+index 81d1bf9..40471c2 100644
+--- a/rust-server/Cargo.toml
++++ b/rust-server/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "mrtt"
+-version = "2.5.0"
++version = "1.0.0"
+ edition = "2024"
+ rust-version = "1.97.1"
+ license = "Unlicense"
+diff --git a/rust-server/dataplane.rs b/rust-server/dataplane.rs
+index 2aec8e8..8e27ba2 100644
+--- a/rust-server/dataplane.rs
++++ b/rust-server/dataplane.rs
+@@ -1,5 +1,4 @@
+ use crate::{
+-    net_setup::{TUN_ADDR, TUN_IFACE},
+     tokio_io::{
+         IoCounters, MAX_RX_PER_PASS, PacketOutput, RxOutcome, TICK_INTERVAL_MS, TUN_RX_DRAIN_BATCH,
+         TokioIo,
+@@ -59,8 +58,9 @@ impl DataplaneConfig {
+     pub fn new(listen: SocketAddr) -> Self {
+         Self {
+             listen,
+-            tun_iface: TUN_IFACE.to_owned(),
+-            tun_addr: TUN_ADDR.to_owned(),
++            // swg-panel: iface/addr follow --iface / --tun-addr (stock: csqtt1 / 10.66.67.1).
++            tun_iface: crate::swgpanel::iface().to_owned(),
++            tun_addr: crate::swgpanel::gw_addr().to_owned(),
+             command_capacity: 4096,
+         }
+     }
+diff --git a/rust-server/main.rs b/rust-server/main.rs
+index 2394ffe..e87fa1c 100644
+--- a/rust-server/main.rs
++++ b/rust-server/main.rs
+@@ -35,6 +35,7 @@ mod packet;
+ mod path_probe;
+ mod protocol;
+ mod proxy_route;
++mod swgpanel;
+ mod tokio_io;
+ mod tproxy;
+ mod tun_device;
+@@ -136,6 +137,42 @@ struct Args {
+         help = "Число последних DPI-записей"
+     )]
+     samples: usize,
++
++    // ── swg-panel integration flags (all optional; absent → stock csqtt behaviour) ──
++    #[arg(long, help = "swg-panel: TUN interface name for multi-instance (stock: csqtt1)")]
++    iface: Option<String>,
++    #[arg(
++        long = "tun-addr",
++        help = "swg-panel: TUN gateway CIDR /24, e.g. 10.66.68.1/24 (stock: 10.66.67.1/24)"
++    )]
++    tun_addr: Option<String>,
++    #[arg(
++        long = "no-nat",
++        default_value_t = false,
++        help = "swg-panel: the node owns forwarding, NAT and the firewall — set no host sysctls and install no FORWARD/MASQUERADE rules"
++    )]
++    no_nat: bool,
++    #[arg(
++        long = "no-web",
++        default_value_t = false,
++        help = "swg-panel: run headless — no web admin panel (it binds 0.0.0.0), no TLS cert, and no DPI/syscalls monitor sockets; the panel owns all state via --desired"
++    )]
++    headless: bool,
++    #[arg(
++        long,
++        help = "swg-panel: declarative desired-passwords JSON, panel-owned (SIGHUP/mtime reload, no restart)"
++    )]
++    desired: Option<std::path::PathBuf>,
++    #[arg(
++        long = "max-passwords",
++        help = "swg-panel: accepted but inert since 2.5 (no password cap; the address pool bounds it); kept so installed units keep starting"
++    )]
++    max_passwords: Option<usize>,
++    #[arg(
++        long,
++        help = "this server's name on the host (stock: csqtt) — its systemd unit, netfilter tags, local-proxy table/mark and session cookie; a second server next to a stock one runs as e.g. csqtt25"
++    )]
++    instance: Option<String>,
+ }
+ 
+ #[derive(Debug, Default, serde::Deserialize)]
+@@ -571,14 +608,15 @@ async fn shutdown_signal() {
+ fn run_systemctl(action: &str) -> Result<()> {
+     if std::env::var("MRTT_SERVICE_MANAGER").is_ok_and(|value| value == "docker") {
+         if action != "restart" {
+-            bail!("для управления контейнером используйте docker start/stop mrtt");
++            bail!("для управления контейнером используйте docker start/stop {}", swgpanel::instance());
+         }
+         #[cfg(unix)]
+         {
+             let init_exe = std::fs::read_link("/proc/1/exe").ok();
+             if init_exe.is_none() || init_exe != std::env::current_exe().ok() {
+                 bail!(
+-                    "PID 1 контейнера не является этим процессом; выполните docker restart mrtt"
++                    "PID 1 контейнера не является этим процессом; выполните docker restart {}",
++                    swgpanel::instance()
+                 );
+             }
+             if unsafe { libc::kill(1, libc::SIGTERM) } == 0 {
+@@ -593,15 +631,17 @@ fn run_systemctl(action: &str) -> Result<()> {
+     #[cfg(unix)]
+     {
+         if unsafe { libc_geteuid() } != 0 {
+-            bail!("для управления службой mrtt нужны права root");
++            bail!("для управления службой {} нужны права root", swgpanel::instance());
+         }
+     }
+-    println!("[CLI] Выполняется systemctl {action} mrtt...");
++    // the unit THIS server runs as: a side instance's restart must never restart the stock server next to it
++    let unit = swgpanel::instance();
++    println!("[CLI] Выполняется systemctl {action} {unit}...");
+     let mut command = std::process::Command::new("systemctl");
+     if action == "restart" {
+         command.arg("--no-block");
+     }
+-    let status = command.args([action, "mrtt"]).status();
++    let status = command.args([action, unit]).status();
+     match status {
+         Ok(s) if s.success() => {
+             println!("[CLI] Готово");
+@@ -622,7 +662,7 @@ static PANEL_RESTART_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+ pub(crate) fn request_service_restart() -> Result<()> {
+     if std::env::var("MRTT_SERVICE_MANAGER").is_ok_and(|value| value == "systemd") {
+         let sequence = PANEL_RESTART_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+-        let unit = format!("mrtt-panel-restart-{}-{sequence}", std::process::id());
++        let unit = format!("{}-panel-restart-{}-{sequence}", swgpanel::instance(), std::process::id());
+         let status = std::process::Command::new("systemd-run")
+             .arg("--quiet")
+             .arg(format!("--unit={unit}"))
+@@ -630,7 +670,7 @@ pub(crate) fn request_service_restart() -> Result<()> {
+             .arg("--timer-property=AccuracySec=100ms")
+             .arg("--collect")
+             .arg("/usr/bin/systemctl")
+-            .args(["--no-block", "restart", "mrtt"])
++            .args(["--no-block", "restart", swgpanel::instance()])
+             .status()
+             .context("schedule delayed systemd restart with systemd-run")?;
+         if status.success() {
+@@ -916,6 +956,16 @@ async fn async_main() -> Result<()> {
+         let cmd = args_vec[1].as_str();
+         match cmd {
+             "start" | "stop" | "restart" => {
++                // The short form names no instance, so it is the stock server's: only a binary installed as `csqtt`
++                // takes it. A second server's binary (csqtt25) running `systemctl restart csqtt` would restart the
++                // stock server next to it.
++                let exe = std::path::Path::new(&args_vec[0])
++                    .file_name()
++                    .and_then(|n| n.to_str())
++                    .unwrap_or_default();
++                if exe != swgpanel::DEFAULT_INSTANCE {
++                    bail!("укажите сервер: {exe} --instance <имя> --{cmd}");
++                }
+                 return run_systemctl(cmd);
+             }
+             "dpi" => {
+@@ -936,6 +986,29 @@ async fn async_main() -> Result<()> {
+         return Ok(());
+     }
+ 
++    // swg-panel: lock in the per-instance config (instance/iface/subnet/desired) before anything reads it — the
++    // --start/--stop/--restart below act on this instance's unit, so it must be known before them.
++    let _ = args.max_passwords;
++    swgpanel::init(swgpanel::build(
++        args.iface.clone(),
++        args.tun_addr.clone(),
++        args.no_nat,
++        args.headless,
++        args.desired.clone(),
++        args.instance.clone(),
++    )?);
++
++    // As the short form above: without --instance the flag names the stock server's unit, which only a binary
++    // installed as `csqtt` may act on (`csqtt25 --restart` restarted the stock server next to it).
++    if (args.start || args.stop || args.restart) && args.instance.is_none() {
++        let exe = std::env::args()
++            .next()
++            .and_then(|a| std::path::Path::new(&a).file_name().and_then(|n| n.to_str()).map(str::to_owned))
++            .unwrap_or_default();
++        if exe != swgpanel::DEFAULT_INSTANCE {
++            bail!("укажите сервер: {exe} --instance <имя> --start|--stop|--restart");
++        }
++    }
+     if args.start {
+         return run_systemctl("start");
+     }
+@@ -1013,8 +1086,10 @@ async fn async_main() -> Result<()> {
+         println!("[INIT] generated main password: {}", db.main_password);
+     }
+ 
++    // swg-panel: swg-noded hands every csqtt line its client DNS as CSQTT_DNS (its csqtt.env); MRTT reads MRTT_DNS.
++    let args_dns = args.dns.clone().or_else(|| std::env::var("CSQTT_DNS").ok());
+     let runtime_dns = if let Some(configured) =
+-        args.dns.as_deref().filter(|value| !value.trim().is_empty())
++        args_dns.as_deref().filter(|value| !value.trim().is_empty())
+     {
+         normalize_dns(configured)?
+     } else if let Some(known_dns) = web_panel::provider_dns_by_id(&db.dns_provider) {
+@@ -1113,7 +1188,7 @@ async fn async_main() -> Result<()> {
+         });
+     }
+ 
+-    log_event(&app, "INFO", "SYSTEM", " MRTT Server");
++    log_event(&app, "INFO", "SYSTEM", " MRTT Server 1.0 (SanityProtocol build for swg-panel)");
+     log_event(
+         &app,
+         "INFO",
+@@ -1121,43 +1196,69 @@ async fn async_main() -> Result<()> {
+         &format!(" RTP AEAD: {}", app.listen),
+     );
+     log_event(&app, "INFO", "SYSTEM", " Tunnel: Userspace TUN (MRTT)");
+-    log_event(
+-        &app,
+-        "INFO",
+-        "SYSTEM",
+-        &format!(" API: 127.0.0.1:{}", app.web_port),
+-    );
++    // swg-panel: headless binds no API port — say so rather than name an address nothing listens on.
++    let api_line = if swgpanel::headless() {
++        " API: off (--no-web)".to_owned()
++    } else {
++        format!(" API: 127.0.0.1:{}", app.web_port)
++    };
++    log_event(&app, "INFO", "SYSTEM", &api_line);
+ 
+     let web_app = app.clone();
+-    let diagnostic_app = app.clone();
+ 
+-    tokio::spawn(async move {
+-        if let Err(e) = protocol::run_dpi_server().await {
+-            eprintln!("[DPI] Server listener error: {e}");
+-        }
+-    });
++    // swg-panel: the DPI (46003) + syscalls (46004) sockets only serve csqtt's own `dpi`/`syscalls` monitor
++    // CLIs, which we never use; their fixed loopback ports also collide on a multi-instance node.
++    if !swgpanel::headless() {
++        let diagnostic_app = app.clone();
++        tokio::spawn(async move {
++            if let Err(e) = protocol::run_dpi_server().await {
++                eprintln!("[DPI] Server listener error: {e}");
++            }
++        });
+ 
+-    tokio::spawn(async move {
+-        if let Err(e) = protocol::run_syscalls_server(diagnostic_app).await {
+-            eprintln!("[SYSCALLS] Server listener error: {e}");
+-        }
+-    });
++        tokio::spawn(async move {
++            if let Err(e) = protocol::run_syscalls_server(diagnostic_app).await {
++                eprintln!("[SYSCALLS] Server listener error: {e}");
++            }
++        });
++    }
+ 
+-    tokio::spawn(auto_restart_loop(app.clone(), auto_restart_interval_rx));
++    // swg-panel: headless has no web panel to set the interval, and its unit (swg-noded's) restarts only on failure —
++    // a scheduled self-restart (a clean exit 0) from a copied or adopted store would leave the server down for good
++    if !swgpanel::headless() {
++        tokio::spawn(auto_restart_loop(app.clone(), auto_restart_interval_rx));
++    }
+ 
+     let protocol_runtime = protocol::start(app.clone()).await?;
+     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+     let mut protocol_status = protocol_runtime.status_receiver();
+-    let mut web_task = tokio::spawn(async move { web_panel::run(web_app).await });
++    // swg-panel: under --no-web no REST API binds (its fixed 127.0.0.1:46002 would collide between two servers on one
++    // node, and the panel owns state via --desired); a never-completing task fills the web_task slot so the select!
++    // below keeps its shape — its "web server stopped" arm simply never fires.
++    let mut web_task = if swgpanel::headless() {
++        tokio::spawn(async { std::future::pending::<anyhow::Result<()>>().await })
++    } else {
++        tokio::spawn(async move { web_panel::run(web_app).await })
++    };
+     tokio::spawn(protocol::session_janitor(app.clone()));
+-    tokio::spawn(protocol::password_janitor(app.clone()));
++    // swg-panel: under --desired the panel owns expiry (it rewrites desired.json), so csqtt's own expiry
++    // janitor is disabled to avoid two writers pruning the same set. Without --desired it runs as stock.
++    if let Some(desired) = swgpanel::desired_path().cloned() {
++        tokio::spawn(swgpanel_desired_loop(app.clone(), desired));
++    } else {
++        tokio::spawn(protocol::password_janitor(app.clone()));
++    }
+     tokio::spawn(password_epoch_sweeper(app.clone()));
+ 
+     tokio::spawn(cpu_loop(app.clone()));
+ 
+     let monitor_app = app.clone();
+     tokio::spawn(local_proxy_monitor_loop(monitor_app));
+-    tokio::spawn(exit_routes_loop(app.clone()));
++    // swg-panel: under --desired the node owns routing — exits are its own, and this loop deletes every pref-5300 `ip rule`
++    // it did not make, a second server's included.
++    if swgpanel::desired_path().is_none() {
++        tokio::spawn(exit_routes_loop(app.clone()));
++    }
+ 
+     let mut web_completed = false;
+     let mut terminal_error = None;
+@@ -1232,6 +1333,274 @@ async fn async_main() -> Result<()> {
+     }
+ }
+ 
++// ── swg-panel: declarative desired-passwords reconcile (panel owns the set; csqtt owns address/traffic) ──
++#[derive(serde::Deserialize, Default)]
++struct SwgDesiredFile {
++    #[serde(default)]
++    passwords: Vec<SwgDesiredPw>,
++    // One routing rule for every password of this server (the panel's App routing). Absent → no rule.
++    #[serde(default)]
++    app_routing: Option<SwgAppRouting>,
++}
++
++// The panel's App routing, in its own words; mapped onto csqtt's RoutingRule by swgpanel_app_rule. The panel validates it
++// (a "tunnel"/"only" mode always carries a list) — upstream validates nothing.
++#[derive(serde::Deserialize, Default, Clone)]
++struct SwgAppRouting {
++    #[serde(default)]
++    apps_mode: String, // "all" | "except" | "only"
++    #[serde(default)]
++    packages: Vec<String>,
++    #[serde(default)]
++    domains_mode: String, // "direct" (blacklist: the listed bypass the tunnel) | "tunnel" (whitelist: only the listed use it)
++    #[serde(default)]
++    domains: Vec<String>,
++    #[serde(default)]
++    template_domains: bool,
++    #[serde(default)]
++    ips_mode: String, // "direct" | "tunnel"
++    #[serde(default)]
++    ips: Vec<String>,
++}
++
++const SWG_RULE_ID: &str = "swg";
++
++// A per-password rule's id: "swg-" + 16 hex of SHA-256 over the rule's content, so passwords asking for the same rule share
++// one row, and an unchanged rule keeps its id across reconciles (no churn in the store).
++fn swgpanel_rule_id(rule: &model::RoutingRule) -> String {
++    use sha2::{Digest, Sha256};
++    let mut keyed = rule.clone();
++    keyed.id.clear();
++    let digest = Sha256::digest(serde_json::to_vec(&keyed).unwrap_or_default());
++    format!("swg-{}", hex::encode(&digest[..8]))
++}
++
++// The rule the panel's App routing asks for, or None when it asks for nothing (no rule is sent at all then).
++fn swgpanel_app_rule(r: &SwgAppRouting) -> Option<model::RoutingRule> {
++    let only_apps = r.apps_mode == "only";
++    let packages = if r.apps_mode == "except" || only_apps { r.packages.clone() } else { Vec::new() };
++    let domains_whitelist = r.domains_mode == "tunnel";
++    let template = r.template_domains && !domains_whitelist; // the built-in list is a direct list
++    let ips_whitelist = r.ips_mode == "tunnel";
++    if packages.is_empty() && !only_apps && r.domains.is_empty() && !template && !domains_whitelist
++        && r.ips.is_empty() && !ips_whitelist
++    {
++        return None;
++    }
++    Some(model::RoutingRule {
++        id: SWG_RULE_ID.to_owned(),
++        name: "swg-panel".to_owned(),
++        is_whitelist: only_apps,
++        packages,
++        template_domains: template,
++        direct_domains: r.domains.clone(),
++        domains_is_whitelist: domains_whitelist,
++        ip_is_whitelist: ips_whitelist,
++        ips: r.ips.clone(),
++    })
++}
++
++#[derive(serde::Deserialize)]
++struct SwgDesiredPw {
++    password: String,
++    #[serde(default)]
++    expires_at: i64,
++    #[serde(default)]
++    vk_hash: String,
++    #[serde(default)]
++    name: String,
++    #[serde(default)]
++    is_deactivated: bool,
++    // This password's own App routing, overriding the server's: absent → the server's rule; present → its own rule, and
++    // one with everything at its default means NO rule for it, whatever the server's says.
++    #[serde(default)]
++    app_routing: Option<SwgAppRouting>,
++}
++
++// Watch desired.json and reconcile on start, on SIGHUP, and on mtime change (3s poll). desired.json is the
++// panel's INPUT (sole writer); the csqtt.db store is csqtt's OUTPUT (sole writer) → no write race.
++async fn swgpanel_desired_loop(app: Arc<App>, path: std::path::PathBuf) {
++    swgpanel_reconcile_desired(&app, &path).await;
++    let mut last = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
++    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
++    let mut ticker = tokio::time::interval(Duration::from_secs(3));
++    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
++    let mut ticks = 0u32;
++    loop {
++        let hup = async {
++            match sighup.as_mut() {
++                Some(s) => {
++                    s.recv().await;
++                }
++                None => std::future::pending::<()>().await,
++            }
++        };
++        tokio::select! {
++            _ = ticker.tick() => {
++                // once a minute: an expiry passes with no change to the file, and its live sessions must end
++                ticks = ticks.wrapping_add(1);
++                if ticks % 20 == 0 {
++                    protocol::cut_expired_password_sessions(&app).await;
++                }
++                let m = std::fs::metadata(&path).and_then(|md| md.modified()).ok();
++                if m != last {
++                    last = m;
++                    swgpanel_reconcile_desired(&app, &path).await;
++                }
++            }
++            _ = hup => {
++                swgpanel_reconcile_desired(&app, &path).await;
++                last = std::fs::metadata(&path).and_then(|md| md.modified()).ok();
++            }
++        }
++    }
++}
++
++// App routing onto the store: the server's rule ("swg") for every password, unless a password carries its own (a rule shared by
++// content, "swg-<hash>"), or its own empty one (no rule). Every "swg*" rule no password uses any more is dropped. Returns
++// whether the store changed.
++fn swgpanel_apply_routing(db: &mut model::Database, desired: &SwgDesiredFile, main_pw: &str) -> bool {
++    let mut changed = false;
++    let server_rule = desired.app_routing.as_ref().and_then(swgpanel_app_rule);
++    let mut wanted: std::collections::BTreeMap<String, model::RoutingRule> = std::collections::BTreeMap::new();
++    for d in desired.passwords.iter().filter(|p| !p.password.is_empty() && p.password != main_pw) {
++        let rule = match &d.app_routing {
++            Some(own) => swgpanel_app_rule(own).map(|mut r| {
++                r.id = swgpanel_rule_id(&r);
++                r
++            }),
++            None => server_rule.clone(),
++        };
++        let id = rule.as_ref().map(|r| r.id.clone()).unwrap_or_default();
++        if let Some(r) = rule {
++            wanted.insert(r.id.clone(), r);
++        }
++        if let Some(entry) = db.passwords.get_mut(&d.password)
++            && entry.routing_rule_id != id
++        {
++            entry.routing_rule_id = id;
++            changed = true;
++        }
++    }
++    let stale: Vec<String> = db
++        .routing_rules
++        .keys()
++        .filter(|k| (k.as_str() == SWG_RULE_ID || k.starts_with("swg-")) && !wanted.contains_key(*k))
++        .cloned()
++        .collect();
++    for k in stale {
++        db.routing_rules.remove(&k);
++        changed = true;
++    }
++    for (id, rule) in wanted {
++        if db.routing_rules.get(&id) != Some(&rule) {
++            db.routing_rules.insert(id, rule);
++            changed = true;
++        }
++    }
++    changed
++}
++
++async fn swgpanel_reconcile_desired(app: &Arc<App>, path: &std::path::Path) {
++    let text = match std::fs::read_to_string(path) {
++        Ok(t) => t,
++        Err(_) => return, // absent/unreadable → never wipe live passwords on a transient read error
++    };
++    let desired: SwgDesiredFile = match serde_json::from_str(&text) {
++        Ok(d) => d,
++        Err(error) => {
++            eprintln!("[DESIRED] parse {}: {error}", path.display());
++            return;
++        }
++    };
++    let want: std::collections::HashMap<&str, &SwgDesiredPw> = desired
++        .passwords
++        .iter()
++        .filter(|p| !p.password.is_empty())
++        .map(|p| (p.password.as_str(), p))
++        .collect();
++    // Passwords whose live sessions must end: removed, or just deactivated — what the stock web panel's
++    // client_delete / client_toggle do. A session of a password that stays usable is never touched.
++    let mut cut: Vec<String> = Vec::new();
++    let mut removed: Vec<String> = Vec::new();
++    let mut changed = false;
++    {
++        let mut db = app.db.write().await;
++        let main_pw = db.main_password.clone();
++        removed.extend(
++            db.passwords
++                .keys()
++                .filter(|k| **k != main_pw && !want.contains_key(k.as_str()))
++                .cloned(),
++        );
++        for k in &removed {
++            db.passwords.remove(k);
++            changed = true;
++        }
++        // add new / update the panel-owned fields (never ip / up_bytes / down_bytes — csqtt owns those). In file
++        // order, so new passwords take addresses in the order the panel lists them.
++        for d in desired.passwords.iter().filter(|p| !p.password.is_empty()) {
++            let pw = &d.password.as_str();
++            if *pw == main_pw {
++                continue;
++            }
++            match db.passwords.get_mut(*pw) {
++                Some(entry) => {
++                    if entry.expires_at != d.expires_at
++                        || entry.vk_hash != d.vk_hash
++                        || entry.vk_hashes != d.vk_hash
++                        || entry.name != d.name
++                        || entry.is_deactivated != d.is_deactivated
++                    {
++                        if d.is_deactivated && !entry.is_deactivated {
++                            cut.push((*pw).to_owned());
++                        }
++                        entry.expires_at = d.expires_at;
++                        entry.vk_hash = d.vk_hash.clone();
++                        entry.vk_hashes = d.vk_hash.clone();
++                        entry.name = d.name.clone();
++                        entry.is_deactivated = d.is_deactivated;
++                        changed = true;
++                    }
++                }
++                None => {
++                    // as the stock web panel's client_create: the address and the subscription id are given here
++                    let ip = model::get_next_ip(&db).unwrap_or_default();
++                    db.passwords.insert(
++                        (*pw).to_owned(),
++                        model::PasswordEntry {
++                            ip,
++                            expires_at: d.expires_at,
++                            vk_hash: d.vk_hash.clone(),
++                            vk_hashes: d.vk_hash.clone(),
++                            name: d.name.clone(),
++                            is_deactivated: d.is_deactivated,
++                            sub_uuid: model::random_uuid_v4(),
++                            ..Default::default()
++                        },
++                    );
++                    changed = true;
++                }
++            }
++        }
++        changed |= swgpanel_apply_routing(&mut db, &desired, &main_pw);
++        if changed {
++            app.db_persistence.submit(db.clone());
++        }
++    }
++    for pw in &removed {
++        app.derived_keys.remove(pw);
++    }
++    for pw in removed.iter().chain(&cut) {
++        protocol::drop_password_sessions(app, pw);
++    }
++    if changed
++        && let Err(error) = protocol::refresh_credentials(app).await
++    {
++        eprintln!("[DESIRED] refresh credentials: {error:#}");
++    }
++}
++
+ async fn run_tproxy_child(
+     port: Option<u16>,
+     status_path: Option<std::path::PathBuf>,
+@@ -1658,3 +2027,86 @@ mod lock_tests {
+         assert_eq!(cpu_percentage(previous, current), Some(80));
+     }
+ }
++
++#[cfg(test)]
++mod swg_app_routing_tests {
++    use super::*;
++
++    fn r(apps: &str, pk: &[&str], dm: &str, d: &[&str], tpl: bool, im: &str, ips: &[&str]) -> SwgAppRouting {
++        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
++        SwgAppRouting { apps_mode: apps.into(), packages: v(pk), domains_mode: dm.into(), domains: v(d),
++                        template_domains: tpl, ips_mode: im.into(), ips: v(ips) }
++    }
++
++    #[test]
++    fn nothing_asked_is_no_rule() {
++        assert!(swgpanel_app_rule(&r("all", &["com.x"], "direct", &[], false, "direct", &[])).is_none());
++        assert!(swgpanel_app_rule(&SwgAppRouting::default()).is_none());
++    }
++
++    #[test]
++    fn each_mode_maps_onto_the_rule() {
++        let x = swgpanel_app_rule(&r("except", &["org.telegram.messenger"], "direct", &["ya.ru"], true, "direct", &["10.0.0.0/8"])).unwrap();
++        assert_eq!(x.id, SWG_RULE_ID);
++        assert!(!x.is_whitelist && x.packages == vec!["org.telegram.messenger"]);
++        assert!(!x.domains_is_whitelist && x.direct_domains == vec!["ya.ru"] && x.template_domains);
++        assert!(!x.ip_is_whitelist && x.ips == vec!["10.0.0.0/8"]);
++        let o = swgpanel_app_rule(&r("only", &["com.a"], "tunnel", &["b.com"], true, "tunnel", &["1.1.1.1"])).unwrap();
++        assert!(o.is_whitelist && o.domains_is_whitelist && o.ip_is_whitelist);
++        assert!(!o.template_domains, "the built-in list is a direct list: dropped in tunnel mode");
++        // "all" never carries packages, whatever the list says
++        let a = swgpanel_app_rule(&r("all", &["com.a"], "direct", &["c.com"], false, "direct", &[])).unwrap();
++        assert!(a.packages.is_empty() && !a.is_whitelist);
++        // the built-in list alone is a rule
++        assert!(swgpanel_app_rule(&r("all", &[], "direct", &[], true, "direct", &[])).unwrap().template_domains);
++    }
++
++    fn pw(p: &str, own: Option<SwgAppRouting>) -> SwgDesiredPw {
++        SwgDesiredPw { password: p.into(), expires_at: 0, vk_hash: String::new(), name: String::new(), is_deactivated: false, app_routing: own }
++    }
++
++    fn db_with(pws: &[&str]) -> model::Database {
++        let mut db = model::Database { main_password: "owner".into(), ..Default::default() };
++        for p in pws {
++            db.passwords.insert((*p).into(), model::PasswordEntry::default());
++        }
++        db
++    }
++
++    #[test]
++    fn per_password_overrides_the_server_rule() {
++        let mut db = db_with(&["a", "b", "c", "d"]);
++        let tg = r("except", &["org.telegram.messenger"], "direct", &[], false, "direct", &[]);
++        let desired = SwgDesiredFile {
++            app_routing: Some(r("all", &[], "direct", &["ya.ru"], false, "direct", &[])),
++            passwords: vec![pw("a", None), pw("b", Some(tg.clone())), pw("c", Some(tg)), pw("d", Some(SwgAppRouting::default()))],
++        };
++        assert!(swgpanel_apply_routing(&mut db, &desired, "owner"));
++        let id = |p: &str| db.passwords[p].routing_rule_id.clone();
++        assert_eq!(id("a"), SWG_RULE_ID, "no override: the server's rule");
++        assert!(id("b").starts_with("swg-") && id("b") == id("c"), "the same override shares one rule");
++        assert_eq!(id("d"), "", "an empty override: no rule at all");
++        assert_eq!(db.routing_rules.len(), 2);
++        assert_eq!(db.routing_rules[&id("b")].packages, vec!["org.telegram.messenger"]);
++        // the same desired again changes nothing (stable ids, no churn)
++        assert!(!swgpanel_apply_routing(&mut db, &desired, "owner"));
++        // the server rule and the overrides gone: every swg rule dropped, every password cleared
++        let bare = SwgDesiredFile { app_routing: None, passwords: vec![pw("a", None), pw("b", None), pw("c", None), pw("d", None)] };
++        assert!(swgpanel_apply_routing(&mut db, &bare, "owner"));
++        assert!(db.routing_rules.is_empty());
++        assert!(db.passwords.values().all(|e| e.routing_rule_id.is_empty()));
++    }
++
++    #[test]
++    fn a_rule_nobody_uses_any_more_is_dropped_and_others_are_kept() {
++        let mut db = db_with(&["a"]);
++        db.routing_rules.insert("user-made".into(), model::RoutingRule { id: "user-made".into(), ..Default::default() });
++        let one = SwgDesiredFile { app_routing: None, passwords: vec![pw("a", Some(r("only", &["com.x"], "direct", &[], false, "direct", &[])))] };
++        swgpanel_apply_routing(&mut db, &one, "owner");
++        let first = db.passwords["a"].routing_rule_id.clone();
++        let two = SwgDesiredFile { app_routing: None, passwords: vec![pw("a", Some(r("only", &["com.y"], "direct", &[], false, "direct", &[])))] };
++        swgpanel_apply_routing(&mut db, &two, "owner");
++        assert!(!db.routing_rules.contains_key(&first), "the old override's rule is gone");
++        assert!(db.routing_rules.contains_key("user-made"), "a rule the panel did not make is never touched");
++    }
++}
+diff --git a/rust-server/model.rs b/rust-server/model.rs
+index 3a6730c..90ce168 100644
+--- a/rust-server/model.rs
++++ b/rust-server/model.rs
+@@ -167,7 +167,7 @@ impl Database {
+     pub fn exit_routes(&self) -> std::collections::BTreeSet<(String, u32)> {
+         let mut routes = std::collections::BTreeSet::new();
+         if let Some(table) = self.exit_table(&self.main_exit) {
+-            routes.insert((OWNER_TUNNEL_IP.to_owned(), table));
++            routes.insert((owner_tunnel_ip(), table));
+             routes.extend(self.main_devices.values().map(|device| (device.ip.clone(), table)));
+         }
+         for entry in self.passwords.values() {
+@@ -425,11 +425,24 @@ impl Database {
+             } else {
+                 key.clone()
+             };
+-            if entry.ip.is_empty()
+-                && let Some(next_ip) = get_next_ip(self)
+-            {
+-                entry.ip = next_ip;
+-                repairs.push(format!("password tag={tag} ip assigned"));
++            if !ip_in_pool(&entry.ip) {
++                let foreign = !entry.ip.is_empty();
++                entry.ip.clear();
++                if let Some(next_ip) = get_next_ip(self) {
++                    entry.ip = next_ip;
++                    repairs.push(if foreign {
++                        format!("password tag={tag} ip outside this server's subnet reassigned")
++                    } else {
++                        format!("password tag={tag} ip assigned")
++                    });
++                }
++            }
++            // swg-panel: a device bound to an address outside this server's pool (a store copied from another server)
++            // rebinds at its next connect — admit_device hands an existing binding its stored address as is.
++            let bound = entry.devices.len();
++            entry.devices.retain(|_, device| ip_in_pool(&device.ip));
++            if entry.devices.len() != bound {
++                repairs.push(format!("password tag={tag} device bindings outside this server's subnet dropped"));
+             }
+             if entry.sub_uuid.trim().is_empty() {
+                 entry.sub_uuid = random_uuid_v4();
+@@ -832,19 +845,25 @@ pub fn is_expired(entry: &PasswordEntry) -> bool {
+     entry.expires_at != 0 && now() > entry.expires_at
+ }
+ 
+-pub const OWNER_TUNNEL_IP: &str = "10.66.67.2";
++// swg-panel: .2 of the instance's --tun-addr /24 (stock: 10.66.67.2).
++pub fn owner_tunnel_ip() -> String {
++    crate::swgpanel::subnet_addr(2)
++}
++
++// Is `ip` an address of THIS server's client pool (.3–.250 of its --tun-addr /24)? An address from elsewhere — a 2.1.9
++// export imported into a second server on 10.66.68, a store copied between servers — was handed out as is: the client
++// got TUNCONF 10.66.67.x, the downlink index refused it and the return path led to the other server's TUN.
++pub fn ip_in_pool(ip: &str) -> bool {
++    let Some(o) = crate::tun_device::parse_ipv4(ip) else {
++        return false;
++    };
++    [o[0], o[1], o[2]] == crate::swgpanel::subnet_prefix() && (3..=250).contains(&o[3])
++}
+ 
+ // The address an IMPORTED client gets: its own only when it is in this server's pool and no client already has it —
+ // an export merged into a server with clients (or two clients of one export on one address) gave two clients one
+ // tunnel address, and each broke the other's traffic. Clients are inserted one by one, so earlier ones in the same
+ // import count as taken.
+-// Is `ip` an address of this server's client pool (.3–.250 of 10.66.67.0/24, as get_next_ip hands out)? One from
+-// elsewhere — another server's export, a store copied between servers — is not a usable address here.
+-pub fn ip_in_pool(ip: &str) -> bool {
+-    ip.parse::<std::net::Ipv4Addr>()
+-        .is_ok_and(|a| a.octets()[..3] == [10, 66, 67] && (3..=250).contains(&a.octets()[3]))
+-}
+-
+ pub fn import_ip(db: &Database, ip: &str) -> String {
+     if ip_in_pool(ip) && !db.passwords.values().any(|entry| entry.ip == ip) {
+         return ip.to_owned();
+@@ -857,7 +876,9 @@ pub fn get_next_ip(db: &Database) -> Option<String> {
+     for i in 3..=250u8 {
+         buf.clear();
+         use std::fmt::Write;
+-        let _ = write!(buf, "10.66.67.{i}");
++        // swg-panel: pool base follows the instance's --tun-addr /24 (stock: 10.66.67).
++        let p = crate::swgpanel::subnet_prefix();
++        let _ = write!(buf, "{}.{}.{}.{i}", p[0], p[1], p[2]);
+         let is_used = db
+             .passwords
+             .values()
+@@ -884,7 +905,7 @@ pub fn resolve_session_ip(
+         return Some(
+             db.main_devices
+                 .get(device_id)
+-                .map_or_else(|| OWNER_TUNNEL_IP.to_owned(), |device| device.ip.clone()),
++                .map_or_else(owner_tunnel_ip, |device| device.ip.clone()),
+         );
+     }
+     if let Some(device) = db
+@@ -931,7 +952,7 @@ pub fn admit_device(
+         // Владелец по умолчанию без лимита устройств: не заданное значение значит 0.
+         None => (
+             device_limit(db.main_max_devices.or(Some(0))),
+-            OWNER_TUNNEL_IP.to_owned(),
++            owner_tunnel_ip(),
+         ),
+         Some(key) => {
+             let entry = db.passwords.get(key).ok_or("DENIED:wrong_password")?;
+@@ -1027,7 +1048,9 @@ pub fn unbind_devices(db: &mut Database, password: &str, device_id: &str) -> Vec
+     }
+ }
+ 
+-const DATABASE_FILE: &str = "mrtt.db";
++// swg-panel: the store keeps csqtt's file name, so swg-noded reads an mrtt server's users and traffic exactly as a csqtt
++// one's (_csqtt_read_store); the schema is csqtt 2.5's plus MRTT's added columns.
++const DATABASE_FILE: &str = "csqtt.db";
+ const LEGACY_DATABASE_FILE: &str = "passwords.json";
+ const LEGACY_DATABASE_IMPORTED_FILE: &str = "passwords.json.imported";
+ const LEGACY_DATABASE_FILES: [&str; 2] = [LEGACY_DATABASE_FILE, LEGACY_DATABASE_IMPORTED_FILE];
+@@ -2237,7 +2260,7 @@ mod tests {
+ 
+     #[test]
+     fn device_binding_respects_limit_unlimited_and_unbind() {
+-        use super::{LEGACY_DEVICE_ID, OWNER_TUNNEL_IP, admit_device, unbind_devices};
++        use super::{LEGACY_DEVICE_ID, admit_device, owner_tunnel_ip, unbind_devices};
+         let mut db = Database {
+             main_password: "owner12345678901".to_owned(),
+             ..Database::default()
+@@ -2292,11 +2315,11 @@ mod tests {
+         // Старый клиент без device_id уступает место устройству с device_id.
+         db.main_max_devices = Some(1);
+         let legacy = admit_device(&mut db, None, "", "", 105).unwrap();
+-        assert_eq!(legacy.ip, OWNER_TUNNEL_IP);
++        assert_eq!(legacy.ip, owner_tunnel_ip());
+         assert!(db.main_devices.contains_key(LEGACY_DEVICE_ID));
+         let modern = admit_device(&mut db, None, "phone-a", "", 106).unwrap();
+         assert!(modern.evicted_legacy);
+-        assert_eq!(modern.ip, OWNER_TUNNEL_IP);
++        assert_eq!(modern.ip, owner_tunnel_ip());
+         assert!(!db.main_devices.contains_key(LEGACY_DEVICE_ID));
+     }
+ 
+@@ -2315,12 +2338,12 @@ mod tests {
+ 
+         // Приоритет сервера: выбор конфига не действует.
+         assert_eq!(table_of(&db, "10.66.67.3"), Some(2001));
+-        assert_eq!(table_of(&db, super::OWNER_TUNNEL_IP), Some(2001));
++        assert_eq!(table_of(&db, &super::owner_tunnel_ip()), Some(2001));
+         // Приоритет конфига: его выбор важнее, устройства идут с ним.
+         db.exit_priority = super::EXIT_PRIORITY_CONFIG.to_owned();
+         assert_eq!(table_of(&db, "10.66.67.3"), Some(2002));
+         assert_eq!(table_of(&db, "10.66.67.9"), Some(2002));
+-        assert_eq!(table_of(&db, super::OWNER_TUNNEL_IP), Some(2001));
++        assert_eq!(table_of(&db, &super::owner_tunnel_ip()), Some(2001));
+         // «Напрямую» у конфига, удалённый выход и пустой сервер не дают маршрута.
+         db.passwords.get_mut("client").unwrap().exit = "direct".to_owned();
+         assert_eq!(table_of(&db, "10.66.67.3"), None);
+@@ -2993,7 +3016,7 @@ mod tests {
+         let directory = std::env::temp_dir().join(format!("mrtt-vladilets-test-{unique}"));
+         std::fs::create_dir_all(&directory).unwrap();
+ 
+-        let conn = rusqlite::Connection::open(directory.join("mrtt.db")).unwrap();
++        let conn = rusqlite::Connection::open(directory.join(super::DATABASE_FILE)).unwrap();
+         conn.execute_batch(
+             "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+              CREATE TABLE passwords (
+diff --git a/rust-server/net_setup.rs b/rust-server/net_setup.rs
+index d478f78..c9ade56 100644
+--- a/rust-server/net_setup.rs
++++ b/rust-server/net_setup.rs
+@@ -1,2 +1,6 @@
++// swg-panel: the dataplane takes iface/addr from swgpanel::{iface,gw_addr} (--iface / --tun-addr); these
++// stock defaults keep upstream's values on record.
++#[allow(dead_code)]
+ pub const TUN_IFACE: &str = "mrtt1";
++#[allow(dead_code)]
+ pub const TUN_ADDR: &str = "10.66.67.1";
+diff --git a/rust-server/protocol.rs b/rust-server/protocol.rs
+index f88130c..533e8af 100644
+--- a/rust-server/protocol.rs
++++ b/rust-server/protocol.rs
+@@ -910,7 +910,9 @@ fn insert_bounded_endpoint<T>(
+ 
+ fn uplink_source_matches(packet: &[u8], tunnel_ip: Option<[u8; 4]>) -> bool {
+     if packet.first().map(|version| *version >> 4) != Some(4) {
+-        return true;
++        // swg-panel: under --desired a non-IPv4 uplink packet has no address of its sender to prove — dropped
++        // (stock passes it unchecked).
++        return !crate::swgpanel::ipv4_only_uplink();
+     }
+     match tunnel_ip {
+         Some(ip) => packet.get(12..16) == Some(&ip[..]),
+@@ -1449,6 +1451,9 @@ pub(crate) enum ProtocolCommand {
+     },
+     InjectTun {
+         session_id: u64,
++        // swg-panel: the sending session's assigned tunnel address, so the executor can drop a spoofed source
++        // on this pre-tunnel path exactly as write_ingress_packet does on the steady-state path.
++        ip: [u8; 4],
+         payload: Vec<u8>,
+     },
+     UpdateEpoch {
+@@ -3391,9 +3396,12 @@ impl DataplaneLogic for ProtocolEngine {
+             }
+             ProtocolCommand::InjectTun {
+                 session_id,
++                ip,
+                 payload,
+             } => {
+-                if let Some(slot) = self.by_id.get(&session_id).copied()
++                // swg-panel: the same source guard as write_ingress_packet — never write a spoofed source to TUN.
++                if uplink_source_matches(&payload, Some(ip))
++                    && let Some(slot) = self.by_id.get(&session_id).copied()
+                     && sink.write_tun(&payload)
+                 {
+                     let session = &mut self.sessions[slot];
+@@ -4286,11 +4294,14 @@ async fn process_ingress_before_tunnel_event(
+                 "TUN",
+                 &format!("{address}: tunnel setup pending: {error}"),
+             );
+-        } else {
++        } else if let Some(ip) = *lock_unpoison(&session.tunnel_ip) {
++            // swg-panel: ensure_control_tunnel resolved (and set) this session's assigned address; carry it so
++            // the executor can drop a spoofed source. No address ⇒ nothing to attribute the packet to ⇒ drop.
+             let _ = command(
+                 &app,
+                 ProtocolCommand::InjectTun {
+                     session_id,
++                    ip,
+                     payload,
+                 },
+             );
+@@ -5518,6 +5529,24 @@ async fn run_password_janitor_cycle(app: &Arc<App>) {
+     }
+ }
+ 
++/// Under --desired the panel owns the password set, so no janitor removes entries — but an expired password must not
++/// keep a live tunnel: GETCONF refuses its new sessions, this cuts the ones already up. The entries stay.
++pub async fn cut_expired_password_sessions(app: &Arc<App>) {
++    let expired = {
++        let Ok(db) = db_read(app).await else {
++            return;
++        };
++        db.passwords
++            .iter()
++            .filter(|(_, entry)| is_expired(entry))
++            .map(|(password, _)| password.clone())
++            .collect::<Vec<String>>()
++    };
++    for password in expired {
++        drop_password_sessions(app, &password);
++    }
++}
++
+ pub async fn password_janitor(app: Arc<App>) {
+     let mut timer = tokio::time::interval(Duration::from_secs(3600));
+     loop {
+diff --git a/rust-server/proxy_route.rs b/rust-server/proxy_route.rs
+index a751b10..b9df617 100644
+--- a/rust-server/proxy_route.rs
++++ b/rust-server/proxy_route.rs
+@@ -17,9 +17,7 @@ const MARK_COMMENT: &str = "MRTT_LOCAL_SOCKS_MARK";
+ const POLICY_MARK: &str = "0x422";
+ const LEGACY_NAT_COMMENT: &str = "MRTT_SOCKS";
+ const LEGACY_QUIC_COMMENT: &str = "MRTT_CASCADE_NO_QUIC";
+-const TPROXY_TABLE: &str = "30001";
+-const TPROXY_PRIORITY: &str = "30001";
+-const TPROXY_RULE_MARK: &str = "0x7531/0x7531";
++// Table, priority and fwmark are the INSTANCE's (crate::swgpanel::tproxy_table/tproxy_mark): stock 30001 / 0x7531.
+ const TPROXY_START_ATTEMPTS: u64 = 8;
+ const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+ const SOCKS_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+@@ -69,7 +67,11 @@ impl ProxyRoute {
+             remove_tproxy_status_file(&status_path);
+             let _guard = POLICY_LOCK.lock().await;
+             cleanup_shared_policy().await;
+-            cleanup_legacy_proxy_policy().await;
++            // stock's legacy rule/table (fwmark 0x422, table 1066) are the default instance's to clear, as at its other
++            // call sites — a second server's failed activation must not touch them
++            if crate::swgpanel::is_default_instance() {
++                cleanup_legacy_proxy_policy().await;
++            }
+             return Err(error);
+         }
+ 
+@@ -142,7 +144,11 @@ impl ProxyRoute {
+         let _guard = POLICY_LOCK.lock().await;
+         ACTIVE_RUNTIME.store(0, Ordering::Release);
+         cleanup_shared_policy().await;
+-        cleanup_legacy_proxy_policy().await;
++        // 1066 / 0x422 / CSQTT_LOCAL_SOCKS*: stock's own legacy, never installed by 2.1.9 or 2.5 — a side instance
++        // leaves it to stock (its ip rule / table deletes are not subnet-scoped)
++        if crate::swgpanel::is_default_instance() {
++            cleanup_legacy_proxy_policy().await;
++        }
+         verify_proxy_policy_clean().await
+     }
+ }
+@@ -187,6 +193,13 @@ fn spawn_tproxy_child(config: &LocalProxyProfile, port: u16, status_path: &Path)
+         .arg(port.to_string())
+         .arg("--tproxy-status")
+         .arg(status_path)
++        // the child's own swgpanel config (it re-parses the CLI): same instance, iface and subnet as its parent
++        .arg("--instance")
++        .arg(crate::swgpanel::instance())
++        .arg("--iface")
++        .arg(crate::swgpanel::iface())
++        .arg("--tun-addr")
++        .arg(format!("{}/24", crate::swgpanel::gw_addr()))
+         .stdin(Stdio::piped())
+         .stdout(Stdio::inherit())
+         .stderr(Stdio::inherit())
+@@ -233,7 +246,8 @@ async fn wait_for_tproxy_child(child: &mut Child, status_path: &Path) -> Result<
+ }
+ 
+ fn tproxy_status_path(runtime_id: u64) -> PathBuf {
+-    std::env::temp_dir().join(format!("mrtt-tproxy-{runtime_id}.sock"))
++    // runtime ids restart at 1 in every process: two servers on one host would share csqtt-tproxy-1.sock
++    std::env::temp_dir().join(format!("{}-tproxy-{runtime_id}.sock", crate::swgpanel::instance()))
+ }
+ 
+ fn remove_tproxy_status_file(path: &Path) {
+@@ -498,11 +512,15 @@ pub(crate) fn socks_udp_response(packet: &[u8]) -> Result<(SocketAddr, &[u8])> {
+ 
+ async fn activate_tproxy(runtime_id: u64, port: u16) -> Result<()> {
+     let _guard = POLICY_LOCK.lock().await;
+-    cleanup_legacy_proxy_policy().await;
++    if crate::swgpanel::is_default_instance() {
++        cleanup_legacy_proxy_policy().await; // stock's legacy 1066/0x422 — not a side instance's to touch (see startup)
++    }
+     let _ = command_output("sysctl", &["-w", "net.ipv4.ip_forward=1"]).await;
+     let _ = command_output("sysctl", &["-w", "net.ipv4.conf.all.rp_filter=2"]).await;
+     let _ = command_output("sysctl", &["-w", "net.ipv4.conf.default.rp_filter=2"]).await;
+-    let _ = command_output("sysctl", &["-w", "net.ipv4.conf.mrtt1.rp_filter=2"]).await;
++    // swg-panel: the instance's own TUN (stock: csqtt1).
++    let iface_rp_filter = format!("net.ipv4.conf.{}.rp_filter=2", crate::swgpanel::iface());
++    let _ = command_output("sysctl", &["-w", &iface_rp_filter]).await;
+     add_tproxy_shared_rules().await?;
+     add_tproxy_rules(port).await?;
+     let _ = command_output("ip", &["route", "flush", "cache"]).await;
+@@ -517,11 +535,11 @@ async fn add_tproxy_shared_rules() -> Result<()> {
+             "rule",
+             "del",
+             "fwmark",
+-            TPROXY_RULE_MARK,
++            crate::swgpanel::tproxy_mark(),
+             "priority",
+-            TPROXY_PRIORITY,
++            crate::swgpanel::tproxy_table(),
+             "table",
+-            TPROXY_TABLE,
++            crate::swgpanel::tproxy_table(),
+         ],
+     )
+     .await
+@@ -532,11 +550,11 @@ async fn add_tproxy_shared_rules() -> Result<()> {
+             "rule",
+             "add",
+             "fwmark",
+-            TPROXY_RULE_MARK,
++            crate::swgpanel::tproxy_mark(),
+             "priority",
+-            TPROXY_PRIORITY,
++            crate::swgpanel::tproxy_table(),
+             "table",
+-            TPROXY_TABLE,
++            crate::swgpanel::tproxy_table(),
+         ],
+     )
+     .await?;
+@@ -550,7 +568,7 @@ async fn add_tproxy_shared_rules() -> Result<()> {
+             "dev",
+             "lo",
+             "table",
+-            TPROXY_TABLE,
++            crate::swgpanel::tproxy_table(),
+         ],
+     )
+     .await?;
+@@ -558,14 +576,14 @@ async fn add_tproxy_shared_rules() -> Result<()> {
+ }
+ 
+ fn tproxy_comment(port: u16) -> String {
+-    format!("MRTT_TPROXY:{port}")
++    format!("{}:{port}", crate::swgpanel::tproxy_tag())
+ }
+ 
+ async fn tproxy_interception_present(port: u16) -> bool {
+     let port_arg = port.to_string();
+     let comment = tproxy_comment(port);
+-    let iface = crate::tun_device::TUN_IFACE;
+-    let subnet = crate::tun_device::TUN_SUBNET;
++    let iface = crate::swgpanel::iface();
++    let subnet = crate::swgpanel::subnet_cidr();
+     for protocol in ["tcp", "udp"] {
+         if !command_success(
+             "iptables",
+@@ -587,7 +605,7 @@ async fn tproxy_interception_present(port: u16) -> bool {
+                 "-j",
+                 "TPROXY",
+                 "--tproxy-mark",
+-                TPROXY_RULE_MARK,
++                crate::swgpanel::tproxy_mark(),
+                 "--on-port",
+                 &port_arg,
+             ],
+@@ -599,13 +617,16 @@ async fn tproxy_interception_present(port: u16) -> bool {
+     }
+     match command_output("ip", &["rule", "show"]).await {
+         Ok(rules) => {
+-            let mark = TPROXY_RULE_MARK
++            let mark = crate::swgpanel::tproxy_mark()
+                 .split('/')
+                 .next()
+-                .unwrap_or(TPROXY_RULE_MARK);
++                .unwrap_or_default();
+             rules
+                 .lines()
+-                .any(|line| line.contains(&format!("fwmark {mark}")) && line.contains(TPROXY_TABLE))
++                .any(|line| {
++                    line.contains(&format!("fwmark {mark}"))
++                        && line.contains(crate::swgpanel::tproxy_table())
++                })
+         }
+         Err(_) => true,
+     }
+@@ -661,9 +682,9 @@ async fn add_tproxy_rules(port: u16) -> Result<()> {
+                 "PREROUTING",
+                 "1",
+                 "-i",
+-                crate::tun_device::TUN_IFACE,
++                crate::swgpanel::iface(),
+                 "-s",
+-                crate::tun_device::TUN_SUBNET,
++                crate::swgpanel::subnet_cidr(),
+                 "-p",
+                 protocol,
+                 "-m",
+@@ -673,7 +694,7 @@ async fn add_tproxy_rules(port: u16) -> Result<()> {
+                 "-j",
+                 "TPROXY",
+                 "--tproxy-mark",
+-                TPROXY_RULE_MARK,
++                crate::swgpanel::tproxy_mark(),
+                 "--on-port",
+                 &port_arg,
+             ],
+@@ -689,9 +710,9 @@ async fn add_tproxy_rules(port: u16) -> Result<()> {
+             "INPUT",
+             "1",
+             "-i",
+-            crate::tun_device::TUN_IFACE,
++            crate::swgpanel::iface(),
+             "-s",
+-            crate::tun_device::TUN_SUBNET,
++            crate::swgpanel::subnet_cidr(),
+             "-m",
+             "comment",
+             "--comment",
+@@ -713,7 +734,8 @@ async fn cleanup_stale_tproxy_rules() -> Result<()> {
+         let mut cleared = false;
+         for _ in 0..8 {
+             let rules = command_output("iptables", &["-t", table, "-S", chain]).await?;
+-            let specs = marked_rule_specs(&rules, chain, &["MRTT_TPROXY"]);
++            // this instance's tag only: stock and a side instance both clean up at every start
++            let specs = marked_rule_specs(&rules, chain, &[crate::swgpanel::tproxy_tag()]);
+             if specs.is_empty() {
+                 cleared = true;
+                 break;
+@@ -784,7 +806,7 @@ async fn remove_from_subnet_rule() {
+             "rule",
+             "del",
+             "from",
+-            crate::tun_device::TUN_SUBNET,
++            crate::swgpanel::subnet_cidr(),
+             "priority",
+             LEGACY_POLICY_PRIORITY,
+             "table",
+@@ -804,7 +826,7 @@ async fn drop_new_flow_mark_rules() {
+             "-D",
+             "PREROUTING",
+             "-s",
+-            crate::tun_device::TUN_SUBNET,
++            crate::swgpanel::subnet_cidr(),
+             "-m",
+             "conntrack",
+             "--ctstate",
+@@ -833,7 +855,7 @@ async fn cleanup_mark_rules() {
+             "-D",
+             "PREROUTING",
+             "-s",
+-            crate::tun_device::TUN_SUBNET,
++            crate::swgpanel::subnet_cidr(),
+             "-m",
+             "comment",
+             "--comment",
+@@ -872,7 +894,7 @@ async fn cleanup_nat_exemption(tun_name: &str) {
+                 "-D",
+                 "POSTROUTING",
+                 "-s",
+-                crate::tun_device::TUN_SUBNET,
++                crate::swgpanel::subnet_cidr(),
+                 "-o",
+                 tun_name,
+                 "-m",
+@@ -913,7 +935,7 @@ async fn cleanup_legacy_quic_rule() {
+             "-D",
+             "FORWARD",
+             "-s",
+-            crate::tun_device::TUN_SUBNET,
++            crate::swgpanel::subnet_cidr(),
+             "-p",
+             "udp",
+             "--dport",
+@@ -951,11 +973,11 @@ async fn cleanup_shared_policy() {
+                 "rule",
+                 "del",
+                 "fwmark",
+-                TPROXY_RULE_MARK,
++                crate::swgpanel::tproxy_mark(),
+                 "priority",
+-                TPROXY_PRIORITY,
++                crate::swgpanel::tproxy_table(),
+                 "table",
+-                TPROXY_TABLE,
++                crate::swgpanel::tproxy_table(),
+             ],
+         )
+         .await
+@@ -965,7 +987,7 @@ async fn cleanup_shared_policy() {
+     if let Err(error) = stale_result {
+         eprintln!("[LOCAL-PROXY] stale TPROXY rule cleanup failed: {error:#}");
+     }
+-    let _ = command_output("ip", &["route", "flush", "table", TPROXY_TABLE]).await;
++    let _ = command_output("ip", &["route", "flush", "table", crate::swgpanel::tproxy_table()]).await;
+     let _ = command_output("ip", &["route", "flush", "cache"]).await;
+ }
+ 
+@@ -983,23 +1005,25 @@ async fn verify_proxy_policy_clean() -> Result<()> {
+             rules.push_str(&chunk);
+         }
+     }
+-    for marker in [
+-        "MRTT_TPROXY",
+-        NAT_COMMENT,
+-        MARK_COMMENT,
+-        LEGACY_NAT_COMMENT,
+-        LEGACY_QUIC_COMMENT,
+-    ] {
++    let legacy: &[&str] = if crate::swgpanel::is_default_instance() {
++        &[NAT_COMMENT, MARK_COMMENT, LEGACY_NAT_COMMENT, LEGACY_QUIC_COMMENT]
++    } else {
++        &[]
++    };
++    for marker in std::iter::once(crate::swgpanel::tproxy_tag()).chain(legacy.iter().copied()) {
+         if rules.contains(marker) {
+             bail!("stale netfilter rule remains: {marker}");
+         }
+     }
+     let rules = command_output("ip", &["-4", "rule", "show"]).await?;
+     for line in rules.lines() {
+-        let owned_tproxy = line.trim_start().starts_with("30001:")
+-            && line.contains("fwmark 0x7531")
+-            && line.contains("lookup 30001");
+-        let owned_legacy = line.trim_start().starts_with("1066:")
++        let table = crate::swgpanel::tproxy_table();
++        let mark = crate::swgpanel::tproxy_mark().split('/').next().unwrap_or_default();
++        let owned_tproxy = line.trim_start().starts_with(&format!("{table}:"))
++            && line.contains(&format!("fwmark {mark}"))
++            && line.contains(&format!("lookup {table}"));
++        let owned_legacy = crate::swgpanel::is_default_instance()
++            && line.trim_start().starts_with("1066:")
+             && (line.contains("lookup 1066") || line.contains("fwmark 0x422"));
+         if owned_tproxy || owned_legacy {
+             bail!("stale policy rule remains: {}", line.trim());
+diff --git a/rust-server/swgpanel.rs b/rust-server/swgpanel.rs
+new file mode 100644
+index 0000000..e9a79c1
+--- /dev/null
++++ b/rust-server/swgpanel.rs
+@@ -0,0 +1,258 @@
++// SPDX-FileCopyrightText: 2026 SanityProtocol
++// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
++//
++// swg-panel integration knobs, ported from our csqtt 2.5.3 onto MRTT 1.0. Every field defaults to MRTT's stock value, so a
++// binary invoked WITHOUT any of the new flags behaves like stock MRTT. Set once at boot from the CLI args (each
++// instance is its own process → a process-global OnceLock is the whole config).
++
++use std::path::PathBuf;
++use std::sync::OnceLock;
++
++#[derive(Clone, Debug)]
++pub struct InstanceCfg {
++    pub iface: String,          // TUN interface name (stock: mrtt1)
++    pub gw_addr: String,        // gateway/.1 address (stock: 10.66.67.1)
++    pub subnet_prefix: [u8; 3], // first 3 octets of the /24 (stock: 10.66.67)
++    pub subnet_cidr: String,    // stock: 10.66.67.0/24
++    // no_nat: the node owns forwarding, NAT and the firewall. Inert from 2.1.5 to 2.1.9 (the binary touched none of
++    // it); 2.5 sets host-wide sysctls and installs FORWARD/MASQUERADE rules at start (tokio_io KernelNetworking),
++    // which this flag now skips. Every swg-noded unit passes it.
++    pub no_nat: bool,
++    pub headless: bool,         // --no-web: skip the REST API (fixed 127.0.0.1:46002) and the DPI/syscalls
++                                // monitor sockets (46003/46004) — the swg-panel owns everything via --desired,
++                                // and fixed loopback ports collide on a multi-instance node. Stock false.
++    pub desired_path: Option<PathBuf>, // declarative desired-passwords file (panel-owned)
++    // instance: the name of this server on the host (stock: mrtt). It names the systemd unit the CLI acts on, the
++    // netfilter comments (stock deploy.sh deletes every rule whose comment CONTAINS MRTT_MANAGED / MRTT_TPROXY, so
++    // MRTT2_MANAGED is out of its reach), the local-proxy policy table and fwmark (stock wipes table 30001 / mark
++    // 0x7531 at every start) and the TPROXY status sockets. swg-noded names none: each of its servers differs by
++    // --iface / --tun-addr / --config-dir.
++    pub instance: String,
++    pub managed_tag: String,    // KernelNetworking rules (stock: MRTT_MANAGED)
++    pub tproxy_tag: String,     // local-proxy TPROXY rules, ":<port>" appended (stock: MRTT_TPROXY)
++}
++
++pub const DEFAULT_INSTANCE: &str = "mrtt";
++// Every netfilter comment stock MRTT (and its app's deploy.sh, line 720) deletes by substring.
++const STOCK_TAGS: [&str; 7] = [
++    "MRTT_MANAGED", "MRTT_MIRRORED", "MRTT_TPROXY", "MRTT_LOCAL_SOCKS", "MRTT_LOCAL_SOCKS_MARK", "MRTT_SOCKS",
++    "MRTT_CASCADE_NO_QUIC",
++];
++
++impl Default for InstanceCfg {
++    fn default() -> Self {
++        Self {
++            iface: "mrtt1".to_owned(),
++            gw_addr: "10.66.67.1".to_owned(),
++            subnet_prefix: [10, 66, 67],
++            subnet_cidr: "10.66.67.0/24".to_owned(),
++            no_nat: false,
++            headless: false,
++            desired_path: None,
++            instance: DEFAULT_INSTANCE.to_owned(),
++            managed_tag: "MRTT_MANAGED".to_owned(),
++            tproxy_tag: "MRTT_TPROXY".to_owned(),
++        }
++    }
++}
++
++static CFG: OnceLock<InstanceCfg> = OnceLock::new();
++
++pub fn init(cfg: InstanceCfg) {
++    let _ = CFG.set(cfg);
++}
++pub fn get() -> &'static InstanceCfg {
++    CFG.get_or_init(InstanceCfg::default)
++}
++pub fn iface() -> &'static str {
++    &get().iface
++}
++pub fn gw_addr() -> &'static str {
++    &get().gw_addr
++}
++pub fn subnet_cidr() -> &'static str {
++    &get().subnet_cidr
++}
++pub fn subnet_prefix() -> [u8; 3] {
++    get().subnet_prefix
++}
++// The address `last` of this instance's /24 (stock: 10.66.67.<last>).
++pub fn subnet_addr(last: u8) -> String {
++    let p = subnet_prefix();
++    format!("{}.{}.{}.{last}", p[0], p[1], p[2])
++}
++pub fn no_nat() -> bool {
++    get().no_nat
++}
++pub fn headless() -> bool {
++    get().headless
++}
++pub fn desired_path() -> Option<&'static PathBuf> {
++    get().desired_path.as_ref()
++}
++
++pub fn instance() -> &'static str {
++    &get().instance
++}
++pub fn is_default_instance() -> bool {
++    get().instance == DEFAULT_INSTANCE
++}
++pub fn managed_tag() -> &'static str {
++    &get().managed_tag
++}
++pub fn tproxy_tag() -> &'static str {
++    &get().tproxy_tag
++}
++// Local-proxy policy routing: stock owns table/priority 30001 and fwmark 0x7531 and flushes them at every start; the
++// side instance takes 30002 / 0x7532. The marks share bits (0x7530), but neither value matches the other's mask
++// (0x7531 & 0x7532 = 0x7530 ≠ 0x7532, and the reverse), so each rule sees only its own. Its TPROXY ports start at 10766;
++// they can still meet stock's 10666+id range, which the listener's EADDRINUSE retry already handles.
++pub fn tproxy_table() -> &'static str {
++    if is_default_instance() { "30001" } else { "30002" }
++}
++pub fn tproxy_mark() -> &'static str {
++    if is_default_instance() { "0x7531/0x7531" } else { "0x7532/0x7532" }
++}
++pub fn tproxy_base_port() -> u16 {
++    if is_default_instance() { 10666 } else { 10766 }
++}
++
++// Under --desired the node runs no IPv6 for this server (the TUN carries no v6 address and nothing routes it), so an IPv6
++// uplink packet is dropped like a spoofed IPv4 source — stock passes any non-IPv4 packet unchecked.
++pub fn ipv4_only_uplink() -> bool {
++    desired_path().is_some()
++}
++
++// Build a config from the optional flags. Only /24 is accepted: the datapath route table indexes a session
++// by the packet's last octet, so a differently-sized mask would need a different table shape.
++pub fn build(
++    iface: Option<String>,
++    tun_addr: Option<String>,
++    no_nat: bool,
++    headless: bool,
++    desired: Option<PathBuf>,
++    instance: Option<String>,
++) -> anyhow::Result<InstanceCfg> {
++    let mut cfg = InstanceCfg::default();
++    if let Some(name) = instance
++        && !name.is_empty()
++        && name != DEFAULT_INSTANCE
++    {
++        // a unit name, a path component and a netfilter comment: lower-case letters, digits and '-' only, so the
++        // tag never gains the '_' that would make it a superstring of a stock one ("MRTT_…")
++        let ok = name.len() <= 15
++            && name.starts_with(|c: char| c.is_ascii_lowercase())
++            && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
++        if !ok {
++            anyhow::bail!("--instance must be 1-15 of a-z, 0-9 and '-', starting with a letter (got {name})");
++        }
++        let up = name.to_ascii_uppercase();
++        cfg.managed_tag = format!("{up}_MANAGED");
++        cfg.tproxy_tag = format!("{up}_TPROXY");
++        // …and a name ending in "mrtt" (old-mrtt → OLD-MRTT_MANAGED) still contains a stock tag
++        for tag in [&cfg.managed_tag, &cfg.tproxy_tag] {
++            if let Some(stock) = STOCK_TAGS.iter().find(|stock| tag.contains(*stock)) {
++                anyhow::bail!("--instance {name}: its rule tag {tag} contains the stock {stock}, which stock MRTT deletes");
++            }
++        }
++        cfg.instance = name;
++    }
++    if let Some(i) = iface
++        && !i.is_empty()
++    {
++        cfg.iface = i;
++    }
++    if let Some(a) = tun_addr {
++        let a = a.trim();
++        if !a.is_empty() {
++            let (ip_part, mask) = a.split_once('/').unwrap_or((a, "24"));
++            if mask != "24" {
++                anyhow::bail!("--tun-addr must be a /24 (got /{mask})");
++            }
++            let octs: Vec<u8> = ip_part
++                .split('.')
++                .map(|o| o.parse::<u8>())
++                .collect::<Result<_, _>>()
++                .map_err(|_| anyhow::anyhow!("bad --tun-addr {a}"))?;
++            if octs.len() != 4 {
++                anyhow::bail!("bad --tun-addr {a}");
++            }
++            // .2 is the owner's address and .3–.250 the client pool (ip_in_pool, get_next_ip): a server address in
++            // there is handed to a client too, whose downlink then stays on the server. Outside that range anything
++            // a node already uses keeps working.
++            if (2..=250).contains(&octs[3]) {
++                anyhow::bail!("--tun-addr {a}: the server's address must not be in the client range .2–.250 (use .1)");
++            }
++            cfg.subnet_prefix = [octs[0], octs[1], octs[2]];
++            cfg.gw_addr = format!("{}.{}.{}.{}", octs[0], octs[1], octs[2], octs[3]);
++            cfg.subnet_cidr = format!("{}.{}.{}.0/24", octs[0], octs[1], octs[2]);
++        }
++    }
++    cfg.no_nat = no_nat;
++    cfg.headless = headless;
++    cfg.desired_path = desired;
++    Ok(cfg)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn tun_addr_in_the_client_range_is_refused() {
++        for bad in ["10.66.68.2/24", "10.66.68.5/24", "10.66.68.250/24"] {
++            assert!(build(None, Some(bad.to_owned()), false, false, None, None).is_err(), "{bad}");
++        }
++        for ok in ["10.66.68.1/24", "10.66.68.0/24", "10.66.68.254/24"] {
++            assert!(build(None, Some(ok.to_owned()), false, false, None, None).is_ok(), "{ok}");
++        }
++    }
++
++    #[test]
++    fn no_flags_is_stock() {
++        let cfg = build(None, None, false, false, None, None).unwrap();
++        assert_eq!(cfg.iface, "mrtt1");
++        assert_eq!(cfg.gw_addr, "10.66.67.1");
++        assert_eq!(cfg.subnet_prefix, [10, 66, 67]);
++        assert_eq!(cfg.subnet_cidr, "10.66.67.0/24");
++        assert!(!cfg.no_nat && !cfg.headless && cfg.desired_path.is_none());
++        assert_eq!(cfg.instance, "mrtt");
++        assert_eq!((cfg.managed_tag.as_str(), cfg.tproxy_tag.as_str()), ("MRTT_MANAGED", "MRTT_TPROXY"));
++        // naming the default instance is the same as not naming one
++        let named = build(None, None, false, false, None, Some("mrtt".into())).unwrap();
++        assert_eq!((named.instance.as_str(), named.managed_tag.as_str()), ("mrtt", "MRTT_MANAGED"));
++    }
++
++    #[test]
++    fn a_side_instance_is_out_of_stock_cleanup_reach() {
++        let cfg = build(Some("mrtt2".into()), Some("10.66.68.1/24".into()), false, false, None, Some("mrtt2".into())).unwrap();
++        assert_eq!(cfg.instance, "mrtt2");
++        assert_eq!((cfg.managed_tag.as_str(), cfg.tproxy_tag.as_str()), ("MRTT2_MANAGED", "MRTT2_TPROXY"));
++        // stock deploy.sh deletes every rule whose comment CONTAINS one of these; ours must contain none of them
++        for stock in STOCK_TAGS {
++            assert!(!cfg.managed_tag.contains(stock) && !cfg.tproxy_tag.contains(stock), "{stock}");
++        }
++        for bad in ["Mrtt2", "mrtt_2", "2mrtt", "mrtt/2", "a-very-long-instance-name", "old-mrtt", "xmrtt"] {
++            assert!(build(None, None, false, false, None, Some(bad.into())).is_err(), "{bad}");
++        }
++    }
++
++    #[test]
++    fn tun_addr_sets_the_whole_subnet() {
++        let cfg = build(Some("mrtt7".into()), Some("10.66.71.1/24".into()), true, true, None, None).unwrap();
++        assert_eq!(cfg.iface, "mrtt7");
++        assert_eq!(cfg.gw_addr, "10.66.71.1");
++        assert_eq!(cfg.subnet_prefix, [10, 66, 71]);
++        assert_eq!(cfg.subnet_cidr, "10.66.71.0/24");
++        assert!(cfg.no_nat && cfg.headless);
++        // a bare address means /24
++        assert_eq!(build(None, Some("10.9.8.1".into()), false, false, None, None).unwrap().subnet_prefix, [10, 9, 8]);
++    }
++
++    #[test]
++    fn only_a_24_is_accepted() {
++        assert!(build(None, Some("10.66.71.1/16".into()), false, false, None, None).is_err());
++        assert!(build(None, Some("10.66.71/24".into()), false, false, None, None).is_err());
++        assert!(build(None, Some("10.66.300.1/24".into()), false, false, None, None).is_err());
++    }
++}
+diff --git a/rust-server/tokio_io.rs b/rust-server/tokio_io.rs
+index a8090d6..bada025 100644
+--- a/rust-server/tokio_io.rs
++++ b/rust-server/tokio_io.rs
+@@ -1081,7 +1081,6 @@ impl TokioIo {
+     }
+ }
+ 
+-const MANAGED_RULE_COMMENT: &str = "MRTT_MANAGED";
+ const FIREWALL_REMOVE_PASSES: usize = 4;
+ const KERNEL_PARAMETERS: &[(&str, &str)] = &[
+     ("/proc/sys/net/ipv4/ip_forward", "1"),
+@@ -1136,7 +1135,7 @@ impl FirewallRule {
+         let spec = matches
+             .iter()
+             .copied()
+-            .chain(["-m", "comment", "--comment", MANAGED_RULE_COMMENT])
++            .chain(["-m", "comment", "--comment", crate::swgpanel::managed_tag()])
+             .chain(target.iter().copied())
+             .map(str::to_owned)
+             .collect();
+@@ -1198,7 +1197,7 @@ impl FirewallRule {
+ }
+ 
+ fn purge_legacy_mss_clamp() {
+-    let subnet = crate::tun_device::TUN_SUBNET;
++    let subnet = crate::swgpanel::subnet_cidr();
+     let mss_source = [
+         "-s",
+         subnet,
+@@ -1245,7 +1244,7 @@ fn purge_legacy_mss_clamp() {
+ }
+ 
+ fn managed_firewall_rules(tun_iface: &str) -> Vec<FirewallRule> {
+-    let subnet = crate::tun_device::TUN_SUBNET;
++    let subnet = crate::swgpanel::subnet_cidr();
+     vec![
+         FirewallRule::new(
+             "iptables",
+@@ -1291,6 +1290,17 @@ struct KernelNetworking {
+ 
+ impl KernelNetworking {
+     fn install(tun_iface: &str) -> Self {
++        // swg-panel: under --no-nat the node owns forwarding, NAT and the firewall, and the host's sysctls are not
++        // ours to change (2.5 sets ip_forward, rp_filter, fq/bbr and six TCP knobs host-wide, adds FORWARD ACCEPT +
++        // MASQUERADE, and deletes TCPMSS rules on the subnet). Only the reverse-path filter of the TUN this process
++        // creates stays, which is scoped to that interface.
++        if crate::swgpanel::no_nat() {
++            set_kernel_parameter(
++                &format!("/proc/sys/net/ipv4/conf/{tun_iface}/rp_filter"),
++                "2",
++            );
++            return Self { rules: Vec::new() };
++        }
+         let _ = std::process::Command::new("modprobe")
+             .arg("tcp_bbr")
+             .output();
+diff --git a/rust-server/tproxy.rs b/rust-server/tproxy.rs
+index 9efdc26..caff452 100644
+--- a/rust-server/tproxy.rs
++++ b/rust-server/tproxy.rs
+@@ -22,7 +22,6 @@ use tokio_util::sync::CancellationToken;
+ pub const UDP_FLOW_IDLE: Duration = Duration::from_secs(60);
+ #[cfg(target_os = "linux")]
+ const SOCKS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+-const TPROXY_BASE_PORT: u16 = 10666;
+ const GLOBAL_TCP_SESSION_LIMIT: usize = 384;
+ const GLOBAL_UDP_FLOW_LIMIT: usize = 784;
+ const EXPANDED_TCP_SESSION_LIMIT: usize = 1_512;
+@@ -977,7 +976,7 @@ impl TproxyStats {
+ }
+ 
+ pub fn tproxy_port(runtime_id: u64) -> u16 {
+-    TPROXY_BASE_PORT + (runtime_id % 50_000) as u16
++    crate::swgpanel::tproxy_base_port() + (runtime_id % 50_000) as u16
+ }
+ 
+ #[cfg(target_os = "linux")]
+@@ -1442,7 +1441,7 @@ mod linux {
+         }
+         static SUBNET: std::sync::OnceLock<Option<(u32, u32)>> = std::sync::OnceLock::new();
+         let prefix = SUBNET.get_or_init(|| {
+-            crate::tun_device::TUN_SUBNET
++            crate::swgpanel::subnet_cidr()
+                 .split_once('/')
+                 .and_then(|(base, bits)| {
+                     let base: Ipv4Addr = base.parse().ok()?;
+diff --git a/rust-server/tun_device.rs b/rust-server/tun_device.rs
+index e3d5b0e..b077bb2 100644
+--- a/rust-server/tun_device.rs
++++ b/rust-server/tun_device.rs
+@@ -2,8 +2,13 @@ use crate::packet::extract_dst_ipv4;
+ use std::collections::HashMap;
+ use std::net::Ipv4Addr;
+ 
++// swg-panel: read at runtime via swgpanel::{iface, subnet_cidr, subnet_prefix} (--iface / --tun-addr); kept as the
++// stock values.
++#[allow(dead_code)]
+ pub const TUN_IFACE: &str = "mrtt1";
++#[allow(dead_code)]
+ pub const TUN_SUBNET: &str = "10.66.67.0/24";
++#[allow(dead_code)]
+ const SUBNET_PREFIX: [u8; 3] = [10, 66, 67];
+ 
+ pub type SessionId = u64;
+@@ -486,7 +491,9 @@ impl Default for RouteTable {
+ 
+ #[inline(always)]
+ pub fn route_index(ip: [u8; 4]) -> Option<usize> {
+-    (ip[..3] == SUBNET_PREFIX).then_some(ip[3] as usize)
++    // swg-panel: the /24 prefix follows the instance's --tun-addr (stock: 10.66.67). One process = one
++    // subnet, so this reads a process-global set once at boot.
++    (ip[..3] == crate::swgpanel::subnet_prefix()).then_some(ip[3] as usize)
+ }
+ 
+ pub fn parse_ipv4(value: &str) -> Option<[u8; 4]> {
+diff --git a/rust-server/web_panel.rs b/rust-server/web_panel.rs
+index 9f79535..0ad2f29 100644
+--- a/rust-server/web_panel.rs
++++ b/rust-server/web_panel.rs
+@@ -1253,7 +1253,7 @@ async fn clients_get(
+                 vk_hash: entry.vk_hash.clone(),
+                 ports: entry.ports.clone(),
+                 ip: if entry.ip.is_empty() {
+-                    "10.66.67.3".to_string()
++                    crate::swgpanel::subnet_addr(3)
+                 } else {
+                     entry.ip.clone()
+                 },
+@@ -1302,7 +1302,7 @@ async fn clients_get(
+             active_sessions: count_active_sessions(&state.app.sessions, &db.main_password),
+             vk_hash: String::new(),
+             ports: String::new(),
+-            ip: "10.66.67.2".to_string(),
++            ip: crate::model::owner_tunnel_ip(),
+             name: "Владелец".to_string(),
+             vk_hashes: if db.main_vk_hashes.is_empty() {
+                 db.vk_hashes.clone()
+@@ -1383,7 +1383,7 @@ async fn group_clients_get(
+                 vk_hash: entry.vk_hash.clone(),
+                 ports: entry.ports.clone(),
+                 ip: if entry.ip.is_empty() {
+-                    "10.66.67.3".to_string()
++                    crate::swgpanel::subnet_addr(3)
+                 } else {
+                     entry.ip.clone()
+                 },
+@@ -1832,7 +1832,7 @@ async fn client_get(
+             active_sessions,
+             vk_hash: String::new(),
+             ports: String::new(),
+-            ip: "10.66.67.2".to_string(),
++            ip: crate::model::owner_tunnel_ip(),
+             name: "Главный пароль".to_string(),
+             vk_hashes: if db.main_vk_hashes.is_empty() {
+                 db.vk_hashes.clone()
+@@ -1873,7 +1873,7 @@ async fn client_get(
+             vk_hash: entry.vk_hash.clone(),
+             ports: entry.ports.clone(),
+             ip: if entry.ip.is_empty() {
+-                "10.66.67.3".to_string()
++                crate::swgpanel::subnet_addr(3)
+             } else {
+                 entry.ip.clone()
+             },

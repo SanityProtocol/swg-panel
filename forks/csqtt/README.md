@@ -16,6 +16,28 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
+## MRTT 1.0 (line mrtt — built 2026-11-24, not yet published)
+
+[ttrroyy/MRTT](https://github.com/ttrroyy/MRTT) is a fork of amurcanov's csqtt 2.5.0 (`fd936ef`, our `v2.5.0`) with its own
+apps (the MRTT Android app; Rawline / RawlineMobile import its `mrtt://` links), MAX-call TURN credentials on the client,
+and every crypto label renamed (`MRTT-WRAP-v1`, `mrtt-dtls-srtp-pms`, …). **`mrtt/mrtt-swgpanel-1.0.patch`** is our 2.5.3
+integration ported onto its v1.0 (`17259c2`) by a 3-way merge on that shared base; `mrtt/build.sh` builds it (the crate's
+binary is `mrtt`: `CSQTT_BIN`). Beyond the 2.5 patch the port:
+- re-defaults the integration's stock names to MRTT's: TUN `mrtt1`, instance `mrtt`, the seven `MRTT_*` netfilter tags its
+  deploy.sh deletes;
+- closes MRTT's REST API (127.0.0.1:46002, which replaced csqtt's web panel) under `--no-web`;
+- leaves MRTT's exit-route loop off under `--desired` — it deletes every pref-5300 `ip rule` it did not make, every 10 s;
+- names the store `csqtt.db`, so swg-noded reads it as a csqtt server's (the schema is 2.5's plus MRTT's columns);
+- reads `CSQTT_DNS` when `MRTT_DNS` is unset (swg-noded writes the former);
+- routes MRTT-only owner-address uses through the instance's subnet, and drops a device binding outside the pool at load;
+- labels itself `mrtt 1.0.0` (Cargo said 2.5.0).
+
+`cargo test`: 159 pass; 4 fail — the same 4 fail on unpatched v1.0 (its protocol GETCONF fixtures). Rig
+(`.campaign/rigs/csqtt25.sh`, R25 = this build as `srv-2.5` + MRTT v1.0's own client with
+`.campaign/rigs/csqtt-client-testturn.patch` behind a `client-2.5` env shim): A1–A9, I, M, R, W all pass. ⚠️ In the default
+SRTP mode `auto` (standard DTLS) MRTT and csqtt 2.5 also reach each other both ways; the renamed labels only feed the
+WRAP-SRTP fallback. The operator kept the separate line (2026-11-24).
+
 ## csqtt 2.5.3 (line 2.5, published 2026-10-27)
 
 `csqtt-2.5.3` is amurcanov's 2.5 server as the community repository [Afteroid/csqttr](https://github.com/Afteroid/csqttr)
