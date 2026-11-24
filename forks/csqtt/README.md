@@ -32,7 +32,12 @@ binary is `mrtt`: `CSQTT_BIN`). Beyond the 2.5 patch the port:
 - routes MRTT-only owner-address uses through the instance's subnet, and drops a device binding (a client's or the
   owner's) outside the instance's subnet at load;
 - under `--desired`, lets the newest device take a password over, on the same address (the store's `max_devices` is unset —
-  one device — and nothing could unbind the old one with the REST API closed: a reinstalled app was locked out);
+  one device — and nothing could unbind the old one with the REST API closed: a reinstalled app was locked out). The cost,
+  chosen by the operator (2026-11-24): two devices running ONE config take it from each other on every reconnect, an MRTT
+  app and a Rawline (which sends no device id) as well — the rule this build gives csqtt 2.1 (the rebind below), and as
+  on csqtt 2.5, where two devices on one config share one address and break each other too. The panel gives each device
+  its own config. Refusing a second device only while the first has a live session was tried and dropped: MRTT keeps a
+  dead device's session for 10 h (so a sleeping phone keeps its tunnel), which locked a reinstalled phone out that long;
 - labels itself `mrtt 1.0.0` (Cargo said 2.5.0).
 
 `cargo test`: 160 pass; 4 fail — the same 4 fail on unpatched v1.0 (its protocol GETCONF fixtures). Rig
