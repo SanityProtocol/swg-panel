@@ -101,7 +101,7 @@ PLANTS = {
           '''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"'''),
     "k": ('''        subs = sorted(S for S in _via if S not in _pinned and S not in _dup''',
           '''        subs = sorted(S for S in _via if S not in _dup'''),
-    "q": ('''                if not whole and str(_pdev).startswith("s5x-"):''', '''                if False:'''),
+    "q": ('''                if not whole and (str(_pdev).startswith("s5x-") or _s5x_chain(P, _pd)):''', '''                if False:'''),
     "r": ('''        arrival_default(P, S, X, W, whole=True)''', '''        arrival_default(P, S, X, W)'''),
 }
 TMP = tempfile.mkdtemp(prefix="default-routing-")

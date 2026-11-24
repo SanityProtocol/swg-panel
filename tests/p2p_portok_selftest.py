@@ -60,7 +60,7 @@ PLANTS = {   # name: (file, old text, planted text)
     "node-hard":    ("node", '(" elements = { %s }" % portok if portok else "")', '(" elements = { %s }" % _P2P_PORTOK if portok else "")'),
     "node-none-builtin": ("node", '    if v == "none":\n        return ""\n', ''),
     "fan-portok":   ("node", '    fan_shape = _P2P_SHAPE if portok else _P2P_SHAPE.replace("@portok", "@nocount")', '    fan_shape = _P2P_SHAPE'),
-    "node-nocap":   ("node", '            "portok_none": 1}', '            }'),
+    "node-nocap":   ("node", '            "portok_none": 1,', '            '),
     "node-none-elements": ("node", '"  set portok { typeof th dport; flags interval;%s }" % (" elements = { %s }" % portok if portok else ""),',
                            '"  set portok { typeof th dport; flags interval; elements = { %s } }" % portok,'),
     "node-unread":  ("node", '                portok=(smart or {}).get("p2p_portok"),', '                portok=None,'),

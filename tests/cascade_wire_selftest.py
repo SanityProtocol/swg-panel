@@ -33,9 +33,9 @@ def check(name, cond, detail=""):
 
 src = open(PANEL, encoding="utf-8").read()
 if "--perturb" in sys.argv:
-    cut = '"devexit": my_plan.get("devexit") or []},   # Phase 2'
-    assert cut in src, "perturbation anchor missing — this run would FALSE-PASS"
-    src = src.replace(cut, '},   # Phase 2', 1)
+    cut = '"devexit": my_plan.get("devexit") or [],   # Phase 2'    # item 18 put `xbackup` after it
+    assert src.count(cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"
+    src = src.replace(cut, '   # Phase 2', 1)
 if "--perturb-arrivals" in sys.argv:
     cut = '**({"arrivals": my_plan["arrivals"]} if my_plan.get("arrivals") else {}),'
     assert src.count(cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"

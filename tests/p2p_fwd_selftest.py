@@ -60,7 +60,7 @@ PLANTS = {   # name: (file, old text, planted text)
     "take-bridge":   ("node", '    if not scope or NODE_NET == "bridge" or not isinstance(fwd, list):', '    if not scope or not isinstance(fwd, list):'),
     "guard-always":  ("node", '        if fwdin and mode == "direct" and oif:', '        if mode == "direct" and oif:'),
     "guard-never":   ("node", '        if fwdin and mode == "direct" and oif:', '        if False:'),
-    "fwd-unread":    ("node", '                fwd=(smart or {}).get("p2p_fwd"))', '                fwd=None)'),
+    "fwd-unread":    ("node", '                fwd=(smart or {}).get("p2p_fwd"),', '                fwd=None,'),
     "fwd-uncalled":  ("node", '    _ensure_p2pfwd(_P2P["fwd"], node_cfg, res)\n', ''),
     "addr-wan":      ("node", '                    addr_of[ifn] = to.group(1) if to else v4.get(o.group(1) if o else "") or wa', '                    addr_of[ifn] = wa'),
     "addr-oldparse": ("node", '            for d, a in _node_addrs():\n                if not a.startswith("169.254."):',
