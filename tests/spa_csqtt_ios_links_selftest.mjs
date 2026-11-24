@@ -15,7 +15,7 @@
  *   [4] the panel card's helper picks the link by the CLIENT's encoder, from the catalog the panel serves
  *   [5] the csqtt server's client list still offers the iOS app (so the card's Alternatives sheet can show it)
  *   [6] …but only apps of the server's csqtt LINE (2.1 and 2.5 do not speak to each other): a 2.5 server offers the CSQTT
- *       app alone, a 2.1 one every app, and a node that reports no line (2.1) the whole list as before
+ *       app alone, a 2.1 one every app, and a node that reports no line (or no report yet) the 2.1 apps — no Rawline
  *   [7] a 2.5 server's link is SEALED, as the 2.5 app requires: byte for byte what the 2.5 server's own make_client_link
  *       gives for the same input (vectors proven against it, 2026-10-16, csqtt-2.5 work repo branch linkcheck), its escaping
  *       the server's url_encode; it is a QR (the 2.5 app scans one); a 2.1 server's link is the plain one, no QR; and the
@@ -110,7 +110,9 @@ check("a node whose row carries no line runs 2.1: Rawline (2.5 only) not offered
       csqttClientIds({ fork: "csqtt", iface: "csqtt0" }));
 const ids21 = csqttClientIds({ fork: "csqtt", line: "2.1" });
 check("a 2.1 server: every app, the iOS one included", ["csqttapp", "focsq", "lalune", "vkturnproxy"].every(i => ids21.includes(i)), ids21);
-check("a node that reports no line: the fork's whole list", JSON.stringify(csqttClientIds({ fork: "csqtt" })) === JSON.stringify(ids), csqttClientIds({ fork: "csqtt" }));
+check("no report yet (no row): a 2.1 server — the 2.1 apps, Rawline not (its link would be a 2.1 one)",
+      !csqttClientIds({ fork: "csqtt" }).includes("rawline") && JSON.stringify(csqttClientIds({ fork: "csqtt" })) === JSON.stringify(ids.filter(i => i !== "rawline")),
+      csqttClientIds({ fork: "csqtt" }));
 
 console.log("\n[7] a 2.5 server's link is sealed, as the 2.5 app requires");
 // Proven against the 2.5 server's make_client_link + decrypt_csqtt_link (a deterministic iv: one payload, one link).

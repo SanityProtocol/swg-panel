@@ -758,6 +758,16 @@ try:
           pl.startswith("csqtt://") and not pl.startswith("csqtt://connect") and pl in clip and not any(x.startswith("rawline:") for x in clip),
           (res, [x[:30] for x in clip], [u[:30] for u in navs], pl[:40]))
     tab.close()
+    serve["turn_client_default"] = {"csqtt@2.5": {"linux": "rawline"}}
+    J("subs/serve.json", serve)
+    tab, _ = render("u4", "linux", "en")
+    tab.ev("localStorage.removeItem('swgsub-hasapp-rawline'), 1")
+    res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
+    asked = tab.ev("!!document.querySelector('.start-choice')")
+    check("[16] Rawline on a desktop csqtt 2.5 server: the first Start asks Open / Get and copies the plain sealed link, firing nothing",
+          asked and not steps and not navs and any(x.startswith("csqtt://") and not x.startswith("csqtt://connect") for x in clip)
+          and not any(x.startswith("rawline:") for x in clip), (res, asked, [x[:30] for x in clip], navs[:2]))
+    tab.close()
     serve["turn_client_default"] = keep_default
     J("subs/serve.json", serve)
     serve["turn_client_default"] = dict(keep_default, samosvalishe={"linux": "sidecar@samosvalishe"})   # the operator picks the CLI
