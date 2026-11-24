@@ -7,6 +7,17 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **Two more client apps: MCRF and Rawline.** MCRF (Android 10+) connects to csqtt 2.1 and 2.5 and every WDTT server
+  one-tap, and imports plain WireGuard / AmneziaWG configs; its download is the app's own newest release, never a beta
+  or an engine pack. Rawline (Windows, Linux, macOS) and RawlineMobile (Android) connect to csqtt 2.5, WDTT and
+  hack-diaz servers, one-tap too: Start opens the app with the server through its rawline:// link — on the desktop
+  after one "Open the app, or install it?" — instead of showing import steps. On hack-diaz their relay transport is
+  udp, like the FreeTurn app's (tcp can be picked in Settings). Rawline does not speak csqtt 2.1, so it is not offered
+  there, and on csqtt 2.5 its uploads of many small packets are slower than in the CSQTT app (its download says so).
+  Where no default app is saved, a one-tap app now leads: on the desktop Rawline replaces PWDTT on WDTT servers, La Lune
+  on csqtt 2.5 servers and the command-line client on hack-diaz; ildarmaga's Android users get MCRF instead of
+  WDTT-Plus; csqtt 2.5 servers are now offered on macOS. A saved default stays as it is.
+
 - **Failover nodes: a spare server that takes over with no new config.** A node's page → the shield → *Add failover
   node* makes a second server a live, read-only copy of it — the same interfaces, keys, ports, subnets, AmneziaWG
   parameters and peers, its WDTT servers (same identity), csqtt servers and turn proxies (same wrap key), with its speed

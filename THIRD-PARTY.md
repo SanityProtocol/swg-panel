@@ -114,6 +114,17 @@ between you and them. They are credited in the READMEs. The panel shows which fo
 The forks hidden in the panel since 1.8.9 — cacggghp, MYSOREZ and Moroka8 — are no longer offered; a node that still
 runs one keeps it.
 
+## Client apps
+
+The subscription page and the peer sheet link the apps people connect with to **their authors' own GitHub releases**;
+we neither build nor rehost them. Two of them, added in 1.8.12, carry licences worth knowing:
+
+- **MCRF** ([vnenapravo7-source/mcrf](https://github.com/vnenapravo7-source/mcrf)) has no licence file, so all rights
+  are its author's: we name it and link its releases, nothing more. Its engines carry their own licences (csqtt:
+  PolyForm Noncommercial), and it runs our csqtt 2.5 client core.
+- **Rawline** ([ttrroyy/Rawline](https://github.com/ttrroyy/Rawline)) and **RawlineMobile**
+  ([ttrroyy/RawlineMobile](https://github.com/ttrroyy/RawlineMobile)) are **GPL-3.0**.
+
 ---
 
 ## Vendored in the browser app

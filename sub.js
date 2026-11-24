@@ -59,6 +59,10 @@
       csqSocksSteps: { linux:   ["1. Download *csq-socks* and open a *terminal* where it was saved", "2. Install it: tar xzf csq-socks.tar.gz && sudo ./csq-socks/install.sh", "3. Run csq-socks set, paste the copied link and press Enter", "4. Run csq-socks up for a SOCKS5 proxy on 127.0.0.1:1089, or csq-socks tun to send all traffic through the tunnel"],
                        windows: ["1. Download *csq-socks* and unpack the zip", "2. Open *PowerShell* in that folder", "3. Run .\\csq-socks set, paste the copied link and press Enter", "4. Run .\\csq-socks up for a SOCKS5 proxy on 127.0.0.1:1089, or .\\csq-socks tun from an administrator PowerShell to send all traffic through the tunnel"] },
       laluneSteps25: ["1. Open *{app}*", "2. Add a profile and choose the *CSQTTR* protocol", "3. *Paste* the copied link", "4. Save, then connect"],
+      // Rawline / RawlineMobile on a csqtt 2.5 server: its download bubble's caveat (their 2.5.0 client lacks our small-UDP fixes)
+      rawlineNote25: "On a CSQTT 2.5 server, uploads of many small packets (QUIC, a VPN inside the VPN) are slower in {app} than in the CSQTT app.",
+      // a note in an app's download bubble, by catalog id
+      dlNotes: { mcrf: "Needs Android 10 or newer. On first start MCRF downloads its engines (the CSQTT / WDTT one is about 11 MB) — allow it." },
       mzBtn1: "Download the GUI app", mzBtn2: "Install TURN Proxy core", mzBtn3: "Assemble and connect", mzBtn3Sub: "Follow the instructions",
       mzCopied: "Config string copied", mzGetCore: "Don't forget to download the core",
       mzStep1: "1. Open the *TURN Proxy* app", mzStep2: "2. Go to *Settings*", mzStep3: "3. Click on *Core (Binary)*", mzStep4: "4. Press *Import*",
@@ -136,6 +140,8 @@
       csqSocksSteps: { linux:   ["1. Скачайте *csq-socks* и откройте *терминал* в папке, куда он сохранился", "2. Установите его: tar xzf csq-socks.tar.gz && sudo ./csq-socks/install.sh", "3. Выполните csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или csq-socks tun, чтобы весь трафик шёл через туннель"],
                        windows: ["1. Скачайте *csq-socks* и распакуйте архив", "2. Откройте *PowerShell* в этой папке", "3. Выполните .\\csq-socks set, вставьте скопированную ссылку и нажмите Enter", "4. Выполните .\\csq-socks up — SOCKS5-прокси на 127.0.0.1:1089, или .\\csq-socks tun в PowerShell от имени администратора, чтобы весь трафик шёл через туннель"] },
       laluneSteps25: ["1. Откройте *{app}*", "2. Добавьте профиль и выберите протокол *CSQTTR*", "3. *Вставьте* скопированную ссылку", "4. Сохраните и подключитесь"],
+      rawlineNote25: "На сервере CSQTT 2.5 отдача множества мелких пакетов (QUIC, VPN внутри VPN) в {app} медленнее, чем в приложении CSQTT.",
+      dlNotes: { mcrf: "Нужен Android 10 или новее. При первом запуске MCRF скачивает свои движки (для CSQTT / WDTT — около 11 МБ) — разрешите это." },
       mzBtn1: "Скачать приложение (GUI)", mzBtn2: "Установить ядро TURN Proxy", mzBtn3: "Собрать и подключиться", mzBtn3Sub: "Следуйте инструкциям",
       mzCopied: "Строка конфигурации скопирована", mzGetCore: "Не забудьте скачать ядро",
       mzStep1: "1. Откройте приложение *TURN Proxy*", mzStep2: "2. Перейдите в *«Настройки»*", mzStep3: "3. Нажмите *«Ядро (Binary)»*", mzStep4: "4. Нажмите *«Импорт»*",
@@ -287,7 +293,8 @@
       var cl = clients[cid], links = cl && cl.platforms && cl.platforms[os];   // this OS only — no cross-OS fallback
       if (!has(links) || (awg && cl.awg === false)) return null;
       var lineGate = !!line && forkId === "csqtt";
-      if (lineGate && (cl.csqtt_lines || ["2.1"]).indexOf(line) < 0) return null;   // this app speaks another csqtt line
+      // a node that reports no line runs 2.1, so an app without 2.1 (Rawline) is not offered there either
+      if (forkId === "csqtt" && (cl.csqtt_lines || ["2.1"]).indexOf(line || "2.1") < 0) return null;   // this app speaks another csqtt line
       links = pinned(links);
       // The server's own app follows the server through its release pin. With no release of this server's line yet, the
       // fallback is the latest release — the OTHER line's app, which cannot connect: offer nothing rather than it.
@@ -447,9 +454,12 @@
     wireguard: { name: "WireGuard", logo: svgUri(BRAND_SVG.wireguard), page: "https://www.wireguard.com/install/",
       android: "https://play.google.com/store/apps/details?id=com.wireguard.android",
       ios: "https://apps.apple.com/app/wireguard/id1441195209", macos: "https://apps.apple.com/app/wireguard/id1451685025",
-      windows: "https://download.wireguard.com/windows-client/wireguard-installer.exe", linux: "https://www.wireguard.com/install/" }   // Linux = per-distro
+      windows: "https://download.wireguard.com/windows-client/wireguard-installer.exe", linux: "https://www.wireguard.com/install/" },   // Linux = per-distro
+    // MCRF imports a WG / AWG config too (AWG 3.1 included). Android only, and no `page`: wgGetApp falls back to app[os], so
+    // the row is offered nowhere else. The direct APK comes from the panel's wg_catalog (WG_APPS, its tag_re).
+    mcrf: { name: "MCRF", android: "https://github.com/vnenapravo7-source/mcrf/releases" }
   };
-  var WG_ORDER = { awg: ["amneziavpn", "amneziawg"], wg: ["amneziavpn", "amneziawg", "wireguard"] };
+  var WG_ORDER = { awg: ["amneziavpn", "amneziawg", "mcrf"], wg: ["amneziavpn", "amneziawg", "wireguard", "mcrf"] };
   // Real Safari on iOS/iPadOS specifically — the ONLY browser that pops a modal "Safari cannot open the page because
   // the address is invalid" when an unregistered custom scheme (e.g. vkturnproxy://) is fired. Chrome/Firefox/Edge on
   // iOS fail silently, so they keep the auto-fire + fallback. Best-effort (Brave / SFSafariViewController can slip in).
@@ -495,8 +505,8 @@
     var L = String(name || "").toLowerCase();
     if (/\.apk$|client-android|[-_]android[-_.]/.test(L)) return "android";
     if (/\.ipa$/.test(L)) return "ios";
-    if (/\.(exe|msi)$|client-windows|[-_]windows[-_.]|win(?:64|32)/.test(L)) return "windows";
-    if (/\.(dmg|pkg)$|client-darwin|darwin|mac(?:os)?[-_.]/.test(L)) return "macos";
+    if (/\.(exe|msi)$|client-windows|[-_]windows(?:legacy)?(?:32|64)?[-_.]|win(?:64|32)/.test(L)) return "windows";   // + Rawline's windows64 / windowslegacy64 zips
+    if (/\.(dmg|pkg)$|client-darwin|darwin|mac(?:os)?(?:legacy)?[-_.]/.test(L)) return "macos";
     if (/\.(deb|appimage|rpm)$|client-linux|[-_]linux[-_.]|\.tar(?:\.|$)/.test(L)) return "linux";
     if (/client-freebsd|[-_]freebsd[-_.]/.test(L)) return "freebsd";   // a real client, but for an OS we don't list → scoped out of every bubble
     return "";
@@ -883,6 +893,8 @@
       head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
       b.appendChild(head);
       if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
+      var dnote = ga.note || (t("dlNotes") || {})[ga.cid];   // what to know before installing (MCRF: Android 10+ and its engines; Rawline on csqtt 2.5)
+      if (dnote) b.appendChild(el("div", "dl-bubble-ver", dnote));
     }
     var list = el("div", "dl-bubble-list");
     if (ga.wgItems) {   // WG/AWG two-target rows: [logo + name] → downloads page · [⬇] → best direct installer for this OS
@@ -1116,6 +1128,16 @@
     document.removeEventListener("keydown", _liKey, true);
   }
   function _liKey(e) { if (e.key === "Escape") dismissHints(); }
+  // What Start hands the resolved app. Rawline and RawlineMobile register rawline://, and rawline://add/<base64url> imports
+  // any link they read: the desktop takes a JSON document there (an array of link strings — Rawline SubscriptionParser.cpp
+  // Parser::json), RawlineMobile any text (ProfileImport.kt document(), which rejects a string inside an array). So their
+  // csqtt 2.5, WDTT and FreeTurn links all open the app in one tap; the QR and the shown link stay the plain one.
+  function appOpenUri(cid, link) {
+    if (cid !== "rawline") return link;
+    var bytes = new TextEncoder().encode(subOs() === "android" ? link : JSON.stringify([link])), bin = "";
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return "rawline://add/" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
   function showLinkImportHint(c) {
     closeLinkImportHint(); closePasteHint();
     var app = (c && c.app) || (c && c.dlAppName) || t("theApp");
@@ -1980,6 +2002,7 @@
           var cver = /(\d+\.\d+\.\d+(?:-\d+)?)/.exec(cga.pinned ? cga.tag : "");
           var cshown = {}; for (var ck in cga) cshown[ck] = cga[ck];
           if (cver) cshown.app = cga.app + " " + cver[1];
+          if (cga.cid === "rawline" && cd.line === "2.5") cshown.note = t("rawlineNote25").replace("{app}", cga.app);
           node.appendChild(getAppRow(cshown));
         }
         ctrl.cliApp = false; ctrl.vktgz = false;         // csqtt client is an app, never a CLI/VKTGZ flow
@@ -1992,7 +2015,7 @@
             : (cga.cid === "lalune" && cd.line === "2.5") ? t("laluneSteps25") : null;   // La Lune's Add dialog defaults to 2.1
           // the steps show where Start copies the link (the desktop); a one-tap app (La Lune on Android) is handed the link as
           // before (operator, 2026-10-29)
-          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
+          ctrl.openUri = appOpenUri(cga && cga.cid, text); ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
           // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
           // visitor sent to install the app first still has the link when they come back to it.
           ctrl.copyOnOpen = true;
@@ -2068,7 +2091,7 @@
         // Start opens the app ONLY when this app+OS declares `autostart` in the catalog (registers a BROWSABLE URL
         // scheme: wdttplus / xxcipher / VK TURN Proxy iOS). No autostart (amurcanov / qWDTT / PWDTT) → noAutoFire: Start
         // COPIES the link + shows the import steps (like the other turn cells), never a dead-scheme fire or a bare download.
-        if (wart.uri) { ctrl.openUri = wart.text; ctrl.noAutoFire = !(wga && wga.autostart); ctrl.instructions = (wga && wga.instructions) || ""; }
+        if (wart.uri) { ctrl.openUri = appOpenUri(wga && wga.cid, wart.text); ctrl.noAutoFire = !(wga && wga.autostart); ctrl.instructions = (wga && wga.instructions) || ""; }
         ctrl.view = (wart.qr && wclientQR) ? "qr" : "text";
         draw();
       } else {
@@ -2174,7 +2197,7 @@
         ctrl.wrapCfg = !!(art.uri || art.wrap);
         // Axis-3: a scheme fork's config IS the tappable open-in-app URI (ctrl.app already = art.app). Start fires it
         // ONLY when this app+OS declares `autostart`; otherwise noAutoFire → copy the link + show the import steps.
-        if (art.uri) { ctrl.openUri = text; ctrl.noAutoFire = !(ga && ga.autostart); ctrl.instructions = (ga && ga.instructions) || ""; }
+        if (art.uri) { ctrl.openUri = appOpenUri(ga && ga.cid, text); ctrl.noAutoFire = !(ga && ga.autostart); ctrl.instructions = (ga && ga.instructions) || ""; }
         ctrl.view = art.qr ? "qr" : "text";   // anything scannable (incl. dual config + command) opens on the QR
         draw();
       };
@@ -2655,8 +2678,11 @@
       // an app that hasn't registered the scheme, so the auto-fire below would silently fail (or error) and drop the
       // link. Instead COPY the connection link + show the app's import steps (WINGS V DeX: Add profile → From clipboard,
       // which reads exactly this). Mobile keeps the deep-link auto-fire.
+      // An app that DID register its scheme on this desktop (`autostart` there: Rawline's rawline://) opens instead — asked
+      // once (Open / Get), as on iOS Safari, since a desktop browser gives no sign of whether an app took the link.
       var _dos = subOs();
       if (_dos === "macos" || _dos === "windows" || _dos === "linux") {
+        if (c.noAutoFire === false) { askThenOpen(c); return; }
         if (navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {});
         showLinkImportHint(c); return;
       }
@@ -2667,19 +2693,19 @@
       // Safari-on-iOS (+ in-app webviews it can't be told apart from): firing an unregistered scheme pops an
       // un-suppressable "address is invalid" modal, so ASK — Open (deliberate) fires the scheme with NO fallback,
       // Get goes to the store. Every OTHER browser fails silently → keep the clean auto-fire + fallback.
-      if (isIOSSafari() && c.dlAppUrl) {
-        var key = hasAppKey(c);
-        var open = function () { _lsSet(key, "1"); fireScheme(c); };          // "Open": remember + open, NO TestFlight fallback
-        var get = function () { startDownload(c); };
-        if (_ls(key)) {   // remembered as installed → open directly; a quick re-tap (didn't open) clears it + re-asks
-          if (_schemeFiredAt[key] && Date.now() - _schemeFiredAt[key] < 4000) { _lsSet(key, ""); openStartChoice(startB, c, open, get); return; }
-          fireScheme(c); return;
-        }
-        openStartChoice(startB, c, open, get);
-        return;
-      }
+      if (isIOSSafari() && c.dlAppUrl) { askThenOpen(c); return; }
       fireDeepLink(c);
     };
+    function askThenOpen(c) {
+      var key = hasAppKey(c);
+      var open = function () { _lsSet(key, "1"); fireScheme(c); };          // "Open": remember + open, NO TestFlight fallback
+      var get = function () { startDownload(c); };
+      if (_ls(key)) {   // remembered as installed → open directly; a quick re-tap (didn't open) clears it + re-asks
+        if (_schemeFiredAt[key] && Date.now() - _schemeFiredAt[key] < 4000) { _lsSet(key, ""); openStartChoice(startB, c, open, get); return; }
+        fireScheme(c); return;
+      }
+      openStartChoice(startB, c, open, get);
+    }
 
     function current() { var sl = srow.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < srow.children.length; i++) { var dd = Math.abs((srow.children[i].offsetLeft - srow.offsetLeft) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
     var raf = 0;

@@ -85,8 +85,8 @@ check("[1] no visible fork offers the MYSOREZ app or XXcipherX's (compat)", not 
 check("[1] …nor carries a schema for one (client_schemas follows compat)",
       all(set(srv[sid]["client_schemas"]) == set(srv[sid]["compat"]) for sid in srv),
       {sid: sorted(set(srv[sid]["client_schemas"]) ^ set(srv[sid]["compat"])) for sid in srv})
-check("[1] the visible forks that offered them still offer their other apps (hack-diaz: FreeTurn, the CLI, VK TURN Proxy)",
-      set(srv["samosvalishe"]["compat"]) == {"freeturn", "sidecar", "vkturnproxy"}
+check("[1] the visible forks that offered them still offer their other apps (hack-diaz: FreeTurn, the CLI, VK TURN Proxy, Rawline)",
+      set(srv["samosvalishe"]["compat"]) == {"freeturn", "sidecar", "vkturnproxy", "rawline"}
       and {"wdttapp", "qwdtt", "wdttplus", "vkturnproxy"} <= set(srv["amurcanov"]["compat"]),
       [srv["samosvalishe"]["compat"], srv["amurcanov"]["compat"]])
 cli = {sid: srv[sid]["cli_authors"] for sid in vis if set(srv[sid]["cli_authors"]) & HIDDEN}

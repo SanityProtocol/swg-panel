@@ -115,7 +115,7 @@ PERTURBATIONS = {
     # [B20]: the line switch shown on a one-line panel too
     "lineswall": ("js/turn.js", "const linesOn = isCsq && (csqttLinesOn() ||", "const linesOn = isCsq && (true ||"),
     # [B20]: a line's list not filtered to its apps (FOCSQ listed under 2.5)
-    "linefilter": ("js/turn.js", ".filter(en => !linesOn || speaks(en.cid))", ".filter(en => true)"),
+    "linefilter": ("js/turn.js", ".filter(en => !isCsq || speaks(en.cid))", ".filter(en => true)"),
     # [B19]: one bubble row per node again — a box running csqtt 2.1 and 2.5 shows one of them
     "lineskey": ("js/screen-settings.js", 'const line = all && csqttOtherLine(w) ? w.line : "", k = line ? nid + "@" + line : nid;', 'const line = "", k = nid;'),
     # [B19]: a 2.5 row read under the fork's own hold key — a 2.5 hold never shows

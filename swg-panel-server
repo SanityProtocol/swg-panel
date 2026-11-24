@@ -18167,6 +18167,32 @@ TURN_CLIENTS = {
                        "linux":   {"github": "https://github.com/ildarmaga/wdtt/releases"}}},
     "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": False, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
     "xxcipher":    {"name": "WDTT",          "author": "XXcipherX", "encoder": "vkturnproxy", "scheme": "vkturnproxy://", "qr": False, "platforms": {"android": {"github": "https://github.com/XXcipherX/proxy-turn-vk-android/releases", "autostart": True}}},   # XXcipherX fork: video-masquerade + no-captcha. CLICKABLE via vkturnproxy://import?data= (valid URI it also registers) — its colon wdtt:// the OS rejects as "unsupported link"
+    # ── Multi-protocol clients (1.8.12 items 9 + 10, docs/RELEASE-1.8.12-PLAN.md). Each speaks several of our server kinds
+    # through ONE `encoder`: the id is a key the kind's artifact function reads, not a format. Both are friendly apps of
+    # other authors, so where they sort first and no default is saved they become the system default — the operator's
+    # choice (2026-11-24: "Let them become default wherever no default is set").
+    # MCRF (vnenapravo7-source/mcrf) — an Android client (sing-box / Xray) whose on-demand engine pack runs the csqtt 2.1 /
+    # 2.5 and WDTT clients; its 2.5 core is OUR csqtt-app core (2.5.1–2.5.3, pinned by SHA-256). It reads the links every
+    # csqtt / WDTT app takes, so it reuses `wdttplus`: wdtt://connect on a WDTT server (a valid URI, which its BROWSABLE
+    # filter opens one-tap), and csqttArtifact gives every encoder but anton48 its line's link. No client settings: the
+    # link is the whole configuration. Its releases mix the app, betas and engine catalogues (`android-engines-v*`, whose
+    # .apk files are engines), hence `tag_re`. Android 10+; its first csqtt / WDTT server downloads an engine (sub.js dlNotes).
+    "mcrf":        {"name": "MCRF", "author": "vnenapravo7-source", "encoder": "wdttplus", "csqtt_lines": ["2.1", "2.5"], "qr": True, "platforms": {
+                       "android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "autostart": True, "tag_re": r"^android-v\d+\.\d+\.\d+$"}}},
+    # Rawline (desktop) / RawlineMobile (Android) — ttrroyy's Throne forks that run the ORIGINAL protocol clients at pinned
+    # commits: csqtt 2.5 (amurcanov's 2.5.0 `shared/`, the tree ours keeps), qWDTT, WDTT Plus, FreeTurn v4.2.1 (their
+    # transport-sources.lock.json / native-transports.lock.json). One entry, a product name per OS (as WINGS V / DeX).
+    # NOT csqtt 2.1: every csqtt link imports as "2.5.0" (Rawline csqtt.cpp:77). `autostart` on every OS: both register
+    # rawline:// (Rawline on first run — its installer on Windows, the package on Linux, the bundle on macOS), and
+    # rawline://add/<base64url> imports any link they read, so the sub page wraps ours in it (sub.js rawlineAddUri) —
+    # one tap for csqtt 2.5, WDTT and FreeTurn alike (operator, 2026-11-24: deep links where the app takes them). Its
+    # own encoder id serves the turn-proxy branch only (turn-artifacts.js), so the peer sheet names Rawline, not the
+    # FreeTurn app; on csqtt the line decides the link, on WDTT the colon form (both apps read it).
+    "rawline":     {"name": "Rawline", "author": "ttrroyy", "encoder": "rawline", "csqtt_lines": ["2.5"], "qr": True, "platforms": {
+                       "windows": {"github": "https://github.com/ttrroyy/Rawline/releases", "autostart": True},
+                       "linux":   {"github": "https://github.com/ttrroyy/Rawline/releases", "autostart": True},
+                       "macos":   {"github": "https://github.com/ttrroyy/Rawline/releases", "autostart": True},
+                       "android": {"name": "RawlineMobile", "github": "https://github.com/ttrroyy/RawlineMobile/releases", "autostart": True}}},
 }
 # The plain WG/AWG client apps (NOT turn forks) — Amnezia VPN / AmneziaWG / WireGuard. Same `platforms[os]` shape as
 # TURN_CLIENTS so they ride the SAME latest-release resolver (_turn_warm_assets → _client_platforms_resolved): where an
@@ -18190,6 +18216,9 @@ WG_APPS = {
                                  "macos":   {"store": "https://apps.apple.com/app/wireguard/id1451685025"},
                                  "windows": {"url": "https://download.wireguard.com/windows-client/wireguard-installer.exe"},   # stable direct installer
                                  "linux":   {"page": "https://www.wireguard.com/install/"}}},   # per-distro instructions (no single file)
+    # MCRF imports a plain WireGuard / AmneziaWG config too (AWG 3.1 fields included). Its `tag_re` is TURN_CLIENTS["mcrf"]'s:
+    # the release cache is keyed by repository, so every platform of one repository must pick its release the same way.
+    "mcrf":       {"name": "MCRF", "platforms": {"android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "tag_re": r"^android-v\d+\.\d+\.\d+$"}}},
 }
 # Per-fork `settings` = the typed schema for the obfuscation knobs (Axis 1). The SPA renders a form from it and
 # SERIALIZES it back to the ExecStart params tail (the wire truth the node still applies verbatim); a raw textarea
@@ -18389,18 +18418,18 @@ _TURN_CLIENT_COMPAT = {
     "cacggghp":     {"mysorez": "native",  "sidecar": "native", "vkturnproxy": "plain"},
     "MYSOREZ":      {"mysorez": "native",  "sidecar": "native"},   # NO vkturnproxy: MYSOREZ hard-requires its mzrtp wrap — with -wrap on (the default) the server replaces the plain listener with a wrapped one and drops every unwrapped packet (verified in MYSOREZ/vk-turn-proxy server/main.go + wrap.go), and the VK TURN Proxy app can't speak mzrtp → it never connects. (WINGS-N differs: it dual-listens plain, so its vkturnproxy pairing works, just throttled.)
     "Moroka8":      {"sidecar": "native",  "vkturnproxy": "friendly", "freeturn": "friendly", "mysorez": "friendly_core"},
-    "samosvalishe": {"freeturn": "native", "sidecar": "native", "vkturnproxy": "friendly", "mysorez": "friendly_core"},
+    "samosvalishe": {"freeturn": "native", "sidecar": "native", "vkturnproxy": "friendly", "mysorez": "friendly_core", "rawline": "friendly"},
     "anton48":      {"vkturnproxy": "native", "sidecar": "friendly", "freeturn": "friendly"},
     "WINGS-N":      {"wingsv": "native",   "sidecar": "plain", "vkturnproxy": "plain", "freeturn": "plain"},   # NO mysorez: core-launcher with no WINGS core to load
     # WDTT family — servers are wire-identical (WRAP-A), so EVERY WDTT client connects fully OBFUSCATED (never plain).
     # `native` = the fork's OWN author's app; every other WDTT app (incl. anton48's iOS vkturnproxy — a different
     # author) is `friendly` (crossplatform, still WRAP-A). Each fork offers the whole family so an operator can hand
     # out whichever app fits the user's device.
-    "amurcanov":    {"wdttapp": "native",  "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
-    "ildarmaga":    {"pwdttilg": "native", "pwdtt": "friendly", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "vkturnproxy": "friendly"},
-    "wdttplus":     {"wdttplus": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
+    "amurcanov":    {"wdttapp": "native",  "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
+    "ildarmaga":    {"pwdttilg": "native", "pwdtt": "friendly", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
+    "wdttplus":     {"wdttplus": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
     "xxcipherx":    {"xxcipher": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
-    "qwdtt":        {"qwdtt": "native",    "qwdttleg": "friendly", "wdttapp": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
+    "qwdtt":        {"qwdtt": "native",    "qwdttleg": "friendly", "wdttapp": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
     # csqtt — a raw-TUN RTP-AEAD protocol, NOT wire-compatible with the WDTT apps or the turn-proxy sidecar, so
     # only an app that implements csqtt itself can speak to one. Always obfuscated (masks as VK call/RTP media),
     # so both clients carry the obf label.
@@ -18437,7 +18466,7 @@ _TURN_CLIENT_COMPAT = {
     # author's app, which here is csqttapp. That classing also produces the right DEFAULTS by itself: on Android
     # csqttapp wins on the native band, and on desktop (where csqttapp does not exist) the two friendlies tie and
     # sort alphabetically, so FOCSQ leads — the operator's choice, reached without mislabelling anything.
-    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly"},
+    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
 }
 # The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
 # ExecStart's extra-flags box) appended to the client command.
@@ -18467,7 +18496,11 @@ _CLIENT_SCHEMA_BY_FORK = {
     "cacggghp":     {"mysorez": _CACGGGHP_CORE_CS},   # cacggghp core (plain) — the app's built-in flags
     "MYSOREZ":      {"mysorez": _MYSOREZ_CORE_CS},     # MYSOREZ core (mzrtp) — captcha / vk-auth / device
     "Moroka8":      {"mysorez": _RTPOPUS_CORE_CS},     # Moroka8 core loaded as a launcher — key from the server
-    "samosvalishe": {"mysorez": _RTPOPUS_CORE_CS},     # free-turn core loaded as a launcher
+    "samosvalishe": {"mysorez": _RTPOPUS_CORE_CS,     # free-turn core loaded as a launcher
+                     # Rawline reads the freeturn:// link key for key: FreeTurn's knobs. Its relay transport with none in the
+                     # link is tcp, where the FreeTurn app's is udp (Rawline freeturn.cpp:82), so turn-artifacts.js writes
+                     # "auto" (or nothing saved) as udp, as this schema's help says (operator, 2026-11-24); tcp stays a pick.
+                     "rawline": TURN_SERVERS["samosvalishe"]["client_settings"]},
 }
 def _client_schema_for(fork, client_id):
     ov = (_CLIENT_SCHEMA_BY_FORK.get(fork) or {}).get(client_id)
@@ -18678,19 +18711,24 @@ def _turn_client_p4_report(cid, rec):
             "counts": {"n": len(cls["added"]), "x": len(cls["needs_wiring"]) + xtra, "m": len(cls["removed"]), "y": y, "z": z},
             "app_version": snap.get("app_version"), "snapshot_at": snap.get("at")}
 
-def _gh_latest_release(owner, repo):
+def _gh_latest_release(owner, repo, tag_re=None):
     """Latest release {tag,date} for a repo (the schema-source repo). None on error/no releases. ~1h cached in the
-    shared commit cache under a 'rel:' prefix. Stamps each snapshot with the app version current at check time."""
-    key = "rel:%s/%s" % (owner, repo)
+    shared commit cache under a 'rel:' prefix. Stamps each snapshot with the app version current at check time.
+    `tag_re` (a client platform's, for a repository whose releases mix the app with betas or engine catalogues, e.g.
+    mcrf's android-engines-v*): the newest of a page of 10 whose tag matches; none matches → None, so the button keeps
+    the /releases page, as when a lookup fails. Without it: one release, as before."""
+    key = "rel:%s/%s" % (owner, repo) + ("#" + tag_re if tag_re else "")
     ent = _GH_COMMIT_CACHE.get(key)
     if ent and time.time() - ent["at"] < 3600:
         return ent["res"]
     res = None
     with contextlib.suppress(Exception):
         # the releases LIST (newest first) — NOT /releases/latest, which excludes pre-releases (WINGSV_DeX ships only prereleases).
-        data = _gh_api("/repos/%s/%s/releases?per_page=1" % (quote(owner), quote(repo)))
-        if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get("tag_name"):
-            res = _gh_release_rec(data[0])
+        data = _gh_api("/repos/%s/%s/releases?per_page=%d" % (quote(owner), quote(repo), 10 if tag_re else 1))
+        rels = [x for x in (data if isinstance(data, list) else []) if isinstance(x, dict) and x.get("tag_name")
+                and (not tag_re or re.search(tag_re, str(x["tag_name"])))]
+        if rels:
+            res = _gh_release_rec(rels[0])
     _GH_COMMIT_CACHE[key] = {"res": res, "at": time.time()}
     return res
 
@@ -18758,6 +18796,8 @@ def _match_os_asset(assets, oskind):
         cands = [(n, u) for (n, u) in names if re.search(fmt, n, re.I)]
         if not cands:
             continue
+        # a Throne-family "-system-qt" package (Rawline) leans on the distro's own Qt; the bundled one installs anywhere
+        cands.sort(key=lambda nu: bool(re.search(r"system-qt", nu[0], re.I)))
         for arch in archp:                            # prefer the default arch within this format
             for (n, u) in cands:
                 if re.search(arch, n, re.I):
@@ -18784,7 +18824,7 @@ def _turn_warm_assets():
             if not owner:
                 continue
             try:
-                rel = _hosted_latest(owner, repo) or _gh_latest_release(owner, repo)
+                rel = _hosted_latest(owner, repo) or _gh_latest_release(owner, repo, links.get("tag_re"))
             except Exception:
                 rel = None
             if not rel:

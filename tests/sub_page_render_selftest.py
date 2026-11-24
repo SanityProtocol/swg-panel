@@ -49,16 +49,21 @@ Fixture — node q-node, three deployments per device:
       own text in the same bubble on a tap; the connection picker shows both icons, as icons, not buttons. The device's own
       incoming port (S12, Part C): where q-node reports forwarding awg0, Anna's AmneziaWG cells' bubble opens with port 20016
       and the address peers reach (in both languages); her WireGuard cell (wg0, not forwarded) and Boris's cells carry none
-  [13] the 2.5 clients on the desktop (S13a): Dana's 2.5 server on Linux/Windows gets La Lune (FOCSQ speaks 2.1 only) and its
+  [13] the 2.5 clients on the desktop (S13a): Dana's 2.5 server on Linux/Windows gets Rawline with no choice (one-tap, 1.8.12
+      item 10) and La Lune where it is chosen for 2.5 (FOCSQ speaks 2.1 only) and its
       Start shows the CSQTTR step; with the operator's choice csq-socks serves both lines, with its download and its own
       terminal steps (EN, RU); Anna's 2.1 server still offers FOCSQ — csq-socks, a command-line client, ranks after the apps
   [14] a default per csqtt line (operator, 2026-10-29): with turn_client_default["csqtt@2.5"], Dana's 2.5 server gets 2.5's
       own choice (csq-socks on Linux; "none" on Windows hides only it) while her 2.1 server keeps 2.1's FOCSQ; a 2.1-only
-      app stored under it is passed over (La Lune, as with no choice)
+      app stored under it is passed over (Rawline, as with no choice)
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
       is not handed the CLI release's Android binary (another repository's app keeps its own versioning)
+  [16] Rawline opens in one tap everywhere (1.8.12 item 10; operator, 2026-11-24: deep links, not instructions): with no default
+      saved, hack-diaz on Linux hands out Rawline; on the desktop the first Start asks Open / Get, and once it is known
+      installed Start opens rawline://add/ with the desktop's form (a JSON list holding the freeturn:// link); RawlineMobile
+      on Android is fired at once with the app's form (the plain link) — never the import steps
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
@@ -316,7 +321,7 @@ if P_VOLDEV:
 if P_MACOS:
     perturbed_web('if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;', "", "the csqtt client-for-this-OS guard")
 if P_LINE:
-    perturbed_web('      if (lineGate && (cl.csqtt_lines || ["2.1"]).indexOf(line) < 0) return null;   // this app speaks another csqtt line\n', "",
+    perturbed_web('      if (forkId === "csqtt" && (cl.csqtt_lines || ["2.1"]).indexOf(line || "2.1") < 0) return null;   // this app speaks another csqtt line\n', "",
                   "the csqtt line filter")
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
@@ -639,7 +644,8 @@ try:
     # [2] the author word, per language, in all three turn cells
     def by_words(os_, lang):
         return {(c["role"] or "?"): c["by"] for c in turn_cells(renders[(os_, lang)]) if c["by"]}
-    for os_, cell, author in (("windows", "CSQTT 2.1", "luminescq"), ("linux", "WDTT", "luminescq"), ("android", "CSQTT 2.1", "Endlad2")):
+    # the Linux WDTT cell: Rawline (one-tap, 1.8.12 item 10) outranks PWDTT where no default is saved
+    for os_, cell, author in (("windows", "CSQTT 2.1", "luminescq"), ("linux", "WDTT", "ttrroyy"), ("android", "CSQTT 2.1", "Endlad2")):
         en, ru = by_words(os_, "en").get(cell), by_words(os_, "ru").get(cell)
         check("[2] %s %s cell: EN badge says ' by %s'" % (os_, cell, author), en == " by " + author, by_words(os_, "en"))
         check("[2] %s %s cell: RU badge says ' от %s', no English" % (os_, cell, author), ru == " от " + author, by_words(os_, "ru"))
@@ -717,11 +723,41 @@ try:
     tab.close()
     serve["turn_client_default"] = keep_default
     J("subs/serve.json", serve)
+    tab, _ = render("u1", "linux", "en")   # no Linux default saved for hack-diaz: an app outranks the CLI (1.8.12 item 10)
+    check("[8] with no default saved, hack-diaz on Linux hands out Rawline, not the CLI", isinstance(bubble(tab, "hack-diaz · Rawline"), dict))
+    tab.ev("document.querySelectorAll('.dl-bubble').forEach(b => b.remove()), localStorage.removeItem('swgsub-hasapp-rawline'), 1")
+    res, clip, steps, navs = start_on(tab, "turn", "hack-diaz · Rawline")
+    asked = tab.ev("!!document.querySelector('.start-choice')")
+    check("[16] Rawline on the desktop (it registers rawline://): the first Start asks Open / Get — no import steps, nothing fired yet",
+          res == "clicked" and asked and not steps and not navs, (res, asked, steps, navs))
+    tab.ev("document.querySelectorAll('.start-choice').forEach(b => b.remove()), localStorage.setItem('swgsub-hasapp-rawline', '1'), 1")
+    res, clip, steps, navs = start_on(tab, "turn", "hack-diaz · Rawline")
+    def rl_payload(u):
+        try:
+            return base64.urlsafe_b64decode(u.split("rawline://add/", 1)[1] + "==").decode()
+        except Exception:
+            return ""
+    pl = rl_payload(next((u for u in navs if u.startswith("rawline://add/")), ""))
+    check("[16] …once it is known installed, Start opens rawline://add/ holding a JSON list with the freeturn:// link (the desktop's form)",
+          not steps and pl.startswith('["freeturn://') and json.loads(pl)[0].startswith("freeturn://"), (steps, navs, pl[:60]))
+    tab.close()
+    serve["turn_client_default"] = dict(keep_default, samosvalishe={"android": "rawline"})   # RawlineMobile picked for hack-diaz on Android
+    J("subs/serve.json", serve)
+    tab, _ = render("u1", "android", "en")
+    res, clip, steps, navs = start_on(tab, "turn", "hack-diaz · RawlineMobile")
+    pl = rl_payload(next((u for u in navs if u.startswith("rawline://add/")), ""))
+    check("[16] RawlineMobile on Android: Start fires rawline://add/ holding the plain freeturn:// link (the app's form), no steps",
+          res == "clicked" and not steps and pl.startswith("freeturn://"), (res, steps, navs[:2], pl[:60]))
+    tab.close()
+    serve["turn_client_default"] = dict(keep_default, samosvalishe={"linux": "sidecar@samosvalishe"})   # the operator picks the CLI
+    J("subs/serve.json", serve)
     tab, _ = render("u1", "linux", "en")
     lb = bubble(tab, "hack-diaz · Sidecar")
     check("[8] the hack-diaz CLI on Linux offers v4.0.3, the proxy's own release — a turn proxy's version reaches the page",
           pinned(lb, "v4.0.3", CLI_LIN), lb)
     tab.close()
+    serve["turn_client_default"] = keep_default
+    J("subs/serve.json", serve)
     # [3] Start on the csqtt cell
     tab, _ = render("u1", "android", "en")
     res, clip, steps, navs = start_on(tab, "turn", "WDTT-Plus")
@@ -869,6 +905,12 @@ try:
             check("[13] %s/%s: Anna's 2.1 server still offers FOCSQ, not csq-socks (ranked last)" % (os_, lang),
                   len(a) == 1 and "FOCSQ" in (a[0] or ""), a)
     STEP25 = {"en": "choose the *CSQTTR* protocol".replace("*", ""), "ru": "выберите протокол *CSQTTR*".replace("*", "")}
+    tab, rd = render("u4", "linux", "en")   # no choice: Rawline, one-tap, outranks La Lune on the desktop (1.8.12 item 10)
+    r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
+    check("[13] with no choice the 2.5 server on the desktop gets Rawline (it opens one-tap)", len(r25) == 1 and "Rawline" in (r25[0] or ""), r25)
+    tab.close()
+    serve["turn_client_default"] = {"csqtt@2.5": {"linux": "lalune", "windows": "lalune"}}   # La Lune by the operator's choice
+    J("subs/serve.json", serve)
     SOCKS = {("linux", "en"): "Run csq-socks set", ("linux", "ru"): "Выполните csq-socks set",
              ("windows", "en"): "Run .\\csq-socks set", ("windows", "ru"): "Выполните .\\csq-socks set"}
     for os_ in ("linux", "windows"):
@@ -876,7 +918,7 @@ try:
             tab, rd = render("u4", os_, lang)
             r25 = [c for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
             r21 = [c for c in turn_cells(rd) if c["role"] == "CSQTT 2.1"]
-            check("[13] %s/%s: the 2.5 server gets a cell — La Lune (FOCSQ speaks 2.1 only)" % (os_, lang),
+            check("[13] %s/%s: the 2.5 server gets a cell — La Lune, chosen for 2.5 (FOCSQ speaks 2.1 only)" % (os_, lang),
                   len(r25) == 1 and "La Lune" in (r25[0]["tag"] or ""), [(c["tag"], c["role"]) for c in turn_cells(rd)])
             check("[13] %s/%s: …and its 2.1 server keeps FOCSQ" % (os_, lang), len(r21) == 1 and "FOCSQ" in (r21[0]["tag"] or ""), [c["tag"] for c in r21])
             res, clip, steps, navs = start_on_role(tab, "CSQTT 2.5")
@@ -918,7 +960,7 @@ try:
     J("subs/serve.json", serve)
     tab, rd = render("u4", "linux", "en")
     r25 = [c["tag"] for c in turn_cells(rd) if c["role"] == "CSQTT 2.5"]
-    check("[14] a 2.1-only app under csqtt@2.5 is passed over: the 2.5 server gets La Lune, as with no choice", len(r25) == 1 and "La Lune" in (r25[0] or ""), r25)
+    check("[14] a 2.1-only app under csqtt@2.5 is passed over: the 2.5 server gets Rawline, as with no choice", len(r25) == 1 and "Rawline" in (r25[0] or ""), r25)
     tab.close()
     serve["turn_client_default"] = {}
     J("subs/serve.json", serve)

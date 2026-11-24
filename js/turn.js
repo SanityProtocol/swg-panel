@@ -1113,7 +1113,7 @@ export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   const dkey = isCsq && line === "2.5" ? "csqtt@2.5" : fork;                   // the turn_client_default key this line's choice lives under
   const speaks = cid => (((cmap[cid] || {}).csqtt_lines) || [CSQTT_DEFAULT_LINE]).includes(line);
   const byOs = {};
-  _OS_TABS.forEach(([o]) => { byOs[o] = pickerEntries(f, o).filter(en => !linesOn || speaks(en.cid)); });   // rich entries, native-first; a csqtt line lists only its apps
+  _OS_TABS.forEach(([o]) => { byOs[o] = pickerEntries(f, o).filter(en => !isCsq || speaks(en.cid)); });   // rich entries, native-first; a csqtt line lists only its apps (one line on offer = 2.1's: no Rawline)
   const first = (_OS_TABS.find(([o]) => byOs[o].length) || [])[0] || "android";
   const [os, setOs] = useState((initialOs && (byOs[initialOs] || []).length) ? initialOs : first);   // opened from a specific OS button → land on that tab
   const [sel, setSel] = useState({});                                          // {os: entry key}

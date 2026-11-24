@@ -422,6 +422,7 @@
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
     freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },   // a fork id, as the others: artLabel names it (forkLabel)
+    rawline:  { app: "Rawline",        platform: "Windows · Linux · macOS · Android", author: "ttrroyy" },   // Rawline + RawlineMobile; OS names need no translation
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
   // A server name may be a TEMPLATE. The sheet that sets it is per (fork, OS), so one literal string names every
@@ -601,6 +602,18 @@
         vk: true, vkLinks: vkList, vkEmbedded: true,   // the freeturn:// link CARRIES the call link in `vk` (verified on a live relay), so the sub must not ask the reader to paste it too
         hint: "Scan the QR with the FreeTurn app (hackdiaz-dev/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.",
         text: freeturnLink(tp, baseConf, vkList, cs, fork) };
+    }
+    if (enc === "rawline") {
+      // Rawline (desktop) / RawlineMobile (ttrroyy) read the same freeturn:// link, every key we write (Rawline
+      // freeturn.cpp:72-90, RawlineMobile Freeturn.kt:80-113) — but a link with no `transport` puts their relay on tcp, where
+      // the FreeTurn app's default is udp. So nothing saved (the sub page hands only saved values) or "auto" → udp
+      // (operator, 2026-11-24); a saved tcp stays tcp. Own label + hint: the peer sheet shows them (peer-ui.js).
+      var csR = {}; for (var ck in cs) if (Object.prototype.hasOwnProperty.call(cs, ck)) csR[ck] = cs[ck];
+      if (!csR.transport || csR.transport === "auto") csR.transport = "udp";
+      return { fork: fork, app: "Rawline", label: clientLabel(fork, "rawline"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
+        vk: true, vkLinks: vkList, vkEmbedded: true,
+        hint: "Paste the freeturn:// link into Rawline (Server → Add profile from clipboard) or RawlineMobile (Add profile → Import from clipboard), or scan the QR in RawlineMobile — it carries the VK call link and the whole config.",
+        text: freeturnLink(tp, baseConf, vkList, csR, fork) };
     }
     // sidecar forks (cacggghp / Moroka8 / unknown): WG dials the local client on :9000
     var sidecar = baseConf.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000");

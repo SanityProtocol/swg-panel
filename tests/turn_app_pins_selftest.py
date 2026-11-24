@@ -122,7 +122,7 @@ P = load("swgpanel_apppins", planted(SERVER, ([('    for x in (v, re.sub(r"-\\d+
                                           + ([('and _RELEASE_PIN[key].get("src") == sk:', ":", "a cached pin served whatever its source")] if PERTURB_CACHE else [])
                                           + ([("                if sk not in hosted:\n", "                if True:\n", "a lookup per build")] if PERTURB_MEMO else [])
                                           + ([("            if rec is None:                           # not hosted", "            if rec is None and not src:   # not hosted", "no fallback to his release")] if PERTURB_FALLBACK else [])
-                                          + ([("rel = _hosted_latest(owner, repo) or _gh_latest_release(owner, repo)", "rel = _gh_latest_release(owner, repo)", "latest from his repository")] if PERTURB_LATEST else [])
+                                          + ([("rel = _hosted_latest(owner, repo) or _gh_latest_release(", "rel = _gh_latest_release(", "latest from his repository")] if PERTURB_LATEST else [])
                                           + ([("                    rec[\"src\"] = sk                   #", "                    pass  #", "his stand-in unmarked")] if PERTURB_FBSRC else [])
                                           + ([("if str(version).startswith(line + \".\") and any(", "if any(", "the line's version not required")] if PERTURB_PROTO else [])
                                           + ([("                        hosted[sk] = False\n", "                        pass\n", "a refused release not remembered")] if PERTURB_403 else [])
