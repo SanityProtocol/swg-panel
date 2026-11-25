@@ -672,7 +672,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 - [vnenapravo7-source](https://github.com/vnenapravo7-source/mcrf) — MCRF, a client for csqtt, WDTT and WireGuard on Android and
   [Windows](https://github.com/vnenapravo7-source/mcrf-desktop)
-- [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (a csqtt version with its own app and MAX calls), [Rawline](https://github.com/ttrroyy/Rawline) (desktop) and [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), clients for csqtt 2.5, MRTT, WDTT and hack-diaz
+- [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (a csqtt fork with its own app and MAX calls), [Rawline](https://github.com/ttrroyy/Rawline) (desktop) and [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), clients for csqtt 2.5, MRTT, WDTT and hack-diaz
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 

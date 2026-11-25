@@ -18,7 +18,7 @@ import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, is
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
-  TURN_FORKS_FALLBACK, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
+  TURN_FORKS_FALLBACK, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel, forkOpts,
   forkSupportsAwg, forkSupportsAwg3, turnColor, turnClientColor, turnClientAuthor, CSQTT_DEFAULT_LINE,
 } from "./turn-catalog.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
@@ -786,7 +786,7 @@ export function turnEnabled() { return !(Store.panelSettings && Store.panelSetti
 // PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side; it lived as three separate literals and two of them
 // had fallen behind, hiding wdttplus and xxcipherx — two of the four WDTT servers we build and publish.
 export const TURN_FORKS_DEFAULT = ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8",
-                            "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"];
+                            "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "mrtt", "qwdtt"];
 // The enabled fork ids — the stored list (else the default) — and every HIDDEN fork, which has no switch to tick: the
 // Overview's traffic-by-fork row reads this, so a proxy of a hidden fork a node still runs keeps its traffic there
 // whatever the stored list says. The pickers filter hidden forks out again (enabledTurnForks).
@@ -1105,11 +1105,11 @@ export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   const f = turnForkList().find(x => x.id === fork) || {};
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   // csqtt's lines do not speak to each other, so each has its own default (operator, 2026-10-29): 2.1's is stored under
-  // "csqtt", another line's under "csqtt@<line>" (2.5, MRTT). The switch exists only while more than one line is on offer, or a server already runs
+  // "csqtt", another Version's under "csqtt@<line>" (2.5; MRTT is a fork, its own key). The switch exists only while more than one line is on offer, or a server already runs
   // a line other than 2.1 — a one-line panel sees exactly what it saw before.
   const isCsq = fork === "csqtt";
   const linesOn = isCsq && (csqttLinesOn() || (Store.nodes || []).some(n => Object.values(n.csqtt_cfg || {}).some(c => c && c.line && c.line !== CSQTT_DEFAULT_LINE)));
-  const pickLines = [...new Set([CSQTT_DEFAULT_LINE, "2.5", ...(Store.csqttLines || [])])];   // a tab per line: 2.1 and 2.5 always, MRTT once offered
+  const pickLines = [...new Set([CSQTT_DEFAULT_LINE, "2.5", ...(Store.csqttLines || [])])];   // a tab per Version line (MRTT is a fork: its own sheet)
   const [line, setLineRaw] = useState(linesOn && initialLine && initialLine !== CSQTT_DEFAULT_LINE && pickLines.includes(initialLine) ? initialLine : CSQTT_DEFAULT_LINE);
   const dkey = isCsq && line !== CSQTT_DEFAULT_LINE ? "csqtt@" + line : fork;   // the turn_client_default key this line's choice lives under
   const speaks = cid => (((cmap[cid] || {}).csqtt_lines) || [CSQTT_DEFAULT_LINE]).includes(line);
@@ -1126,7 +1126,7 @@ export function useTurnClients(fork, commitRef, initialOs, initialLine) {
   const savedDefault = (o) => savedOf(dkey, o);
   // 2.5 with no choice of its own hands out what the sub page does: 2.1's choice if it speaks 2.5 (or "not offered"), else
   // the line's top app — shown, so an operator sees that FOCSQ on Windows becomes La Lune there
-  const inherited = (o) => dkey !== fork && line !== "mrtt" && savedDefault(o) === undefined;
+  const inherited = (o) => dkey !== fork && savedDefault(o) === undefined;
   // NONE_KEY = "don't offer this server on this OS": a real, storable choice, not the absence of one — so it is
   // valid wherever a client id is, and it round-trips through settings. It has no `cid`, so anything keyed by
   // client id must skip it (see save()).
@@ -1476,7 +1476,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     if ((csqtt || wdtt) && Store.isMirror(nid)) continue;   // a failover node's servers run its primary's held build (§12.4): its
     //                                                  version doors refuse them, as the updates list leaves them out
     // csqtt: one binary per (node, VERSION) — a node running 2.1 and 2.5 is two rows, each with its own build and hold
-    if (csqtt) { for (const c of (snap.csqtt || [])) if (c && c.iface) { const ln = c.line || CSQTT_DEFAULT_LINE, k = ln === CSQTT_DEFAULT_LINE ? nid : nid + "@" + ln;
+    if (csqtt) { for (const c of (snap.csqtt || [])) if (c && c.iface && (c.fork || "csqtt") === fork) { const ln = c.line || CSQTT_DEFAULT_LINE, k = ln === CSQTT_DEFAULT_LINE ? nid : nid + "@" + ln;
       const m = running[k] = running[k] || { version: "", ids: [], node: nid, line: ln }; if (c.version) m.version = c.version; m.ids.push(c.iface); } }
     else if (wdtt) { for (const w of (snap.wdtt || [])) if (w && w.fork === fork && w.iface) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (w.version) m.version = w.version; m.ids.push(w.iface); } }
     else { for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fork) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (tp.version) m.version = tp.version; m.ids.push(tp.service); } }
@@ -1485,7 +1485,8 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
   const nids = Object.keys(running).sort((a, b) => Store.byNode(nodeOf(a), nodeOf(b)) || a.localeCompare(b));
   const [vmap, setVmap] = useState({});   // nid -> versions[] (newest-first). ONLY the version list loads async.
   const [sel, setSel] = useState({});     // nid -> user override; absent = the actual hold (heldOf) — so the dropdown shows the right value on open, no "latest" flash
-  const heldOf = k => { const r = running[k] || {}; return (Store.turnHolds[nodeOf(k)] || {})[r.line && r.line !== CSQTT_DEFAULT_LINE ? fork + "@" + r.line : fork] || ""; };   // sync, from /api/state → correct current selection immediately
+  const holdId = csqtt ? "csqtt" : fork;   // every csqtt fork's hold is keyed by its line (_csqtt_hold_svc: csqtt, csqtt@2.5, csqtt@mrtt)
+  const heldOf = k => { const r = running[k] || {}; return (Store.turnHolds[nodeOf(k)] || {})[r.line && r.line !== CSQTT_DEFAULT_LINE ? holdId + "@" + r.line : holdId] || ""; };   // sync, from /api/state → correct current selection immediately
   const curSel = nid => (nid in sel ? sel[nid] : heldOf(nid));
   const key = nids.join(",");
   useEffect(() => { let live = true; (async () => {
@@ -2468,15 +2469,19 @@ export { CSQTT_DEFAULT_LINE };   // defined in turn-catalog.js (ui.js reads it t
 // A server's version as the PANEL reads its record (swg-panel-server _csqtt_line_of): a line no longer on offer is 2.1, which is
 // what the node is sent — so the card never says "switching" to a version nothing moves to (q189 SPA-11: a record left naming
 // a stand-in line read "switching" for ever).
-export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || "").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };
+export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || "").trim(); return ((Store.csqttLines || []).includes(l) || csqttFixedLines().includes(l)) ? l : CSQTT_DEFAULT_LINE; };
+// A csqtt-kind fork that is its own product (MRTT — operator 2026-11-25: "MRTT is a fork, not a version of csqtt") runs ONE
+// fixed line of the node's machinery: the catalog's `line`. The Version control lists amurcanov's lines (Store.csqttLines);
+// the Fork field picks the others, and drives the same `line` (a fork switch IS a line switch on the node).
+export const csqttForkLine = fork => (turnForkList().find(f => f.id === fork) || {}).line || "";
+const csqttFixedLines = () => turnForkList().filter(f => f.kind === "csqtt" && f.line).map(f => f.line);
+export const csqttForkOfLine = line => (turnForkList().find(f => f.kind === "csqtt" && f.line && f.line === line) || {}).id || "csqtt";
 export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
 // A line as the operator reads it, whole: MRTT by its product name, a csqtt version as "csqtt 2.5" — strings take it as
 // one value ("Switch to {v1}?"), so no string reads "csqtt MRTT". csqttLineTag is the short form a badge puts beside the
-// fork's name ("amurcanov 2.5", "ttrroyy MRTT"); csqttLineAuthor names the fork a line is the work of, where it is not
-// the csqtt fork's own author (MRTT is ttrroyy's) — from the catalog: csqtt's line_authors.
+// fork's name ("amurcanov 2.5", "ttrroyy MRTT").
 export const csqttLineName = l => l === "mrtt" ? "MRTT" : "csqtt " + (l || CSQTT_DEFAULT_LINE);
 export const csqttLineTag = l => l === "mrtt" ? "MRTT" : (l || CSQTT_DEFAULT_LINE);
-export const csqttLineAuthor = l => (((turnForkList().find(x => x.id === "csqtt") || {}).line_authors || {})[l]) || null;
 const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_DEFAULT_LINE];
 // What each version means to the people on it.
 // csqtt 2.1 and 2.5 do not speak to each other, either way (csqtt25 rig, 2026-10-16): an app connects only to a server
@@ -2506,7 +2511,20 @@ export const csqttRunLine = (node, iface) => {
   const seen = ((Store.stats[node] || {}).csqtt || []).some(x => x && x.iface === iface);
   return seen ? s.run : s.want;
 };
+// The fork a csqtt server runs: amurcanov's csqtt (its Version picks 2.1 / 2.5) or a fork with a fixed line (MRTT). It sets
+// the same `line` the Version does — users and passwords kept, the switch confirmed first; leaving MRTT lands on 2.5
+// (Rawline speaks both). Shown while more than one csqtt fork is on offer, or the server runs another than the first.
+export function CsqttForkField({ node, value, onChange }) {
+  const cur = csqttForkOfLine(value);
+  const forks = enabledTurnForks(cur).filter(f => f.kind === "csqtt");
+  if (forks.length < 2) return null;
+  const can = csqttNodeLines(node);
+  const opts = forkOpts(forks, f => f.id !== cur && f.line && !can.includes(f.line) ? T("Update this node to run {v1}.", { v1: csqttLineName(f.line) }) : "");
+  return html`<div class="field"><label>${T("Server fork")}</label>
+    <${Dropdown} value=${cur} onChange=${id => onChange(csqttForkLine(id) || (id === cur ? value : "2.5"))} options=${opts} ariaLabel=${T("Server fork")}/></div>`;
+}
 export function CsqttVersionField({ node, value, onChange }) {
+  if (csqttFixedLines().includes(value)) return null;   // a fork with its own line (MRTT) has no Version to pick
   if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;
   const can = csqttNodeLines(node);
   const ids = (Store.csqttLines || []).includes(value) ? (Store.csqttLines || []) : [...(Store.csqttLines || []), value];
@@ -2584,7 +2602,7 @@ export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }
     const _ne = turnIfaceNameError(node, iface, "csqtt"); if (_ne) return fail(_ne);
     if (!/^\d{1,3}(\.\d{1,3}){3}\/24$/.test(subnet.trim())) return fail(T("Subnet must be an IPv4 /24 CIDR (e.g. 10.66.67.1/24)."));
     setBusy(true); setMsg({ k: "work", t: T("creating csqtt server… (the node installs it on its next sync)") });
-    const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false, ...(pin ? { bind_ip: pin } : {}), ...(line !== CSQTT_DEFAULT_LINE ? { line } : {}) });
+    const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false, ...(pin ? { bind_ip: pin } : {}), fork: csqttForkOfLine(line), ...(line !== CSQTT_DEFAULT_LINE ? { line } : {}) });
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     closeModal(); Store.apply(); await Store.poll();
     toast(T("csqtt server requested — the node installs it on its next sync. Add users from Peers."), "ok");
@@ -2597,6 +2615,7 @@ export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }
       </div>
       <div class="hint">${T("csqtt owns its own raw-IP TUN interface — users attach to it directly (no forwards-to). It mints each user's address on connect; add + manage users from Peers.")}</div>
     </div>
+    <${CsqttForkField} node=${node} value=${line} onChange=${setLine}/>
     <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
     <${Disclosure} title=${T("Advanced — built-in interface")} open=${adv} onToggle=${() => setAdv(a => !a)}>
       <div class="field"><label>${T("col|Interface")}</label><input value=${iface} onInput=${e => setIface(e.target.value)} placeholder="csqtt1" autocomplete="off"/></div>
@@ -2639,7 +2658,7 @@ export function CsqttCard({ node, c, reorder }) {
       ${tag}
     </div>
     <div class="ifcard-rows">
-      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">${csqttLineAuthor(sw.run) || forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span></div>
+      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">${forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a></span></div>
     </div></div>`;
@@ -2684,7 +2703,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
-    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line } : {}), ...egressBody(egressInit(cfg)) }),   // Listen on: as WdttManageSheet's
+    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line, fork: csqttForkOfLine(line) } : {}), ...egressBody(egressInit(cfg)) }),   // Listen on: as WdttManageSheet's
       errMsg(setMsg), setBusy);
     if (!r.ok) return;
     Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
@@ -2707,7 +2726,8 @@ export function CsqttManageSheet({ node, c: c0 }) {
     closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => roWhy ? null : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
-  const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`;
+  const cfork = csqttForkOfLine(csqttRunLine(node, iface));   // the fork it runs (MRTT's panel is its own)
+  const gear = html`<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(cfork) })} onClick=${() => openServerDefaults(cfork)}><${Ic} i="gear"/></button>`;
   const extras = c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null;
   const mh = isMobile() ? mTurnHead("CSQTT", title.trim() || iface, "csqtt", c.version, gear, extras) : null;
   return html`<${Sheet}
@@ -2730,6 +2750,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     </div>
     <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
     <${ListenNotice} st=${lst}/>
+    <${CsqttForkField} node=${node} value=${line} onChange=${setLine}/>
     <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
     <${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked || !!roWhy} title=${roWhy || T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
@@ -2916,7 +2937,7 @@ export function EditCsqttSheet({ node, iface, pick }) {
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
     const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg),
-      ...(lineDirty ? { line } : {}), ...(is25 && arNow !== arKey.current ? { app_routing: arBody(ar) } : {}),
+      ...(lineDirty ? { line, fork: csqttForkOfLine(line) } : {}), ...(is25 && arNow !== arKey.current ? { app_routing: arBody(ar) } : {}),
       ...(is25 && axNow !== axKey.current ? { app_routing_except: arxSend(ax) } : {}) }), errMsg(setMsg), setBusy);
     if (!r.ok) return;
     Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
@@ -2944,6 +2965,7 @@ export function EditCsqttSheet({ node, iface, pick }) {
       <div class="field"><label>${T("csqtt server")}</label>
         <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${cfg.title || "csqtt"}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
         <div class="hint">${T("Endpoint & listen port are edited from the csqtt-proxy modal.")}</div></div>
+      <${CsqttForkField} node=${node} value=${line} onChange=${setLine}/>
       <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
     </div>
     <${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>
@@ -2981,11 +3003,11 @@ export function EditCsqttSheet({ node, iface, pick }) {
 // A WDTT fork chip: the fork's own colour, with the WDTT colour as the fallback until applyThemeColors has
 // injected the tunable one. The style string, the `turnColor(fork) || WDTT_COLOR` fallback and the label lookup
 // were written out at four separate sites, which is how they drifted (some showed the raw id, some the label).
-export function ForkTag({ fork, suffix, title, label: author }) {   // `label`: a line's own author in place of the fork's (csqttLineAuthor)
+export function ForkTag({ fork, suffix, title }) {
   if (!fork) return null;
   const col = turnColor(fork) || WDTT_COLOR;
   const fk = turnForkList().find(x => x.id === fork) || {};
-  const label = author || forkLabel(fork);
+  const label = forkLabel(fork);
   // Both amurcanov forks now read "amurcanov"; the kind-specific title (and the fork colour) tell them apart.
   const defTitle = fk.kind === "csqtt" ? T("CSQTT fork: {v1}", { v1: label }) : T("WDTT fork: {v1}", { v1: label });
   return html`<span class="tg" style=${"color:" + col + ";background:color-mix(in srgb," + col + " 16%,transparent)"}

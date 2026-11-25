@@ -65,7 +65,7 @@ Fixture — node q-node, three deployments per device:
       installed Start opens rawline://add/ with the desktop's form (a JSON list holding the freeturn:// link); RawlineMobile
       on Android is fired at once with the app's form (the plain link) — never the import steps
   [17] the MRTT line (1.8.12 item 10): Eve's MRTT server gets the MRTT app on Android (chip MRTT, tag by ttrroyy; its own
-       default "csqtt@mrtt" picks the app or hides it per OS, csqtt's 2.1 "none" does not; Start fires an mrtt:// link
+       default — the fork's key "mrtt" — picks the app or hides it per OS, csqtt's "none" does not; Start fires an mrtt:// link
       MRTT's own decoder opens), Rawline on Linux (rawline://add/ around that mrtt:// link), nothing on iOS; Dana's 2.1 and
       2.5 servers are not offered the MRTT app
 
@@ -101,7 +101,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-csqrank    serves a sub.js that ranks csq-socks as an app (it sorts first on a 2.1 desktop) → RED on [13]
      --perturb-csqsteps   serves a sub.js whose csq-socks cell shows the generic app steps → RED on [13]
      --perturb-line25     serves a sub.js that ignores the 2.5 line's own default ("csqtt@2.5") → RED on [14]
-     --perturb-linemrtt   serves a sub.js that ignores the MRTT line's own default ("csqtt@mrtt") → RED on [17]
+     --perturb-linemrtt   serves a sub.js that resolves an MRTT server under csqtt's fork (its apps, defaults, name) → RED on [17]
      --perturb-mrttby     serves a sub.js that credits an MRTT server to csqtt's author (amurcanov) → RED on [17]
      --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
      --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
@@ -255,7 +255,7 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      "p5": {"id": "p5", "user_id": "u4", "title": "tablet", "csqtt_password": "pw5csqtt",
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "csqtt2", "type": "csqtt"}]},
-                     # [17] a device on an MRTT server (csqtt line mrtt, 1.8.12 item 10)
+                     # [17] a device on an MRTT server (the csqtt fork mrtt, its line mrtt — 1.8.12 item 10)
                      "p6": {"id": "p6", "user_id": "u5", "title": "phone", "csqtt_password": "pw6csqtt",
                             "targets": [{"node": "n1", "iface": "csqtt3", "type": "csqtt"}]},
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
@@ -263,7 +263,7 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
 # [12] torrents leave q-node directly, except from awg1, whose own Torrents / P2P block is on
 J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7", "p2p": {"action": "direct"}, "ifaces": {"awg1": {"block": ["torrents"]}},
-                        "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}, "csqtt3": {"listen": "0.0.0.0:56005"}},
+                        "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}, "csqtt3": {"listen": "0.0.0.0:56005", "fork": "mrtt", "line": "mrtt"}},
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}}})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
 b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
@@ -273,7 +273,7 @@ J("stats/stats-n1.json", {"interfaces": {
         "wg0": {"meta": {"public_key": b64(32), "listen_port": 51830, "endpoint": "203.0.113.7:51830", "subnet": "10.7.0.0/24"}}},
     "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"},   # an older node's row: no line (2.1, filters nothing)
               {"iface": "csqtt2", "fork": "csqtt", "version": "2.5.1", "line": "2.5"},
-              {"iface": "csqtt3", "fork": "csqtt", "version": "mrtt-1.0-1", "line": "mrtt"}],
+              {"iface": "csqtt3", "fork": "mrtt", "version": "mrtt-1.0-1", "line": "mrtt"}],
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64, "version": "v4.0.3"},
                      {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64, "version": "v4.0.3"},
@@ -356,9 +356,9 @@ if P_CSQRANK:
 if P_LINE25:
     perturbed_web('    if (forkId === "csqtt" && line && line !== "2.1") {', '    if (forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
 if P_LINEMRTT:
-    perturbed_web('    if (forkId === "csqtt" && line && line !== "2.1") {', '    if (forkId === "csqtt" && line === "2.5") {', "the MRTT line's own default")
+    perturbed_web('        var cga = turnGetApp(cfk, cd.version, false, cd.line);', '        var cga = turnGetApp("csqtt", cd.version, false, cd.line);', "the MRTT fork's own apps and defaults")
 if P_MRTTBY:
-    perturbed_web('var csfork = ((turnServer("csqtt") || {}).line_authors || {})[cd.line] || forkLabel(', 'var csfork = forkLabel(', "MRTT's own author on its tag")
+    perturbed_web('        var csfork = forkLabel(cfk);', '        var csfork = forkLabel("csqtt");', "MRTT's own author on its tag")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -822,7 +822,7 @@ try:
     check("[17] …and Dana's 2.1 and 2.5 servers are not offered the MRTT app", not any("MRTT" in (c["tag"] or "") for c in turn_cells(rd)),
           [c["tag"] for c in turn_cells(rd)])
     tab.close()
-    serve["turn_client_default"] = {"csqtt": {"android": "none"}}   # 2.1 not offered on Android: MRTT has no key of its own
+    serve["turn_client_default"] = {"csqtt": {"android": "none"}}   # amurcanov's csqtt not offered on Android: MRTT is another fork
     J("subs/serve.json", serve)
     tab, rd = render("u5", "android", "en")
     check("[17] csqtt's \"Don't offer\" on Android (a 2.1 choice) leaves the MRTT server offered",
@@ -832,10 +832,10 @@ try:
     check("[17] …while it still hides Dana's 2.1 server there", not any(c["role"] == "CSQTT 2.1" for c in turn_cells(rd)),
           [(c["tag"], c["role"]) for c in turn_cells(rd)])
     tab.close()
-    serve["turn_client_default"] = {"csqtt@mrtt": {"android": "rawline", "linux": "none"}}   # MRTT's own key (card mrtt-line3, F2)
+    serve["turn_client_default"] = {"mrtt": {"android": "rawline", "linux": "none"}}   # MRTT's own key: the fork's (operator 2026-11-25)
     J("subs/serve.json", serve)
     tab, rd = render("u5", "android", "en")
-    check("[17] MRTT's own default (csqtt@mrtt) on Android names Rawline: the MRTT server hands out RawlineMobile, not the MRTT app",
+    check("[17] MRTT's own default (its fork's key) on Android names Rawline: the MRTT server hands out RawlineMobile, not the MRTT app",
           len(turn_cells(rd)) == 1 and "Rawline" in (turn_cells(rd)[0]["tag"] or ""), [c["tag"] for c in turn_cells(rd)])
     tab.close()
     tab, rd = render("u5", "linux", "en")

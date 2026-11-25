@@ -16,7 +16,7 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
-## MRTT 1.0 (line mrtt — built 2026-11-24, not yet published)
+## MRTT 1.0 (the panel's csqtt fork `mrtt`, run by the node as its line `mrtt` — release csqtt-mrtt-1.0-1, 2026-11-24)
 
 [ttrroyy/MRTT](https://github.com/ttrroyy/MRTT) is a fork of amurcanov's csqtt 2.5.0 (`fd936ef`, our `v2.5.0`) with its own
 apps (the MRTT Android app; Rawline / RawlineMobile import its `mrtt://` links), MAX-call TURN credentials on the client,

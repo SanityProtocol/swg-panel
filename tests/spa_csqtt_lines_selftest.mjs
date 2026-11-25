@@ -36,7 +36,7 @@
  *      so it shows the take-over notice instead of "missing" with Recreate, and a failed attempt is not "never created"
  *      (seen live on swgt, 10-24). Read from the source: both are components with hooks, not rendered here
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho|nodeby|cardby|lineauthor> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho|lineof|forkleave|verhide|forksave|forkref> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -76,9 +76,11 @@ const PLANTS = {
   picksame: ["turn.js", "export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);", "export const csqttPickOf = (v, cfg) => v || null;"],
   pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
   ifpick: ["turn.js", " pick=${lineDirty ? line : null}/>", "/>"],
-  nodeby: ["screen-nodes.js", 'label=${csqttLineAuthor(csqttRunLine(name, c.iface))} suffix=', 'suffix='],
-  cardby: ["turn.js", '<span class="r">${csqttLineAuthor(sw.run) || forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>', '<span class="r">${forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>'],
-  lineauthor: ["turn.js", 'export const csqttLineAuthor = l => (((turnForkList().find(x => x.id === "csqtt") || {}).line_authors || {})[l]) || null;', 'export const csqttLineAuthor = l => null;'],
+  lineof: ["turn.js", "return ((Store.csqttLines || []).includes(l) || csqttFixedLines().includes(l)) ? l : CSQTT_DEFAULT_LINE; };", "return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };"],
+  forkleave: ["turn.js", 'onChange(csqttForkLine(id) || (id === cur ? value : "2.5"))', "onChange(csqttForkLine(id) || value)"],
+  verhide: ["turn.js", "  if (csqttFixedLines().includes(value)) return null;   // a fork with its own line (MRTT) has no Version to pick\n", ""],
+  forksave: ["turn.js", "      ...(lineDirty ? { line, fork: csqttForkOfLine(line) } : {}), ...(is25", "      ...(lineDirty ? { line } : {}), ...(is25"],
+  forkref: ["turn.js", 'f.id !== cur && f.line && !can.includes(f.line) ? T(', 'false ? T('],
   askgo: ["turn.js", "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${go}/>`);",
           "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${() => {}}/>`);"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
@@ -207,7 +209,7 @@ const sheet = (TSRC.split("export function EditCsqttSheet(")[1] || "").split("\n
 check("[10] the interface sheet exists where this gate looks", sheet.length > 500, sheet.length);
 const row = (sheet.split('<div class="row2">')[1] || "").split("\n    </div>")[0];
 check("[10] the Version sits on the csqtt server's line (one row2)", /T\("csqtt server"\)/.test(row) && row.includes("<${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>"), row.slice(0, 200));
-check("[10] a changed version is sent with the save", sheet.includes("...(lineDirty ? { line } : {})"));
+check("[10] a changed version is sent with the save, with its fork", sheet.includes("...(lineDirty ? { line, fork: csqttForkOfLine(line) } : {})"));
 check("[10] …after the same questions as the csqtt-proxy modal", sheet.includes("if (lineDirty && askCsqttLine(sw, node, iface, { ...cfg, app_routing: arOn(ar).length ? arBody(ar) : null, app_routing_except: ax }, line, doSave)) return;")
       && TSRC.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;"));
 check("[10] both sheets hold a pick, not a copy of the record", sheet.includes("const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);")
@@ -287,16 +289,37 @@ check("[12] …and a take-over's failed attempt is not \"never created\" with a 
 check("[12] …it says why it failed and how it ends, in the take-over notice itself (the node's error, the 5-minute give-up)",
       /\$\{adopting && failErr[^\n]*\n\s*\? html`<div class="notice warn">[^\n]*The node couldn't take this server over yet: \*\{err\}\*[^\n]*\{ err: failErr \}\)\}<\/span><\/div>`\n\s*: adopting \? /.test(ISRC));
 
-// [13] MRTT, a line that is another author's work (1.8.12 item 10, card mrtt-line3 round 2): named whole, its author from
-// the catalog (csqtt's line_authors) on the node page's badge and the csqtt card's fork row, as on the server's page
-ST.Store.turnCatalog = { ...(ST.Store.turnCatalog || {}), servers: [{ id: "csqtt", label: "amurcanov", kind: "csqtt", line_authors: { mrtt: "ttrroyy" } }] };
+// [13] MRTT is a csqtt FORK, not a version (operator 2026-11-25): it runs one fixed line; a line reads whole; the Fork field
+// drives that line (MRTT → its line, leaving it → 2.5) and refuses MRTT on a node that cannot run it; the Version hides on
+// MRTT; a recorded MRTT line stays MRTT; the saves carry the fork; every badge names the fork from the catalog
+ST.Store.turnCatalog = { ...(ST.Store.turnCatalog || {}), servers: [{ id: "csqtt", label: "amurcanov", kind: "csqtt" },
+  { id: "mrtt", label: "ttrroyy", product: "MRTT", kind: "csqtt", line: "mrtt" }] };
+ST.Store.csqttLines = ["2.1", "2.5"];
+ST.Store.panelSettings = { ...(ST.Store.panelSettings || {}), enabled_turn_forks: ["csqtt", "mrtt"] };
 check("[13] a line reads whole — csqtt 2.5, MRTT (never \"csqtt MRTT\") — and short on a badge (2.5, MRTT)",
       TU.csqttLineName("2.5") === "csqtt 2.5" && TU.csqttLineName("mrtt") === "MRTT" && TU.csqttLineTag("2.5") === "2.5" && TU.csqttLineTag("mrtt") === "MRTT");
-check("[13] MRTT's author comes from the catalog (ttrroyy); a csqtt line has none of its own",
-      TU.csqttLineAuthor("mrtt") === "ttrroyy" && TU.csqttLineAuthor("2.5") === null, [TU.csqttLineAuthor("mrtt"), TU.csqttLineAuthor("2.5")]);
-check("[13] the node page's csqtt badge names the line's author and line",
-      NSRC.includes('<${ForkTag} fork=${c.fork || "csqtt"} label=${csqttLineAuthor(csqttRunLine(name, c.iface))} suffix=${" " + csqttLineTag(csqttRunLine(name, c.iface))}/>'));
-check("[13] …and so does the csqtt card's CSQTT fork row",
-      TSRC.includes('<span class="r">${csqttLineAuthor(sw.run) || forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>'));
+check("[13] the fork MRTT runs the line mrtt; amurcanov's csqtt has no fixed line",
+      TU.csqttForkLine("mrtt") === "mrtt" && TU.csqttForkLine("csqtt") === "" && TU.csqttForkOfLine("mrtt") === "mrtt" && TU.csqttForkOfLine("2.5") === "csqtt");
+check("[13] a server recorded on MRTT's line reads MRTT, not 2.1 (the Version list has no mrtt); an unknown line is still 2.1",
+      TU.csqttLineOf({ line: "mrtt" }) === "mrtt" && TU.csqttLineOf({ line: "9.9" }) === "2.1", [TU.csqttLineOf({ line: "mrtt" }), TU.csqttLineOf({ line: "9.9" })]);
+const ddOf = vn => walk(vn, x => x.props && Array.isArray(x.props.options) && typeof x.props.onChange === "function" ? x.props : undefined)[0] || null;
+Store.stats = { ...(Store.stats || {}), nmr: { csqtt_lines: ["2.1", "2.5", "mrtt"] }, nno: { csqtt_lines: ["2.1", "2.5"] } };
+const got13 = [];
+const dd1 = ddOf(TU.CsqttForkField({ node: "nmr", value: "2.5", onChange: v => got13.push(v) }));
+const dd2 = ddOf(TU.CsqttForkField({ node: "nmr", value: "mrtt", onChange: v => got13.push(v) }));
+if (dd1) dd1.onChange("mrtt"); if (dd2) dd2.onChange("csqtt");
+check("[13] the Fork field: amurcanov's csqtt and MRTT; picking MRTT sets its line, leaving it lands on 2.5",
+      !!dd1 && !!dd2 && JSON.stringify(dd1.options.map(o => o.value)) === '["csqtt","mrtt"]' && dd1.value === "csqtt" && dd2.value === "mrtt"
+      && JSON.stringify(got13) === '["mrtt","2.5"]', [dd1 && dd1.options, got13]);
+const dd3 = ddOf(TU.CsqttForkField({ node: "nno", value: "2.5", onChange: () => {} }));
+check("[13] …on a node that cannot run MRTT, it is offered greyed, saying to update the node",
+      !!dd3 && (dd3.options.find(o => o.value === "mrtt") || {}).disabled === true, dd3 && dd3.options);
+check("[13] the Version hides on MRTT (a fork's line is no version); it shows on amurcanov's 2.5",
+      TU.CsqttVersionField({ node: "nmr", value: "mrtt", onChange: () => {} }) === null && TU.CsqttVersionField({ node: "nmr", value: "2.5", onChange: () => {} }) !== null);
+check("[13] both csqtt sheets and the create body send the fork with the line",
+      TSRC.split("...(lineDirty ? { line, fork: csqttForkOfLine(line) } : {})").length === 3 && TSRC.includes("fork: csqttForkOfLine(line), ...(line !== CSQTT_DEFAULT_LINE ? { line } : {})"));
+check("[13] the node page's badge and the csqtt card name the fork from the catalog (ttrroyy for MRTT), its line beside it",
+      NSRC.includes('<${ForkTag} fork=${c.fork || "csqtt"} suffix=${" " + csqttLineTag(csqttRunLine(name, c.iface))}/>')
+      && TSRC.includes('<span class="r">${forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>') && !TSRC.includes("csqttLineAuthor"));
 
 done(!!MODE, MODE || "");

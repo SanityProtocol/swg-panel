@@ -26386,7 +26386,7 @@ def _csqtt_ifaces(want, line=CSQTT_DEFAULT_LINE):   # the desired ifaces RUNNING
     return [i for i in (want or {}) if _csqtt_running_line(i) == line]
 # csqtt ships one implementation today; the instance still records WHICH fork, so a second one can never be
 # silently substituted the way an unknown WDTT fork used to be (see _wdtt_fork_unknown).
-CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt"}
+CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt", "mrtt": "ttrroyy/MRTT"}   # mrtt: a fork run as its fixed line (the panel sends both)
 def _csqtt_fork_unknown(inst):
     f = ((inst or {}).get("fork") or "").strip()
     return "" if (not f or f in CSQTT_FORK_OWNER) else f

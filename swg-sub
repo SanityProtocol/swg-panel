@@ -999,6 +999,7 @@ def read_data(state, token):
                     "node_name": node_cfg.get("name") or t.get("node"),
                     "type": "csqtt",
                     "csqtt": {"password": p.get("csqtt_password") or "",
+                              "fork": inst.get("fork") or "csqtt",   # which csqtt fork (MRTT is ttrroyy's) → its own apps, defaults and name
                               "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,

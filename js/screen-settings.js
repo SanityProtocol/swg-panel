@@ -56,7 +56,7 @@ import { classifyAll } from "./classify.js";   // the one grammar — CustomList
 import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows, PORTS_MAX_TOKENS } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
   TURN_FORKS_DEFAULT, TurnCollectedIps, openRosterCheck, openServerClients, openServerDefaults,
-  turnDialFallback, turnForkPlatforms, turnUpdateTarget, turnUpdating,
+  turnDialFallback, turnForkPlatforms, turnUpdateTarget, turnUpdating, csqttForkLine,
 } from "./turn.js";
 import {
   IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, MeshGenField,
@@ -2177,7 +2177,7 @@ export function PanelSettingsScreen() {
   // This row is csqtt 2.1's — the version this panel's check compares against. A server on another csqtt version
   // (docs/CSQTT-LINES-PLAN.md) has its own build, latest and hold: it updates from the header badge and the fork's
   // "Version, rollback" panel, and must not read here as a 2.1 server behind 2.1's newest build.
-  const csqttOtherLine = w => !!(w && w.kind === "csqtt" && w.line && w.line !== "2.1");
+  const csqttOtherLine = w => !!(w && w.kind === "csqtt" && w.line && w.line !== (csqttForkLine(w.fork) || "2.1"));   // MRTT's own line is its row's
   // the rows of Settings → Turn proxies: every visible fork, and a hidden one while a node still runs it — so the operator
   // keeps its users' app, client knobs, version and colour (MYSOREZ, Moroka8, xxcipherx, hidden 2026-10-14)
   const settingsForks = () => turnForkList().filter(f => !f.hidden || forkNodeStates(f.id, true).length);

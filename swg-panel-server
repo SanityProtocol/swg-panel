@@ -1602,9 +1602,10 @@ CSQTT_DEFAULT_LINE = "2.1"
 # minute (2.5.1-2 refused only new ones), no scheduled self-restart in headless mode, and the server refuses a --tun-addr
 # whose host number is .2–.250 (its own address would be handed to a client) — such a server is sent .1 of its /24
 # (_csqtt_tun_for_line). 2.5.1-2 and 2.5.1 stay listed for a rollback.
-# mrtt (1.8.12 item 10, operator 2026-11-24: "Keep the mrtt line"): ttrroyy's MRTT 1.0 with our 2.5.3 integration ported onto
-# it (forks/csqtt/mrtt, release csqtt-mrtt-1.0-1 — the node fetches "csqtt-" + version). Its own apps (the MRTT app, Rawline)
-# take mrtt:// links (turn-artifacts.js); its store is csqtt.db with 2.5's schema, so the node reads it as a 2.5 store.
+# mrtt (1.8.12 item 10): ttrroyy's MRTT 1.0 with our 2.5.3 integration ported onto it (forks/csqtt/mrtt, release
+# csqtt-mrtt-1.0-1 — the node fetches "csqtt-" + version). The node runs it as a line (its own binary slot; its store is
+# csqtt.db with 2.5's schema); the operator chooses it as a FORK (TURN_SERVERS["mrtt"], its fixed line — operator
+# 2026-11-25: "MRTT is a fork, not a version of csqtt"), so the Version control never lists it (_csqtt_version_lines).
 CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.3", "csqtt-2.5.3"), ("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")],
                "mrtt": [("mrtt-1.0-1", "csqtt-mrtt-1.0-1")]}
 def _csqtt_tun_for_line(addr):
@@ -1642,6 +1643,15 @@ def _csqtt_current_version(line=CSQTT_DEFAULT_LINE):
     b = CSQTT_LINES.get(line) or []
     return b[0][0] if b else ""
 CSQTT_MIRROR_OWNER = "amurcanov/csqtt"        # the mirror KEY the node asks under — NOT where the binary lives
+def _csqtt_fork_line(fork):
+    """The ONE line a csqtt-kind fork that is its own product runs (MRTT: TURN_SERVERS["mrtt"]["line"]; operator 2026-11-25:
+    "MRTT is a fork, not a version of csqtt") — "" for amurcanov's csqtt, whose lines are its Versions."""
+    return str((TURN_SERVERS.get(str(fork or "")) or {}).get("line") or "")
+def _csqtt_version_lines():
+    """The lines the Version control offers — amurcanov's own (2.1, 2.5). A fork's fixed line runs on the same node
+    machinery (binary slot, store, release, holds) but is chosen as the FORK, never as a version of csqtt."""
+    fixed = {m.get("line") for m in TURN_SERVERS.values() if (m or {}).get("kind") == "csqtt" and m.get("line")}
+    return [l for l in CSQTT_LINES if l not in fixed]
 def _csqtt_line_name(line):
     """A csqtt line as the operator reads it, whole — "csqtt 2.5", or MRTT by its own name (the SPA's csqttLineName)."""
     return "MRTT" if line == "mrtt" else "csqtt " + str(line)
@@ -2163,8 +2173,8 @@ def _turn_latest_for(fork):
     disagree about whether something is behind."""
     if fork in WDTT_BUILDS:
         return _wdtt_current_version(fork)
-    if fork == "csqtt" or fork.startswith("csqtt@"):
-        return _csqtt_current_version(fork.partition("@")[2] or CSQTT_DEFAULT_LINE)
+    if (TURN_SERVERS.get(fork.partition("@")[0]) or {}).get("kind") == "csqtt":   # csqtt, csqtt@2.5, mrtt@mrtt: our build of its line
+        return _csqtt_current_version(fork.partition("@")[2] or _csqtt_fork_line(fork.partition("@")[0]) or CSQTT_DEFAULT_LINE)
     if _wdtt_unbuilt(fork):
         return ""
     owner = turn_fork_owner(fork)
@@ -7094,7 +7104,10 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
                                                   # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
-    "csqtt":     {"raw": ("mrtt-1.0-1", "2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
+    "csqtt":     {"raw": ("2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},
+    # mrtt-1.0-1 (the fork mrtt, the build csqtt-mrtt-1.0-1 publishes, 2026-11-24): csqtt25.sh A I M R W D with MRTT v1.0's
+    # own client — reach, spoof +0, IPv6 uplink +0, deactivate / revoke cut + refused, stable address, two instances, App routing
+    "mrtt":      {"raw": ("mrtt-1.0-1",)},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
                                                   # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 8911aa11 = the published
                                                   # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
@@ -7107,9 +7120,6 @@ KEYLESS_SHARE_BUILDS = {
                                                   # deactivate/revoke cut + refused, stable address, two instances, App routing
                                                   # 2.5.3 (187224d9 = the published amd64 bytes, 2026-10-28): csqtt25.sh A I X S M R
                                                   # with the 2.5.1 test client — every result as 2.5.1-2's
-                                                  # mrtt-1.0-1 (line mrtt, the build csqtt-mrtt-1.0-1 publishes, 2026-11-24): csqtt25.sh A I M R W
-                                                  # with MRTT v1.0's own client — reach, spoof +0, IPv6 uplink +0, deactivate /
-                                                  # revoke cut + refused, stable address, two instances, App routing
 }
 
 
@@ -18386,7 +18396,7 @@ TURN_SERVERS = {
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
-    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "line_authors": {"mrtt": "ttrroyy"}, "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "csqsocks", "vkturnproxy"], "reload": "sighup",
+    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "csqsocks", "vkturnproxy"], "reload": "sighup",
                      # NO client settings. This carried the shared WDTT-family placeholder (workers/dns), which the panel saved and
                      # NOTHING ever delivered: csqttArtifact builds `csqtt://connect?v=2&host=&peer=&password=&hashes=`
                      # and takes no client values at all. Verified against the app itself (amurcanov/csqtt,
@@ -18396,6 +18406,11 @@ TURN_SERVERS = {
                      # even a primary/secondary pair plus a no-DNS toggle, not the comma-separated list that schema
                      # describes. Offering the fields was a promise the link cannot keep.
                      "settings": [], "client_settings": []},
+    # MRTT (ttrroyy/MRTT, PolyForm NC): csqtt 2.5.0 with its own apps (the MRTT app, MAX calls) — a FORK of csqtt
+    # (operator 2026-11-25), on csqtt's machinery: the node runs it as its fixed `line` (binary slot, store, release
+    # csqtt-mrtt-1.0-1 of forks/csqtt/mrtt, mrtt:// links). Never adopted (its app-deployed store is mrtt.db).
+    "mrtt":         {"label": "ttrroyy",        "product": "MRTT",  "owner": "ttrroyy/MRTT", "line": "mrtt",      "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#FB923C", "light": "#C2410C"}, "clients": ["mrttapp", "rawline"], "reload": "sighup",
+                     "settings": [], "client_settings": []},
 }
 # client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client
 # config/QR/link, stored per-fork in panel_settings.turn_client_settings. Server + coupled settings live in
@@ -18403,7 +18418,7 @@ TURN_SERVERS = {
 # Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
 # 141+314, anton48 29+165, Moroka8 75+0.
-TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
+TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "mrtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
                      "samosvalishe", "cacggghp", "xxcipherx", "qwdtt"]   # operator order (csqtt sits under amurcanov — same author).
 # The tail is pinned by hand: xxcipherx, then qwdtt LAST. The hidden fork (cacggghp) sits before them so the
 # pinned pair stays at the bottom of every operator list even if it is ever un-hidden.
@@ -18490,7 +18505,8 @@ _TURN_CLIENT_COMPAT = {
     # author's app, which here is csqttapp. That classing also produces the right DEFAULTS by itself: on Android
     # csqttapp wins on the native band, and on desktop (where csqttapp does not exist) the two friendlies tie and
     # sort alphabetically, so FOCSQ leads — the operator's choice, reached without mislabelling anything.
-    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly", "mrttapp": "friendly"},
+    "csqtt":        {"csqttapp": "native", "focsq": "friendly", "lalune": "friendly", "csqsocks": "friendly", "vkturnproxy": "friendly", "mcrf": "friendly", "rawline": "friendly"},
+    "mrtt":         {"mrttapp": "native", "rawline": "friendly"},   # MRTT's own app; Rawline speaks MRTT too
 }
 # The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
 # ExecStart's extra-flags box) appended to the client command.
@@ -19688,7 +19704,7 @@ def turn_catalog_view(pins=False):
                          # sheet warns before the instance exists; the edit sheet then reads the node's reported build instead.
                          **({"reach_vouched": keyless_share_capable(sid, "wg", _wdtt_current_version(sid))
                                               if TURN_SERVERS[sid].get("kind") == "wdtt"
-                                              else keyless_share_capable(sid, "raw", _csqtt_current_version())}
+                                              else keyless_share_capable(sid, "raw", _csqtt_current_version(_csqtt_fork_line(sid) or CSQTT_DEFAULT_LINE))}
                             if TURN_SERVERS[sid].get("kind") in ("wdtt", "csqtt") else {}),
                          "hidden": sid in TURN_HIDDEN_FORKS,   # in the catalog (deployed instances still resolve label/colour) but skipped by every operator-facing fork list
                          **TURN_SERVERS[sid]} for sid, cm in ((s, _turn_compat(s)) for s in TURN_SERVER_ORDER)],
@@ -21409,7 +21425,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
-    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"],   # + csqtt (raw-TUN self-contained kind) + qwdtt (the live WDTT fork); MYSOREZ/Moroka8/xxcipherx are hidden since 2026-10-14 — no picker offers them, whatever this says
+    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "mrtt", "qwdtt"],   # + csqtt (raw-TUN self-contained kind) + qwdtt (the live WDTT fork); MYSOREZ/Moroka8/xxcipherx are hidden since 2026-10-14 — no picker offers them, whatever this says
     # RAW-IP mode on a NEW qWDTT server. On by default: it is ~6x the WireGuard path through the same relay, and
     # the server keeps its normal WireGuard listener either way, so a peer that shouldn't use raw simply doesn't.
     # Per-instance the operator can still switch it off; this only decides what a freshly created one starts with.
@@ -29213,7 +29229,7 @@ def api(method, path, qs, body, deps):
             "turn_holds": _turn_holds_view(),            # {node: {fork: held_version}} → fork-row "held" flag (per node+fork rollback holds)
             # csqtt LINES this panel offers, display order (docs/CSQTT-LINES-PLAN.md). One entry = no Version control
             # anywhere in the SPA; a non-2.1 line's holds sit under "csqtt@<line>" in turn_holds above.
-            "csqtt_lines": list(CSQTT_LINES),
+            "csqtt_lines": _csqtt_version_lines(),   # the Version control's: amurcanov's lines (a fork's fixed line is chosen as the fork)
             "turn_updates": turn_updates_view(deps, nodes),      # deployed turn-family servers behind their newest build, one row per (fork, node) — the header badge reads this as a READY FACT, the way panel_outdated is, instead of the SPA fanning out a network check per fork on every click
             "catalog_gen": catalog_gen(),                 # moves whenever the held catalog index changes → the SPA refetches it exactly then
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
@@ -29656,7 +29672,7 @@ def api(method, path, qs, body, deps):
                 # key stays 2.1's. Only an app that speaks the line (catalog csqtt_lines) can be stored under it; validated
                 # against csqtt's own compat. Any other "@" key names no fork and is dropped below.
                 _l = fk.split("@", 1)[1] if fk.startswith("csqtt@") else ""
-                line = _l if _l in CSQTT_LINES and _l != CSQTT_DEFAULT_LINE else None
+                line = _l if _l in _csqtt_version_lines() and _l != CSQTT_DEFAULT_LINE else None   # MRTT's own key is "mrtt" (a fork)
                 base = "csqtt" if line else fk
                 if base not in TURN_SERVERS or not isinstance(osmap_in, dict):
                     continue
@@ -34525,12 +34541,12 @@ def api(method, path, qs, body, deps):
                 continue
             if fid in WDTT_BUILDS:                       # WDTT: our published build version, NOT the upstream Android tag
                 latest[fid] = _wdtt_current_version(fid)
-            elif fid == "csqtt":                         # csqtt is OURS to build too — same rule as WDTT above.
+            elif (TURN_SERVERS.get(fid) or {}).get("kind") == "csqtt":   # csqtt (and MRTT, a csqtt fork) are OURS to build too — same rule as WDTT above.
                 # Without this it fell to the owner branch below and resolved amurcanov/csqtt's UPSTREAM release
                 # tag ("v2.1.5"), which never equals our build string ("2.1.5") — so the row offered an update
                 # that was really a formatting difference, and the click did nothing (updateFork walks
                 # snap.turn_proxies, and a csqtt server is not in there).
-                latest[fid] = _csqtt_current_version()
+                latest[fid] = _csqtt_current_version(_csqtt_fork_line(fid) or CSQTT_DEFAULT_LINE)   # MRTT: its own line's build
             elif _wdtt_unbuilt(fid):                    # a WDTT fork we no longer build: nothing installable
                 latest[fid] = ""
             elif "/" in owner:
@@ -35095,6 +35111,7 @@ def api(method, path, qs, body, deps):
             if any((c or {}).get("iface") == iface for c in (_fsnap.get("csqtt_candidates") or [])):
                 return 400, {"ok": False, **perr("a csqtt server this panel doesn't manage already holds {v1} on this node — adopt it from the node's page to take it over with its users, or pick another name", v1=iface), "code": "iface_taken"}
         inst = dict((nodes[nid].get("csqtt") or {}).get(iface) or {}); inst["iface"] = iface
+        _fork_from = str(inst.get("fork") or "")
         # csqtt is one implementation today (amurcanov), but the catalog is fork-shaped and others are being
         # built — so the instance records WHICH fork from the start. Unknown/absent falls back to the catalog's
         # single csqtt entry, exactly as an old record without the field does.
@@ -35113,6 +35130,18 @@ def api(method, path, qs, body, deps):
                 inst.pop("bind_ip", None)
         if inst.get("fork") and (TURN_SERVERS.get(inst["fork"]) or {}).get("kind") != "csqtt":
             return 400, {"ok": False, "error": "unknown csqtt fork", "code": "bad_request"}
+        # A fork with ONE line (MRTT: TURN_SERVERS["mrtt"]["line"]) — the line follows the fork, both ways, through the
+        # line switch below: choosing the fork sets its line; leaving it for amurcanov's csqtt lands on 2.5 (Rawline speaks
+        # both) unless the save names a version. A fork's line is never asked for as a Version (operator 2026-11-25:
+        # "MRTT is a fork, not a version of csqtt").
+        _fl = _csqtt_fork_line(inst.get("fork"))
+        if _fl:
+            body = dict(body, line=_fl)
+        elif _csqtt_fork_line(_fork_from) and str(body.get("line") or "").strip() in ("", _csqtt_fork_line(_fork_from)):
+            body = dict(body, line="2.5")
+        elif "line" in body and str(body.get("line") or "").strip() not in [CSQTT_DEFAULT_LINE, ""] + _csqtt_version_lines():
+            return 400, {"ok": False, **perr("{v1} is a fork, not a version — choose it as the server's fork",
+                                             v1=_csqtt_line_name(str(body.get("line") or "")[:16])), "code": "bad_request"}
         # The csqtt LINE this server runs (docs/CSQTT-LINES-PLAN.md) — a switch, both ways, keeping its users. Only a
         # line this panel lists, and a non-2.1 line only on a node that says it can run it: an older noded would
         # put that line's build under every csqtt server on the box (see _csqtt_reply, G1).
@@ -35597,6 +35626,8 @@ def api(method, path, qs, body, deps):
         fork = (body.get("fork") or "").strip() or _csqtt_default_fork()
         if (TURN_SERVERS.get(fork) or {}).get("kind") != "csqtt":
             return 400, {"ok": False, **perr("unknown csqtt fork: {v1}", v1=fork), "code": "bad_request"}
+        if _csqtt_fork_line(fork):                   # MRTT's app deploys a store of its own (mrtt.db): not taken over here
+            return 400, {"ok": False, **perr("a {v1} server can't be taken over — create one from the panel", v1=_csqtt_line_name(_csqtt_fork_line(fork))), "code": "bad_request"}
         inst["fork"] = fork
         for k in ("listen", "tun_addr", "title"):
             v = (body.get(k) or "").strip() or (_cd.get(k) or "").strip()

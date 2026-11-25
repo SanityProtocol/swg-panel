@@ -643,7 +643,7 @@ check("F2/F3: the sheet and the card chip both read `skipped` and `stale`",
 _srv = [s for s in P.turn_catalog_view()["servers"] if s.get("kind") in ("wdtt", "csqtt")]
 check("F4: the catalog says whether the build a create installs is vouched — WDTT on its WG path, csqtt on RAW",
       bool(_srv) and all(s.get("reach_vouched") is P.keyless_share_capable(s["id"], "wg" if s["kind"] == "wdtt" else "raw",
-                                                                         P._wdtt_current_version(s["id"]) if s["kind"] == "wdtt" else P._csqtt_current_version())
+                                                                         P._wdtt_current_version(s["id"]) if s["kind"] == "wdtt" else P._csqtt_current_version(P._csqtt_fork_line(s["id"]) or "2.1"))   # a csqtt fork's own line (MRTT)
                          for s in _srv), {s["id"]: s.get("reach_vouched") for s in _srv})
 _ifjs = open(os.path.join(ROOT, "js", "iface.js"), encoding="utf-8").read()
 check("F4: …and the create sheet warns from it for the chosen WDTT fork or csqtt build",

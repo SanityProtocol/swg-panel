@@ -1409,8 +1409,8 @@ try:
             tab = open_app(lang, viewport=vp) if vp else open_app(lang)
             ev_mod(tab, "turn", "M.openServerClients('csqtt', 'windows'); return true;"); settle(tab, 900)
             sw = tab.ev(SW)
-            check("[B20] %s %s: the lines on offer → the switch, on 2.1 (MRTT by its own name, 1.8.12 item 10)" % (lang, "390" if vp else "desktop"),
-                  sw == ["csqtt 2.1*", "csqtt 2.5", "MRTT"], sw)
+            check("[B20] %s %s: both versions on offer → the switch, on 2.1 (MRTT is a fork, not a version: no tab)" % (lang, "390" if vp else "desktop"),
+                  sw == ["csqtt 2.1*", "csqtt 2.5"], sw)
             c21 = tab.ev(CELL)
             tab.ev("[...document.querySelectorAll('.overlay.show .csq-linesw button')][1].click()"); settle(tab, 400)
             c25 = tab.ev(CELL)
@@ -1424,7 +1424,7 @@ try:
             tab.close()
     tab = open_app("en")
     ev_mod(tab, "turn", "M.openServerClients('csqtt', 'windows', '2.5'); return true;"); settle(tab, 900)
-    check("[B20] opened for a 2.5 server, the sheet starts on 2.5", tab.ev(SW) == ["csqtt 2.1", "csqtt 2.5*", "MRTT"], tab.ev(SW))
+    check("[B20] opened for a 2.5 server, the sheet starts on 2.5", tab.ev(SW) == ["csqtt 2.1", "csqtt 2.5*"], tab.ev(SW))
     tab.ev("document.querySelector('.overlay.show .osapp-cell.on').click()"); settle(tab, 300)
     tab.ev("[...document.querySelectorAll('.overlay.show .osapp-menu .cpick-opt')].find(b => /csq-socks/.test(b.textContent)).click()"); settle(tab, 300)
     tab.ev("[...document.querySelectorAll('.overlay.show .btn-primary')].pop().click()"); settle(tab, 1500)
@@ -1432,20 +1432,20 @@ try:
     check("[B20] saving under 2.5 writes csqtt@2.5 and leaves 2.1's choice alone",
           (tcd.get("csqtt@2.5") or {}).get("windows") == "csqsocks" and (tcd.get("csqtt") or {}).get("windows") == "focsq", tcd)
     tab.close()
-    # MRTT has its own default (card mrtt-line3, F2): opened for an MRTT server, Android lists only MRTT's apps, and a save
-    # writes csqtt@mrtt alone
+    # MRTT is a fork (operator 2026-11-25): its own sheet — no version switch, Android lists only its apps, and a save
+    # writes its own key ("mrtt") alone
     tab = open_app("en")
-    ev_mod(tab, "turn", "M.openServerClients('csqtt', 'android', 'mrtt'); return true;"); settle(tab, 900)
+    ev_mod(tab, "turn", "M.openServerClients('mrtt', 'android'); return true;"); settle(tab, 900)
     sw = tab.ev(SW)
     tab.ev("document.querySelector('.overlay.show .osapp-cell.on').click()"); settle(tab, 300)
     menu = tab.ev(MENU)
-    check("[B20] opened for an MRTT server, the sheet starts on MRTT, and Android lists only its apps (the MRTT app, RawlineMobile)",
-          sw == ["csqtt 2.1", "csqtt 2.5", "MRTT*"] and sorted(menu) == ["MRTT", "RawlineMobile"], [sw, menu])
+    check("[B20] MRTT's own sheet: no version switch, and Android lists only its apps (the MRTT app, RawlineMobile)",
+          sw == [] and sorted(menu) == ["MRTT", "RawlineMobile"], [sw, menu])
     tab.ev("[...document.querySelectorAll('.overlay.show .osapp-menu .cpick-opt')].find(b => /Rawline/.test(b.textContent)).click()"); settle(tab, 300)
     tab.ev("[...document.querySelectorAll('.overlay.show .btn-primary')].pop().click()"); settle(tab, 1500)
     tcd = ev_mod(tab, "store", "await M.Store.poll(); return (M.Store.panelSettings || {}).turn_client_default || {};") or {}
-    check("[B20] saving under MRTT writes csqtt@mrtt and leaves 2.1's and 2.5's choices alone",
-          (tcd.get("csqtt@mrtt") or {}).get("android") == "rawline" and (tcd.get("csqtt@2.5") or {}).get("windows") == "csqsocks"
+    check("[B20] saving MRTT's choice writes its fork's key and leaves csqtt 2.1's and 2.5's alone",
+          (tcd.get("mrtt") or {}).get("android") == "rawline" and "csqtt@mrtt" not in tcd and (tcd.get("csqtt@2.5") or {}).get("windows") == "csqsocks"
           and (tcd.get("csqtt") or {}).get("windows") == "focsq", tcd)
     tab.close()
     # one line on offer and none other running: no switch, and the list is as it always was

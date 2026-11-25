@@ -557,14 +557,17 @@ check("\"Networks this user can reach\": the vouched keyless device reaches the 
 
 print("\n[15] the capability table promises only published builds")
 for fork, paths in P.KEYLESS_SHARE_BUILDS.items():
-    if fork != "csqtt" and fork not in P.WDTT_BUILDS:
+    ck = (P.TURN_SERVERS.get(fork) or {}).get("kind") == "csqtt"   # csqtt, and MRTT — a csqtt fork run as its fixed line
+    if not ck and fork not in P.WDTT_BUILDS:
         # a fork whose builds were WITHDRAWN (xxcipherx, 2026-10-14): nothing is published to promise, and the table
         # still vouches the version a node may go on running — keyless_share_capable judges the node's own version
         check("%s: builds withdrawn — the table vouches what nodes may still run, a hidden fork" % fork,
               (P.TURN_SERVERS.get(fork) or {}) and fork in P.TURN_HIDDEN_FORKS, fork)
         continue
     # csqtt: every LINE's builds (docs/CSQTT-LINES-PLAN.md) — CSQTT_BUILDS is 2.1's alone, and judging by it left 2.5.0 out
-    lines = (list(P.CSQTT_LINES.values()) if fork == "csqtt" else [P.WDTT_BUILDS.get(fork) or [("", "")]])
+    # …a fork with its own line (MRTT, operator 2026-11-25) has that line's builds alone; csqtt has its Versions' (2.1, 2.5)
+    lines = ([P.CSQTT_LINES[l] for l in ([P._csqtt_fork_line(fork)] if P._csqtt_fork_line(fork) else P._csqtt_version_lines())]
+             if ck else [P.WDTT_BUILDS.get(fork) or [("", "")]])
     published = {v for _b in lines for v, _t in _b}
     for path, vers in paths.items():
         check("%s %s: a known path, every version published %s" % (fork, path, list(vers)),

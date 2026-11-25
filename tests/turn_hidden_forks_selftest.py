@@ -23,7 +23,7 @@ Hermetic (GitHub reads are stubbed). Run: python3 tests/turn_hidden_forks_selfte
      --perturb-roster   the roster report lists every app again → RED in [3]
      --perturb-gone     a hidden fork keeps a gone app (XXcipherX's) → RED in [1] and [2]
      --perturb-line25   a 2.1-only app is stored under csqtt@2.5 → RED in [4]
-     --perturb-linemrtt the panel keeps only csqtt@2.5 among the line keys (csqtt@mrtt is dropped) → RED in [4]
+     --perturb-linemrtt the panel takes MRTT's line as a csqtt Version key (csqtt@mrtt kept beside MRTT's own fork key) → RED in [4]
 """
 import atexit, importlib.machinery, importlib.util, json, os, shutil, sys, tempfile
 
@@ -63,7 +63,7 @@ if PERTURB_ROSTER:
 if PERTURB_LINE25:
     plant("not line or line in (TURN_CLIENTS[cidv].get(\"csqtt_lines\") or [CSQTT_DEFAULT_LINE])", "True", "the 2.5 key's line check")
 if PERTURB_LINEMRTT:
-    plant("line = _l if _l in CSQTT_LINES and _l != CSQTT_DEFAULT_LINE else None", "line = _l if _l == \"2.5\" else None", "a line key other than 2.5's")
+    plant("line = _l if _l in _csqtt_version_lines() and _l != CSQTT_DEFAULT_LINE else None", "line = _l if _l in CSQTT_LINES and _l != CSQTT_DEFAULT_LINE else None", "a fork's line taken as a Version key")
 if PERTURB_GONE:
     plant('TURN_GONE_CLIENTS = {"xxcipher"}\n', "TURN_GONE_CLIENTS = set()\n", "a gone app kept by its hidden fork")
 SRV = os.path.join(TMP, "swg-panel-server")
@@ -128,14 +128,15 @@ check("[2] a hidden fork's own app is kept as its default (MYSOREZ's); a gone on
 
 body = {"turn_client_default": {"csqtt": {"windows": "focsq"},
     "csqtt@2.5": {"windows": "focsq", "linux": "csqsocks", "android": "csqttapp", "macos": "none", "ios": "vkturnproxy"}, "csqtt@9.9": {"linux": "csqsocks"},
-    "csqtt@mrtt": {"android": "mrttapp", "windows": "rawline", "linux": "csqsocks", "macos": "none", "ios": "csqttapp"}}}
+    "csqtt@mrtt": {"android": "rawline"},
+    "mrtt": {"android": "mrttapp", "windows": "rawline", "linux": "csqsocks", "macos": "none", "ios": "csqttapp"}}}
 code, rsp = P.api("POST", "/api/panel/settings", {}, body, deps)
 saved = (deps.get("panel_settings") or {}).get("turn_client_default") or {}
 check("[4] csqtt@2.5 (a default per csqtt line, 2026-10-29) is kept beside csqtt's: apps of 2.5 and \"none\" stay, 2.1-only ones (FOCSQ, VK TURN Proxy) are dropped",
       saved.get("csqtt@2.5") == {"linux": "csqsocks", "android": "csqttapp", "macos": "none"} and saved.get("csqtt") == {"windows": "focsq"}, saved)
 check("[4] …and no other line's key is invented (csqtt@9.9 dropped)", "csqtt@9.9" not in saved, sorted(saved))
-check("[4] csqtt@mrtt (MRTT, 1.8.12 item 10) is kept the same way: the MRTT app, Rawline and \"none\" stay, apps of 2.1/2.5 only are dropped",
-      saved.get("csqtt@mrtt") == {"android": "mrttapp", "windows": "rawline", "macos": "none"}, saved.get("csqtt@mrtt"))
+check("[4] MRTT is a fork (operator 2026-11-25): its own key \"mrtt\" keeps the MRTT app, Rawline and \"none\", drops apps it does not offer; csqtt@mrtt is no key",
+      saved.get("mrtt") == {"android": "mrttapp", "windows": "rawline", "macos": "none"} and "csqtt@mrtt" not in saved, (saved.get("mrtt"), sorted(saved)))
 
 print("\n[3] the Client rosters sheet")
 P.TURN_ROSTER_PATH = os.path.join(TMP, "turn-roster.json")

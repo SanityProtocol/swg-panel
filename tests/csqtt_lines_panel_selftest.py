@@ -47,7 +47,11 @@ Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
                        override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12] ·
                        arstore / arclear / ar21 [13] · list253 / listroll [14] · tunbad / tun21 [15] ·
-                       stage / stayall / curpop / f8 [16]
+                       stage / stayall / curpop / f8 [16] · forkline / forkleave / forkversion / forkver / forkcheck [17]
+  [17] fork      MRTT is a csqtt FORK, not a version (operator 2026-11-25): created on the fork it records fork + line mrtt and
+                 the node is sent MRTT's build; asked for as a Version it is refused; leaving it for amurcanov lands on 2.5 and
+                 back; a node that cannot run it refuses it, naming MRTT; the Version control offers 2.1 and 2.5 only; its
+                 latest is its own build
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -87,6 +91,12 @@ PLANTS = {
     "curpop": ("[16]", "            merged.pop(\"cur_ver\", None)\n", "            pass\n"),
     "f8": ("[16]", "(_line != CSQTT_DEFAULT_LINE or _run not in (\"\", CSQTT_DEFAULT_LINE))", "_line != CSQTT_DEFAULT_LINE"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
+    "forkline": ("[17]", "        if _fl:\n            body = dict(body, line=_fl)\n", "        if False:\n            body = dict(body, line=_fl)\n"),
+    "forkleave": ("[17]", "            body = dict(body, line=\"2.5\")\n", "            pass\n"),
+    "forkversion": (("[4]", "[17]"), "            \"csqtt_lines\": _csqtt_version_lines(),", "            \"csqtt_lines\": list(CSQTT_LINES),"),
+    "forkcheck": ("[17]", "                latest[fid] = _csqtt_current_version(_csqtt_fork_line(fid) or CSQTT_DEFAULT_LINE)   # MRTT: its own line's build",
+                  "                latest[fid] = _csqtt_current_version()   # MRTT: its own line's build"),
+    "forkver": ("[17]", "    if (TURN_SERVERS.get(fork.partition(\"@\")[0]) or {}).get(\"kind\") == \"csqtt\":", "    if fork == \"csqtt\" or fork.startswith(\"csqtt@\"):"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
 SECTION = [""]
@@ -174,13 +184,14 @@ try:
         with open(NODES + ".tmp", "w") as f:
             json.dump(n, f)
         os.replace(NODES + ".tmp", NODES)
+    NNEW_LINES = ["2.1", "2.5"]
     def snap(nid, rows=None):
         s = {"hostname": nid, "generated_at": int(time.time()), "noded_version": "t", "interfaces": {},
              "csqtt": rows if rows is not None else [{"iface": i, "kind": "csqtt", "fork": "csqtt", "active": "active",
                                                        "version": "2.1.9-4", "line": "2.1", "max_passwords": 500, "params": ""}
                                                       for i in (nodes()[nid].get("csqtt") or {})]}
         if nid == "nnew":
-            s["csqtt_lines"] = ["2.1", "2.5"]
+            s["csqtt_lines"] = list(NNEW_LINES)
         else:
             for r in s["csqtt"]:
                 r.pop("line", None)
@@ -222,7 +233,7 @@ try:
     d = st.get("data") or st
     nn = next((n for n in (d.get("nodes") or []) if n.get("id") == "nnew"), {})
     check("csqtt_cfg publishes the line", ((nn.get("csqtt_cfg") or {}).get("csqtt1") or {}).get("line") == "2.5", nn.get("csqtt_cfg"))
-    check("/api/state offers 2.1, 2.5 and mrtt (1.8.12 item 10)", d.get("csqtt_lines") == ["2.1", "2.5", "mrtt"], d.get("csqtt_lines"))
+    check("/api/state offers the Versions 2.1 and 2.5 (MRTT is a fork, not a version)", d.get("csqtt_lines") == ["2.1", "2.5"], d.get("csqtt_lines"))
 
     section("[5] versions and holds per line")
     put_csqtt("nnew", "csqtt2", dict(C1, tun_addr="10.66.91.1/24", listen="0.0.0.0:46020"))
@@ -421,6 +432,41 @@ try:
     r = sync("nnew", [row("csqtt50", "2.5", "2.5.1-2", "10.66.150.5/24"), R51, R52, R53, R55])
     check("while a 2.5 server moves, one running 2.5 on its way to 2.1 gets no 2.5 build to swap (no cur_ver)",
           "cur_ver" not in (r.get("csqtt55") or {}) and (r.get("csqtt55") or {}).get("line") == "2.1", r.get("csqtt55"))
+
+    section("[17] the fork MRTT")
+    NNEW_LINES[:] = ["2.1", "2.5", "mrtt"]
+    sync("nnew")
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt70", "tun_addr": "10.66.170.1/24", "listen": "0.0.0.0:46700", "fork": "mrtt", "max_passwords": 500})
+    rec = nodes()["nnew"]["csqtt"].get("csqtt70") or {}
+    check("a server created on the fork MRTT records fork mrtt and its line (no Version asked)",
+          code == 200 and rec.get("fork") == "mrtt" and rec.get("line") == "mrtt", (code, r, rec))
+    d = sync("nnew").get("csqtt70") or {}
+    check("…the node is sent fork mrtt, line mrtt and MRTT's build", d.get("fork") == "mrtt" and d.get("line") == "mrtt" and d.get("ver") == "mrtt-1.0-1", d)
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt71", "tun_addr": "10.66.171.1/24", "listen": "0.0.0.0:46710", "line": "mrtt", "max_passwords": 500})
+    check("MRTT asked for as a csqtt Version is refused — a fork, not a version",
+          code == 400 and "fork, not a version" in json.dumps(r) and "csqtt71" not in (nodes()["nnew"].get("csqtt") or {}), (code, r))
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt70", "fork": "csqtt"})
+    rec = nodes()["nnew"]["csqtt"].get("csqtt70") or {}
+    check("leaving MRTT for amurcanov's csqtt lands on 2.5 (Rawline speaks both)", code == 200 and rec.get("fork") == "csqtt" and rec.get("line") == "2.5", (code, r, rec))
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt70", "fork": "mrtt", "line": "2.5"})
+    rec = nodes()["nnew"]["csqtt"].get("csqtt70") or {}
+    check("…and back: the fork sets its own line, whatever version the save carries", code == 200 and rec.get("fork") == "mrtt" and rec.get("line") == "mrtt", (code, r, rec))
+    NNEW_LINES[:] = ["2.1", "2.5"]
+    sync("nnew")
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt72", "tun_addr": "10.66.172.1/24", "listen": "0.0.0.0:46720", "fork": "mrtt", "max_passwords": 500})
+    check("a node that cannot run MRTT refuses it, naming MRTT", code == 400 and r.get("code") == "node_too_old" and "MRTT" in json.dumps(r), (code, r))
+    d = req("/api/state")[1].get("data") or {}
+    ms = next((x for x in ((d.get("turn_catalog") or {}).get("servers") or []) if x.get("id") == "mrtt"), {})
+    check("the Version control offers 2.1 and 2.5; the catalog has MRTT as a csqtt fork of ttrroyy with its line",
+          d.get("csqtt_lines") == ["2.1", "2.5"] and ms.get("kind") == "csqtt" and ms.get("line") == "mrtt" and ms.get("label") == "ttrroyy",
+          (d.get("csqtt_lines"), {k: ms.get(k) for k in ("kind", "line", "label")}))
+    code, r = req("/api/turn/check-updates", {"forks": [{"id": "mrtt", "owner": "ttrroyy/MRTT"}, {"id": "csqtt", "owner": "amurcanov/csqtt"}]})
+    lt = ((r.get("data") or {}).get("latest") or {})
+    check("Settings' update check names our builds for both csqtt forks, never an upstream tag",
+          code == 200 and lt.get("mrtt") == "mrtt-1.0-1" and lt.get("csqtt") == P1._csqtt_current_version(), (code, lt))
+    check("its latest is its own build (an update row mrtt@mrtt, and the fork alone)",
+          P1._turn_latest_for("mrtt@mrtt") == "mrtt-1.0-1" and P1._turn_latest_for("mrtt") == "mrtt-1.0-1",
+          (P1._turn_latest_for("mrtt@mrtt"), P1._turn_latest_for("mrtt")))
 finally:
     proc.terminate()
     try: proc.wait(5)

@@ -33,7 +33,7 @@ import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInt
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
          enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback, CsqttVersionField, CSQTT_DEFAULT_LINE, csqttRunLine,
-         csqttLineTag, csqttLineAuthor } from "./turn.js";
+         csqttLineTag, csqttForkLine } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -329,7 +329,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
 // node copies it, serves it through the hand-off, and offers each user up to become a roster peer.
 export function AdoptCsqttSheet({ node, c }) {
   useStore();
-  const forks = enabledTurnForks().filter(f => f.kind === "csqtt");
+  const forks = enabledTurnForks().filter(f => f.kind === "csqtt" && !f.line);   // a fork with its own line (MRTT) is never adopted: its app's store is mrtt.db
   const [fork, setFork] = useState((forks[0] || {}).id || "csqtt");
   const [busy, setBusy] = useState(false);
   const n = (c.users || []).length;
@@ -890,12 +890,11 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   const kindLabel = isCsq ? "CSQTT" : "WDTT";   // i18n-keys: product names, the same in every language
   const runLine = isCsq ? csqttRunLine(node, iface) : "";
   const lineSuffix = isCsq ? " " + csqttLineTag(runLine) : "";   // "amurcanov 2.5" — the badge carries the csqtt line
-  const lineAuthor = isCsq ? csqttLineAuthor(runLine) : null;    // "ttrroyy MRTT": MRTT is ttrroyy's fork of csqtt, not amurcanov's
   return html`<div class="screen">
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} label=${lineAuthor} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when">${foCountTag(node, iface, "head", foC) || html`<${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/>`}</span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when">${foCountTag(node, iface, "head", foC) || html`<${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/>`}</span></div>
       <div class="grow"></div>
     </div>
     ${roWhy ? html`<div class="notice"><${Ic} i="info"/><span>${roWhy}</span></div>` : null}   ${/* a failover node's copy: its controls are not there at all (operator, 2026-11-17: hidden reads cleaner than disabled) — this says why */""}
@@ -931,7 +930,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Traffic")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node, node, cfg.exit_id)}</span></div>
-        <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork} label=${lineAuthor} suffix=${lineSuffix}/></span></div>
+        <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork} suffix=${lineSuffix}/></span></div>
       </div>
     <//>
 
@@ -1386,7 +1385,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...(cline !== CSQTT_DEFAULT_LINE ? { line: cline } : {}), ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...(csqttForkLine(cfork) ? { line: csqttForkLine(cfork) } : cline !== CSQTT_DEFAULT_LINE ? { line: cline } : {}), ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -1495,7 +1494,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${cfork} onChange=${v => setCfork(v)} options=${forkOpts(_csqttForks)} ariaLabel=${T("Server fork")}/><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
         <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
       </div>
-      <${CsqttVersionField} node=${node} value=${cline} onChange=${setCline}/>` : null}
+      ${csqttForkLine(cfork) ? null : html`<${CsqttVersionField} node=${node} value=${cline} onChange=${setCline}/>`}` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} ariaLabel=${T("Server fork")}

@@ -325,8 +325,8 @@
     // 1) the admin's chosen END-USER default for this (fork, OS): a client id, or "sidecar@<author>" (a CLI build).
     //    Honoured ONLY if that client is still COMPATIBLE with the fork — a saved default goes stale when a pairing is
     //    retired (e.g. VK TURN Proxy dropped from MYSOREZ), and a stale default must never resurrect a dead pairing.
-    // A csqtt server on a line other than 2.1 (2.5, MRTT) reads the operator's default for its line first
-    // (turn_client_default["csqtt@<line>"]; operator, 2026-10-29): "none" hides only that line's servers on this OS, an app
+    // A csqtt server on a Version other than 2.1 (2.5) reads the operator's default for its line first
+    // (turn_client_default["csqtt@<line>"]; operator, 2026-10-29; MRTT is a fork — its own key, "mrtt"): "none" hides only that line's servers on this OS, an app
     // of the line is handed out, and anything else — unset, stale, of another line — falls through to the path below,
     // unchanged (the "csqtt" default if it speaks the line, else the rank).
     if (forkId === "csqtt" && line && line !== "2.1") {
@@ -339,8 +339,7 @@
     // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the
     // intent. It must short-circuit BEFORE the compat-ranked fallback below, or the deliberate choice would
     // silently resolve to some other app instead.
-    // …a csqtt choice is 2.1's (2.5 and MRTT have their own keys above); MRTT, new beside 2.1, is not hidden by 2.1's "none"
-    if (def === "none" && !(forkId === "csqtt" && line === "mrtt")) return null;
+    if (def === "none") return null;
     if (def) {
       // a CLI build is honoured only while this fork still offers its author (a hidden fork's build is withdrawn)
       if (def.indexOf("sidecar@") === 0) { if ((compat.sidecar && cliAuthors.indexOf(def.split("@")[1]) >= 0) || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }
@@ -1972,7 +1971,8 @@
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
         // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
-        var cga = turnGetApp("csqtt", cd.version, false, cd.line);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
+        var cfk = cd.fork || "csqtt";   // the server's csqtt fork — amurcanov's, or MRTT (ttrroyy's): its own apps, defaults and name
+        var cga = turnGetApp(cfk, cd.version, false, cd.line);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
@@ -1980,8 +1980,8 @@
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
-        var csfork = ((turnServer("csqtt") || {}).line_authors || {})[cd.line] || forkLabel(cd.fork || "csqtt");   // the catalog's names: a line's own author (MRTT: ttrroyy), else the fork's (amurcanov)
-        var cffork = forkColor("csqtt");   // the csqtt FORK colour (catalog key "csqtt"), distinct from the iface colour cfc
+        var csfork = forkLabel(cfk);   // the catalog's name (amurcanov, ttrroyy), never a copy of it here
+        var cffork = forkColor(cfk);   // the csqtt FORK colour (catalog key), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");
         // server + app chips take the FORK colour (like the WDTT/turn cells); the role chip below keeps the iface colour.
@@ -1998,7 +1998,7 @@
         crole.appendChild(el("span", "scell-role-if", cd.line === "mrtt" ? "MRTT" : "CSQTT " + (cd.line || "2.1")));   // MRTT: its own name
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
-        ctrl.forkId = "csqtt"; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
+        ctrl.forkId = cfk; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
         if (cart.vkMissing) {                                                  // no VK link yet → the same warning the turn/WDTT cells show
           var cvkw = el("div", "scell-vk scell-vkwarn");
           cvkw.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
@@ -2322,7 +2322,7 @@
           // every OS, so its encoder fallback is honest) a csqtt link on macOS named an app that does not exist there —
           // "amurcanov · CSQTT", a link and nothing to open it with. turnGetApp also answers "none" (the operator's
           // "don't offer on this OS") with nothing, so that choice keeps hiding it too.
-          if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;
+          if (!turnGetApp((tt.csqtt || {}).fork || "csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;
           items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
         }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
