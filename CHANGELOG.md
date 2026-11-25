@@ -16,12 +16,12 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Two more client apps: MCRF and Rawline.** MCRF (Android 10+, Windows) connects to csqtt 2.1 and 2.5 and every WDTT
   server — one-tap on Android — and imports plain WireGuard / AmneziaWG configs; its download is the app's own newest release, never a beta
   or an engine pack. Rawline (Windows, Linux, macOS) and RawlineMobile (Android) connect to csqtt 2.5, WDTT and
-  hack-diaz servers, one-tap too: Start opens the app with the server through its rawline:// link — on the desktop
-  after one "Open the app, or install it?" — instead of showing import steps. On hack-diaz their relay transport is
+  hackdiaz servers, one-tap too: Start opens the app with the server through its rawline:// link — on the desktop
+  after one "Open the app, or install it?" — instead of showing import steps. On hackdiaz their relay transport is
   udp, like the FreeTurn app's (tcp can be picked in Settings). Rawline does not speak csqtt 2.1, so it is not offered
   there, and on csqtt 2.5 its uploads of many small packets are slower than in the CSQTT app (its download says so).
   Where no default app is saved, a one-tap app now leads: on the desktop Rawline replaces PWDTT on WDTT servers, La Lune
-  on csqtt 2.5 servers and the command-line client on hack-diaz; ildarmaga's Android users get MCRF instead of
+  on csqtt 2.5 servers and the command-line client on hackdiaz; ildarmaga's Android users get MCRF instead of
   WDTT-Plus; csqtt 2.5 servers are now offered on macOS. A saved default stays as it is.
 
 - **Failover nodes: a spare server that takes over with no new config.** A node's page → the shield → *Add failover
@@ -140,6 +140,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   one rule, an IPv6 packet two, and the rules that drop IPv6 on routed interfaces and reset a connection's first hit in
   the SNI modes are one rule each, not one per subnet and interface (about 40 a forwarded packet read on a node with 11
   subnets, now at most 5). What each rule decides is unchanged, and so is its order.
+- **samosvalishe's fork is shown as hackdiaz, no longer hack-diaz** — on the panel, on the subscription page and in server
+  names built with `{fork}`, where importing the link again can add the server a second time, under the new name. Its
+  GitHub account stays hackdiaz-dev, and its servers and settings do not change.
 
 ### Fixed
 
@@ -456,7 +459,7 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Mesh AWG parameters are set per link.** A server's own mesh AWG parameters moved onto the links they applied to;
   nothing changes on the wire.
 - **MYSOREZ, Moroka8 and XXcipherX are hidden**, with the MYSOREZ and XXcipherX apps — their development has stopped.
-  Servers already running them keep working. samosvalishe's fork is now shown as hack-diaz.
+  Servers already running them keep working. samosvalishe's fork is now shown as hackdiaz.
 
 ### Fixed
 

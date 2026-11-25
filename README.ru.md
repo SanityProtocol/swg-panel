@@ -61,7 +61,7 @@ swgPanel — это панель управления для запуска со
 
 - **Одна страница, чтобы управлять всем.** Добавляйте серверы, добавляйте пользователей, раздавайте доступ — всё из веб-панели.
 - **Доступ в виде QR-кода.** Создайте человека, покажите ему QR — он сканирует его в приложении WireGuard/AmneziaWG. Никаких конфиг-файлов, которые нужно пересылать по почте.
-- **Подписки — персональная ссылка для каждого пользователя.** Вместо разового QR каждый получает свою страницу **swgSub**: удобную для телефона ссылку с конфигом и QR для каждого сервера, где он есть — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg) и TURN-прокси-форки вроде [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) и других — плюс бейджи протокола/реле, светлая/тёмная тема и копирование / скачивание / отправка в одно касание. Ключ расшифровки живёт в `#fragment` ссылки, поэтому сервер хранит только шифротекст и никогда не видит чужие приватные ключи. [Как их настроить ↓](#подписки-и-контроль-доступа)
+- **Подписки — персональная ссылка для каждого пользователя.** Вместо разового QR каждый получает свою страницу **swgSub**: удобную для телефона ссылку с конфигом и QR для каждого сервера, где он есть — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg) и TURN-прокси-форки вроде [WINGS-N](screenshots/sub-wings-n.jpg), [hackdiaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) и других — плюс бейджи протокола/реле, светлая/тёмная тема и копирование / скачивание / отправка в одно касание. Ключ расшифровки живёт в `#fragment` ссылки, поэтому сервер хранит только шифротекст и никогда не видит чужие приватные ключи. [Как их настроить ↓](#подписки-и-контроль-доступа)
 - **Приостановка доступа в один клик.** Заблокируйте человека — или только одно из его устройств — мгновенно, не удаляя. Его туннели останавливаются, а страница подписки гаснет; разблокировка восстанавливает доступ с теми же ключами, ничего перевыпускать не нужно.
 - **Ограничения скорости.** Ограничьте человека, группу, одно устройство или одно развёртывание в Мбит/с — загрузку и отдачу или одно общее значение. Ограничение человека или группы — один бюджет на сервер, общий для устройств в работе. В живом просмотре видно, кто упирается в ограничение, а редактор предупреждает, где сервер пока не может его соблюдать.
 - **Лимиты трафика.** Дайте человеку, группе или устройству столько-то ГБ на день, неделю или месяц (или всего); при исчерпании устройство отключается или его скорость снижается до 1 Мбит/с, а при сбросе периода всё возвращается. На странице подписки видно, сколько использовано и сколько осталось.
@@ -168,7 +168,7 @@ swgPanel — это панель управления для запуска со
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="Подписка WireGuard" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="Подписка AmneziaWG" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="Подписка WINGS-N" width="150"></a>
-  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="Подписка hack-diaz" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="Подписка hackdiaz" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="Подписка anton48" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="Подписка cacggghp" width="150"></a>
 </p>
@@ -693,7 +693,7 @@ swgPanel использует несколько прекрасных проек
 **Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK, чтобы обходить жёсткие блокировки:
 
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из его нового репозитория, hackdiaz-dev/free-turn-proxy)
+- [hackdiaz](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из его нового репозитория, hackdiaz-dev/free-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — самодостаточный VPN-сервер, владеющий своими ключами, который панель запускает как интерфейс, и приложения, которыми подключаются люди:
@@ -707,7 +707,7 @@ swgPanel использует несколько прекрасных проек
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 - [vnenapravo7-source](https://github.com/vnenapravo7-source/mcrf) — MCRF, клиент csqtt, WDTT и WireGuard для Android и
   [Windows](https://github.com/vnenapravo7-source/mcrf-desktop)
-- [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (форк csqtt со своим приложением и звонками MAX), [Rawline](https://github.com/ttrroyy/Rawline) (десктоп) и [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), клиенты для csqtt 2.5, MRTT, WDTT и hack-diaz
+- [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (форк csqtt со своим приложением и звонками MAX), [Rawline](https://github.com/ttrroyy/Rawline) (десктоп) и [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), клиенты для csqtt 2.5, MRTT, WDTT и hackdiaz
 
 **Списки маршрутизации / гео-данные** — доменные и IP-списки, на которых работает умная маршрутизация:
 

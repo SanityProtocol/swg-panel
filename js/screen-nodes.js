@@ -1275,7 +1275,7 @@ export const nodeTurns = node => {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   return orderById(((Store.stats[node] || {}).turn_proxies) || [], nrec.turn_order, tp => tp.service);
 };
-// One turn-proxy badge: fork-coloured, labelled with the fork's name — forkLabel, never the id in its service name ("hack-diaz",
+// One turn-proxy badge: fork-coloured, labelled with the fork's name — forkLabel, never the id in its service name ("hackdiaz",
 // not "samosvalishe": q189 V-FEAT-A F5).
 export const TurnTag = (node, tp) =>
   html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(node) || turnDown(tp)) ? " muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;

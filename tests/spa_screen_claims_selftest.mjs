@@ -17,7 +17,7 @@
  * [3] V-FEAT-A F5 — the raw fork id "samosvalishe" on operator screens (the node's badge row, the manage sheet's title and its
  *     gear's tooltip; also the pending card, the delete sheet, the front tag's tooltip, the "Connected via" bubbles, a device's
  *     transport row and the flow map's hover; the manage sheet's Title placeholder, which an untitled proxy goes by — the operator,
- *     2026-10-14). Every one now prints forkLabel — "hack-diaz" — and keeps the id for its
+ *     2026-10-14). Every one now prints forkLabel — "hackdiaz" — and keeps the id for its
  *     colour; turnLabel (the id) is used nowhere outside turn-catalog.js.
  * [4] V-FEAT-A F6 — the Disguise picker said a restart brings devices back "within a few seconds". Measured 15.2–15.4 s (the
  *     devices still on their old set come back on WireGuard's own rekey after silence): it now says about 15 seconds.
@@ -179,12 +179,14 @@ check("[2] no other sentence on any screen says programs running on the server a
 
 // ── [3] fork names ──────────────────────────────────────────────────────────────────────────────────────────────────────
 console.log("\n[3] a turn proxy's fork is shown by its name, never by the id in its service name (V-FEAT-A F5)");
-const SVC = "vk-turn-proxy-samosvalishe-51823", LBL = "hack-diaz";
-check("[3] the catalog's fallback names samosvalishe hack-diaz (what every check below expects)",
+const SVC = "vk-turn-proxy-samosvalishe-51823", LBL = "hackdiaz";
+check("[3] the catalog's fallback names samosvalishe hackdiaz (what every check below expects)",
       TC.forkLabel("samosvalishe") === LBL && TC.turnFork(SVC) === "samosvalishe", TC.forkLabel("samosvalishe"));
-const shows = v => { const all = flat(v) + " " + attrs(v).join(" "); return all.includes(LBL) && !/samosvalishe/i.test(flat(v)); };
+// the label as a word of its own: "hackdiaz" is a prefix of the owner, hackdiaz-dev, which must not pass for it
+const LBL_RE = new RegExp("(?<![\\w-])" + LBL + "(?![\\w-])");
+const shows = v => { const all = flat(v) + " " + attrs(v).join(" "); return LBL_RE.test(all) && !/samosvalishe/i.test(flat(v)); };
 const tag = SN.TurnTag("n1", { service: SVC, listen: "0.0.0.0:51823" });
-check("[3] the node's badge row: «hack-diaz», coloured by the fork's id (tf-samosvalishe)",
+check("[3] the node's badge row: «hackdiaz», coloured by the fork's id (tf-samosvalishe)",
       flat(tag) === LBL && /\btf-samosvalishe\b/.test(tag.props.class), [flat(tag), tag.props.class]);
 const tc = TC.turnColor("samosvalishe");
 const dot = UI.connDot({ online: true, viaTurn: SVC, node: "n1" });

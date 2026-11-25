@@ -29,14 +29,14 @@ Fixture — node q-node, three deployments per device:
       (Cara's office router carries 192.168.50.0/24 on the node, open to everyone there), not a blocked device's page (Anna's
       old tablet) — and the networks page's heading opens the picker instead, as a device's title does. Control: the same
       subscription on a desktop window shows the one Connections button in its header
-  [6] a fork is named by its catalog label, never its id: the samosvalishe proxy's cell says hack-diaz (its repos moved,
+  [6] a fork is named by its catalog label, never its id: the samosvalishe proxy's cell says hackdiaz (its repos moved,
       the id stays in every node's unit names), and no cell on any OS or language says samosvalishe
   [7] a WDTT fork's own app is its default (operator, 2026-10-14): the WDTT cell on Android hands out amurcanov's WDTT —
       XXcipherX's app, which stood in for it, is hidden with its deleted repository — and its Start shows the import steps
   [9] an app whose own tunnel is WireGuard only (VK TURN Proxy on iOS, `awg: false`) is never handed out for an AmneziaWG
       interface behind a proxy; the WireGuard interface's proxy still offers it; FreeTurn keeps the AmneziaWG one on Android
   [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
-      hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
+      hidden from every visible fork (hackdiaz's cells on the same interface do not offer it)
   [11] csqtt 2.1 and 2.5 do not speak to each other: a 2.5 server (Dana's csqtt2, line 2.5) is offered only an app of its
       line. The operator's Android default La Lune speaks both since S13a: it serves the 2.5 server one tap, as on 2.1 (Start
       fires the sealed link and copies it, no steps); ranked, the CSQTT app; on iOS nothing (VK TURN
@@ -58,10 +58,10 @@ Fixture — node q-node, three deployments per device:
       app stored under it is passed over (Rawline, as with no choice)
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
-      → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
+      → v1.2.4 and the hackdiaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
       is not handed the CLI release's Android binary (another repository's app keeps its own versioning)
   [16] Rawline opens in one tap everywhere (1.8.12 item 10; operator, 2026-11-24: deep links, not instructions): with no default
-      saved, hack-diaz on Linux hands out Rawline; on the desktop the first Start asks Open / Get, and once it is known
+      saved, hackdiaz on Linux hands out Rawline; on the desktop the first Start asks Open / Get, and once it is known
       installed Start opens rawline://add/ with the desktop's form (a JSON list holding the freeturn:// link); RawlineMobile
       on Android is fired at once with the app's form (the plain link) — never the import steps
   [17] the MRTT line (1.8.12 item 10): Eve's MRTT server gets the MRTT app on Android (chip MRTT, tag by ttrroyy; its own
@@ -194,7 +194,7 @@ if P_XXSUB:   # the app back in every WDTT fork's compat (the catalog before 202
     P.TURN_HIDDEN_CLIENTS = set()
 # [8] each server's own release, as _turn_warm_pins leaves it (csqtt's latest is our v2.5.1): csqtt 2.1.9-4 → our
 # csqtt-app-2.1.9 shown as v2.1.9, Dana's 2.5.1 → our csqtt-app-2.5.1 (v2.5.1), amurcanov's WDTT 1.2.4-3 → v1.2.4, the
-# hack-diaz proxies' v4.0.3 → its CLI release (which also carries an Android binary)
+# hackdiaz proxies' v4.0.3 → its CLI release (which also carries an Android binary)
 PIN_APK = "https://github.com/SanityProtocol/swg-panel/releases/download/csqtt-app-2.1.9/CSQTT-universal.apk"
 PIN25_APK = "https://github.com/SanityProtocol/swg-panel/releases/download/csqtt-app-2.5.1/CSQTT-2.5.1-universal.apk"
 WDTT_APK = "https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk"
@@ -245,7 +245,7 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "wdtt1", "type": "wdtt"},
                                         {"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.2/32"},
-                                        # [9] a plain WireGuard interface behind a second hack-diaz proxy
+                                        # [9] a plain WireGuard interface behind a second hackdiaz proxy
                                         {"node": "n1", "iface": "wg0", "type": "wg", "ip": "10.7.0.2/32"}]},
                      "p2": {"id": "p2", "user_id": "u2", "title": "phone", "csqtt_password": "pw2csqtt",
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
@@ -677,8 +677,9 @@ try:
     an = turn_cells(renders[("android", "en")])
     check("[10] Android: the MYSOREZ proxy (hidden fork, still running) offers its users the MYSOREZ app",
           any((c["tag"] or "").startswith("MYSOREZ · VK TURN Proxy") for c in an), [c["tag"] for c in an])
-    check("[10] …while hack-diaz's cells (a visible fork) do not offer that hidden app",
-          not [c for c in an if (c["tag"] or "").startswith("hack-diaz") and "MYSOREZ" in (c["tag"] or "")], [c["tag"] for c in an])
+    hd = [c for c in an if (c["tag"] or "").startswith("hackdiaz · ")]   # the label exactly: it is a prefix of its owner, hackdiaz-dev
+    check("[10] …while hackdiaz's cells (a visible fork) do not offer that hidden app",
+          hd and not [c for c in hd if "MYSOREZ" in (c["tag"] or "")], [c["tag"] for c in an])
 
     # [9] an app whose own tunnel is WireGuard only (anton48's VK TURN Proxy, `awg: false`) is never handed out for an AmneziaWG
     #     interface behind a proxy — the app itself warns that AmneziaWG keys cannot work (the review of 356a08f9, F3)
@@ -691,12 +692,13 @@ try:
           any((c["role"] or "") == "AWG" and "FreeTurn" in (c["tag"] or "") for c in turn_cells(renders[("android", "en")])),
           [(c["role"], c["tag"]) for c in turn_cells(renders[("android", "en")])])
 
-    # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hack-diaz (GitHub: hackdiaz-dev) carries them
+    # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hackdiaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
     fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
           if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith(("MYSOREZ", "cacggghp"))]   # [10]'s and [12]'s proxies are other forks
-    check("[6] the samosvalishe-fronted cell's badge names hack-diaz on every OS and language",
-          fp and all("hack-diaz" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
+    # the label as a word of its own: "hackdiaz" is a prefix of the owner, hackdiaz-dev, which must not pass for it
+    check("[6] the samosvalishe-fronted cell's badge names hackdiaz on every OS and language",
+          fp and all(re.search(r"(?<![\w-])hackdiaz(?![\w-])", c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
     leak = [(os_, lang, c["text"][:120]) for os_ in ALL_OS for lang in ("en", "ru") for p in renders[(os_, lang)]["pages"]
             for c in p["cells"] if "samosvalishe" in (c["text"] or "")]
     check("[6] …and no cell anywhere says samosvalishe", not leak, leak[:3])
@@ -737,21 +739,21 @@ try:
     wb = bubble(tab, "amurcanov · WDTT")
     check("[8] the WDTT cell (amurcanov 1.2.4-3) offers its own app's v1.2.4 — the WDTT server's version reaches the page",
           pinned(wb, "v1.2.4", WDTT_APK), wb)
-    fb = bubble(tab, "hack-diaz · FreeTurn")
-    check("[8] FreeTurn on a hack-diaz proxy is NOT handed the CLI release's Android binary: its repository is not the server's",
+    fb = bubble(tab, "hackdiaz · FreeTurn")
+    check("[8] FreeTurn on a hackdiaz proxy is NOT handed the CLI release's Android binary: its repository is not the server's",
           isinstance(fb, dict) and "matches this server" not in fb["ver"] and CLI_AND not in fb["links"], fb)
     tab.close()
     serve["turn_client_default"] = keep_default
     J("subs/serve.json", serve)
-    tab, _ = render("u1", "linux", "en")   # no Linux default saved for hack-diaz: an app outranks the CLI (1.8.12 item 10)
-    check("[8] with no default saved, hack-diaz on Linux hands out Rawline, not the CLI", isinstance(bubble(tab, "hack-diaz · Rawline"), dict))
+    tab, _ = render("u1", "linux", "en")   # no Linux default saved for hackdiaz: an app outranks the CLI (1.8.12 item 10)
+    check("[8] with no default saved, hackdiaz on Linux hands out Rawline, not the CLI", isinstance(bubble(tab, "hackdiaz · Rawline"), dict))
     tab.ev("document.querySelectorAll('.dl-bubble').forEach(b => b.remove()), localStorage.removeItem('swgsub-hasapp-rawline'), 1")
-    res, clip, steps, navs = start_on(tab, "turn", "hack-diaz · Rawline")
+    res, clip, steps, navs = start_on(tab, "turn", "hackdiaz · Rawline")
     asked = tab.ev("!!document.querySelector('.start-choice')")
     check("[16] Rawline on the desktop (it registers rawline://): the first Start asks Open / Get — no import steps, nothing fired yet",
           res == "clicked" and asked and not steps and not navs, (res, asked, steps, navs))
     tab.ev("document.querySelectorAll('.start-choice').forEach(b => b.remove()), localStorage.setItem('swgsub-hasapp-rawline', '1'), 1")
-    res, clip, steps, navs = start_on(tab, "turn", "hack-diaz · Rawline")
+    res, clip, steps, navs = start_on(tab, "turn", "hackdiaz · Rawline")
     def rl_payload(u):
         try:
             return base64.urlsafe_b64decode(u.split("rawline://add/", 1)[1] + "==").decode()
@@ -761,10 +763,10 @@ try:
     check("[16] …once it is known installed, Start opens rawline://add/ holding a JSON list with the freeturn:// link (the desktop's form)",
           not steps and pl.startswith('["freeturn://') and json.loads(pl)[0].startswith("freeturn://"), (steps, navs, pl[:60]))
     tab.close()
-    serve["turn_client_default"] = dict(keep_default, samosvalishe={"android": "rawline"})   # RawlineMobile picked for hack-diaz on Android
+    serve["turn_client_default"] = dict(keep_default, samosvalishe={"android": "rawline"})   # RawlineMobile picked for hackdiaz on Android
     J("subs/serve.json", serve)
     tab, _ = render("u1", "android", "en")
-    res, clip, steps, navs = start_on(tab, "turn", "hack-diaz · RawlineMobile")
+    res, clip, steps, navs = start_on(tab, "turn", "hackdiaz · RawlineMobile")
     pl = rl_payload(next((u for u in navs if u.startswith("rawline://add/")), ""))
     check("[16] RawlineMobile on Android: Start fires rawline://add/ holding the plain freeturn:// link (the app's form), no steps",
           res == "clicked" and not steps and pl.startswith("freeturn://"), (res, steps, navs[:2], pl[:60]))
@@ -866,8 +868,8 @@ try:
     serve["turn_client_default"] = dict(keep_default, samosvalishe={"linux": "sidecar@samosvalishe"})   # the operator picks the CLI
     J("subs/serve.json", serve)
     tab, _ = render("u1", "linux", "en")
-    lb = bubble(tab, "hack-diaz · Sidecar")
-    check("[8] the hack-diaz CLI on Linux offers v4.0.3, the proxy's own release — a turn proxy's version reaches the page",
+    lb = bubble(tab, "hackdiaz · Sidecar")
+    check("[8] the hackdiaz CLI on Linux offers v4.0.3, the proxy's own release — a turn proxy's version reaches the page",
           pinned(lb, "v4.0.3", CLI_LIN), lb)
     tab.close()
     serve["turn_client_default"] = keep_default

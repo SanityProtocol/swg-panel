@@ -422,7 +422,7 @@ function Hi({ text, q }) {
 
 // a line's source as the stream shows it: a mesh link by the node at its other end, not by its generated name
 let _shown = { d: null, m: new Map() };
-// a VK turn proxy by its fork's name and port ("hack-diaz:51823"), not the id in its service name; a WDTT / csqtt
+// a VK turn proxy by its fork's name and port ("hackdiaz:51823"), not the id in its service name; a WDTT / csqtt
 // interface (no catalog fork before its port) stays as it is
 // (a WDTT / csqtt interface named "<fork>-<n>" is no VK proxy: only a turn-kind fork maps; legacy "main" is cacggghp, as
 // turnFork says; memoised per catalog — the stream re-renders thousands of lines every poll)

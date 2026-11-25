@@ -82,7 +82,7 @@ deps = {"node_snaps": {"svo": {"wdtt": [{"iface": "WDTT3", "fork": "xxcipherx", 
 P._check_turn_latest(deps)
 rows = P.turn_updates_view(deps)
 check("no row for the XXcipherX server", not [r for r in rows if r["fork"] == "xxcipherx"], rows)
-check("the hack-diaz proxy behind its tag keeps its row",
+check("the hackdiaz proxy behind its tag keeps its row",
       [(r["fork"], r["installed"], r["latest"]) for r in rows] == [(proxy_fork, "v4.0.1", "v4.0.3")], rows)
 # a fork whose latest differs by the "v" alone: never a row
 P.TURN_LATEST["forks"][proxy_fork] = "4.0.1"

@@ -150,7 +150,7 @@
   }
 
   // ── a fork's NAME for an end user ({fork} in a server-name template): each page hands its catalog's (q189 HE-8 —
-  // "samosvalishe 56005" was the raw id of a fork renamed hack-diaz). Identity until a page sets it.
+  // "samosvalishe 56005" was the raw id of a fork renamed hackdiaz). Identity until a page sets it.
   var forkName = function (f) { return f; };
   // ── the CLI builds a fork's catalog offers (its cli_authors, native first) — each page hands its own; none = the table ──
   var cliAuthorsOf = function () { return null; };

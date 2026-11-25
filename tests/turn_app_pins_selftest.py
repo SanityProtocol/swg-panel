@@ -7,7 +7,7 @@ subscriber is handed (the page half is sub_page_render_selftest [8]).
   [1] _pin_tags: upstream's own tag as reported (a turn proxy's "v4.0.3"), and our "<upstream>-<N>" build of it
       (csqtt 2.1.9-4 → v2.1.9, WDTT-Plus 18-2 → v18), most exact first
   [2] _pin_wanted, over a fleet's snapshots: a server whose repository also publishes an app (csqtt, amurcanov's WDTT,
-      WDTT-Plus, ildarmaga, a hack-diaz proxy — the free-turn CLI) is wanted with its running version; a server whose app
+      WDTT-Plus, ildarmaga, a hackdiaz proxy — the free-turn CLI) is wanted with its running version; a server whose app
       lives elsewhere (WINGS-N, anton48) is not; csqtt's 2.5 line ("csqtt@2.5") resolves to csqtt's repository; a stray
       value in a snapshot (a non-string fork) raises nothing
   [3] _turn_warm_pins, GitHub stubbed by tag: the release a version names is pinned with each OS's installer decided
@@ -157,7 +157,7 @@ deps = {"node_snaps": {
                             {"service": "vk-turn-proxy-anton48-56011", "version": "srtp-build440"}]},
     "n2": {"wdtt": [{"iface": "wdtt1", "fork": "wdttplus", "version": "18-2"}]}}}
 W = P._pin_wanted(deps)
-check("[2] csqtt (both lines), amurcanov's WDTT, ildarmaga, WDTT-Plus and the hack-diaz proxy, each with its running version",
+check("[2] csqtt (both lines), amurcanov's WDTT, ildarmaga, WDTT-Plus and the hackdiaz proxy, each with its running version",
       W == {("amurcanov", "csqtt"): {"2.1.9-4", "2.5.0-1"}, ("amurcanov", "proxy-turn-vk-android"): {"1.2.4-3"},
             ("ildarmaga", "wdtt"): {"1.5.40-2", "1.5.99-1"}, ("Ivan4537", "WDTT-Plus"): {"18-2"},
             ("hackdiaz-dev", "free-turn-proxy"): {"v4.0.3"}}, {"/".join(k): sorted(v) for k, v in W.items()})
@@ -206,7 +206,7 @@ def api(path):
 P._gh_api = api
 ch = P._turn_warm_pins(deps)
 pin = lambda o, r, v: P._RELEASE_PIN.get((o, r, v)) or {}
-check("[3] csqtt 2.1.9-4 → our csqtt-app-2.1.9 with its Android installer, though 2.5 is newer; amurcanov 1.2.4-3 → v1.2.4; WDTT-Plus 18-2 → v18; hack-diaz v4.0.3",
+check("[3] csqtt 2.1.9-4 → our csqtt-app-2.1.9 with its Android installer, though 2.5 is newer; amurcanov 1.2.4-3 → v1.2.4; WDTT-Plus 18-2 → v18; hackdiaz v4.0.3",
       pin("amurcanov", "csqtt", "2.1.9-4").get("tag") == "v2.1.9" and pin("amurcanov", "csqtt", "2.1.9-4").get("src") == "SanityProtocol/swg-panel@csqtt-app-2.1.9"
       and pin("amurcanov", "csqtt", "2.1.9-4").get("url", {}).get("android") == "https://dl/CSQTT-universal.apk"
       and pin("amurcanov", "proxy-turn-vk-android", "1.2.4-3").get("tag") == "v1.2.4" and pin("Ivan4537", "WDTT-Plus", "18-2").get("tag") == "v18"
@@ -308,7 +308,7 @@ cat = {"servers": [], "pins": {"amurcanov/csqtt": {"2.1.9-4": {"tag": "v2.1.9"},
                                 "hackdiaz-dev/free-turn-proxy": {"v4.0.3": {"tag": "v4.0.3"}},
                                 "Ivan4537/WDTT-Plus": {"18-2": {"tag": "v18"}}}}
 own = S._own_pins(cat, peers).get("pins")
-check("[6] a subscriber is handed only its own servers' versions (csqtt 2.1.9-4, hack-diaz v4.0.3) — not 2.5.0-1 or WDTT-Plus 18-2 run elsewhere",
+check("[6] a subscriber is handed only its own servers' versions (csqtt 2.1.9-4, hackdiaz v4.0.3) — not 2.5.0-1 or WDTT-Plus 18-2 run elsewhere",
       own == {"amurcanov/csqtt": {"2.1.9-4": {"tag": "v2.1.9"}}, "hackdiaz-dev/free-turn-proxy": {"v4.0.3": {"tag": "v4.0.3"}}}, own)
 rv = S._running_versions({"wdtt": {"w1": {"iface": "w1", "version": "18-2"}, "bad": 5},
                           "csqtt": [{"iface": ["x"]}, {"iface": "c1", "version": "2.1.9-4"}, "junk"]})

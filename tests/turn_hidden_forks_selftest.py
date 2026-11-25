@@ -9,7 +9,7 @@ longer offers them, a hidden fork keeps the map it had, so its users keep their 
 
   [1] the served catalog (turn_catalog_view, what the SPA and serve.json read): the four hidden forks say hidden, the rest
       do not; no visible fork offers a hidden app in `compat` or `client_schemas`, nor a hidden fork's CLI build in
-      `cli_authors` (hack-diaz and anton48 offered Moroka8's); each hidden fork keeps its map (MYSOREZ's own app,
+      `cli_authors` (hackdiaz and anton48 offered Moroka8's); each hidden fork keeps its map (MYSOREZ's own app,
       Moroka8's CLI) — but no fork offers a GONE app (XXcipherX's: a running xxcipherx server's users get the next WDTT
       app, never a dead link); the apps stay in the clients map, which the hidden forks' users still need
   [2] the Settings save (/api/panel/settings, the real handler): a visible fork's default naming a hidden app or a hidden
@@ -89,13 +89,13 @@ check("[1] no visible fork offers the MYSOREZ app or XXcipherX's (compat)", not 
 check("[1] …nor carries a schema for one (client_schemas follows compat)",
       all(set(srv[sid]["client_schemas"]) == set(srv[sid]["compat"]) for sid in srv),
       {sid: sorted(set(srv[sid]["client_schemas"]) ^ set(srv[sid]["compat"])) for sid in srv})
-check("[1] the visible forks that offered them still offer their other apps (hack-diaz: FreeTurn, the CLI, VK TURN Proxy, Rawline)",
+check("[1] the visible forks that offered them still offer their other apps (hackdiaz: FreeTurn, the CLI, VK TURN Proxy, Rawline)",
       set(srv["samosvalishe"]["compat"]) == {"freeturn", "sidecar", "vkturnproxy", "rawline"}
       and {"wdttapp", "qwdtt", "wdttplus", "vkturnproxy"} <= set(srv["amurcanov"]["compat"]),
       [srv["samosvalishe"]["compat"], srv["amurcanov"]["compat"]])
 cli = {sid: srv[sid]["cli_authors"] for sid in vis if set(srv[sid]["cli_authors"]) & HIDDEN}
-check("[1] no visible fork offers a hidden fork's CLI build (hack-diaz and anton48 offered Moroka8's)", not cli, cli)
-check("[1] …and they keep hack-diaz's", srv["samosvalishe"]["cli_authors"] == ["samosvalishe"]
+check("[1] no visible fork offers a hidden fork's CLI build (hackdiaz and anton48 offered Moroka8's)", not cli, cli)
+check("[1] …and they keep hackdiaz's", srv["samosvalishe"]["cli_authors"] == ["samosvalishe"]
       and srv["anton48"]["cli_authors"] == ["samosvalishe"], [srv["samosvalishe"]["cli_authors"], srv["anton48"]["cli_authors"]])
 check("[1] a hidden fork keeps its map: MYSOREZ its own app, Moroka8 its CLI and the core launcher",
       srv["MYSOREZ"]["compat"].get("mysorez") == "native"
@@ -120,7 +120,7 @@ body = {"turn_client_default": {
 code, rsp = P.api("POST", "/api/panel/settings", {}, body, deps)
 saved = (deps.get("panel_settings") or {}).get("turn_client_default") or {}
 check("[2] the save is accepted", code == 200, (code, rsp))
-check("[2] hack-diaz: the MYSOREZ app and Moroka8's CLI are dropped, its own CLI and VK TURN Proxy kept",
+check("[2] hackdiaz: the MYSOREZ app and Moroka8's CLI are dropped, its own CLI and VK TURN Proxy kept",
       saved.get("samosvalishe") == {"windows": "sidecar@samosvalishe", "ios": "vkturnproxy"}, saved.get("samosvalishe"))
 check("[2] amurcanov: XXcipherX's app is dropped, VK TURN Proxy kept", saved.get("amurcanov") == {"ios": "vkturnproxy"}, saved.get("amurcanov"))
 check("[2] a hidden fork's own app is kept as its default (MYSOREZ's); a gone one is not (XXcipherX's)",

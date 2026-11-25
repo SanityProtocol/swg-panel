@@ -59,7 +59,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
-- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hackdiaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
 - **Suspend access in one click.** Block a person — or just one of their devices — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **Speed limits.** Cap a person, a group, one device or one deployment in Mbit/s — download and upload, or one figure for both. A person's or a group's limit is one budget per server, shared by the devices in use. The live view shows who is held at their limit, and the editor warns where a server can't enforce one yet.
 - **Volume limits.** Give a person, a group or a device so many GB a day, week or month (or in total); at the limit the device is cut off or slowed to 1 Mbit/s, and it comes back when the period resets. Their subscription page shows what is used and what is left.
@@ -161,7 +161,7 @@ subscription and no one else sitting in the middle of your traffic.
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="WireGuard subscription" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="AmneziaWG subscription" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="WINGS-N subscription" width="150"></a>
-  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="hack-diaz subscription" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="hackdiaz subscription" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="anton48 subscription" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="cacggghp subscription" width="150"></a>
 </p>
@@ -658,7 +658,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 **Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK TURN relays to get past tough blocks:
 
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from its new repository, hackdiaz-dev/free-turn-proxy)
+- [hackdiaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from its new repository, hackdiaz-dev/free-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
@@ -672,7 +672,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 - [vnenapravo7-source](https://github.com/vnenapravo7-source/mcrf) — MCRF, a client for csqtt, WDTT and WireGuard on Android and
   [Windows](https://github.com/vnenapravo7-source/mcrf-desktop)
-- [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (a csqtt fork with its own app and MAX calls), [Rawline](https://github.com/ttrroyy/Rawline) (desktop) and [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), clients for csqtt 2.5, MRTT, WDTT and hack-diaz
+- [ttrroyy](https://github.com/ttrroyy/MRTT) — MRTT (a csqtt fork with its own app and MAX calls), [Rawline](https://github.com/ttrroyy/Rawline) (desktop) and [RawlineMobile](https://github.com/ttrroyy/RawlineMobile), clients for csqtt 2.5, MRTT, WDTT and hackdiaz
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 

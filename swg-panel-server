@@ -18337,7 +18337,7 @@ TURN_SERVERS = {
     # then "поддержка amneziawg 3.1" (v3.3.0) and "собственный iface для awg" (v3.3.2). ⚠️ This is a capability claim about
     # SOMEBODY ELSE'S binary, and there is no per-fork version gate yet ([[client-version-compat-matrix]] is designed, not
     # built) — so an operator still running < 3.2.0 is offered AWG interfaces this list now says it can carry.
-    "samosvalishe": {"label": "hack-diaz", "owner": "hackdiaz-dev/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg", "awg"], "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
+    "samosvalishe": {"label": "hackdiaz", "owner": "hackdiaz-dev/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg", "awg"], "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
                      "settings": [{"key": "obf_profile", "flag": "-obf-profile", "type": "enum", "values": ["none", "rtpopus", "rtpopus2", "rtpopus3"], "default": "rtpopus", "label": "Obfuscation profile", "help": "rtpopus* dress the traffic as an RTP/Opus call; none = plain. Must match the FreeTurn client."},
                                   {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
                      "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},
@@ -18582,7 +18582,7 @@ _CLIENT_SOURCES = {
                     {"owner": "hackdiaz-dev", "repo": "free-turn-proxy", "branch": "master", "path": "docs/flags.md"}],
     "mysorez":     [{"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/models/Configs.kt"},
                     {"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/data/AppPreferences.kt"}],
-    # the CLI the visible forks hand out is hack-diaz's free-turn client (Moroka8's build is withdrawn with its fork, 2026-10-14)
+    # the CLI the visible forks hand out is hackdiaz's free-turn client (Moroka8's build is withdrawn with its fork, 2026-10-14)
     "sidecar":     [{"owner": "hackdiaz-dev", "repo": "free-turn-proxy", "branch": "master", "path": "internal/config/cliflags.go"}],
     # WDTT-family CLIENT apps — previously watched by NOTHING (which is how qWDTT's Raw mode + csqtt reached us by
     # word of mouth instead of a drift alert). Commit-drift watch only: only qWDTT declares a knob,
@@ -18887,7 +18887,7 @@ def _turn_warm_assets():
 # ---- the release a RUNNING server's version names (operator, 2026-10-14) ------------------------------------------
 # An app published from the server's own repository follows the server, not the latest release: a csqtt 2.1.9 server
 # hands out the CSQTT app 2.1.9 even after 2.5 is out (amurcanov's WDTT, WDTT-Plus, qWDTT, ildarmaga's PWDTT, the
-# free-turn CLI by hack-diaz likewise). Apps by other authors keep their own versioning and stay on latest, and so
+# free-turn CLI by hackdiaz likewise). Apps by other authors keep their own versioning and stay on latest, and so
 # does a version no release names (ildarmaga's 1.5.0: all its tags are CI rebuilds of one commit) — as before.
 _RELEASE_PIN = {}        # (owner, repo, server version) -> {tag, page, assets, url:{os: installer}} — refreshed hourly
 _PIN_WANTED = {}         # (owner, repo) -> {server versions seen running within _PIN_KEEP} — what serve.json publishes pins for

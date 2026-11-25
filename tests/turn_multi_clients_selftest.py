@@ -5,8 +5,8 @@ docs/RELEASE-1.8.12-PLAN.md), and the release lookup's `tag_re`.
   [1] the catalog: MCRF reuses the `wdttplus` encoder (csqtt 2.1 + 2.5, Android one-tap, its own app releases only);
       Rawline is one entry with RawlineMobile as its Android name, csqtt 2.5 only (every csqtt link imports into it as
       2.5.0), one-tap on every OS (both register rawline://); MCRF in WG_APPS picks releases the same way
-  [2] compat: both friendly on csqtt and the visible WDTT forks, Rawline on hack-diaz too; the hidden xxcipherx neither
-  [3] client settings: none on csqtt / WDTT (the link is the configuration); Rawline on hack-diaz has FreeTurn's knobs,
+  [2] compat: both friendly on csqtt and the visible WDTT forks, Rawline on hackdiaz too; the hidden xxcipherx neither
+  [3] client settings: none on csqtt / WDTT (the link is the configuration); Rawline on hackdiaz has FreeTurn's knobs,
       whose "auto" relay transport its link writes as udp (operator, 2026-11-24: udp by default)
   [4] tag_re: the newest of a page of 10 whose tag matches (mcrf's betas and android-engines-v* skipped); no match →
       None, so the button keeps /releases; a client without it asks one release, as before; a repository's platforms
@@ -90,14 +90,14 @@ for sid in ("csqtt", "amurcanov", "ildarmaga", "wdttplus", "qwdtt"):
     cm = P._turn_compat(sid)
     check("%s offers MCRF and Rawline as friendly" % sid, cm.get("mcrf") == "friendly" and cm.get("rawline") == "friendly", cm)
 cm = P._turn_compat("samosvalishe")
-check("hack-diaz offers Rawline, not MCRF (no turn-proxy parser)", cm.get("rawline") == "friendly" and "mcrf" not in cm, cm)
+check("hackdiaz offers Rawline, not MCRF (no turn-proxy parser)", cm.get("rawline") == "friendly" and "mcrf" not in cm, cm)
 check("the hidden xxcipherx keeps its map", "mcrf" not in P._TURN_CLIENT_COMPAT["xxcipherx"] and "rawline" not in P._TURN_CLIENT_COMPAT["xxcipherx"])
 
 print("\n[3] client settings")
 for sid in ("csqtt", "amurcanov", "ildarmaga"):
     check("%s: MCRF and Rawline take none" % sid, P._client_schema_for(sid, "mcrf") == [] and P._client_schema_for(sid, "rawline") == [])
 rs, fs = P._client_schema_for("samosvalishe", "rawline"), P._client_schema_for("samosvalishe", "freeturn")
-check("Rawline on hack-diaz: FreeTurn's knobs, the same list", rs == fs and len(rs) >= 5, [d["key"] for d in rs])
+check("Rawline on hackdiaz: FreeTurn's knobs, the same list", rs == fs and len(rs) >= 5, [d["key"] for d in rs])
 rt = next((d for d in rs if d["key"] == "transport"), {})
 check("…its relay transport auto (the link writes it as udp, [6]) or a pick of udp / tcp", rt.get("default") == "auto"
       and {"udp", "tcp"} <= set(rt.get("values") or []) and "(udp)" in rt.get("help", ""), rt)

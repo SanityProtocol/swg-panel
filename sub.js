@@ -203,7 +203,7 @@
   var FORK_ORDER_FALLBACK = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "anton48"];
   function turnServers() { return (_lastData && _lastData.turn_catalog && _lastData.turn_catalog.servers) || null; }
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
-  // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hack-diaz).
+  // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hackdiaz).
   function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
   // The csqtt fork a server RUNS — its line, from the binary the node reports — not the one its record names: while a fork
   // switch is pending, or after one failed and the node fell back, they differ, and MRTT's apps and amurcanov's can't cross lines.
@@ -218,7 +218,7 @@
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
-  var TURN_WG_ONLY_FALLBACK = { anton48: 1 };   // samosvalishe (hack-diaz) carries AmneziaWG since free-turn-proxy v3.2.0, as the catalog says
+  var TURN_WG_ONLY_FALLBACK = { anton48: 1 };   // samosvalishe (hackdiaz) carries AmneziaWG since free-turn-proxy v3.2.0, as the catalog says
   function turnWgOnly(f) { var s = turnServer(f); if (s && s.protocols) return s.protocols.indexOf("awg") < 0; return !!TURN_WG_ONLY_FALLBACK[f]; }
 
   // AXIS-3: the client-app install link for a server fork, from the panel's turn_catalog (server → clients[0] →

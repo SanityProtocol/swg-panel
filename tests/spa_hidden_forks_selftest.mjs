@@ -47,7 +47,7 @@ Store.turnCatalog = { servers: [
   { id: "WINGS-N", label: "WINGS-N", kind: "turn" },
   { id: "MYSOREZ", label: "MYSOREZ", kind: "turn", hidden: true },
   { id: "Moroka8", label: "Moroka8", kind: "turn", hidden: true },
-  { id: "samosvalishe", label: "hack-diaz", kind: "turn" },
+  { id: "samosvalishe", label: "hackdiaz", kind: "turn" },
   { id: "amurcanov", label: "amurcanov", kind: "wdtt", product: "WDTT",
     compat: { wdttapp: "native", wdttplus: "friendly", qwdtt: "friendly", vkturnproxy: "friendly" } },
   { id: "qwdtt", label: "SpaceNeuroX", kind: "wdtt", product: "qWDTT" },
