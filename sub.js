@@ -38,6 +38,10 @@
       copied: "Copied", copiedClip: "Copied to clipboard", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
       dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
       getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually", by: " by {author}",
+      apTitle: "Choose your app", apChange: "Choose another app", apRec: "Recommended", apOneTap: "Opens with one tap",
+      apScan: "Scan the QR in the app", apPaste: "Paste the link in the app", apCli: "Runs from the command line",
+      apHint: "Tap to choose another app", apAlso1: "{app} also works for 1 more connection",
+      apAlsoN: "{app} also works for {n} more connections", apUse: "Use it there too",
       getWgClient: "WireGuard clients", getAwgClient: "AmneziaWG clients",
       dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}", dlPinned: "Release {ver} · matches this server",
       start: "Start", startOpen: "Start — opens {app}", startGet: "Start — installs {app} if you don't have it",
@@ -120,6 +124,10 @@
       copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную", by: " от {author}",
+      apTitle: "Выберите приложение", apChange: "Выбрать другое приложение", apRec: "Рекомендуется", apOneTap: "Открывается одним нажатием",
+      apScan: "Отсканируйте QR в приложении", apPaste: "Вставьте ссылку в приложение", apCli: "Запускается из командной строки",
+      apHint: "Нажмите, чтобы выбрать другое приложение", apAlso1: "{app} подходит ещё для 1 подключения",
+      apAlsoN: "{app} подходит ещё для {n} подключений", apUse: "Использовать и там",
       getWgClient: "Клиенты WireGuard", getAwgClient: "Клиенты AmneziaWG",
       dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}", dlPinned: "Версия {ver} · как у этого сервера",
       start: "Старт", startOpen: "Старт — откроет {app}", startGet: "Старт — установит {app}, если его нет",
@@ -240,7 +248,7 @@
   // Rank a turn-proxy fork by the class of the client it resolves to for THIS visitor — matching the panel picker:
   // native app · friendly app · native sidecar · friendly sidecar · plain (so the "best" connection sorts first).
   function turnCellRank(forkId, awg) {
-    var ga = turnGetApp(forkId, null, awg); if (!ga) return 9;
+    var ga = turnGetApp(forkId, null, awg, undefined, "default"); if (!ga) return 9;   // the operator's default: a pick never moves a card
     var srv = turnServer(forkId), compat = (srv && srv.compat) || {};
     var isCli = ga.cid === "sidecar" || ga.enc === "sidecar";
     var cls = isCli ? (compat.sidecar || "native") : (compat[ga.cid] || "");
@@ -280,7 +288,15 @@
   // catalog — anton48's VK TURN Proxy on iOS) is never handed out for it; the next app is, or none.
   // `line` — a csqtt server's running line (2.1 / 2.5): the two do not speak to each other, so only an app of the server's
   // line is offered. "" (an older node, which runs 2.1 only) filters nothing.
-  function turnGetApp(forkId, ver, awg, line) {
+  // `mode` (item 24): none = what the card hands out — the visitor's own pick (appPick) while it is still in the list, else
+  // the operator's default; "default" = the operator's default alone (card ranking: a pick never moves a card); "all" = every
+  // app this OS can use for the server, in the picker's order, each with its compat class (`cls`).
+  function turnGetApp(forkId, ver, awg, line, mode) {
+    if (!mode) {
+      var lst = turnAppList(forkId, ver, awg, line), pk = appPick(appScope(forkId, line));
+      for (var pi = 0; pk && pi < lst.length; pi++) if (lst[pi].cid === pk) return lst[pi];
+      return lst[0] || null;   // a stale pick (line switched, app retired) falls back silently; the key stays
+    }
     var srv = turnServer(forkId), clients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
     var os = subOs();
     function has(links) { return links && (links.url || links.github || links.play || links.appstore); }
@@ -337,12 +353,12 @@
     // (turn_client_default["csqtt@<line>"]; operator, 2026-10-29; MRTT is a fork — its own key, "mrtt"): "none" hides only that line's servers on this OS, an app
     // of the line is handed out, and anything else — unset, stale, of another line — falls through to the path below,
     // unchanged (the "csqtt" default if it speaks the line, else the rank).
-    if (forkId === "csqtt" && line && line !== "2.1") {
+    if (mode === "default" && forkId === "csqtt" && line && line !== "2.1") {
       var d25 = (((_lastData && _lastData.turn_client_default) || {})["csqtt@" + line] || {})[os];
       if (d25 === "none") return null;
       if (d25 && clients[d25] && (compat[d25] || !hasCompat)) { var b25 = build(d25); if (b25) return b25; }
     }
-    var def = (((_lastData && _lastData.turn_client_default) || {})[forkId] || {})[os];
+    var def = mode === "all" ? "" : (((_lastData && _lastData.turn_client_default) || {})[forkId] || {})[os];
     // "none" = the operator chose DON'T OFFER this server on this OS. Return nothing and stop — every caller
     // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the
     // intent. It must short-circuit BEFORE the compat-ranked fallback below, or the deliberate choice would
@@ -365,6 +381,7 @@
     for (var id in clients) if (compat[id] && has(clients[id].platforms && clients[id].platforms[os])) ranked.push(id);
     // compat band first, then the one-tap (autostart) apps ahead of paste/QR-only ones, then alphabetical — mirrors the panel picker.
     ranked.sort(function (a, b) { return rank(a) - rank(b) || ((autostartOf(b) ? 1 : 0) - (autostartOf(a) ? 1 : 0)) || (a < b ? -1 : a > b ? 1 : 0); });
+    if (mode === "all") return ranked.map(function (cid) { var r = build(cid); if (r) r.cls = compat[cid]; return withCli(r, cliAuthors[0]); }).filter(Boolean);
     // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
     // stood in where a fork's own could not open one-tap; its repository is gone — the panel's picker agrees).
     for (var k = 0; k < ranked.length; k++) { var r2 = build(ranked[k]); if (r2) return withCli(r2, cliAuthors[0]); }
@@ -375,6 +392,204 @@
       for (var j = 0; j < cids.length; j++) { var r = build(cids[j]); if (r) return withCli(r, cliAuthors[0]); }
     }
     return null;
+  }
+  // ── Item 24: the visitor picks the app (operator, 2026-11-25) ────────────────────────────────────────────────────────
+  // A pick is kept on THIS device (which app is installed is a fact about the phone), per server type × OS, under the
+  // operator default's own key: the fork, csqtt@<line> for a csqtt line other than 2.1, mrtt. A pick of the default clears it.
+  function appScope(forkId, line) { return (forkId === "csqtt" && line && line !== "2.1") ? "csqtt@" + line : forkId; }
+  function appPickKey(scope) { return "swgsub-app:" + scope + ":" + subOs(); }
+  function appPick(scope) { return _ls(appPickKey(scope)) || ""; }
+  function setAppPick(scope, cid) { _lsSet(appPickKey(scope), cid); }
+  function appIsCli(cid) { var cl = (((_lastData && _lastData.turn_catalog) || {}).clients || {})[cid] || {}; return cid === "sidecar" || cl.encoder === "sidecar" || !!cl.cli; }
+  // The list: the operator's default first, then every other app this OS can use for the server. A slow (plain) app is left
+  // out unless it IS the default, and so is a command-line client on a phone (Termux only in practice; operator, 2026-11-25).
+  function turnAppList(forkId, ver, awg, line) {
+    var def = turnGetApp(forkId, ver, awg, line, "default"); if (!def) return [];
+    var out = [def], phone = subOs() === "android" || subOs() === "ios";
+    turnGetApp(forkId, ver, awg, line, "all").forEach(function (r) {
+      if (r.cid !== def.cid && r.cls !== "plain" && !(phone && appIsCli(r.cid))) out.push(r);
+    });
+    return out;
+  }
+  var SWAP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13.5V2.5M2.3 5.2 5 2.5l2.7 2.7M11 2.5v11M8.3 10.8 11 13.5l2.7-2.7"/></svg>';
+  var CHECK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.6 6.4 12 13 4.6"/></svg>';
+  var _appCells = [];   // this render's connections with a choice — the "Use it there too" offer reads them
+  function appAuthor(r) { return (r && (r.author || r.cliAuthor)) || ""; }
+  function appHow(r) {
+    if (r.autostart) return t("apOneTap");
+    if (appIsCli(r.cid)) return t("apCli");
+    var cl = (((_lastData && _lastData.turn_catalog) || {}).clients || {})[r.cid] || {};
+    return (cl.qr && appScans(r.cid)) ? t("apScan") : t("apPaste");
+  }
+  function appListInfo(scope, sub, list, cur) {
+    return { scope: scope, sub: sub, cur: cur ? cur.cid : "", def: list.length ? list[0].cid : "",
+             list: list.map(function (r) { return { cid: r.cid, name: r.productName || r.app, author: appAuthor(r), how: appHow(r) }; }) };
+  }
+  // "<app> by <author>" as one label: the badge, the roll and the list all build it here
+  function appLabel(name, author) {
+    var lbl = el("span", "ap-lbl"); lbl.appendChild(el("span", "ap-nm", name));
+    if (author) { var by = tagBy(author); by.classList.add("ap-au"); lbl.appendChild(by); }
+    return lbl;
+  }
+  // The badge of a csqtt / WDTT / turn card: "<app> by <author>" — no fork in front, the author always, a native app's too
+  // (operator, 2026-11-25) — then the port that tells two relays of one fork apart. `kind` leads only in the connection list,
+  // which names connections side by side: an interface's type (CSQTT, WDTT), a turn proxy's server author; hidden on the
+  // card, and dropped where it repeats the app ("CSQTT", not "CSQTT · CSQTT").
+  function appBadge(kind, kindColor, name, author, color, port) {
+    var tag = el("span", "scell-tag");
+    if (kind && kind.toUpperCase() !== String(name).toUpperCase()) {
+      var kd = el("span", "scell-tag-kind"), ks = el("span", null, kind); ks.style.color = kindColor;
+      kd.appendChild(ks); kd.appendChild(el("span", "scell-tag-sep", " · ")); tag.appendChild(kd);
+    }
+    var app = el("span", "scell-app"); app.style.color = color; app.appendChild(appLabel(name, author)); tag.appendChild(app);
+    if (port) tag.appendChild(el("span", "scell-tag-port", ":" + port));
+    return tag;
+  }
+  // With two or more apps the label is a chip and the whole badge is the target (≥44 px tall); one app (most of iOS) stays
+  // text, no dead control.
+  var _apHintT = 0;
+  function wireAppChip(tag, info) {
+    if (info.list.length < 2) return;
+    _appCells.push(info);
+    var chip = tag.querySelector(".scell-app");
+    tag.classList.add("scell-tag-pick"); tag.setAttribute("role", "button"); tag.tabIndex = 0;
+    tag.setAttribute("aria-label", t("apChange") + ": " + chip.textContent);
+    chip.classList.add("scell-appchip");
+    var sw = el("span", "ap-swap"); sw.appendChild(svgNode(SWAP_SVG)); chip.appendChild(sw);
+    var open = function (e) { e.preventDefault(); e.stopPropagation(); appHintDone(); openAppPicker(info); };
+    tag.onclick = open;
+    tag.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") open(e); };
+    tag._apInfo = info; info._tag = tag;
+    if (!appHintSeen()) { clearTimeout(_apHintT); _apHintT = setTimeout(scheduleAppHint, 0); }   // once the page is built
+  }
+  // A pick rebuilds the page and the tapped badge stays where it was on screen (the lang/theme rebuild lands on the
+  // connection's top instead: right for a header button, a jump for a badge mid-screen). The offer's rebuild has no tapped
+  // badge, so the one nearest the middle of the screen stays put.
+  function reRenderAt(tag) {
+    var tags = function () { return document.querySelectorAll(".scell-tag-pick"); };
+    if (!tag || !document.body.contains(tag)) {
+      var bd = Infinity, mid = innerHeight / 2;
+      Array.prototype.forEach.call(tags(), function (x) {
+        var r = x.getBoundingClientRect(); if (!r.width || r.right < 0 || r.left > innerWidth) return;
+        if (Math.abs(r.top - mid) < bd) { bd = Math.abs(r.top - mid); tag = x; }
+      });
+    }
+    var idx = tag ? Array.prototype.indexOf.call(tags(), tag) : -1, top0 = tag ? tag.getBoundingClientRect().top : 0;
+    return Promise.resolve(reRender()).then(function () {
+      var nt = idx >= 0 ? tags()[idx] : null; if (!nt) return;
+      var d = nt.getBoundingClientRect().top - top0; if (Math.abs(d) < 1) return;
+      var pg = nt.closest(".pager");   // the pager scrolls in portrait, the window on a desktop
+      if (pg && pg.scrollHeight > pg.clientHeight + 1 && getComputedStyle(pg).overflowY !== "visible") pg.scrollTop += d;
+      else window.scrollTo({ top: (window.scrollY || 0) + d, behavior: "instant" });
+    });
+  }
+  function openAppPicker(info) {
+    closeAllHints();
+    var ov = el("div", "cp-overlay"), panel = el("div", "cp-panel ap-panel");
+    var head = el("div", "cp-head"), title = el("div", "cp-title"), list = el("div", "cp-list");
+    var x = el("button", "cp-close"); x.type = "button"; x.setAttribute("aria-label", t("close")); x.textContent = "×";
+    x.onclick = dismissHints;
+    title.appendChild(el("span", "cp-eyebrow", t("apTitle")));
+    head.appendChild(title); head.appendChild(x);
+    panel.appendChild(head);
+    panel.appendChild(el("div", "ap-sub", info.sub + (platLbl(subOs()) ? " · " + platLbl(subOs()) : "")));
+    panel.appendChild(list); ov.appendChild(panel);
+    ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
+    info.list.forEach(function (a) {
+      var on = a.cid === info.cur, r = el("button", "cp-row ap-row" + (on ? " on" : "")); r.type = "button";
+      var main = el("span", "ap-main"), top = el("span", "ap-top"), end = el("span", "ap-end"), ck = el("span", "ap-check");
+      top.appendChild(el("span", "cp-name", a.name));
+      if (a.author) top.appendChild(el("span", "ap-by", t("by").replace("{author}", forkLabel(a.author)).trim()));
+      main.appendChild(top); main.appendChild(el("span", "ap-how", a.how)); r.appendChild(main);
+      if (a.cid === info.def) end.appendChild(el("span", "ap-rec", t("apRec")));
+      if (on) ck.appendChild(svgNode(CHECK_SVG));
+      end.appendChild(ck); r.appendChild(end);
+      r.onclick = function () { dismissHints(); if (!on) pickApp(info, a); };
+      list.appendChild(r);
+    });
+    document.body.appendChild(ov);
+    _pickOv = ov;   // the config picker's slot: closeAllHints, Escape and Back close it the same way
+    attachSwipeClose(ov, dismissHints, panel);
+    setTimeout(function () { document.addEventListener("keydown", _pickKey, true); }, 0);
+    armOverlayBack();
+  }
+  function pickApp(info, a) {
+    // The offer, counted BEFORE the rebuild (render is async, and the registry is empty until it finishes): this app on the
+    // page's other connections that still follow their default — one whose default already is this app has nothing to change.
+    var scopes = {}, n = 0, reset = a.cid === info.def;
+    if (!reset) _appCells.forEach(function (c) {
+      if (c.scope === info.scope || appPick(c.scope) || c.cur === a.cid || !c.list.some(function (x) { return x.cid === a.cid; })) return;
+      scopes[c.scope] = 1; n++;
+    });
+    setAppPick(info.scope, reset ? "" : a.cid);
+    reRenderAt(info._tag);
+    if (n) showActionToast(t(n === 1 ? "apAlso1" : "apAlsoN").replace("{app}", a.name).replace("{n}", n), t("apUse"), function () {
+      for (var s in scopes) setAppPick(s, a.cid);
+      reRenderAt(null);
+    });
+  }
+  function showActionToast(msg, label, fn) {
+    if (_toastEl) { try { _toastEl.remove(); } catch (_) {} clearTimeout(_toastT); }
+    var box = el("div", "sub-toast ap-toast"), b = el("button", "ap-toast-b", label); b.type = "button";
+    var gone = function () { try { box.remove(); } catch (_) {} if (_toastEl === box) _toastEl = null; clearTimeout(_toastT); };
+    b.onclick = function (e) { e.stopPropagation(); gone(); fn(); };
+    box.appendChild(el("span", "ap-toast-t", msg)); box.appendChild(b);
+    document.body.appendChild(box); _toastEl = box; _toastT = setTimeout(gone, 8000);
+  }
+  // Once per device, the first chip to come fully into view rolls its label through up to three other apps and lands back
+  // on its own; never again after it played or after any chip tap. Reduced motion: a one-line hint under it instead.
+  var _apHintIO = null;
+  function appHintSeen() { return _ls("swgsub-apphint") === "1"; }
+  function appHintDone() {
+    _lsSet("swgsub-apphint", "1");
+    if (_apHintIO) { _apHintIO.disconnect(); _apHintIO = null; }
+    var h = document.querySelector(".ap-hint"); if (h) h.remove();
+  }
+  function scheduleAppHint() {
+    if (appHintSeen() || !window.IntersectionObserver) return;
+    if (_apHintIO) _apHintIO.disconnect();
+    _apHintIO = new IntersectionObserver(function (ents) {
+      for (var i = 0; i < ents.length; i++) if (ents[i].isIntersecting) {
+        var tag = ents[i].target.closest(".scell-tag-pick"); _apHintIO.disconnect(); _apHintIO = null;
+        setTimeout(function () { if (!appHintSeen() && document.body.contains(tag)) playAppHint(tag); }, 700);
+        return;
+      }
+    }, { threshold: [1] });
+    // the chip itself: the badge's hit-area padding reaches past the card row's clipped edge, so the badge is never wholly "in view"
+    Array.prototype.forEach.call(document.querySelectorAll(".scell-tag-pick .scell-appchip"), function (c) { _apHintIO.observe(c); });
+  }
+  function playAppHint(tag) {
+    _lsSet("swgsub-apphint", "1");
+    var info = tag._apInfo, chip = tag.querySelector(".scell-appchip"), lbl = chip && chip.querySelector(".ap-lbl");
+    if (!info || !lbl) return;
+    if (!chip.animate || (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)) {   // no Web Animations: the hint too
+      var row = tag.parentNode; row.parentNode.insertBefore(el("div", "ap-hint", t("apHint")), row.nextSibling); return;
+    }
+    // the whole "<app> by <author>" rolls, the chip's width following each label in turn
+    var me = info.list.filter(function (a) { return a.cid === info.cur; })[0]; if (!me) return;
+    var seq = [me].concat(info.list.filter(function (a) { return a !== me; }).slice(0, 3)).concat([me]);
+    var w0 = lbl.getBoundingClientRect().width, roll = el("span", "ap-roll"), inner = el("span", "ap-roll-in");
+    seq.forEach(function (a) { var r = appLabel(a.name, a.author); r.classList.add("ap-roll-i"); inner.appendChild(r); });
+    roll.appendChild(inner); lbl.replaceWith(roll);
+    var kids = Array.prototype.slice.call(inner.children);
+    var ws = kids.map(function (r) { return r.getBoundingClientRect().width; });
+    var lh = Math.max.apply(null, kids.map(function (r) { return r.getBoundingClientRect().height; }));
+    kids.forEach(function (r) { r.style.height = lh + "px"; });   // one row height, so each step lands exactly
+    roll.style.height = lh + "px"; roll.style.width = w0 + "px";
+    var steps = seq.length - 1, dur = 420 * steps + 300, kf = [], kw = [], ease = "cubic-bezier(.55,0,.25,1)";
+    for (var i = 0; i < steps; i++) {
+      kf.push({ transform: "translateY(" + (-i * lh) + "px)", offset: i / steps });
+      kf.push({ transform: "translateY(" + (-i * lh) + "px)", offset: (i + 0.5) / steps, easing: ease });
+      kw.push({ width: ws[i] + "px", offset: i / steps });
+      kw.push({ width: ws[i] + "px", offset: (i + 0.5) / steps, easing: ease });
+    }
+    kf.push({ transform: "translateY(" + (-steps * lh) + "px)", offset: 1 }); kw.push({ width: ws[steps] + "px", offset: 1 });
+    inner.animate(kf, { duration: dur, fill: "forwards" });
+    roll.animate(kw, { duration: dur });
+    var c = getComputedStyle(chip).color.replace(/^rgba?\(([^)]*)\)$/, "$1").split(",").slice(0, 3).join(",");
+    chip.animate([{ boxShadow: "0 0 0 0 rgba(" + c + ",0)" }, { boxShadow: "0 0 0 4px rgba(" + c + ",.28)", offset: 0.25 },
+                  { boxShadow: "0 0 0 4px rgba(" + c + ",.28)", offset: 0.75 }, { boxShadow: "0 0 0 0 rgba(" + c + ",0)" }],
+                 { duration: dur, easing: "ease-in-out" }).onfinish = function () { roll.replaceWith(lbl); };
   }
   // The visitor's device OS, mapped to a catalog platform key (best-effort from the UA / platform string).
   function _subDetectOs() {
@@ -838,6 +1053,9 @@
         if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
         if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's
           var bc = en.badge.cloneNode(true);   // button — each becomes its icon alone (the turtle, the magnet), shown, not pressable
+          Array.prototype.forEach.call(bc.querySelectorAll(".scell-tag-pick"), function (x) {   // the app chip: text here, not a button in a button
+            x.classList.remove("scell-tag-pick"); x.removeAttribute("role"); x.removeAttribute("tabindex"); x.removeAttribute("aria-label");
+          });
           Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
             var icon = el("span"); icon.className = x.className; icon.classList.remove("scell-mark");
             icon.setAttribute("role", "img"); icon.setAttribute("aria-label", x.getAttribute("aria-label") || "");
@@ -1667,7 +1885,7 @@
   function reRender() {   // rebuild for a lang/theme change, but land the reader back where they were
     if (!_lastData || !_lastKey) return;
     var pos = capturePos();
-    render(_lastData, _lastKey, pos);
+    return render(_lastData, _lastKey, pos);   // its promise: a pick puts the tapped badge back once the page is rebuilt
   }
   function setLang(l) { LANG = l; _lsSet("swgsub-lang", l); document.documentElement.lang = l; paintCtl(); reRender(); }
   function setTheme(mode) {   // "light" | "dark" | "" (auto)
@@ -1985,17 +2203,11 @@
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
           vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [], version: cd.version }, cga && cga.enc, cd.line);   // 2.5 → the sealed link + a QR
-        // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
-        // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
-        // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
-        var csfork = forkLabel(cfk);   // the catalog's name (amurcanov, ttrroyy), never a copy of it here
+        // Badge "<app> by <author>" (item 24) in the csqtt FORK colour; the role chip below keeps the iface colour. Behind it,
+        // the apps of this server's fork and line for the visitor to choose from.
         var cffork = forkColor(cfk);   // the csqtt FORK colour (catalog key), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
-        var ctag = el("span", "scell-tag");
-        // server + app chips take the FORK colour (like the WDTT/turn cells); the role chip below keeps the iface colour.
-        var csrv = el("span", null, csfork); csrv.style.color = cffork; ctag.appendChild(csrv);
-        ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, cAppName); capp.style.color = cffork; ctag.appendChild(capp);
-        if (cga && cga.author && cga.author !== csfork) ctag.appendChild(tagBy(cga.author));   // cross-author client only
+        var ctag = appBadge(cd.line === "mrtt" ? "MRTT" : "CSQTT", cfc, cAppName, cga ? appAuthor(cga) : forkLabel(cfk), cffork);
         srvRow.appendChild(ctag);
         var crl = tgt.primary || "";
         var cBackup = multi && crl === "backup";                                // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
@@ -2006,6 +2218,8 @@
         crole.appendChild(el("span", "scell-role-if", cd.line === "mrtt" ? "MRTT" : "CSQTT " + (cd.line || "2.1")));   // MRTT: its own name
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
+        // the app list names the server the way this chip does ("CSQTT 2.5", "MRTT")
+        wireAppChip(ctag, appListInfo(appScope(cfk, cd.line), crole.lastChild.textContent, turnAppList(cfk, cd.version, false, cd.line), cga));
         ctrl.forkId = cfk; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
         if (cart.vkMissing) {                                                  // no VK link yet → the same warning the turn/WDTT cells show
           var cvkw = el("div", "scell-vk scell-vkwarn");
@@ -2059,17 +2273,15 @@
           wg_port: wd.wg_port, tun_port: wd.tun_port, raw_port: wd.raw_port, workers: wWorkers,
           vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
         var wAppName = (wga && (wga.productName || wga.app)) || wart.app;
-        // Badge "<fork> · <app>", collapsing to just the fork when the app name echoes it — same rule the turn cells use.
+        // Badge "<app> by <author>" (item 24), just the fork when the app name echoes it — same rule the turn cells use.
         var wHasApp = wAppName && wAppName !== wfork;
-        var wtag = el("span", "scell-tag");
-        var wsrv = el("span", null, forkLabel(wfork)); wsrv.style.color = wfc; wtag.appendChild(wsrv);
-        // Colour the app chip by the fork its client is NATIVE to (not the server fork) — same rule the turn cells use,
-        // so "AMURCANOV · PWDTT" shows PWDTT in its home fork's colour, not amurcanov's.
+        // Colour the app by the fork its client is NATIVE to (not the server fork) — same rule the turn cells use,
+        // so PWDTT on amurcanov's server shows in its home fork's colour, not amurcanov's.
         var wAppFork = (wga && wclients[wga.cid] && wclients[wga.cid].native_fork) || wfork;
         var wAppColor = forkColor(wAppFork);
-        if (wHasApp) { wtag.appendChild(el("span", "scell-tag-sep", " · ")); var wapp = el("span", null, wAppName); wapp.style.color = wAppColor; wtag.appendChild(wapp);
-          if (wga && wga.author && wga.author !== wfork) wtag.appendChild(tagBy(wga.author)); }   // app author (e.g. luminescq)
+        var wtag = wHasApp ? appBadge("WDTT", ifaceColor("wdtt"), wAppName, appAuthor(wga), wAppColor) : appBadge("", "", forkLabel(wfork), "", wfc);
         srvRow.appendChild(wtag);
+        if (wHasApp && wga) wireAppChip(wtag, appListInfo(appScope(wfork), "WDTT · " + forkLabel(wfork), turnAppList(wfork, wd.version), wga));
         var wrl = tgt.primary || "";
         var wBackup = multi && wrl === "backup";                                 // WDTT is its own protocol family in the panel → the "WDTT" role chip (not the built-in WG), in the WDTT type colour
         var wrole = el("span", "scell-role" + (wBackup ? " scell-backup" : "") + (multi && wrl ? " scell-role-on" : ""));
@@ -2125,11 +2337,11 @@
       // "WINGS V" — else that client's name, e.g. the CLI on desktop); only when NO client ships for this OS does it
       // fall back to the encoder's app name. Keeps the badge in step with the OS-correct download (never a wrong-OS app).
       var appName = (ga && (ga.productName || ga.app)) || (art && art.app);
-      // app badge: a branded/resolved app name → "{fork} · {app}"; otherwise just "{fork} app". Every fork now resolves
-      // to a client for the visitor's OS (cacggghp → VK TURN Proxy on mobile, CLI on desktop), so there's no "no app" case.
+      // Every fork resolves to a client for the visitor's OS (cacggghp → VK TURN Proxy on mobile, CLI on desktop), so
+      // there's no "no app" case; the VK prompt below still names the fork for one.
       var appInfo = appName ? { badge: appName, kind: "app", app: appName }
                   : { badge: t("forkApp").replace("{fork}", forkLabel(forkId)), kind: "fork", fork: forkId };
-      // badge = just the fork when it echoes its own id (a generic fork like Moroka8 with no app name); "fork · App"
+      // badge = just the fork when it echoes its own id (a generic fork like Moroka8 with no app name); "<app> by <author>"
       // when there's a real app name (WINGS V/DeX, FreeTurn, VK TURN Proxy, CLI client)
       var hasAppName = appName && appName !== forkId;
       ctrl.app = appName;   // Axis-3: the client app name for the "Open in {app}" deep-link button
@@ -2139,28 +2351,24 @@
       var appColor = forkColor(appFork);
       // Enlarged-QR caption (peer.title · …): a turn cell names the APP; the main-screen caption keeps the server name.
       ctrl.zoomTail = hasAppName ? appName : forkLabel(forkId);
-      // Badge = "<server used> · <app>": the server chip in the used fork's colour, the app chip in its native fork's.
-      var tag = el("span", "scell-tag");
-      // Two relays of the SAME fork on one deployment would otherwise render as two identical badges, leaving
+      // Badge = "<app> by <author>" (item 24) in the app's native fork's colour; the server used leads it in the connection
+      // list. Two relays of the SAME fork on one deployment would otherwise render as two identical badges, leaving
       // the reader to guess which is which. The port is the one thing that always separates them.
-      var srvName = it.dupFork ? (forkLabel(forkId) + " :" + String(tp.listen || "").split(":").pop()) : forkLabel(forkId);
-      var srvChip = el("span", null, srvName); srvChip.style.color = fc; tag.appendChild(srvChip);
-      if (hasAppName) {
-        tag.appendChild(el("span", "scell-tag-sep", " · "));
-        var appChip = el("span", null, appName); appChip.style.color = appColor; tag.appendChild(appChip);
-        if (ga && ga.author && ga.author !== forkId) tag.appendChild(tagBy(ga.author));   // app author (e.g. luminescq / SpaceNeuroX)
-      }
+      var tport = it.dupFork ? String(tp.listen || "").split(":").pop() : "";
+      var srvName = forkLabel(forkId) + (tport ? " :" + tport : "");
+      var tag = hasAppName ? appBadge(srvName, fc, appName, appAuthor(ga), appColor, tport) : appBadge("", "", srvName, "", fc);
       srvRow.appendChild(tag);
-      // role + interface next to the badge: multi → "Primary/Backup WG"; single → "WG". Primary/single = iface colour, backup = grey.
-      // The interface word is its OWN span (and the whole role is marked when that's all it says) so the jump
+      if (hasAppName && ga) wireAppChip(tag, appListInfo(appScope(forkId), forkLabel(forkId), turnAppList(forkId, tp.version, it.tgt.type === "awg"), ga));
+      // role + server next to the badge: multi → "Primary/Backup hackdiaz"; single → "hackdiaz". An interface's card names
+      // its type there, a turn proxy's its server author (operator, 2026-11-25), in the fork colour; backup = grey.
+      // The server word is its OWN span (and the whole role is marked when that's all it says) so the jump
       // picker can drop it: there, the row already leads with the protocol icon and the fork name.
-      var ifaceUp = (tgt.type === "awg") ? "AWG" : "WG";
       var rl = tgt.primary || "";
       var isBackup = multi && rl === "backup";
       var role = el("span", "scell-role" + (isBackup ? " scell-backup" : "") + (multi && rl ? " scell-role-on" : ""));
       if (multi && rl) role.appendChild(document.createTextNode(t(rl) + " "));
-      role.appendChild(el("span", "scell-role-if", ifaceUp));
-      if (!isBackup) role.style.color = ifaceColor(tgt.type);
+      role.appendChild(el("span", "scell-role-if", forkLabel(forkId)));
+      if (!isBackup) role.style.color = fc;
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
       // A tap opens the same bubble as the torrent magnet (operator, 2026-10-21) — a title alone never showed on a phone.
@@ -2771,6 +2979,7 @@
 
   function render(data, cryptoKey, keepPos) {
     closeNoteBubble();                                 // its marker is about to leave the DOM, and its text may change language
+    _appCells = [];
     _lastData = data; _lastKey = cryptoKey;
     LANGS = (data.langs && data.langs.enabled && data.langs.enabled.length) ? data.langs.enabled : ["en"];
     LANG_DEFAULT = (data.langs && data.langs.default) || "en";

@@ -69,6 +69,17 @@ Fixture — node q-node, three deployments per device:
       MRTT's own decoder opens), Rawline on Linux (rawline://add/ around that mrtt:// link), nothing on iOS; Dana's 2.1 and
       2.5 servers are not offered the MRTT app
 
+  [18] the visitor picks the app (1.8.12 item 24; operator, 2026-11-25): the badges read "<app> by <author>", a chip where
+      there is a choice; the list puts the operator's default first (Recommended), then the other apps with their authors,
+      and leaves the command-line client out on a phone (a desktop keeps it); a pick makes the card hand out that app — its
+      badge and download — is kept on the device per server type, offers itself where it also works ("Use it there too"), and
+      is cleared by picking the default again; a pick never moves a card (the order stays the operator's), a stale one falls
+      back silently and is kept; on the desktop the tapped badge stays put through the rebuild; the connection list names a
+      connection "<type or server author> · <app>" with no button inside its rows; the one-time roll plays once and lands
+      back on the chip's own label, and under reduced motion a one-line hint stands in for it
+  The turn cards name their server's author beside the badge (operator, 2026-11-25), not the interface: [9] tells the
+  AmneziaWG and WireGuard proxies apart by count — one hackdiaz card on iOS, where only the WireGuard one has an app.
+
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
 
@@ -107,6 +118,11 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
      --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
      --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
+     --perturb-pickrank   serves a sub.js whose card ranking follows the visitor's pick → RED on [18]
+     --perturb-cliphone   serves a sub.js that lists the command-line client on a phone → RED on [18]
+     --perturb-pickclone  serves a sub.js whose connection list copies the app chip as a button → RED on [18]
+     --perturb-pickjump   serves a sub.js whose pick rebuild leaves the tapped badge where the rebuild puts it → RED on [18]
+     --perturb-stalepick  serves a sub.js that hides a card whose saved pick the list no longer holds → RED on [18]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -154,8 +170,14 @@ P_RUNFORK = "--perturb-runfork" in sys.argv
 P_LL25 = "--perturb-ll25" in sys.argv
 P_LLFIRE = "--perturb-llfire" in sys.argv
 P_LL21 = "--perturb-ll21" in sys.argv
+P_PICKRANK = "--perturb-pickrank" in sys.argv
+P_CLIPHONE = "--perturb-cliphone" in sys.argv
+P_PICKCLONE = "--perturb-pickclone" in sys.argv
+P_PICKJUMP = "--perturb-pickjump" in sys.argv
+P_STALEPICK = "--perturb-stalepick" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK)
+           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
+           or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -356,13 +378,26 @@ if P_PICKMARK:
 if P_CSQRANK:
     perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
 if P_LINE25:
-    perturbed_web('    if (forkId === "csqtt" && line && line !== "2.1") {', '    if (forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
+    perturbed_web('    if (mode === "default" && forkId === "csqtt" && line && line !== "2.1") {',
+                  '    if (mode === "default" && forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
 if P_LINEMRTT:
     perturbed_web('        var cga = turnGetApp(cfk, cd.version, false, cd.line);', '        var cga = turnGetApp("csqtt", cd.version, false, cd.line);', "the MRTT fork's own apps and defaults")
 if P_RUNFORK:
     perturbed_web('        var cfk = csqttRunFork(cd);', '        var cfk = cd.fork || "csqtt";', "the fork the server runs, not its record's")
 if P_MRTTBY:
-    perturbed_web('        var csfork = forkLabel(cfk);', '        var csfork = forkLabel("csqtt");', "MRTT's own author on its tag")
+    perturbed_web('cga ? appAuthor(cga) : forkLabel(cfk), cffork);', 'forkLabel("csqtt"), cffork);', "MRTT's own author on its tag")
+if P_PICKRANK:
+    perturbed_web('turnGetApp(forkId, null, awg, undefined, "default"); if (!ga) return 9;', 'turnGetApp(forkId, null, awg); if (!ga) return 9;',
+                  "card ranking on the operator's default, never the pick")
+if P_CLIPHONE:
+    perturbed_web(' && !(phone && appIsCli(r.cid))) out.push(r);', ') out.push(r);', "no command-line client in a phone's list")
+if P_PICKCLONE:
+    perturbed_web('            x.classList.remove("scell-tag-pick"); x.removeAttribute("role"); x.removeAttribute("tabindex"); x.removeAttribute("aria-label");\n',
+                  "", "the connection list's badge copy stripped of the chip's button")
+if P_PICKJUMP:
+    perturbed_web('var d = nt.getBoundingClientRect().top - top0; if (Math.abs(d) < 1) return;', 'return;', "the tapped badge kept in place")
+if P_STALEPICK:
+    perturbed_web('      return lst[0] || null;   // a stale pick', '      return pk ? null : lst[0] || null;   // a stale pick', "a stale pick falls back")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -443,13 +478,13 @@ READ = r"""(() => {
     pages: [...document.querySelectorAll("section.ppage")].map(pg => ({
       mode: pg.getAttribute("data-mode"), p2pn: pg.querySelectorAll(".scell-p2p").length,
       cells: [...pg.querySelectorAll(".scell")].map(c => ({
-        tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
+        tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), app: txt(c, ".scell-app"), chip: !!c.querySelector(".scell-tag-pick"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
         payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent, p2p: (x => x ? x.getAttribute("aria-label") : null)(c.querySelector(".scell-p2p")),
         note: (x => x ? x.getAttribute("data-note") : null)(c.querySelector(".scell-p2p")),
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
-def render(uid, os_, lang, phone=False, desktop=False):
+def render(uid, os_, lang, phone=False, desktop=False, ls=None):
     """Load `uid`'s subscription as a visitor on `os_` reading `lang`, the way the page's own selectors persist those. `phone`: a
     390×844 touch viewport (the narrow layout); `desktop`: 1280×800 (the wide one, whose header carries the Connections button)."""
     tab = Tab(br)
@@ -461,7 +496,12 @@ def render(uid, os_, lang, phone=False, desktop=False):
         if tab.ev("location.href").startswith(ORIGIN):
             break
         time.sleep(0.1)
-    tab.ev("localStorage.setItem('swgsub-os', %s); localStorage.setItem('swgsub-lang', %s); true" % (json.dumps(os_), json.dumps(lang)))
+    # Item 24's own keys start clean: no app picked, the one-time roll off (it would swap a badge's text for its labels while a check
+    # reads it) — unless `ls` says otherwise ({key: value, or None to remove}); the tabs share one localStorage.
+    seed = dict({"swgsub-os": os_, "swgsub-lang": lang, "swgsub-apphint": "1"}, **(ls or {}))
+    tab.ev("Object.keys(localStorage).filter(k => k.startsWith('swgsub-app:')).forEach(k => localStorage.removeItem(k)); "
+           + "; ".join(("localStorage.setItem(%s, %s)" % (json.dumps(k), json.dumps(v))) if v is not None else "localStorage.removeItem(%s)" % json.dumps(k)
+                       for k, v in seed.items()) + "; true")
     # Record what Start hands to the clipboard, and every navigation the page asks for (a scheme link included), before
     # sub.js runs — Page.addScriptToEvaluateOnNewDocument installs it into the document the next navigation creates.
     tab.br.send("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
@@ -669,7 +709,9 @@ try:
         en, ru = by_words(os_, "en").get(cell), by_words(os_, "ru").get(cell)
         check("[2] %s %s cell: EN badge says ' by %s'" % (os_, cell, author), en == " by " + author, by_words(os_, "en"))
         check("[2] %s %s cell: RU badge says ' от %s', no English" % (os_, cell, author), ru == " от " + author, by_words(os_, "ru"))
-    tp = [c for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if (c["role"] or "") in ("AWG", "WG") and c["by"]]
+    # a turn proxy's card names its server's author beside the badge (operator, 2026-11-25), an interface's card its type
+    is_proxy = lambda c: not (c["role"] or "").startswith(("CSQTT", "MRTT", "WDTT"))
+    tp = [c for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if is_proxy(c) and c["by"]]
     check("[2] the turn-proxy cell's author word is translated wherever one renders (RU)", tp and all(" by " not in c["by"] for c in tp),
           [c["by"] for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if c["by"]])
 
@@ -684,18 +726,21 @@ try:
     # [9] an app whose own tunnel is WireGuard only (anton48's VK TURN Proxy, `awg: false`) is never handed out for an AmneziaWG
     #     interface behind a proxy — the app itself warns that AmneziaWG keys cannot work (the review of 356a08f9, F3)
     ios = turn_cells(renders[("ios", "en")])
-    check("[9] iOS: no AmneziaWG cell offers VK TURN Proxy (the AWG proxy has no iOS app, so it shows no card)",
-          not [c for c in ios if (c["role"] or "") == "AWG" and "VK TURN Proxy" in (c["tag"] or "")], [(c["role"], c["tag"]) for c in ios])
-    check("[9] …while the WireGuard interface's proxy still does", any((c["role"] or "") == "WG" and "VK TURN Proxy" in (c["tag"] or "") for c in ios),
+    # Anna has two hackdiaz proxies, one before awg0 and one before wg0; their cards name the server, not the interface, so they
+    # are told apart by count: on iOS only the WireGuard one has an app
+    ihd = [c for c in ios if c["role"] == "hackdiaz"]
+    check("[9] iOS: no AmneziaWG cell offers VK TURN Proxy (the AWG proxy has no iOS app, so it shows no card): one hackdiaz card",
+          len(ihd) == 1, [(c["role"], c["tag"]) for c in ios])
+    check("[9] …while the WireGuard interface's proxy still does", len(ihd) == 1 and "VK TURN Proxy" in (ihd[0]["tag"] or ""),
           [(c["role"], c["tag"]) for c in ios])
-    check("[9] control: on Android the AmneziaWG proxy keeps its cell (FreeTurn carries AmneziaWG)",
-          any((c["role"] or "") == "AWG" and "FreeTurn" in (c["tag"] or "") for c in turn_cells(renders[("android", "en")])),
+    check("[9] control: on Android the AmneziaWG proxy keeps its cell (FreeTurn carries AmneziaWG): both hackdiaz cards, FreeTurn",
+          [c["app"] for c in turn_cells(renders[("android", "en")]) if c["role"] == "hackdiaz"] == ["FreeTurn by hackdiaz"] * 2,
           [(c["role"], c["tag"]) for c in turn_cells(renders[("android", "en")])])
 
     # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hackdiaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
     fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
-          if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith(("MYSOREZ", "cacggghp"))]   # [10]'s and [12]'s proxies are other forks
+          if is_proxy(c) and not (c["tag"] or "").startswith(("MYSOREZ", "cacggghp"))]   # [10]'s and [12]'s proxies are other forks
     # the label as a word of its own: "hackdiaz" is a prefix of the owner, hackdiaz-dev, which must not pass for it
     check("[6] the samosvalishe-fronted cell's badge names hackdiaz on every OS and language",
           fp and all(re.search(r"(?<![\w-])hackdiaz(?![\w-])", c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
@@ -708,7 +753,7 @@ try:
     tab, _ = render("u1", "android", "en")
     wc = [c for p in renders[("android", "en")]["pages"] for c in p["cells"] if "WDTT" in (c["tag"] or "")]
     check("[7] the WDTT cell's Android app is amurcanov's own WDTT (no cross-author app, never XXcipherX's)",
-          wc and all((c["tag"] or "") == "amurcanov · WDTT" and not c["by"] for c in wc), [(c["tag"], c["by"]) for c in wc])
+          wc and all((c["tag"] or "") == "WDTT by amurcanov" for c in wc), [(c["tag"], c["by"]) for c in wc])
     res, clip, steps, navs = start_on(tab, "turn", "WDTT")
     check("[7] …and its Start copies the wdtt:// link and shows the import steps (the app opens no scheme), firing nothing",
           res == "clicked" and steps and not navs and any(x.startswith("wdtt://") for x in clip), (res, navs, steps, [x[:20] for x in clip]))
@@ -736,7 +781,7 @@ try:
     bb = bubble(tab, "CSQTT")
     check("[8] the CSQTT app's bubble offers v2.1.9 — the release the server runs, from our csqtt-app-2.1.9, though v2.5.1 is the latest — and says it matches",
           pinned(bb, "v2.1.9", PIN_APK) and not any("csqtt-app-2.5.1" in u or "amurcanov" in u for u in bb["links"]), bb)
-    wb = bubble(tab, "amurcanov · WDTT")
+    wb = bubble(tab, "WDTT by amurcanov")
     check("[8] the WDTT cell (amurcanov 1.2.4-3) offers its own app's v1.2.4 — the WDTT server's version reaches the page",
           pinned(wb, "v1.2.4", WDTT_APK), wb)
     fb = bubble(tab, "hackdiaz · FreeTurn")
@@ -806,7 +851,7 @@ try:
     check("[17] Android, an MRTT server: one cell, the MRTT app, its chip says MRTT",
           len(cells) == 1 and "MRTT" in (cells[0]["tag"] or "") and cells[0]["role"] == "MRTT", [(c["tag"], c["role"]) for c in cells])
     check("[17] …its tag credits MRTT's author, ttrroyy, not csqtt's (amurcanov)",
-          len(cells) == 1 and (cells[0]["tag"] or "").startswith("ttrroyy") and "amurcanov" not in (cells[0]["tag"] or ""), [c["tag"] for c in cells])
+          len(cells) == 1 and cells[0]["tag"] == "MRTT by ttrroyy", [c["tag"] for c in cells])
     res, clip, steps, navs = start_on(tab, "turn", "MRTT")
     ml = next((u for u in navs if u.startswith("mrtt://")), "")
     check("[17] …Start fires the mrtt:// link one-tap, sealed under MRTT's seed (MRTT's own decoder opens it to the server)",
@@ -836,7 +881,7 @@ try:
     cells = turn_cells(rd)
     check("[17] a switch to MRTT that fell back to 2.5 (record fork mrtt, the node runs 2.5): amurcanov's app and name, never the MRTT app",
           len(_hit) == 1 and _hit[0].get("fork") == "mrtt" and len(cells) == 1 and "MRTT" not in (cells[0]["tag"] or "")
-          and (cells[0]["tag"] or "").startswith("amurcanov"), (len(_hit), [(c["tag"], c["role"]) for c in cells]))
+          and (cells[0]["tag"] or "").startswith("CSQTT by amurcanov"), (len(_hit), [(c["tag"], c["role"]) for c in cells]))
     tab.close()
     open(_sp, "w").write(_keep)
     time.sleep(3.2)
@@ -1145,6 +1190,143 @@ try:
           and "This device's data limit is used up" in dead and "12/1/2027" in dead, dead)
     tab.close()
     os.unlink(os.path.join(D, "subs", "usage.json"))
+    # [18] the visitor picks the app (1.8.12 item 24; operator, 2026-11-25): the badge opens the list of the apps this OS can use
+    #      for the connection; a pick lives on the device per server type × OS and the link / download follow it
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+    time.sleep(3.2)                                     # swg-sub's read cache (_READ_TTL, 3 s)
+    def sheet(tab, role):   # open the app list of the first Turn cell whose server chip says `role`: [(row text, chosen)]
+        return tab.ev(r"""(() => {
+          const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === 'turn');
+          if (!pg) return 'no page';
+          const cells = [...pg.querySelectorAll('.scell')];
+          const i = cells.findIndex(c => ((c.querySelector('.scell-role-if') || {}).textContent || '') === %s);
+          if (i < 0) return 'no cell';
+          pg._seek(i, null);
+          const t = cells[i].querySelector('.scell-tag-pick'); if (!t) return 'no chip';
+          t.click();
+          return [...document.querySelectorAll('.ap-row')].map(r => [r.innerText.replace(/\s+/g, ' ').trim(), r.classList.contains('on')]);
+        })()""" % json.dumps(role))
+    def pick(tab, name):    # tap the list row of the app `name`
+        ok = tab.ev("(() => { const r = [...document.querySelectorAll('.ap-row')].find(r => r.querySelector('.cp-name').textContent === %s);"
+                    " if (!r) return false; r.click(); return true; })()" % json.dumps(name))
+        time.sleep(1.2)                                 # the page rebuilds (render is async)
+        return ok
+    def stored(tab, scope, os_="android"):
+        return tab.ev("localStorage.getItem(%s)" % json.dumps("swgsub-app:%s:%s" % (scope, os_)))
+    def cells_now(tab):
+        return [{"role": c["role"], "app": c["app"], "getapp": c["getapp"]} for c in turn_cells(tab.ev(READ))]
+    ROLES = lambda cs: [c["role"] for c in cs]
+    CLI = "Runs from the command line"
+    tab, r0 = render("u1", "android", "en", phone=True)
+    fresh = turn_cells(r0)
+    check("[18] Android: the badges read '<app> by <author>', a chip where there is a choice",
+          [(c["role"], c["app"], c["chip"]) for c in fresh if c["role"] in ("CSQTT 2.1", "WDTT", "hackdiaz")]
+          == [("CSQTT 2.1", "CSQTT by amurcanov", True), ("WDTT", "WDTT by amurcanov", True), ("hackdiaz", "FreeTurn by hackdiaz", True),
+              ("hackdiaz", "FreeTurn by hackdiaz", True)], [(c["role"], c["app"], c["chip"]) for c in fresh])
+    rows = sheet(tab, "WDTT")
+    check("[18] the WDTT list: the operator's default first, chosen and Recommended, then the other apps with their authors",
+          isinstance(rows, list) and rows[0] == ["WDTT by amurcanov Paste the link in the app Recommended", True]
+          and ["MCRF by vnenapravo7-source Opens with one tap", False] in rows and ["RawlineMobile by ttrroyy Opens with one tap", False] in rows, rows)
+    rows_hd = sheet(tab, "hackdiaz")
+    check("[18] Android: hackdiaz's list leaves out the command-line client (a phone runs it in Termux only)",
+          isinstance(rows_hd, list) and [r[0] for r in rows_hd] == ["FreeTurn by hackdiaz Opens with one tap Recommended", "RawlineMobile by ttrroyy Opens with one tap"],
+          rows_hd)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
+    sheet(tab, "WDTT")
+    pick(tab, "MCRF")
+    after = cells_now(tab)
+    wd = [c for c in after if c["role"] == "WDTT"]
+    check("[18] a pick: the WDTT card hands out MCRF — its badge and its download — and the device keeps it for amurcanov's servers",
+          len(wd) == 1 and wd[0]["app"] == "MCRF by vnenapravo7-source" and "MCRF" in (wd[0]["getapp"] or "") and stored(tab, "amurcanov") == "mcrf",
+          (wd, stored(tab, "amurcanov")))
+    toast = tab.ev("(document.querySelector('.ap-toast') || {}).innerText || ''")
+    check("[18] …and offers MCRF where it also works and the visitor kept the default (the CSQTT 2.1 server)",
+          toast.replace("\n", " ").startswith("MCRF also works for 1 more connection"), toast)
+    tab.ev("(() => { const b = document.querySelector('.ap-toast-b'); if (b) b.click(); return !!b; })()"); time.sleep(1.2)
+    after = cells_now(tab)
+    check("[18] 'Use it there too' gives the CSQTT 2.1 server MCRF as well",
+          stored(tab, "csqtt") == "mcrf" and [c["app"] for c in after if c["role"] == "CSQTT 2.1"] == ["MCRF by vnenapravo7-source"],
+          (stored(tab, "csqtt"), [(c["role"], c["app"]) for c in after]))
+    sheet(tab, "WDTT")
+    pick(tab, "WDTT")
+    check("[18] picking the default again clears the pick", stored(tab, "amurcanov") is None
+          and [c["app"] for c in cells_now(tab) if c["role"] == "WDTT"] == ["WDTT by amurcanov"], stored(tab, "amurcanov"))
+    tab.close()
+    # a pick never moves a card: the turn proxies keep the operator's ranking (a friendly app picked for hackdiaz would rank it
+    # after the native apps of cacggghp's proxy)
+    tab, r1 = render("u1", "android", "en", phone=True, ls={"swgsub-app:samosvalishe:android": "rawline"})
+    c1 = turn_cells(r1)
+    check("[18] a pick leaves the cards in place: RawlineMobile on both hackdiaz cards, the order as without it",
+          ROLES(c1) == ROLES(fresh) and [c["app"] for c in c1 if c["role"] == "hackdiaz"] == ["RawlineMobile by ttrroyy"] * 2,
+          (ROLES(fresh), [(c["role"], c["app"]) for c in c1]))
+    tab.close()
+    # a pick the list no longer holds (an app retired, a line switched) falls back to the default, silently, and is kept
+    tab, r2 = render("u1", "android", "en", phone=True, ls={"swgsub-app:amurcanov:android": "xxcipher"})
+    check("[18] a stale pick: the WDTT card shows the default app, and the pick stays on the device",
+          [c["app"] for c in turn_cells(r2) if c["role"] == "WDTT"] == ["WDTT by amurcanov"] and stored(tab, "amurcanov") == "xxcipher",
+          [(c["role"], c["app"]) for c in turn_cells(r2)])
+    tab.close()
+    # the desktop keeps the command-line client in the list; a pick there keeps the tapped badge where it was on the screen
+    tab, _r = render("u1", "linux", "en", desktop=True)
+    rows_l = sheet(tab, "hackdiaz")
+    check("[18] Linux: hackdiaz's list keeps the command-line client", isinstance(rows_l, list) and any(CLI in r[0] for r in rows_l), rows_l)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
+    FIND = "[...document.querySelectorAll('.scell-tag-pick')].find(x => x.closest('.scell').querySelector('.scell-role-if').textContent === 'WDTT')"
+    tab.ev("(() => { const t = %s; window.scrollBy(0, t.getBoundingClientRect().top - 430); return 1; })()" % FIND); time.sleep(0.5)
+    top0 = tab.ev("Math.round((%s).getBoundingClientRect().top)" % FIND)
+    tab.ev("(%s).click(), 1" % FIND); time.sleep(0.4)
+    names = tab.ev("[...document.querySelectorAll('.ap-row .cp-name')].map(n => n.textContent)")
+    alt = next((n for n in names[1:] if n != "WDTT"), None) if isinstance(names, list) else None
+    pick(tab, alt)
+    top1 = tab.ev("Math.round((%s).getBoundingClientRect().top)" % FIND)
+    check("[18] desktop: a pick rebuilds the page and the tapped badge stays where it was (no jump)",
+          alt and top0 is not None and top1 is not None and abs(top1 - top0) <= 1, (alt, top0, top1))
+    # the connection list copies the badge: "<type or server author> · <app>", text there — no button inside its row button
+    tab.ev("(() => { const b = [...document.querySelectorAll('[data-pick]')].find(x => x.offsetParent); if (b) b.click(); return !!b; })()"); time.sleep(0.6)
+    tab.ev("(() => { const r = [...document.querySelectorAll('.cp-row')].find(r => (r.querySelector('.cp-name') || {}).textContent === 'laptop');"
+           " if (r) r.click(); return !!r; })()"); time.sleep(0.4)   # Anna has more than one device: hers first, then its connections
+    cp = tab.ev(r"""(() => ({ rows: [...document.querySelectorAll('.cp-row')].map(r => r.textContent.replace(/\s+/g, ' ').trim()),
+                                nested: document.querySelectorAll('.cp-row [role=button], .cp-row [tabindex], .cp-row .scell-tag-pick').length }))()""")
+    check("[18] the connection list names a connection '<type or server author> · <app>' and holds no button in its rows",
+          isinstance(cp, dict) and cp["nested"] == 0 and any(r.startswith("WDTT · " + alt) for r in cp["rows"])
+          and any(r.startswith("hackdiaz · Rawline") for r in cp["rows"]), cp)
+    tab.close()
+    # once per device, the first chip in full view rolls through the other apps and lands back on its own; reduced motion: a hint
+    tab, _r = render("u1", "android", "en", phone=True, ls={"swgsub-apphint": None})
+    tab.ev("(() => { document.querySelector('.scell-tag-pick .scell-appchip').scrollIntoView({block: 'center'}); return 1; })()")
+    seen, lbl0, deadline = set(), None, time.time() + 6
+    while time.time() < deadline:
+        st = tab.ev("(() => { const c = document.querySelector('.scell-tag-pick .scell-appchip'); return [!!c.querySelector('.ap-roll'),"
+                    " c.textContent, localStorage.getItem('swgsub-apphint')]; })()")
+        lbl0 = lbl0 or st[1]
+        if st[0]:
+            seen.add(st[1])
+        if seen and not st[0] and st[2] == "1":
+            break
+        time.sleep(0.1)
+    end = tab.ev("document.querySelector('.scell-tag-pick .scell-appchip').textContent")
+    check("[18] the one-time roll plays once the chip is in view, through the other apps, back to its own label",
+          bool(seen) and end == lbl0 and tab.ev("localStorage.getItem('swgsub-apphint')") == "1", (seen, lbl0, end))
+    tab.close()
+    tab = Tab(br)
+    tab.br.send("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]}, session=tab.s)
+    tab.goto(ORIGIN + "/healthz")
+    for _ in range(50):                                 # the page's origin first, or its localStorage is about:blank's
+        if tab.ev("location.href").startswith(ORIGIN):
+            break
+        time.sleep(0.1)
+    tab.ev("Object.keys(localStorage).filter(k => k.startsWith('swgsub-app:')).forEach(k => localStorage.removeItem(k)); "
+           "localStorage.removeItem('swgsub-apphint'); localStorage.setItem('swgsub-os', 'android'); localStorage.setItem('swgsub-lang', 'en'); true")
+    tab.goto(ORIGIN + "/" + links["u1"]); time.sleep(2.5)
+    tab.ev("(() => { document.querySelector('.scell-tag-pick .scell-appchip').scrollIntoView({block: 'center'}); return 1; })()")
+    time.sleep(1.5)
+    hint = tab.ev("(() => [(document.querySelector('.ap-hint') || {}).textContent || '', document.querySelectorAll('.ap-roll').length])()")
+    why = tab.ev(r"""(() => { const c = document.querySelector('.scell-tag-pick .scell-appchip'), r = c && c.getBoundingClientRect();
+      return {vp: [innerWidth, innerHeight], chip: r && [r.left, r.top, r.right, r.bottom].map(Math.round), seen: localStorage.getItem('swgsub-apphint'),
+              reduce: matchMedia('(prefers-reduced-motion: reduce)').matches, chips: document.querySelectorAll('.scell-tag-pick').length}; })()""")
+    check("[18] reduced motion: no roll, a one-line hint under the chip", hint == ["Tap to choose another app", 0], (hint, why))
+    tab.close()
 finally:
     br.close()
     srv.terminate()

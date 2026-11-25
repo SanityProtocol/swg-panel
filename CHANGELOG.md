@@ -7,6 +7,16 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **People pick their own app on the subscription page.** A connection's card names its app as "<app> by <author>";
+  where more than one app on that device can connect, the badge opens the list — your default app first, marked
+  Recommended, then every other app that fits, each with its author and how it imports (one tap, scan the QR, paste the
+  link). The pick is kept on that device for every server of the same kind, and the card's link, QR, Start and download
+  follow it; the cards keep their order, the page does not move, and a pick that no longer fits (the server changed
+  line, the app was retired) quietly falls back to your default. After a pick, the page offers the same app for the
+  other connections it also works for ("Use it there too"). Slow plain-mode apps, and command-line clients on a phone,
+  are listed only where they are your default. Once per device the badge rolls through the other apps, to show it can
+  be tapped. On a turn proxy's card the word beside the badge now names the server's author instead of WG / AWG.
+
 - **MRTT, a csqtt fork.** A csqtt server's fork can now be MRTT (ttrroyy's fork of csqtt, built by us with the panel's
   integration), chosen when it is created or switched later from amurcanov's csqtt and back: for the MRTT app (Android,
   with MAX calls) and Rawline, which open its mrtt:// link in one tap on the subscription page, with its own app choice

@@ -411,6 +411,9 @@ Its limits:
   Where a server runs both csqtt lines, **Settings → Turn proxies → Default client apps** keeps a default app per line:
   a **2.1 / 2.5** switch above the operating systems picks which line you are choosing for, and each line lists only
   the apps that speak it. Leave 2.5 unset and its servers follow 2.1's choice, as before.
+  The default app is the one a subscription page recommends; where other apps fit the server on that device, the person
+  taps the app's badge on its card to pick one of them, and the device remembers it for every server of that kind.
+  Slow plain-mode apps and, on a phone, command-line clients are offered only when they are your default.
 - **Manage it from your phone.** On a phone the panel opens in its own layout — a tab bar at the bottom, lists as cards,
   windows that slide up and close with a swipe down or the phone's Back. Swipe a row left (or tap its ⋮) for its actions.
   **More → Desktop view** switches to the full desktop layout and back. It can be added to the home screen as an app.
