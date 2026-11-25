@@ -333,7 +333,7 @@ if P_VOLDAY:
 if P_VOLDEV:
     perturbed_web('var volCut = expired && peer.vol_back != null;', 'var volCut = false;', "a device's own volume cut")
 if P_MACOS:
-    perturbed_web('if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;', "", "the csqtt client-for-this-OS guard")
+    perturbed_web('if (!turnGetApp(csqttRunFork(tt.csqtt), (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;', "", "the csqtt client-for-this-OS guard")
 if P_LINE:
     perturbed_web('      if (forkId === "csqtt" && (cl.csqtt_lines || ["2.1"]).indexOf(line || "2.1") < 0) return null;   // this app speaks another csqtt line\n', "",
                   "the csqtt line filter")

@@ -56,7 +56,7 @@ const PLANTS = {
   artpl: ["turn.js", "template_domains: a.domains_mode === \"direct\" && !!a.template_domains,", "template_domains: !!a.template_domains,"],
   runseen: ["turn.js", "  return seen ? s.run : s.want;", "  return s.run;"],
   ifver: ["turn.js", "      <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>\n    </div>", "    </div>"],
-  ifline: ["turn.js", "...(lineDirty ? { line } : {}), ...(is25 && arNow !== arKey.current", "...(is25 && arNow !== arKey.current"],
+  ifline: ["turn.js", "...(lineDirty ? { line, fork: csqttForkOfLine(line) } : {}), ...(is25 && arNow !== arKey.current", "...(is25 && arNow !== arKey.current"],
   arxnull: ["turn.js", "  app_routing: own && arOn(ar).length ? arBody(ar) : null });", "  app_routing: arBody(ar) });"],
   arxempty: ["turn.js", "  app_routing: own && arOn(ar).length ? arBody(ar) : null });", "  app_routing: own ? arBody(ar) : null });"],
   axalways: ["turn.js", "...(is25 && axNow !== axKey.current ?", "...(is25 ?"],
@@ -85,7 +85,7 @@ const PLANTS = {
           "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${() => {}}/>`);"],
   setfork: ["screen-settings.js", ' && (c.fork || "csqtt") === fid && !csqttOtherLine(c)) all.push(', " && !csqttOtherLine(c)) all.push("],
   adoptmrtt: ["iface.js", '${csqttForkOfLine(c.line) !== "csqtt"   //', '${false   //'],
-  stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
+  stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return ((Store.csqttLines || []).includes(l) || csqttFixedLines().includes(l)) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };
 const made = [];
