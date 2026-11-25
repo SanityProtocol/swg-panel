@@ -7685,6 +7685,7 @@ export const STR = {
   "This node can't run {v1}, so the server stays on {v2}. Update the node, or pick {v2}.": "Эта нода не умеет запускать {v1}, поэтому сервер остаётся на {v2}. Обновите ноду или выберите {v2}.",
   "{v1} is a fork, not a version — choose it as the server's fork": "{v1} — это форк, а не версия: выберите его как форк сервера",
   "a {v1} server can't be taken over — create one from the panel": "сервер {v1} нельзя взять под управление — создайте его в панели",
+  "This server runs {v1}, which can't be taken over: create one from the panel instead.": "На этом сервере работает {v1} — такой сервер нельзя взять под управление: создайте его в панели.",
   "{v1} isn't a version this panel offers": "{v1} — не та версия, которую предлагает эта панель",
   "this node can't run {v1} yet — update the node first (its page offers \"update node to …\")": "эта нода пока не умеет запускать {v1} — сначала обновите ноду (на её странице есть «обновить ноду до …»)",
   "The panel's QR codes show the new config at once; each device still has to import it.": "QR-коды панели сразу показывают новый конфиг; импортировать его каждому устройству всё равно нужно.",

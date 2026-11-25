@@ -36,7 +36,7 @@
  *      so it shows the take-over notice instead of "missing" with Recreate, and a failed attempt is not "never created"
  *      (seen live on swgt, 10-24). Read from the source: both are components with hooks, not rendered here
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho|lineof|forkleave|verhide|forksave|forkref> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <cqadopt|cqtwice|ifadopt|ifnever|adopterr|hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21|arxempty|axalways|arondraft|aronoff|rswho|lineof|forkleave|verhide|forksave|forkref|setfork|adoptmrtt> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -83,6 +83,8 @@ const PLANTS = {
   forkref: ["turn.js", 'f.id !== cur && f.line && !can.includes(f.line) ? T(', 'false ? T('],
   askgo: ["turn.js", "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${go}/>`);",
           "      body=${T(\"Its App routing is removed: {v1} has none.\", { v1: csqttLineName(line) })} onConfirm=${() => {}}/>`);"],
+  setfork: ["screen-settings.js", ' && (c.fork || "csqtt") === fid && !csqttOtherLine(c)) all.push(', " && !csqttOtherLine(c)) all.push("],
+  adoptmrtt: ["iface.js", '${csqttForkOfLine(c.line) !== "csqtt"   //', '${false   //'],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };
@@ -95,13 +97,15 @@ async function load(name) {
   const p = path.join(ROOT, "js", "__perturbed_" + name); fs.writeFileSync(p, src.replace(old, nu)); made.push(p);
   return import(pathToFileURL(p).href);
 }
-let TU, ST, TSRC, RSRC, ISRC, NSRC;
+let TU, ST, TSRC, RSRC, ISRC, NSRC, SSRC;
 try { TU = await load("turn.js"); TSRC = fs.readFileSync((MODE && PLANTS[MODE][0] === "turn.js" && made[0]) || path.join(ROOT, "js", "turn.js"), "utf8");
   ST = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
   RSRC = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");   // read only (Rule settings is not rendered here)
   ISRC = fs.readFileSync(path.join(ROOT, "js", "iface.js"), "utf8");     // read only (the interface page has hooks)
   NSRC = fs.readFileSync(path.join(ROOT, "js", "screen-nodes.js"), "utf8");   // read only (the node page has hooks)
-  for (const [f, get, set] of [["iface.js", () => ISRC, v => { ISRC = v; }], ["screen-nodes.js", () => NSRC, v => { NSRC = v; }]])
+  SSRC = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8");   // read only (Settings has hooks)
+  for (const [f, get, set] of [["iface.js", () => ISRC, v => { ISRC = v; }], ["screen-nodes.js", () => NSRC, v => { NSRC = v; }],
+                               ["screen-settings.js", () => SSRC, v => { SSRC = v; }]])
     if (MODE && PLANTS[MODE][0] === f) {
       if (get().split(PLANTS[MODE][1]).length !== 2) throw new Error("plant anchor did not match exactly once — this run would measure nothing");
       set(get().replace(PLANTS[MODE][1], PLANTS[MODE][2]));
@@ -321,5 +325,10 @@ check("[13] both csqtt sheets and the create body send the fork with the line",
 check("[13] the node page's badge and the csqtt card name the fork from the catalog (ttrroyy for MRTT), its line beside it",
       NSRC.includes('<${ForkTag} fork=${c.fork || "csqtt"} suffix=${" " + csqttLineTag(csqttRunLine(name, c.iface))}/>')
       && TSRC.includes('<span class="r">${forkLabel(c.fork || "csqtt")} ${csqttLineTag(sw.run)}</span>') && !TSRC.includes("csqttLineAuthor"));
+// mrtt-fork review F1 / F6 — read from the source (Settings and the adopt sheet have hooks)
+check("[13] Settings' Update on a csqtt fork's row releases only that fork's servers' holds (MRTT's never a 2.1 server's)",
+      SSRC.includes('for (const c of (snap.csqtt || [])) if (c && c.iface && (c.fork || "csqtt") === fid && !csqttOtherLine(c)) all.push('));
+check("[13] a found MRTT server's adopt sheet says it can't be taken over, never \"a version this panel doesn't run\"",
+      ISRC.includes('${csqttForkOfLine(c.line) !== "csqtt"   //') && ISRC.includes("This server runs {v1}, which can't be taken over: create one from the panel instead."));
 
 done(!!MODE, MODE || "");

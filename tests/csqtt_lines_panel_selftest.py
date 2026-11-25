@@ -47,11 +47,14 @@ Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
                        override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12] ·
                        arstore / arclear / ar21 [13] · list253 / listroll [14] · tunbad / tun21 [15] ·
-                       stage / stayall / curpop / f8 [16] · forkline / forkleave / forkversion / forkver / forkcheck [17]
+                       stage / stayall / curpop / f8 [16] · forkline / forkleave / forkversion / forkver / forkcheck /
+                       forkunknown / forkadopt / forkhold / forkvouch [17]
   [17] fork      MRTT is a csqtt FORK, not a version (operator 2026-11-25): created on the fork it records fork + line mrtt and
                  the node is sent MRTT's build; asked for as a Version it is refused; leaving it for amurcanov lands on 2.5 and
                  back; a node that cannot run it refuses it, naming MRTT; the Version control offers 2.1 and 2.5 only; its
-                 latest is its own build
+                 latest is its own build; an unknown line is "not offered", never "a fork"; a found MRTT server is never
+                 taken over; an MRTT server's hold is its line's (fork:csqtt@mrtt), so a held one leaves the update badge;
+                 a csqtt-kind build vouches under either csqtt fork (a switch pending or fallen back)
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -96,6 +99,11 @@ PLANTS = {
     "forkversion": (("[4]", "[17]"), "            \"csqtt_lines\": _csqtt_version_lines(),", "            \"csqtt_lines\": list(CSQTT_LINES),"),
     "forkcheck": ("[17]", "                latest[fid] = _csqtt_current_version(_csqtt_fork_line(fid) or CSQTT_DEFAULT_LINE)   # MRTT: its own line's build",
                   "                latest[fid] = _csqtt_current_version()   # MRTT: its own line's build"),
+    "forkunknown": ("[17]", "str(body.get(\"line\") or \"\").strip() in set(CSQTT_LINES) - set(_csqtt_version_lines()):",
+                    "str(body.get(\"line\") or \"\").strip() not in [CSQTT_DEFAULT_LINE, \"\"] + _csqtt_version_lines():"),
+    "forkadopt": ("[17]", "            if _ln not in _csqtt_version_lines():     # a fork's own line (MRTT)", "            if False:     # a fork's own line (MRTT)"),
+    "forkhold": ("[17]", "_csqtt_hold_svc(_ln or CSQTT_DEFAULT_LINE) if kind == \"csqtt\" else _turn_hold_key(kind, fork)", "_turn_hold_key(kind, fork)"),
+    "forkvouch": ("[17]", "             if (TURN_SERVERS.get(fork) or {}).get(\"kind\") == \"csqtt\" else [fork])", "             if False else [fork])"),
     "forkver": ("[17]", "    if (TURN_SERVERS.get(fork.partition(\"@\")[0]) or {}).get(\"kind\") == \"csqtt\":", "    if fork == \"csqtt\" or fork.startswith(\"csqtt@\"):"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
@@ -467,6 +475,35 @@ try:
     check("its latest is its own build (an update row mrtt@mrtt, and the fork alone)",
           P1._turn_latest_for("mrtt@mrtt") == "mrtt-1.0-1" and P1._turn_latest_for("mrtt") == "mrtt-1.0-1",
           (P1._turn_latest_for("mrtt@mrtt"), P1._turn_latest_for("mrtt")))
+    # mrtt-fork review F7: an unknown line is told so — only a fork's own line is "a fork, not a version"
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt73", "tun_addr": "10.66.173.1/24", "listen": "0.0.0.0:46730", "line": "3.0", "max_passwords": 500})
+    check("a line the panel doesn't know is refused as not offered, never called a fork",
+          code == 400 and "isn't a version this panel offers" in json.dumps(r) and "fork" not in json.dumps(r), (code, r))
+    # mrtt-fork review F6: a found server that runs MRTT's line is never taken over — as amurcanov's csqtt either
+    s0 = snap("nnew")
+    s0["csqtt_candidates"] = [{"iface": "csqttx", "line": "mrtt", "version": "mrtt-1.0-1", "config_dir": "/etc/mrtt",
+                               "listen": "0.0.0.0:46790", "tun_addr": "10.66.179.1/24", "store_found": True}]
+    NNEW_LINES[:] = ["2.1", "2.5", "mrtt"]
+    s0["csqtt_lines"] = list(NNEW_LINES)
+    assert req("/api/node/sync", {"snapshot": s0}, TOK["nnew"])[0] == 200
+    code, r = req("/api/csqtt/adopt", {"node": "nnew", "iface": "csqttx"})
+    check("a found MRTT server is not taken over, even with no fork named (never fork csqtt on line mrtt)",
+          code == 400 and "can't be taken over" in json.dumps(r) and "csqttx" not in (nodes()["nnew"].get("csqtt") or {}), (code, r))
+    NNEW_LINES[:] = ["2.1", "2.5"]
+    # mrtt-fork review F2: an MRTT server's hold is its line's (fork:csqtt@mrtt), where every writer and the SPA keep it
+    deps = {"node_snaps": {"n": {"csqtt": [{"iface": "m", "fork": "mrtt", "line": "mrtt", "version": "mrtt-0.9"}]}}}
+    P.TURN_HOLDS_PATH = os.path.join(TMP, "holds-fork.json")
+    P._check_turn_latest(deps)
+    check("an MRTT server behind its own build is one update row: fork mrtt, line mrtt",
+          [(x.get("fork"), x.get("line"), x.get("latest")) for x in P.turn_updates_view(deps)] == [("mrtt", "mrtt", "mrtt-1.0-1")], P.turn_updates_view(deps))
+    json.dump({"n|" + P._csqtt_hold_svc("mrtt"): {"tag": "mrtt-0.9"}}, open(P.TURN_HOLDS_PATH, "w"))
+    check("…held where /api/csqtt/version holds it: no row, so the header badge clears", P.turn_updates_view(deps) == [], P.turn_updates_view(deps))
+    # mrtt-fork review F5: a csqtt-kind build vouches whichever csqtt fork the node's report names (a switch pending or fallen back)
+    check("a csqtt-kind build vouches under either csqtt fork; an unvetted build under neither; a WDTT fork stays its own",
+          P.keyless_share_capable("mrtt", "raw", "2.5.3") and P.keyless_share_capable("csqtt", "raw", "mrtt-1.0-1")
+          and P.keyless_share_capable("mrtt", "raw", "mrtt-1.0-1") and not P.keyless_share_capable("mrtt", "raw", "2.1.9")
+          and not P.keyless_share_capable("qwdtt", "wg", "1.2.4-3") and P.keyless_share_capable("amurcanov", "wg", "1.2.4-3"),
+          [P.keyless_share_capable(f, "raw", v) for f, v in (("mrtt", "2.5.3"), ("csqtt", "mrtt-1.0-1"), ("mrtt", "2.1.9"))])
 finally:
     proc.terminate()
     try: proc.wait(5)

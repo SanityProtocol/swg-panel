@@ -10,7 +10,8 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **MRTT, a csqtt fork.** A csqtt server's fork can now be MRTT (ttrroyy's fork of csqtt, built by us with the panel's
   integration), chosen when it is created or switched later from amurcanov's csqtt and back: for the MRTT app (Android,
   with MAX calls) and Rawline, which open its mrtt:// link in one tap on the subscription page, with its own app choice
-  per OS. The server keeps its users and their passwords across a switch; the iPhone app does not connect to it.
+  per OS. The server keeps its users and their passwords across a switch; the iPhone app does not connect to it. A panel
+  that has saved its own list of turn proxies offers MRTT once it is ticked in Settings → Turn proxies.
 
 - **Two more client apps: MCRF and Rawline.** MCRF (Android 10+, Windows) connects to csqtt 2.1 and 2.5 and every WDTT
   server — one-tap on Android — and imports plain WireGuard / AmneziaWG configs; its download is the app's own newest release, never a beta

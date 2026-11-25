@@ -205,6 +205,14 @@
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
   // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hack-diaz).
   function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
+  // The csqtt fork a server RUNS — its line, from the binary the node reports — not the one its record names: while a fork
+  // switch is pending, or after one failed and the node fell back, they differ, and MRTT's apps and amurcanov's can't cross lines.
+  function csqttRunFork(cd) {
+    var fk = (cd && cd.fork) || "csqtt", line = cd && cd.line, s = turnServers() || [];
+    if (!line) return fk;
+    for (var i = 0; i < s.length; i++) if (s[i].kind === "csqtt" && s[i].line && s[i].line === line) return s[i].id;
+    return (turnServer(fk) || {}).line ? "csqtt" : fk;
+  }
   if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the name (q189 HE-8)
   if (window.SWGTurn && SWGTurn.setCliAuthors) SWGTurn.setCliAuthors(function (f) { var s = turnServer(f); return s && s.cli_authors; });   // the served CLI builds
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
@@ -1971,7 +1979,7 @@
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
         // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
-        var cfk = cd.fork || "csqtt";   // the server's csqtt fork — amurcanov's, or MRTT (ttrroyy's): its own apps, defaults and name
+        var cfk = csqttRunFork(cd);   // the server's csqtt fork — amurcanov's, or MRTT (ttrroyy's): its own apps, defaults and name
         var cga = turnGetApp(cfk, cd.version, false, cd.line);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
@@ -2322,7 +2330,7 @@
           // every OS, so its encoder fallback is honest) a csqtt link on macOS named an app that does not exist there —
           // "amurcanov · CSQTT", a link and nothing to open it with. turnGetApp also answers "none" (the operator's
           // "don't offer on this OS") with nothing, so that choice keeps hiding it too.
-          if (!turnGetApp((tt.csqtt || {}).fork || "csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;
+          if (!turnGetApp(csqttRunFork(tt.csqtt), (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;
           items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
         }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");

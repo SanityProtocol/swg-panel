@@ -2265,7 +2265,7 @@ export function PanelSettingsScreen() {
     const fork = turnForkList().find(x => x.id === fid) || {};
     if (fork.kind === "csqtt") {   // csqtt: one binary per NODE — release each node's hold and it takes the current build
       const all = [];
-      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const c of (snap.csqtt || [])) if (c && c.iface && !csqttOtherLine(c)) all.push({ node: nid, iface: c.iface });
+      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const c of (snap.csqtt || [])) if (c && c.iface && (c.fork || "csqtt") === fid && !csqttOtherLine(c)) all.push({ node: nid, iface: c.iface });   // this fork's servers only: MRTT's Update never releases a 2.1 hold
       const ct = all.filter(t => canTurnAct(t.node));
       const cskip = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
       if (!ct.length) { skipNote(cskip); return; }

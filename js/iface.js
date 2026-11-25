@@ -33,7 +33,7 @@ import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInt
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
          enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback, CsqttVersionField, CSQTT_DEFAULT_LINE, csqttRunLine,
-         csqttLineTag, csqttForkLine } from "./turn.js";
+         csqttLineTag, csqttForkLine, csqttForkOfLine, csqttLineName } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -340,7 +340,7 @@ export function AdoptCsqttSheet({ node, c }) {
   const storeGone = c.store_found === false;
   // Which csqtt line it runs, so ours starts on the same one ("" = the node couldn't name it: the panel refuses the adopt).
   const lineUnknown = c.line === "";
-  // …or names one this panel does not offer (a later csqtt): the panel refuses that adopt too, so the button says so first
+  // …or names one this panel does not offer (a later csqtt, or a fork's own line — MRTT): the panel refuses that adopt too, so the button says so first
   const lineUnoffered = !!c.line && (Store.csqttLines || []).length > 0 && !(Store.csqttLines || []).includes(c.line);
   // Either way there is no adopt to describe: the version notice stands where the sheet would say what Adopt does
   const lineBlocked = lineUnknown || lineUnoffered;
@@ -366,7 +366,9 @@ export function AdoptCsqttSheet({ node, c }) {
       ${c.line != null ? html`<div class="ig-item"><span class="ig-l">${T("Version")}</span><span class="ig-v">${c.line || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>` : null}
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${storeGone ? html`<span class="faint">${T("couldn't be read")}</span>` : (n || html`<span class="faint">${T("none found")}</span>`)}</span></div>
     </div>
-    ${lineUnoffered ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><span>${T("This server runs csqtt {v1}, which this panel doesn't run: taking it over would cut off its clients.", { v1: (c.version || c.line).slice(0, 16) })}</span></div>` : null}
+    ${lineUnoffered ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><span>${csqttForkOfLine(c.line) !== "csqtt"   // a fork's own line (MRTT): the panel runs it, but only a server it created
+      ? T("This server runs {v1}, which can't be taken over: create one from the panel instead.", { v1: csqttLineName(c.line) })
+      : T("This server runs csqtt {v1}, which this panel doesn't run: taking it over would cut off its clients.", { v1: (c.version || c.line).slice(0, 16) })}</span></div>` : null}
     ${lineUnknown ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><span>${T("The node couldn't tell which csqtt version this server runs, and taking it over on a guess could cut off its clients. Refresh in a minute; if it stays unknown, stop that server and create one from the panel.")}</span></div>` : null}
     ${n && !lineBlocked ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
     <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>

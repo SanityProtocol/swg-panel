@@ -2232,9 +2232,9 @@ def turn_updates_view(deps, nodes=None):
         lt = latest.get(fork) or ""
         if not _turn_behind(inst, lt):
             continue
-        if _turn_hold_get(nid, _turn_hold_key(kind, fork)):
-            continue
         _fk, _, _ln = fork.partition("@")   # a csqtt line's internal id → the fork and the line, apart (the SPA labels the fork)
+        if _turn_hold_get(nid, _csqtt_hold_svc(_ln or CSQTT_DEFAULT_LINE) if kind == "csqtt" else _turn_hold_key(kind, fork)):
+            continue                         # csqtt holds are per LINE ("fork:csqtt@mrtt" for MRTT's), as every writer keys them
         r = rows.setdefault((fork, nid), {"fork": _fk, "kind": kind, "node": nid,
                                           "installed": inst, "latest": lt, "ids": [], **({"line": _ln} if _ln else {})})
         r["ids"].append(ident)
@@ -7104,10 +7104,7 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
                                                   # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
-    "csqtt":     {"raw": ("2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},
-    # mrtt-1.0-1 (the fork mrtt, the build csqtt-mrtt-1.0-1 publishes, 2026-11-24): csqtt25.sh A I M R W D with MRTT v1.0's
-    # own client — reach, spoof +0, IPv6 uplink +0, deactivate / revoke cut + refused, stable address, two instances, App routing
-    "mrtt":      {"raw": ("mrtt-1.0-1",)},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
+    "csqtt":     {"raw": ("2.5.3", "2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
                                                   # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 8911aa11 = the published
                                                   # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
@@ -7120,12 +7117,22 @@ KEYLESS_SHARE_BUILDS = {
                                                   # deactivate/revoke cut + refused, stable address, two instances, App routing
                                                   # 2.5.3 (187224d9 = the published amd64 bytes, 2026-10-28): csqtt25.sh A I X S M R
                                                   # with the 2.5.1 test client — every result as 2.5.1-2's
+    # mrtt-1.0-1 (the fork mrtt, the build csqtt-mrtt-1.0-1 publishes, 2026-11-24): csqtt25.sh A I M R W D with MRTT v1.0's
+    # own client — reach, spoof +0, IPv6 uplink +0, deactivate / revoke cut + refused, stable address, two instances, App routing
+    "mrtt":      {"raw": ("mrtt-1.0-1",)},
 }
 
 
 def keyless_share_capable(fork, path, version):
-    """Does this fork's build, as the node REPORTS it installed, vouch for a source on this path? Unknown ⇒ no."""
-    return bool(version) and version in ((KEYLESS_SHARE_BUILDS.get(fork) or {}).get(path) or ())
+    """Does this fork's build, as the node REPORTS it installed, vouch for a source on this path? Unknown ⇒ no.
+    A csqtt-kind fork is judged by the BUILD alone, under any csqtt-kind fork: the node reports the record's fork but runs
+    its line's binary, so a fork switch still pending, or fallen back, pairs MRTT with a 2.5 build (or csqtt with
+    mrtt-1.0-1) — and every csqtt-kind build string names one binary."""
+    if not version:
+        return False
+    forks = ([f for f, m in TURN_SERVERS.items() if (m or {}).get("kind") == "csqtt"]
+             if (TURN_SERVERS.get(fork) or {}).get("kind") == "csqtt" else [fork])
+    return any(version in ((KEYLESS_SHARE_BUILDS.get(f) or {}).get(path) or ()) for f in forks)
 
 
 def reach_unvouched_report(snap):
@@ -35139,7 +35146,7 @@ def api(method, path, qs, body, deps):
             body = dict(body, line=_fl)
         elif _csqtt_fork_line(_fork_from) and str(body.get("line") or "").strip() in ("", _csqtt_fork_line(_fork_from)):
             body = dict(body, line="2.5")
-        elif "line" in body and str(body.get("line") or "").strip() not in [CSQTT_DEFAULT_LINE, ""] + _csqtt_version_lines():
+        elif "line" in body and str(body.get("line") or "").strip() in set(CSQTT_LINES) - set(_csqtt_version_lines()):
             return 400, {"ok": False, **perr("{v1} is a fork, not a version — choose it as the server's fork",
                                              v1=_csqtt_line_name(str(body.get("line") or "")[:16])), "code": "bad_request"}
         # The csqtt LINE this server runs (docs/CSQTT-LINES-PLAN.md) — a switch, both ways, keeping its users. Only a
@@ -35619,6 +35626,8 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, **perr("the node couldn't tell which csqtt version runs on {v1}, and taking it over on a guess could cut off its clients — refresh and try again; if it stays unknown, stop that server and create one from the panel", v1=iface), "code": "bad_request"}
             if _ln not in CSQTT_LINES:
                 return 400, {"ok": False, **perr("this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients", v1=(_cd.get("version") or _ln)[:16]), "code": "bad_request"}
+            if _ln not in _csqtt_version_lines():     # a fork's own line (MRTT): never adopted as amurcanov's csqtt, nor as itself (below)
+                return 400, {"ok": False, **perr("a {v1} server can't be taken over — create one from the panel", v1=_csqtt_line_name(_ln)), "code": "bad_request"}
             if _ln != CSQTT_DEFAULT_LINE:
                 if _ln not in (_snap.get("csqtt_lines") or []):
                     return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \"update node to …\")", v1=_csqtt_line_name(_ln)), "code": "node_too_old"}

@@ -103,6 +103,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line25     serves a sub.js that ignores the 2.5 line's own default ("csqtt@2.5") → RED on [14]
      --perturb-linemrtt   serves a sub.js that resolves an MRTT server under csqtt's fork (its apps, defaults, name) → RED on [17]
      --perturb-mrttby     serves a sub.js that credits an MRTT server to csqtt's author (amurcanov) → RED on [17]
+     --perturb-runfork    serves a sub.js that takes a csqtt server's fork from its record, not the line it runs → RED on [17]
      --perturb-ll25       serves a sub.js whose La Lune 2.5 cell shows the generic steps (no CSQTTR) → RED on [11]/[13]
      --perturb-llfire     serves a sub.js that shows the steps instead of firing a one-tap app's link (La Lune on Android) → RED on [11]
      --perturb-ll21       serves a catalog where La Lune speaks 2.1 only again → RED on [11]/[13]
@@ -149,11 +150,12 @@ P_CSQSTEPS = "--perturb-csqsteps" in sys.argv
 P_LINE25 = "--perturb-line25" in sys.argv
 P_LINEMRTT = "--perturb-linemrtt" in sys.argv
 P_MRTTBY = "--perturb-mrttby" in sys.argv
+P_RUNFORK = "--perturb-runfork" in sys.argv
 P_LL25 = "--perturb-ll25" in sys.argv
 P_LLFIRE = "--perturb-llfire" in sys.argv
 P_LL21 = "--perturb-ll21" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY)
+           or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -357,6 +359,8 @@ if P_LINE25:
     perturbed_web('    if (forkId === "csqtt" && line && line !== "2.1") {', '    if (forkId === "csqtt" && line === "mrtt") {', "the 2.5 line's own default")
 if P_LINEMRTT:
     perturbed_web('        var cga = turnGetApp(cfk, cd.version, false, cd.line);', '        var cga = turnGetApp("csqtt", cd.version, false, cd.line);', "the MRTT fork's own apps and defaults")
+if P_RUNFORK:
+    perturbed_web('        var cfk = csqttRunFork(cd);', '        var cfk = cd.fork || "csqtt";', "the fork the server runs, not its record's")
 if P_MRTTBY:
     perturbed_web('        var csfork = forkLabel(cfk);', '        var csfork = forkLabel("csqtt");', "MRTT's own author on its tag")
 if P_CSQSTEPS:
@@ -818,6 +822,22 @@ try:
     tab, rd = render("u5", "ios", "en")
     check("[17] iOS, an MRTT server: no app exists, no cell", not turn_cells(rd), [c["tag"] for c in turn_cells(rd)])
     tab.close()
+    # mrtt-fork review F4: a switch to MRTT that fell back to 2.5 — the record says fork mrtt, the node runs 2.5: the page
+    # offers what RUNS (amurcanov's apps and name), never the MRTT app, which can't connect to a 2.5 server
+    _sp = os.path.join(D, "stats", "stats-n1.json")
+    _keep = open(_sp).read()
+    _st = json.loads(_keep)
+    _hit = [r.update(line="2.5", version="2.5.1") or r for r in _st.get("csqtt") or [] if r.get("iface") == "csqtt3"]
+    J("stats/stats-n1.json", _st)
+    time.sleep(3.2)                                     # swg-sub's read cache (_READ_TTL, 3 s)
+    tab, rd = render("u5", "android", "en")
+    cells = turn_cells(rd)
+    check("[17] a switch to MRTT that fell back to 2.5 (record fork mrtt, the node runs 2.5): amurcanov's app and name, never the MRTT app",
+          len(_hit) == 1 and _hit[0].get("fork") == "mrtt" and len(cells) == 1 and "MRTT" not in (cells[0]["tag"] or "")
+          and (cells[0]["tag"] or "").startswith("amurcanov"), (len(_hit), [(c["tag"], c["role"]) for c in cells]))
+    tab.close()
+    open(_sp, "w").write(_keep)
+    time.sleep(3.2)
     tab, rd = render("u4", "android", "en")
     check("[17] …and Dana's 2.1 and 2.5 servers are not offered the MRTT app", not any("MRTT" in (c["tag"] or "") for c in turn_cells(rd)),
           [c["tag"] for c in turn_cells(rd)])
