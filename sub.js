@@ -437,12 +437,15 @@
   // card, and dropped where it repeats the app ("CSQTT", not "CSQTT · CSQTT").
   function appBadge(kind, kindColor, name, author, color, port) {
     var tag = el("span", "scell-tag");
-    if (kind && kind.toUpperCase() !== String(name).toUpperCase()) {
+    // the kind drops where the app repeats it, its port aside ("WDTT :56000 · WDTT" reads "WDTT :56000"): the port then
+    // shows in the connection list too, where it otherwise rides the kind
+    var echo = !!kind && String(kind).replace(/ :\d+$/, "").toUpperCase() === String(name).toUpperCase();
+    if (kind && !echo) {
       var kd = el("span", "scell-tag-kind"), ks = el("span", null, kind); ks.style.color = kindColor;
       kd.appendChild(ks); kd.appendChild(el("span", "scell-tag-sep", " · ")); tag.appendChild(kd);
     }
     var app = el("span", "scell-app"); app.style.color = color; app.appendChild(appLabel(name, author)); tag.appendChild(app);
-    if (port) tag.appendChild(el("span", "scell-tag-port", ":" + port));
+    if (port) tag.appendChild(el("span", "scell-tag-port" + (echo ? " scell-tag-port-on" : ""), ":" + port));
     return tag;
   }
   // With two or more apps the label is a chip and the whole badge is the target (≥44 px tall); one app (most of iOS) stays
@@ -485,7 +488,6 @@
   }
   function openAppPicker(info) {
     closeAllHints();
-    if (_toastEl && _toastEl.classList.contains("ap-toast")) { try { _toastEl.remove(); } catch (_) {} _toastEl = null; clearTimeout(_toastT); }   // a stale offer would overwrite the picks made since
     var ov = el("div", "cp-overlay"), panel = el("div", "cp-panel ap-panel");
     var head = el("div", "cp-head"), title = el("div", "cp-title"), list = el("div", "cp-list");
     var x = el("button", "cp-close"); x.type = "button"; x.setAttribute("aria-label", t("close")); x.textContent = "×";
@@ -515,6 +517,7 @@
     armOverlayBack();
   }
   function pickApp(info, a) {
+    if (_toastEl && _toastEl.classList.contains("ap-toast")) { try { _toastEl.remove(); } catch (_) {} _toastEl = null; clearTimeout(_toastT); }   // an earlier offer would overwrite this pick
     // The offer, counted BEFORE the rebuild (render is async, and the registry is empty until it finishes): this app on the
     // page's other connections that still follow their default — one whose default already is this app has nothing to change.
     var scopes = {}, n = 0, reset = a.cid === info.def;
@@ -2558,12 +2561,14 @@
                  || String(a.tp.listen || "").localeCompare(String(b.tp.listen || "")); });   // client-priority, then canonical fork order
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp, f: x.f }); });
       });
-      // Two cards of this device that would read alike keep their port after the badge: two relays of one fork, on one
+      // Two cards of this device that would read alike keep their port after the badge — two relays of one fork, on one
       // interface or two (wg0 and awg0 behind hackdiaz: the card names the server's author, no longer WG / AWG), and two
-      // WDTT servers (the badge names the app, no longer the fork)
-      var nsame = {}, same = function (x) { return x.tp ? "t:" + x.f : x.wdtt ? "wdtt" : ""; };
-      items.forEach(function (x) { var k = same(x); if (k) nsame[k] = (nsame[k] || 0) + 1; });
-      items.forEach(function (x) { var k = same(x); x.dupFork = !!k && nsame[k] > 1; });
+      // WDTT servers (the badge names the app, no longer the fork) — where the port tells them apart: a Primary / Backup
+      // pair on the same default port reads apart by its role chip, and one port on both would only add noise
+      var nport = {}, same = function (x) { return x.tp ? "t:" + x.f : x.wdtt ? "wdtt" : ""; },
+          portOf = function (x) { return x.tp ? String(x.tp.listen || "").split(":").pop() : String(x.wdtt.dtls_port || ""); };
+      items.forEach(function (x) { var k = same(x); if (k) (nport[k] = nport[k] || {})[portOf(x)] = 1; });
+      items.forEach(function (x) { var k = same(x); x.dupFork = !!k && Object.keys(nport[k]).length > 1; });
     } else {
       orderedTargets(peer.targets).forEach(function (tt) { if (isSelfContained(tt.type) || tt.direct === false) return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
     }

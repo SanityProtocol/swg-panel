@@ -76,7 +76,10 @@ Fixture — node q-node, three deployments per device:
       is cleared by picking the default again; a pick never moves a card (the order stays the operator's), a stale one falls
       back silently and is kept; on the desktop the tapped badge stays put through the rebuild; the connection list names a
       connection "<type or server author> · <app>" with no button inside its rows; the one-time roll plays once and lands
-      back on the chip's own label, and under reduced motion a one-line hint stands in for it
+      back on the chip's own label, and under reduced motion a one-line hint stands in for it; two cards that would read alike
+      keep their port only where it tells them apart (a Primary / Backup pair on one port has none), the port staying in
+      the list row where the app repeats the type ("WDTT by amurcanov :56000"); an offer stays, under the list, while another
+      list is only opened, and goes with the next pick
   The turn cards name their server's author beside the badge (operator, 2026-11-25), not the interface: [9] tells the
   AmneziaWG and WireGuard proxies apart by count — one hackdiaz card on iOS, where only the WireGuard one has an app.
 
@@ -124,7 +127,11 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-pickjump   serves a sub.js whose pick rebuild leaves the tapped badge where the rebuild puts it → RED on [18]
      --perturb-stalepick  serves a sub.js that hides a card whose saved pick the list no longer holds → RED on [18]
      --perturb-dupport    serves a sub.js whose two relays of one fork on two interfaces carry no port → RED on [18]
-     --perturb-staleoffer serves a sub.js that leaves an offer on screen when another list opens → RED on [18]
+     --perturb-staleoffer serves a sub.js that leaves an earlier offer on screen after a pick → RED on [18]
+     --perturb-sameport   serves a sub.js that gives a Primary / Backup pair on one port that port → RED on [18]
+     --perturb-echoport   serves a sub.js whose type label keeps its port when the app repeats the type → RED on [18]
+     --perturb-offeropen  serves a sub.js that drops the offer when a list only opens → RED on [18]
+     --perturb-offertop   serves a sub.css that puts the offer over an open list → RED on [18]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -179,9 +186,14 @@ P_PICKJUMP = "--perturb-pickjump" in sys.argv
 P_STALEPICK = "--perturb-stalepick" in sys.argv
 P_DUPPORT = "--perturb-dupport" in sys.argv
 P_STALEOFFER = "--perturb-staleoffer" in sys.argv
+P_SAMEPORT = "--perturb-sameport" in sys.argv
+P_ECHOPORT = "--perturb-echoport" in sys.argv
+P_OFFEROPEN = "--perturb-offeropen" in sys.argv
+P_OFFERTOP = "--perturb-offertop" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
-           or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER)
+           or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER
+           or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -265,7 +277,8 @@ J("subs/serve.json", {"enabled": True, "turn_enabled": True, "turn_catalog": cat
                       "languages": {"enabled": ["en", "ru"], "default": "en"}})
 VK = ["https://vk.ru/call/join/AAAAbbbbCCCCddddEEEEffffGGGGhhhh1234567890", "https://vk.ru/call/join/ZZZZyyyyXXXXwwwwVVVVuuuuTTTTssss0987654321"]
 J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"},
-                           "u4": {"name": "Dana", "vk_links": VK[:1]}, "u5": {"name": "Eve", "vk_links": VK[:1]}},
+                           "u4": {"name": "Dana", "vk_links": VK[:1]}, "u5": {"name": "Eve", "vk_links": VK[:1]},
+                           "u6": {"name": "Finn", "vk_links": VK[:1]}, "u7": {"name": "Gina", "vk_links": VK[:1]}},
                  "peers": {
                      "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt", "p2p_port": 20016,
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
@@ -286,13 +299,25 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      # [17] a device on an MRTT server (the csqtt fork mrtt, its line mrtt — 1.8.12 item 10)
                      "p6": {"id": "p6", "user_id": "u5", "title": "phone", "csqtt_password": "pw6csqtt",
                             "targets": [{"node": "n1", "iface": "csqtt3", "type": "csqtt"}]},
+                     # [18] a phone on WDTT at two nodes (Primary / Backup): on one port at both (Finn), on two ports (Gina)
+                     "p7": {"id": "p7", "user_id": "u6", "title": "phone", "wdtt_password": "pw7wdtt",
+                            "targets": [{"node": "n1", "iface": "wdtt1", "type": "wdtt", "primary": "primary"},
+                                        {"node": "n2", "iface": "wdtt1", "type": "wdtt", "primary": "backup"}]},
+                     "p8": {"id": "p8", "user_id": "u7", "title": "phone", "wdtt_password": "pw8wdtt",
+                            "targets": [{"node": "n1", "iface": "wdtt1", "type": "wdtt", "primary": "primary"},
+                                        {"node": "n2", "iface": "wdtt2", "type": "wdtt", "primary": "backup"}]},
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
                      "p4": {"id": "p4", "user_id": "u1", "title": "old tablet", "disabled": True,
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
 # [12] torrents leave q-node directly, except from awg1, whose own Torrents / P2P block is on
 J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7", "p2p": {"action": "direct"}, "ifaces": {"awg1": {"block": ["torrents"]}},
                         "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}, "csqtt3": {"listen": "0.0.0.0:56005", "fork": "mrtt", "line": "mrtt"}},
-                        "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}}})
+                        "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}},
+                 "n2": {"name": "q-node2", "endpoint_host": "203.0.113.8",
+                        "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001},
+                                 "wdtt2": {"listen": "0.0.0.0:56010", "fork": "amurcanov", "wg_port": 56011}}}})
+J("stats/stats-n2.json", {"interfaces": {}, "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"},
+                                                     {"iface": "wdtt2", "fork": "amurcanov", "version": "1.2.4-3"}]})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
 b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
 J("stats/stats-n1.json", {"interfaces": {
@@ -321,7 +346,7 @@ const all = new Uint8Array(12 + ct.length); all.set(iv); all.set(ct, 12);
 console.log(Buffer.from(all).toString('base64'));
 """
 users_sub, links = {}, {}
-for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5"), ("u5", "p6")):
+for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5"), ("u5", "p6"), ("u6", "p7"), ("u7", "p8")):
     key, token = os.urandom(32), secrets.token_urlsafe(24)
     sec = subprocess.run(["node", "--input-type=module", "-e", SEAL, key.hex(), json.dumps({"k": b64(32), "p": b64(32)})],
                          capture_output=True, text=True, timeout=60).stdout.strip()
@@ -403,9 +428,20 @@ if P_PICKJUMP:
 if P_STALEPICK:
     perturbed_web('      return lst[0] || null;   // a stale pick', '      return pk ? null : lst[0] || null;   // a stale pick', "a stale pick falls back")
 if P_DUPPORT:
-    perturbed_web('x.dupFork = !!k && nsame[k] > 1;', 'x.dupFork = false;', "two cards that read alike keep their port")
+    perturbed_web('x.dupFork = !!k && Object.keys(nport[k]).length > 1;', 'x.dupFork = false;', "two cards that read alike keep their port")
 if P_STALEOFFER:
-    perturbed_web('    if (_toastEl && _toastEl.classList.contains("ap-toast")) {', '    if (false) {', "a new list drops a stale offer")
+    perturbed_web('    if (_toastEl && _toastEl.classList.contains("ap-toast")) {', '    if (false) {', "a pick drops an earlier offer")
+if P_SAMEPORT:
+    perturbed_web('x.dupFork = !!k && Object.keys(nport[k]).length > 1;',
+                  'x.dupFork = !!k && items.filter(function (y) { return same(y) === k; }).length > 1;', "a port only where it tells cards apart")
+if P_ECHOPORT:
+    perturbed_web('String(kind).replace(/ :\\d+$/, "").toUpperCase()', 'String(kind).toUpperCase()', "the repeat compared without its port")
+if P_OFFEROPEN:
+    perturbed_web('  function openAppPicker(info) {\n    closeAllHints();\n',
+                  '  function openAppPicker(info) {\n    closeAllHints();\n    if (_toastEl) { try { _toastEl.remove(); } catch (_) {} _toastEl = null; }\n',
+                  "an offer kept while a list only opens")
+if P_OFFERTOP:
+    perturbed_web('max-width: min(92vw, 440px); z-index: 89; }', 'max-width: min(92vw, 440px); z-index: 95; }', "the offer under an open list", fname="sub.css")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -1264,13 +1300,36 @@ try:
     pick(tab, "WDTT")
     check("[18] picking the default again clears the pick", stored(tab, "amurcanov") is None
           and [c["app"] for c in cells_now(tab) if c["role"] == "WDTT"] == ["WDTT by amurcanov"], stored(tab, "amurcanov"))
-    # an offer still on screen goes when another list opens: it was counted before the picks made since (review F3)
+    # an offer stays while another list is only opened and closed — under that list while it is open (review F7) — and goes
+    # with the next pick, which it would otherwise write over (review F3)
     sheet(tab, "WDTT"); pick(tab, "RawlineMobile")
     t1 = tab.ev("!!document.querySelector('.ap-toast')")
-    sheet(tab, "WDTT")
-    check("[18] opening a list drops the offer still on screen (it would write over the picks made since)",
-          t1 is True and tab.ev("!!document.querySelector('.ap-toast')") is False, t1)
-    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
+    sheet(tab, "hackdiaz")
+    under = tab.ev("(() => { const t = document.querySelector('.ap-toast'); if (!t) return null; const b = t.getBoundingClientRect();"
+                   " const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !t.contains(e); })()")
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true"); time.sleep(0.4)
+    t2 = tab.ev("!!document.querySelector('.ap-toast')")
+    check("[18] an offer stays while another list only opens and closes, under that list while it is open (review F7)",
+          (t1, under, t2) == (True, True, True), (t1, under, t2))
+    sheet(tab, "WDTT"); pick(tab, "WDTT")
+    check("[18] …and the next pick drops it (it would write over that pick; review F3)",
+          tab.ev("!!document.querySelector('.ap-toast')") is False and stored(tab, "amurcanov") is None, stored(tab, "amurcanov"))
+    tab.close()
+    # two cards that would read alike keep their port only where it tells them apart (review F5): Finn's Primary / Backup
+    # WDTT servers share the default port, so neither card carries it; Gina's are on two ports, so both do — and where the
+    # app repeats the type ("WDTT"), the list row keeps the port after the app, not "WDTT :56000 · WDTT" (review F6)
+    tab, rf = render("u6", "android", "en", phone=True)
+    ft = [c["tag"] for c in turn_cells(rf) if c["role"] == "WDTT"]
+    check("[18] a Primary / Backup pair on one port: two WDTT cards, no port on either (the role chip tells them apart)",
+          len(ft) == 2 and not any(re.search(r":\d+", x or "") for x in ft), ft)
+    tab.close()
+    tab, rg = render("u7", "android", "en", desktop=True)
+    gt = sorted((c["tag"] or "").replace(" ", "") for c in turn_cells(rg) if c["role"] == "WDTT")
+    tab.ev("(() => { const b = [...document.querySelectorAll('[data-pick]')].find(x => x.offsetParent); if (b) b.click(); return !!b; })()"); time.sleep(0.6)
+    gr = tab.ev(r"[...document.querySelectorAll('.cp-row')].map(r => r.innerText.replace(/\s+/g, ' ').trim())")
+    check("[18] two ports: each card carries its own, and the list row (no author there) reads 'WDTT :<port>', never 'WDTT :<port> · WDTT'",
+          gt == ["WDTTbyamurcanov:56000", "WDTTbyamurcanov:56010"] and isinstance(gr, list)
+          and sorted(re.sub(r"\s*:", ":", r) for r in gr if r.startswith("WDTT")) == ["WDTT:56000 PRIMARY", "WDTT:56010 BACKUP"], (gt, gr))
     tab.close()
     # a pick never moves a card: the turn proxies keep the operator's ranking (a friendly app picked for hackdiaz would rank it
     # after the native apps of cacggghp's proxy)

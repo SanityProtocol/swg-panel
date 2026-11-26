@@ -773,6 +773,8 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .scell-tag-kind { display: none; }
 .cp-row .scell-tag-kind { display: inline; }
 .cp-row .scell-tag-port { display: none; }
+/* …unless the kind dropped because the app repeats it: the port is the only place the row keeps it */
+.cp-row .scell-tag-port.scell-tag-port-on { display: inline; }
 .cp-row .scell-appchip { border: 0; background: none; padding: 0; }
 .cp-row .ap-swap { display: none; }
 .ap-roll { display: inline-flex; overflow: hidden; vertical-align: top; }
@@ -790,7 +792,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
   border-radius: 999px; padding: 2px 8px; }
 .ap-check { display: inline-flex; width: 18px; justify-content: center; color: var(--brand); font-size: 17px; }
 .ap-toast { display: flex; align-items: center; gap: 14px; text-align: left; pointer-events: auto; padding: 10px 10px 10px 16px;
-  width: max-content; max-width: min(92vw, 440px); }
+  width: max-content; max-width: min(92vw, 440px); z-index: 89; }   /* the offer: over the page, under an open app list (90) */
 .ap-toast-b { flex: none; min-height: 36px; padding: 0 12px; border-radius: 9px; border: 0; cursor: pointer; font: inherit; font-weight: 700;
   color: #0b1118; background: var(--brand); }
 @media (prefers-reduced-motion: reduce) { .scell-appchip { transition: none; } }
