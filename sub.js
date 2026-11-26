@@ -36,7 +36,7 @@
       netsNames: "A name from that network works only if your administrator set your device to use that network's DNS server. Automatic discovery — printers, the “Network” folder, .local names — doesn't reach across the tunnel.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config",
       copied: "Copied", copiedClip: "Copied to clipboard", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
-      dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
+      enlarge: "Tap to enlarge", share: "Share",
       getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually", by: " by {author}",
       apTitle: "Choose your app", apChange: "Choose another app", apRec: "Recommended", apOneTap: "Opens with one tap",
       apScan: "Scan the QR in the app", apPaste: "Paste the link in the app", apCli: "Runs from the command line",
@@ -69,6 +69,7 @@
       rawlineNote25: "On a CSQTT 2.5 server, uploads of many small packets (QUIC, a VPN inside the VPN) are slower in {app} than in the CSQTT app.",
       // a note in an app's download bubble, by catalog id
       dlNotes: { "mcrf@android": "Needs Android 10 or newer. On first start MCRF downloads its engines (the CSQTT / WDTT one is about 11 MB) — allow it." },
+      dlNotesWg: { "mcrf@android": "Needs Android 10 or newer." },
       mzBtn1: "Download the GUI app", mzBtn2: "Install TURN Proxy core", mzBtn3: "Assemble and connect", mzBtn3Sub: "Follow the instructions",
       mzCopied: "Config string copied", mzGetCore: "Don't forget to download the core",
       mzStep1: "1. Open the *TURN Proxy* app", mzStep2: "2. Go to *Settings*", mzStep3: "3. Click on *Core (Binary)*", mzStep4: "4. Press *Import*",
@@ -124,7 +125,7 @@
       netsNames: "Имя из той сети работает, только если администратор настроил ваше устройство на DNS-сервер этой сети. Автоматический поиск — принтеры, папка «Сеть», имена .local — через туннель не работает.",
       peer: "Пир", primary: "Главный", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать",
       copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
-      dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
+      enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную", by: " от {author}",
       apTitle: "Выберите приложение", apChange: "Выбрать другое приложение", apRec: "Рекомендуется", apOneTap: "Открывается одним нажатием",
       apScan: "Отсканируйте QR в приложении", apPaste: "Вставьте ссылку в приложение", apCli: "Запускается из командной строки",
@@ -154,6 +155,7 @@
       laluneSteps25: ["1. Откройте *{app}*", "2. Добавьте профиль и выберите протокол *CSQTTR*", "3. *Вставьте* скопированную ссылку", "4. Сохраните и подключитесь"],
       rawlineNote25: "На сервере CSQTT 2.5 отдача множества мелких пакетов (QUIC, VPN внутри VPN) в {app} медленнее, чем в приложении CSQTT.",
       dlNotes: { "mcrf@android": "Нужен Android 10 или новее. При первом запуске MCRF скачивает свои движки (для CSQTT / WDTT — около 11 МБ) — разрешите это." },
+      dlNotesWg: { "mcrf@android": "Нужен Android 10 или новее." },
       mzBtn1: "Скачать приложение (GUI)", mzBtn2: "Установить ядро TURN Proxy", mzBtn3: "Собрать и подключиться", mzBtn3Sub: "Следуйте инструкциям",
       mzCopied: "Строка конфигурации скопирована", mzGetCore: "Не забудьте скачать ядро",
       mzStep1: "1. Откройте приложение *TURN Proxy*", mzStep2: "2. Перейдите в *«Настройки»*", mzStep3: "3. Нажмите *«Ядро (Binary)»*", mzStep4: "4. Нажмите *«Импорт»*",
@@ -717,7 +719,8 @@
       var files = (plat.assets && plat.assets.length) ? plat.assets : urlFileName(file) ? [{ name: urlFileName(file), url: file }] : [];   // WireGuard's one installer
       out.push({ cid: id, app: (app.names || {})[os] || app.name, author: app.author || "", platform: os, autostart: one,
                  store: store, page: page, file: file, fileName: urlFileName(file), tag: plat.tag || "", assets: files,
-                 how: t(one ? "apOneTap" : id === "amneziavpn" ? "apPaste" : "apFile") });
+                 how: t(one ? "apOneTap" : id === "amneziavpn" ? "apPaste" : "apFile"),
+                 note: (t("dlNotesWg") || {})[id + "@" + os] || "" });   // its own note, never a turn card's (MCRF's engines)
     });
     return out;
   }
@@ -1133,7 +1136,7 @@
     head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
     b.appendChild(head);
     if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
-    var dnotes = t("dlNotes") || {}, dnote = ga.note || dnotes[ga.cid + "@" + ga.platform] || dnotes[ga.cid];   // what to know before installing (MCRF on Android: 10+ and its engines; Rawline on csqtt 2.5)
+    var dnotes = t("dlNotes") || {}, dnote = ga.note != null ? ga.note : dnotes[ga.cid + "@" + ga.platform] || dnotes[ga.cid];   // what to know before installing (MCRF on Android: 10+ and its engines; Rawline on csqtt 2.5)
     if (dnote) b.appendChild(el("div", "dl-bubble-ver", dnote));
     var list = el("div", "dl-bubble-list");
     files.forEach(function (f) {
@@ -2424,7 +2427,8 @@
     } else {
       var wcid = wga ? wga.cid : "";
       if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppPage = wga.page;   // Start-button download-fallback (the card's app)
-                 ctrl.app = ctrl.dlAppName = wcid === "amneziavpn" ? AMNEZIA_VPN.name : wga.app; }   // the ask reads "Open/Get Amnezia VPN"
+                 ctrl.app = ctrl.dlAppName = wcid === "amneziavpn" ? AMNEZIA_VPN.name : wga.app;   // the ask reads "Open/Get Amnezia VPN"
+                 ctrl.zoomTail = wga.app; }   // the enlarged QR names the app to scan it with, as a turn card's does
       if (conf) { ctrl.payload = conf; ctrl.ready = true; ctrl.hasQR = true; ctrl.ext = "conf"; ctrl.view = "qr"; }
       // Start follows the card's app (item 24). Rawline: rawline://add/ around the .conf (one tap on every OS). AmneziaVPN:
       // the vpn:// link (base64url(qCompress(.conf))), one tap on Android, pasted elsewhere; WINGS V: its own wingsv://

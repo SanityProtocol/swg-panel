@@ -143,6 +143,8 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-wgcollapse serves a sub.js whose badge repeats a protocol the app's name already says → RED on [19]
      --perturb-wsvnote    serves a sub.js that drops WINGS V's old-profile note → RED on [19]
      --perturb-wgdl       serves a sub.js whose WG / AWG download row stays AmneziaVPN's after a pick → RED on [19]
+     --perturb-wgnote     serves a sub.js whose WG / AWG download bubble shows a turn card's note (MCRF's engines) → RED on [19]
+     --perturb-wgzoom     serves a sub.js whose enlarged WG / AWG QR names the protocol, not the app picked → RED on [19]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -206,11 +208,13 @@ P_WGLIST = "--perturb-wglist" in sys.argv
 P_WGCOLLAPSE = "--perturb-wgcollapse" in sys.argv
 P_WSVNOTE = "--perturb-wsvnote" in sys.argv
 P_WGDL = "--perturb-wgdl" in sys.argv
+P_WGNOTE = "--perturb-wgnote" in sys.argv
+P_WGZOOM = "--perturb-wgzoom" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
            or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER
            or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP
-           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL)
+           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -467,6 +471,10 @@ if P_WGCOLLAPSE:
     perturbed_web('    if (kind && !echo) {', '    if (kind) {', "the protocol dropped where the app repeats it")
 if P_WSVNOTE:
     perturbed_web('      if (wga && wga.cid === "wingsv") node.appendChild(el("div", "scell-appnote", t("wingsvOld")));', '', "WINGS V's old-profile note")
+if P_WGNOTE:
+    perturbed_web('                 note: (t("dlNotesWg") || {})[id + "@" + os] || "" });', '                 });', "a WG / AWG card's own download note")
+if P_WGZOOM:
+    perturbed_web("                 ctrl.zoomTail = wga.app; }", "                 }", "the enlarged QR names the card's app")
 if P_WGDL:
     perturbed_web('      if (wga) node.appendChild(getAppRow(wga));   // under the server/app name line', '      if (wga) node.appendChild(getAppRow(wgAppList(tgt.type)[0]));   //',
                   "the WG / AWG download row follows the pick")
@@ -1497,10 +1505,25 @@ try:
     toast = tab.ev("(document.querySelector('.ap-toast') || {}).innerText || ''")
     check("[19] …and offers RawlineMobile where it also works (the WireGuard card among them)", toast.replace("\n", " ").startswith("RawlineMobile also works for"), toast)
     tab.ev("(() => { const t = document.querySelector('.ap-toast'); if (t) t.remove(); return 1; })()")
+    # the enlarged QR names the app it is scanned with, as a turn card's does (review item24-b F5)
+    cap = tab.ev(r"""(() => { %s
+      const box = cells[i].querySelector('.qrbox'); if (!box) return 'no qr'; box.click();
+      const c = document.querySelector('.qz-cap'); const t = c ? c.textContent : null;
+      document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); return t; })()""" % seek_js("awg", "AmneziaWG"))
+    check("[19] the enlarged QR of the AWG card reads 'laptop · RawlineMobile', the app picked", cap == "laptop · RawlineMobile", cap)
     _res, _clip, _steps, navs = start_on(tab, "awg", "AmneziaWG")
     conf_r = next((rawline(u) for u in navs if rawline(u)), None)
     check("[19] Android: Start opens RawlineMobile with rawline://add/ around the plain .conf (AWG keys in it)",
           bool(conf_r) and conf_r.startswith("[Interface]") and "Jc = 4" in conf_r and "Endpoint = 203.0.113.7:51820" in conf_r, navs)
+    tab.close()
+    # MCRF on an AWG card: its download bubble says what MCRF needs on Android, not the turn cards' engine download (F4)
+    tab, _r = render("u1", "android", "en", phone=True, ls={"swgsub-app:awg:android": "mcrf"})
+    notes = tab.ev(r"""(() => { %s
+      const btn = cells[i].querySelector('.scell-getapp-btn'); if (!btn) return 'no button'; btn.click();
+      const b = document.querySelector('.dl-bubble'); if (!b) return 'no bubble';
+      return [...b.querySelectorAll('.dl-bubble-ver')].map(x => x.textContent); })()""" % seek_js("awg", "AmneziaWG"))
+    check("[19] MCRF's bubble on an AWG card: 'Needs Android 10 or newer.', no word of the CSQTT / WDTT engine",
+          isinstance(notes, list) and "Needs Android 10 or newer." in notes and not any("11 MB" in x for x in notes), notes)
     tab.close()
     # WINGS V on the AWG card: its own wingsv:// link — type AMNEZIAWG, backend AMNEZIAWG_TL, the whole .conf — and its note
     tab, r2 = render("u1", "android", "en", phone=True, ls={"swgsub-app:awg:android": "wingsv"})
