@@ -414,6 +414,8 @@ Its limits:
   The default app is the one a subscription page recommends; where other apps fit the server on that device, the person
   taps the app's badge on its card to pick one of them, and the device remembers it for every server of that kind.
   Slow plain-mode apps and, on a phone, command-line clients are offered only when they are your default.
+  WireGuard and AmneziaWG cards work the same way: AmneziaVPN by default, or AmneziaWG, WireGuard, MCRF, Rawline and, on
+  Android, WINGS V — wherever the app exists for that device.
 - **Manage it from your phone.** On a phone the panel opens in its own layout — a tab bar at the bottom, lists as cards,
   windows that slide up and close with a swipe down or the phone's Back. Swipe a row left (or tap its ⋮) for its actions.
   **More → Desktop view** switches to the full desktop layout and back. It can be added to the home screen as an app.
@@ -558,8 +560,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   encrypted DNS, turn on the interface’s **DoH / DoT / DoQ** block.
 - **AmneziaWG 3.1 needs a 3.1 app.** These connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG on iPhone
   and Mac (App Store), on Android (the GitHub release — the Google Play build is still 2.0) and on Windows,
-  WG Tunnel 5.6 or newer, FreeTurn 4.3. These cannot: the Google Play AmneziaWG, WINGS V, Keenetic and
-  MikroTik routers — and Amnezia VPN 5.0.0.5 or older imports a 3.1 config without complaint and never
+  WG Tunnel 5.6 or newer, FreeTurn 4.3, WINGS V 6.1, Rawline 1.2.1 and RawlineMobile 1.1.7 or newer. These cannot:
+  the Google Play AmneziaWG, Keenetic and MikroTik routers — and Amnezia VPN 5.0.0.5 or older imports a 3.1 config without complaint and never
   connects. The server needs 3.1 too (its AmneziaWG kernel module, or `amneziawg-go` where there is none,
   and its `awg` tools); on one that isn't, the switch is greyed out and says which part. The cost,
   measured: +1–2 % CPU at the rates a VPS carries; a server that is already CPU-bound loses 7–20 % of its

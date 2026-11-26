@@ -16,6 +16,13 @@ earlier releases predate the changelog — see the git history. · Русски�
   other connections it also works for ("Use it there too"). Slow plain-mode apps, and command-line clients on a phone,
   are listed only where they are your default. Once per device the badge rolls through the other apps, to show it can
   be tapped. On a turn proxy's card the word beside the badge now names the server's author instead of WG / AWG.
+- **WireGuard and AmneziaWG cards pick their app too.** The card reads "AmneziaWG · AmneziaVPN", and its list holds
+  every app that imports the config on that device: AmneziaVPN (the default), AmneziaWG, WireGuard, MCRF, and now
+  Rawline / RawlineMobile (all four operating systems) and WINGS V (Android). Start opens the app picked — AmneziaVPN by
+  its vpn:// link, Rawline by rawline://, WINGS V by its own profile link; an app without a link of its own gets the
+  config file saved and the steps to import it. "Get <app> manually" lists that app's own downloads; MCRF's engine
+  packages, which the app fetches itself, are no longer among them. WINGS V keeps an old profile of the same server on
+  a new import, so its card says to delete that one first.
 
 - **MRTT, a csqtt fork.** A csqtt server's fork can now be MRTT (ttrroyy's fork of csqtt, built by us with the panel's
   integration), chosen when it is created or switched later from amurcanov's csqtt and back: for the MRTT app (Android,

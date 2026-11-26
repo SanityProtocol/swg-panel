@@ -17,6 +17,9 @@ docs/RELEASE-1.8.12-PLAN.md), and the release lookup's `tag_re`.
   [7] the sub page: Start hands Rawline rawline://add/ with each app's form — the desktop a JSON list of the link, RawlineMobile
       the plain link (run from sub.js, decoded back) — other apps their link unchanged; its 2.5 note and MCRF's download
       note in English and Russian; the WG row
+  [8] the WG / AWG apps (1.8.12 item 24): Rawline and WINGS V in WG_APPS, each repository as its turn entry has it;
+      WINGS V's direct link (run from turn-artifacts.js, inflated and read back): WireGuard = type 1, backend 4, the
+      server's endpoint and the title; AmneziaWG = type 3, backend 8, the whole .conf and the title; the list's order
 
 Hermetic (node for [6]). Run: python3 tests/turn_multi_clients_selftest.py   (0 = pass)
      --perturb-tagre  the lookup reads only the newest release (a beta or engine pack wins) → RED in [4]
@@ -28,6 +31,8 @@ Hermetic (node for [6]). Run: python3 tests/turn_multi_clients_selftest.py   (0 
      --perturb-genver MCRF's 2.1 link names 2.1.9 whatever the server runs (a 2.0.1 rollback dials the wrong wire) → RED in [6]
      --perturb-blobs  mcrf-desktop's runtime-*.bin blobs and update zip are listed as installers → RED in [5]
      --perturb-qr     MCRF's Windows cell opens on a QR its app cannot scan → RED in [7]
+     --perturb-engines MCRF's engine APKs (mcrf-engine-*, mcrf-anubis) are listed as installers → RED in [5]
+     --perturb-wsvawg WINGS V's AmneziaWG link names the WireGuard backend → RED in [8]
 """
 import json, os, re, subprocess, sys, tempfile, types
 
@@ -44,6 +49,8 @@ PLANTS = {
     "--perturb-genver": ("turn-artifacts.js", "var mg = mcrfGeneration(c.version);", 'var mg = "2.1.9";'),
     "--perturb-blobs": ("sub.js", "      if (/^runtime-[0-9a-f]{64}\\.bin$|[-_]app[-_]update\\.zip$/i.test(n)) return false;", ""),
     "--perturb-qr":    ("sub.js", "    return !(p && p.qr === false);", "    return true;"),
+    "--perturb-engines": ("sub.js", "      if (/^mcrf-(engine|anubis)[-_]/i.test(n)) return false;", ""),
+    "--perturb-wsvawg": ("turn-artifacts.js", "{ ver: 1, type: 3, backend: 8, awg:", "{ ver: 1, type: 3, backend: 4, awg:"),
 }
 PERTURB = [a for a in ARGS if a in PLANTS]
 
@@ -143,14 +150,18 @@ check("macOS: the arm64 zip", P._match_os_asset(RAW, "macos") == "Rawline-1.2-ma
 MD = ["mcrf.exe", "mcrf-app-update.zip", "mcrf-1.2-source.zip"] + ["runtime-%064x.bin" % i for i in range(3)]
 check("Windows, mcrf-desktop: the button gets mcrf.exe", P._match_os_asset([{"name": n, "url": n} for n in MD], "windows") == "mcrf.exe",
       P._match_os_asset([{"name": n, "url": n} for n in MD], "windows"))
+# mcrf android-v2.0.1 (live, 2026-11-26): the app and the engines it downloads on first start
+MA = ["mcrf-android-universal-release.apk", "mcrf-anubis-release.apk", "mcrf-engine-bs-arm64-v8a-release.apk", "mcrf-engine-bs-x86_64-release.apk"]
 subsrc = source("sub.js")
 fa = subsrc[subsrc.index("  function installerAssets("):]
 fa = fa[:fa.index("\n  }\n") + 4]
 pr5 = subprocess.run(["node", "-e", fa + "\nconsole.log(JSON.stringify(installerAssets(JSON.parse(process.argv[1])).map(a => a.name)));",
-                      json.dumps([{"name": n} for n in MD + ["Rawline-1.2-windows64.zip", "Amnezia.apk", "Foo-1.0-linux-x64.bin"]])], capture_output=True, text=True, timeout=60)
+                      json.dumps([{"name": n} for n in MD + MA + ["Rawline-1.2-windows64.zip", "Amnezia.apk", "Foo-1.0-linux-x64.bin"]])], capture_output=True, text=True, timeout=60)
 kept = (pr5.stdout.strip().splitlines() or ["null"])[-1]
 check("…and its download bubble lists the app only, not its update payload or the runtime blobs (other zips and an app's own .bin installer stay)",
-      json.loads(kept) == ["mcrf.exe", "Rawline-1.2-windows64.zip", "Amnezia.apk", "Foo-1.0-linux-x64.bin"], (kept, pr5.stderr[-200:]))
+      json.loads(kept)[:1] == ["mcrf.exe"] and json.loads(kept)[2:] == ["Rawline-1.2-windows64.zip", "Amnezia.apk", "Foo-1.0-linux-x64.bin"], (kept, pr5.stderr[-200:]))
+check("…on Android the app, not the engine APKs it fetches itself (mcrf-engine-*, mcrf-anubis)",
+      json.loads(kept)[1:2] == ["mcrf-android-universal-release.apk"], (kept, pr5.stderr[-200:]))
 
 print("\n[6] the links")
 JS = r"""
@@ -223,9 +234,9 @@ for os_ in ("android", "windows"):
     check("%s: another app's link is handed over unchanged" % os_, o7["o"] == LINKS, o7["o"])
 for key in ("rawlineNote25:", 'dlNotes: { "mcrf@android":'):
     check("%s in English and Russian" % key.split(":")[0], sub.count(key) == 2, sub.count(key))
-check("Start hands every cell's app its own form (csqtt, WDTT, turn)", sub.count("appOpenUri(") == 4, sub.count("appOpenUri("))
+check("Start hands every cell's app its own form (csqtt, WDTT, turn, WG / AWG)", sub.count("appOpenUri(") == 5, sub.count("appOpenUri("))
 check("the 2.5 note rides Rawline's download bubble on a 2.5 server", 'cga.cid === "rawline" && cd.line === "2.5") cshown.note' in sub)
-check("MCRF in both WG/AWG lists", '"amneziawg", "mcrf"]' in sub and '"wireguard", "mcrf"]' in sub)
+check("MCRF in both WG/AWG lists", '"amneziawg", "mcrf", ' in sub and '"wireguard", "mcrf", ' in sub)
 check("a download note can be per OS (MCRF's Android one is not shown on Windows)", 'dnotes[ga.cid + "@" + ga.platform]' in sub)
 fq = sub[sub.index("  function appScans("):]
 fq = fq[:fq.index("\n  }\n") + 4]
@@ -243,6 +254,45 @@ for os_ in ("windows", "android"):
 check("MCRF scans no QR on Windows (a pasted link only), on Android it does; other apps as their catalog says",
       scans == {"windows": [False, True, True], "android": [True, True, True]}, scans)
 check("…and the csqtt and WDTT cells ask it before a QR, and the app list's import line", sub.count("appScans(") == 4, sub.count("appScans("))
+
+print("\n[8] the WG / AWG apps")
+for cid in ("rawline", "wingsv"):
+    w, tcp = (WG.get(cid) or {}).get("platforms") or {}, TC[cid]["platforms"]
+    check("%s in WG_APPS: each OS's repository and release choice as its turn entry has them" % cid,
+          bool(w) and all(tcp.get(o, {}).get("github") == p.get("github") and tcp.get(o, {}).get("tag_re") == p.get("tag_re") for o, p in w.items()), w)
+check("WINGS V in WG_APPS on Android only (WINGS DeX takes no direct profile)", sorted((WG.get("wingsv") or {}).get("platforms") or {}) == ["android"])
+check("Rawline in WG_APPS on all four OSes", sorted((WG.get("rawline") or {}).get("platforms") or {}) == ["android", "linux", "macos", "windows"])
+m8 = re.search(r'var WG_ORDER = \{ awg: (\[.*?\]), wg: (\[.*?\]) \};', sub)
+check("the list: AmneziaVPN first (the default), Rawline after MCRF, then WINGS V; WireGuard for WireGuard only",
+      bool(m8) and json.loads(m8.group(1)) == ["amneziavpn", "amneziawg", "mcrf", "rawline", "wingsv"]
+      and json.loads(m8.group(2)) == ["amneziavpn", "amneziawg", "wireguard", "mcrf", "rawline", "wingsv"], m8 and m8.groups())
+JS8 = r"""
+global.window = global; require(process.argv[1]); const T = global.SWGTurn, zlib = require("zlib");
+const conf = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.8.0.5/32\nDNS = 1.1.1.1\n\n[Peer]\n" +
+  "PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 203.0.113.7:51820\n";
+const aconf = conf.replace("DNS = 1.1.1.1\n", "DNS = 1.1.1.1\nJc = 4\nJmin = 40\nJmax = 70\nI1 = <b 0xdeadbeef>\n");
+function rd(b) { const o = {}; let i = 0; const v = () => { let r = 0, s = 0, x; do { x = b[i++]; r += (x & 127) * 2 ** s; s += 7; } while (x & 128); return r; };
+  while (i < b.length) { const k = v(), f = Math.floor(k / 8); if ((k & 7) === 0) o[f] = v(); else { const n = v(); o[f] = b.slice(i, i + n); i += n; } } return o; }
+const dec = l => { const b = Buffer.from(l.slice(9).replace(/-/g, "+").replace(/_/g, "/"), "base64"); return b[0] === 0x12 ? rd(zlib.inflateSync(b.slice(1))) : null; };
+(async () => {
+  const w = dec(await T.wingsvDirect(conf, false, "Anna · msk")), a = dec(await T.wingsvDirect(aconf, true, "Anna · msk"));
+  const wg = rd(w[4]), ep = rd(wg[3]), aw = rd(a[7]);
+  console.log(JSON.stringify({ w: [w[1], w[2], w[5], !!w[3]], ep: [Buffer.from(ep[1]).toString(), ep[2]], wt: Buffer.from(wg[4]).toString(), wkey: wg[1].length > 0,
+    a: [a[1], a[2], a[5], !!a[3], !!a[4]], aconf: Buffer.from(aw[1]).toString() === aconf, at: Buffer.from(aw[2]).toString() }));
+})().catch(e => { console.log(JSON.stringify({ err: String(e) })); });
+"""
+with tempfile.TemporaryDirectory() as td:   # the source as planted, as [6] runs it
+    ta = os.path.join(td, "turn-artifacts.js")
+    open(ta, "w", encoding="utf-8").write(source("turn-artifacts.js"))
+    pr8 = subprocess.run(["node", "-e", JS8, ta], capture_output=True, text=True, timeout=60)
+try:
+    o8 = json.loads(pr8.stdout.strip().splitlines()[-1])
+except Exception:
+    o8 = {"err": pr8.stderr[-300:]}
+check("WINGS V, WireGuard: ver 1, type VK (1), backend WIREGUARD (4), no turn", o8.get("w") == [1, 1, 4, False], o8)
+check("…its endpoint is the server's, and the profile is titled", o8.get("ep") == ["203.0.113.7", 51820] and o8.get("wt") == "Anna · msk" and o8.get("wkey"), o8)
+check("WINGS V, AmneziaWG: ver 1, type AMNEZIAWG (3), backend AMNEZIAWG_TL (8), no turn, no wg", o8.get("a") == [1, 3, 8, False, False], o8)
+check("…carrying the whole .conf, titled", o8.get("aconf") is True and o8.get("at") == "Anna · msk", o8)
 
 print()
 if PERTURB:

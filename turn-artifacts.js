@@ -74,8 +74,8 @@
     Peer:      [{ name: "public_key", num: 1, type: "bytes" }, { name: "preshared_key", num: 2, type: "bytes" },
                 { name: "allowed_ips", num: 3, type: "msg", msg: "Cidr", repeated: true }],
     WireGuard: [{ name: "iface", num: 1, type: "msg", msg: "Interface" }, { name: "peer", num: 2, type: "msg", msg: "Peer" },
-                { name: "endpoint", num: 3, type: "msg", msg: "Endpoint" }],
-    AmneziaWG: [{ name: "awg_quick_config", num: 1, type: "string" }],
+                { name: "endpoint", num: 3, type: "msg", msg: "Endpoint" }, { name: "title", num: 4, type: "string" }],
+    AmneziaWG: [{ name: "awg_quick_config", num: 1, type: "string" }, { name: "title", num: 2, type: "string" }],
     Turn:      [{ name: "endpoint", num: 1, type: "msg", msg: "Endpoint" }, { name: "link", num: 2, type: "string" },
                 { name: "threads", num: 3, type: "uint32", opt: true }, { name: "use_udp", num: 4, type: "bool", opt: true },
                 { name: "no_obfuscation", num: 5, type: "bool", opt: true }, { name: "local_endpoint", num: 6, type: "msg", msg: "Endpoint" },
@@ -208,21 +208,37 @@
     if (isAwg) {
       config.awg = { awg_quick_config: String(rawConf || "").replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 " + LOCAL_HOST + ":" + LOCAL_PORT) };
     } else {
-      var iface = { private_key: b64ToBytes(cf.privkey), addrs: splitList(cf.address), dns: (cf.dns || []).slice() };
-      if (cf.mtu) iface.mtu = +cf.mtu || 1280;
-      var peer = { public_key: b64ToBytes(cf.server_pubkey) };
-      if (cf.psk) peer.preshared_key = b64ToBytes(cf.psk);
-      peer.allowed_ips = splitList(cf.allowed).map(function (c) {
-        var sp = c.split("/"), a = sp[0], pfx = sp[1];
-        return { addr: ipToBytes(a), prefix: pfx != null ? +pfx : (a.indexOf(":") >= 0 ? 128 : 32) };
-      });
-      config.wg = { iface: iface, peer: peer, endpoint: { host: LOCAL_HOST, port: LOCAL_PORT } };   // WG dials the local turn client
+      config.wg = wingsvWg(cf, { host: LOCAL_HOST, port: LOCAL_PORT });   // WG dials the local turn client
     }
     return new Uint8Array(pbEncodeMsg("Config", config));
   }
+  function wingsvWg(cf, endpoint) {   // a wingsv.WireGuard from a parsed .conf
+    var iface = { private_key: b64ToBytes(cf.privkey), addrs: splitList(cf.address), dns: (cf.dns || []).slice() };
+    if (cf.mtu) iface.mtu = +cf.mtu || 1280;
+    var peer = { public_key: b64ToBytes(cf.server_pubkey) };
+    if (cf.psk) peer.preshared_key = b64ToBytes(cf.psk);
+    peer.allowed_ips = splitList(cf.allowed).map(function (c) {
+      var sp = c.split("/"), a = sp[0], pfx = sp[1];
+      return { addr: ipToBytes(a), prefix: pfx != null ? +pfx : (a.indexOf(":") >= 0 ? 128 : 32) };
+    });
+    return { iface: iface, peer: peer, endpoint: endpoint };
+  }
+  // A DIRECT WG / AWG profile for WINGS V (no turn hop; 1.8.12 item 24), as the app's own share links build one
+  // (WingsImportParser buildWireGuardProfileLink / buildAmneziaProfileLink): WireGuard = type VK (1) + backend WIREGUARD (4)
+  // + wg with the server's endpoint (split at the last ':', as the app's parseEndpoint does); AmneziaWG = type AMNEZIAWG (3)
+  // + backend AMNEZIAWG_TL (8) + the whole .conf. `title` names the profile.
+  function wingsvDirect(baseConf, awg, title) {
+    var cf = parseFullConf(baseConf), ep = String(cf.endpoint || ""), i = ep.lastIndexOf(":");
+    var config = awg ? { ver: 1, type: 3, backend: 8, awg: { awg_quick_config: String(baseConf || ""), title: title || "" } }
+      : { ver: 1, type: 1, backend: 4, wg: wingsvWg(cf, { host: i >= 0 ? ep.slice(0, i) : ep, port: i >= 0 ? (+ep.slice(i + 1) || 0) : 0 }) };
+    if (!awg) config.wg.title = title || "";
+    return wingsvPack(new Uint8Array(pbEncodeMsg("Config", config)));
+  }
   function wingsvLink(baseConf, tp, vk, clientSettings) {
+    return wingsvPack(wingsvConfigBytes(parseFullConf(baseConf), tp, vk, baseConf, clientSettings));   // vk = the VK-link list (or string); wingsvConfigBytes normalizes → Turn.links[] / Turn.link (empty → omitted)
+  }
+  function wingsvPack(proto) {   // wingsv:// + base64url(0x12 ‖ zlib(proto))
     if (typeof CompressionStream === "undefined") return Promise.reject(new Error("this browser can't build a wingsv:// link (no CompressionStream) — copy the fields into the WINGS V app manually"));
-    var proto = wingsvConfigBytes(parseFullConf(baseConf), tp, vk, baseConf, clientSettings);   // vk = the VK-link list (or string); wingsvConfigBytes normalizes → Turn.links[] / Turn.link (empty → omitted)
     var stream = new CompressionStream("deflate"); var w = stream.writable.getWriter(); w.write(proto); w.close();
     return new Response(stream.readable).arrayBuffer().then(function (buf) {
       var comp = new Uint8Array(buf);
@@ -870,5 +886,5 @@
   // placeholder string instead, the way it already does for every other composed sentence.
   function clientMeta(enc) { var m = CLIENT_META[enc]; return m ? { app: m.app, platform: m.platform, author: m.author } : null; }
   root.SWGTurn = { setForkLabel: function (fn) { if (typeof fn === "function") forkName = fn; },
-    setCliAuthors: function (fn) { if (typeof fn === "function") cliAuthorsOf = fn; }, vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
+    setCliAuthors: function (fn) { if (typeof fn === "function") cliAuthorsOf = fn; }, vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wingsvDirect: wingsvDirect, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

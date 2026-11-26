@@ -18260,6 +18260,14 @@ WG_APPS = {
     # the release cache is keyed by repository, so every platform of one repository must pick its release the same way.
     "mcrf":       {"name": "MCRF", "platforms": {"android": {"github": "https://github.com/vnenapravo7-source/mcrf/releases", "tag_re": r"^android-v\d+\.\d+\.\d+$"},
                                                  "windows": {"github": "https://github.com/vnenapravo7-source/mcrf-desktop/releases", "tag_re": r"^v\d+\.\d+(\.\d+)?$"}}},
+    # 1.8.12 item 24: Rawline (desktop) and RawlineMobile (Android) read a WG / AWG .conf, AWG 3.1 included (operator
+    # 2026-11-25: all four OSes); WINGS V (Android) runs WireGuard and AmneziaWG, AWG 3.1 since 6.1.0. Each repository
+    # picks its release as its TURN_CLIENTS entry does; sub.js WG_CLIENTS holds their names, authors and one-tap OSes.
+    "rawline":    {"name": "Rawline", "platforms": {"windows": {"github": "https://github.com/ttrroyy/Rawline/releases"},
+                                                    "linux":   {"github": "https://github.com/ttrroyy/Rawline/releases"},
+                                                    "macos":   {"github": "https://github.com/ttrroyy/Rawline/releases"},
+                                                    "android": {"github": "https://github.com/ttrroyy/RawlineMobile/releases"}}},
+    "wingsv":     {"name": "WINGS V", "platforms": {"android": {"github": "https://github.com/WINGS-N/WINGSV/releases"}}},
 }
 # Per-fork `settings` = the typed schema for the obfuscation knobs (Axis 1). The SPA renders a form from it and
 # SERIALIZES it back to the ExecStart params tail (the wire truth the node still applies verbatim); a raw textarea

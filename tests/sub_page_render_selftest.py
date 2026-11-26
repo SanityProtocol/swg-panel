@@ -80,6 +80,12 @@ Fixture — node q-node, three deployments per device:
       keep their port only where it tells them apart (a Primary / Backup pair on one port has none), the port staying in
       the list row where the app repeats the type ("WDTT by amurcanov :56000"); an offer stays, under the list, while another
       list is only opened, and goes with the next pick
+  [19] the WG / AWG cards pick their app too (item 24, card B): "<protocol> · <app>" with a chip, the protocol dropped where
+      the app repeats it ("WireGuard"); the list is AmneziaVPN (Recommended) then every app this OS has a link for, Linux
+      without AmneziaWG, MCRF or WINGS V; a pick names the app's own download row and drives Start — RawlineMobile
+      rawline://add/ around the plain .conf, Rawline on Windows a JSON list holding it, WINGS V its own AmneziaWG profile
+      link (type 3, backend 8, the whole .conf) under a note to delete an old profile first, WireGuard the .conf saved and
+      its import steps; a pick the list doesn't hold falls back; the connection list reads "AmneziaWG · AmneziaVPN"
   The turn cards name their server's author beside the badge (operator, 2026-11-25), not the interface: [9] tells the
   AmneziaWG and WireGuard proxies apart by count — one hackdiaz card on iOS, where only the WireGuard one has an app.
 
@@ -132,12 +138,17 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-echoport   serves a sub.js whose type label keeps its port when the app repeats the type → RED on [18]
      --perturb-offeropen  serves a sub.js that drops the offer when a list only opens → RED on [18]
      --perturb-offertop   serves a sub.css that puts the offer over an open list → RED on [18]
+     --perturb-wgstart    serves a sub.js whose WG / AWG Start always opens AmneziaVPN, whatever is picked → RED on [19]
+     --perturb-wglist     serves a sub.js whose WG / AWG list offers an app with nothing for this OS → RED on [19]
+     --perturb-wgcollapse serves a sub.js whose badge repeats a protocol the app's name already says → RED on [19]
+     --perturb-wsvnote    serves a sub.js that drops WINGS V's old-profile note → RED on [19]
+     --perturb-wgdl       serves a sub.js whose WG / AWG download row stays AmneziaVPN's after a pick → RED on [19]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
 """
 import base64, fcntl, hashlib, importlib.machinery, importlib.util, json, os, re, secrets, select, shutil, socket, subprocess, sys
-import tempfile, time, urllib.request
+import tempfile, time, urllib.request, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -190,10 +201,16 @@ P_SAMEPORT = "--perturb-sameport" in sys.argv
 P_ECHOPORT = "--perturb-echoport" in sys.argv
 P_OFFEROPEN = "--perturb-offeropen" in sys.argv
 P_OFFERTOP = "--perturb-offertop" in sys.argv
+P_WGSTART = "--perturb-wgstart" in sys.argv
+P_WGLIST = "--perturb-wglist" in sys.argv
+P_WGCOLLAPSE = "--perturb-wgcollapse" in sys.argv
+P_WSVNOTE = "--perturb-wsvnote" in sys.argv
+P_WGDL = "--perturb-wgdl" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
            or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER
-           or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP)
+           or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP
+           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -442,6 +459,17 @@ if P_OFFEROPEN:
                   "an offer kept while a list only opens")
 if P_OFFERTOP:
     perturbed_web('max-width: min(92vw, 440px); z-index: 89; }', 'max-width: min(92vw, 440px); z-index: 95; }', "the offer under an open list", fname="sub.css")
+if P_WGSTART:
+    perturbed_web('      var wcid = wga ? wga.cid : "";', '      var wcid = "amneziavpn";', "WG / AWG Start follows the pick")
+if P_WGLIST:
+    perturbed_web('if (!app || !app[os]) return;', 'if (!app) return;', "a WG / AWG app offered only where it has a link")
+if P_WGCOLLAPSE:
+    perturbed_web('    if (kind && !echo) {', '    if (kind) {', "the protocol dropped where the app repeats it")
+if P_WSVNOTE:
+    perturbed_web('      if (wga && wga.cid === "wingsv") node.appendChild(el("div", "scell-appnote", t("wingsvOld")));', '', "WINGS V's old-profile note")
+if P_WGDL:
+    perturbed_web('      if (wga) node.appendChild(getAppRow(wga));   // under the server/app name line', '      if (wga) node.appendChild(getAppRow(wgAppList(tgt.type)[0]));   //',
+                  "the WG / AWG download row follows the pick")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -1289,13 +1317,14 @@ try:
           len(wd) == 1 and wd[0]["app"] == "MCRF by vnenapravo7-source" and "MCRF" in (wd[0]["getapp"] or "") and stored(tab, "amurcanov") == "mcrf",
           (wd, stored(tab, "amurcanov")))
     toast = tab.ev("(document.querySelector('.ap-toast') || {}).innerText || ''")
-    check("[18] …and offers MCRF where it also works and the visitor kept the default (the CSQTT 2.1 server)",
-          toast.replace("\n", " ").startswith("MCRF also works for 1 more connection"), toast)
+    check("[18] …and offers MCRF where it also works and the visitor kept the default (the CSQTT 2.1 server, the AmneziaWG and WireGuard cards)",
+          toast.replace("\n", " ").startswith("MCRF also works for 3 more connections"), toast)
     tab.ev("(() => { const b = document.querySelector('.ap-toast-b'); if (b) b.click(); return !!b; })()"); time.sleep(1.2)
     after = cells_now(tab)
-    check("[18] 'Use it there too' gives the CSQTT 2.1 server MCRF as well",
-          stored(tab, "csqtt") == "mcrf" and [c["app"] for c in after if c["role"] == "CSQTT 2.1"] == ["MCRF by vnenapravo7-source"],
-          (stored(tab, "csqtt"), [(c["role"], c["app"]) for c in after]))
+    check("[18] 'Use it there too' gives the CSQTT 2.1 server MCRF as well, and the AmneziaWG and WireGuard cards",
+          stored(tab, "csqtt") == "mcrf" and [c["app"] for c in after if c["role"] == "CSQTT 2.1"] == ["MCRF by vnenapravo7-source"]
+          and stored(tab, "awg") == "mcrf" and stored(tab, "wg") == "mcrf",
+          (stored(tab, "csqtt"), stored(tab, "awg"), stored(tab, "wg"), [(c["role"], c["app"]) for c in after]))
     sheet(tab, "WDTT")
     pick(tab, "WDTT")
     check("[18] picking the default again clears the pick", stored(tab, "amurcanov") is None
@@ -1350,7 +1379,7 @@ try:
     rows_l = sheet(tab, "hackdiaz")
     check("[18] Linux: hackdiaz's list keeps the command-line client", isinstance(rows_l, list) and any(CLI in r[0] for r in rows_l), rows_l)
     tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
-    FIND = "[...document.querySelectorAll('.scell-tag-pick')].find(x => x.closest('.scell').querySelector('.scell-role-if').textContent === 'WDTT')"
+    FIND = "[...document.querySelectorAll('.scell-tag-pick')].find(x => (x.closest('.scell').querySelector('.scell-role-if') || {}).textContent === 'WDTT')"
     tab.ev("(() => { const t = %s; window.scrollBy(0, t.getBoundingClientRect().top - 430); return 1; })()" % FIND); time.sleep(0.5)
     top0 = tab.ev("Math.round((%s).getBoundingClientRect().top)" % FIND)
     tab.ev("(%s).click(), 1" % FIND); time.sleep(0.4)
@@ -1404,6 +1433,125 @@ try:
       return {vp: [innerWidth, innerHeight], chip: r && [r.left, r.top, r.right, r.bottom].map(Math.round), seen: localStorage.getItem('swgsub-apphint'),
               reduce: matchMedia('(prefers-reduced-motion: reduce)').matches, chips: document.querySelectorAll('.scell-tag-pick').length}; })()""")
     check("[18] reduced motion: no roll, a one-line hint under the chip", hint == ["Tap to choose another app", 0], (hint, why))
+    tab.close()
+    # [19] the WG / AWG cards pick their app too (1.8.12 item 24, card B): the badge keeps the protocol in front of the app,
+    #      the list is every WG_ORDER app this OS has a link for, and the pick drives the download row and Start
+    def wsheet(tab, mode):  # open the app list of the first `mode` card: [(row text, chosen)]
+        return tab.ev(r"""(() => {
+          const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === %s);
+          if (!pg) return 'no page';
+          pg._seek(0, null);
+          const t = pg.querySelector('.scell-tag-pick'); if (!t) return 'no chip';
+          t.click();
+          return [...document.querySelectorAll('.ap-row')].map(r => [r.innerText.replace(/\s+/g, ' ').trim(), r.classList.contains('on')]);
+        })()""" % json.dumps(mode))
+    def wcell(r, mode):     # the first `mode` card: (badge, getapp row, its note)
+        cs = [c for p in (r or {}).get("pages", []) if p["mode"] == mode for c in p["cells"]]
+        return cs[0] if cs else {}
+    def wnote(tab, mode):
+        return tab.ev("(() => { const pg = document.querySelector('section.ppage[data-mode=%s]'); const n = pg && pg.querySelector('.scell-appnote');"
+                      " return n ? n.textContent : null; })()" % mode)
+    def pb(b):              # protobuf wire → {field: int | bytes}
+        out, i = {}, 0
+        def vint():
+            nonlocal i
+            r = s_ = 0
+            while True:
+                x = b[i]; i += 1; r |= (x & 127) << s_; s_ += 7
+                if not x & 128:
+                    return r
+        while i < len(b):
+            k = vint(); f, wt = k >> 3, k & 7
+            if wt == 0:
+                out[f] = vint()
+            else:
+                n = vint(); out[f] = b[i:i + n]; i += n
+        return out
+    def wingsv(u):          # wingsv:// → its Config's fields, or None
+        if not u.startswith("wingsv://"):
+            return None
+        raw = base64.urlsafe_b64decode(u[9:] + "=" * (-len(u[9:]) % 4))
+        return pb(zlib.decompress(raw[1:])) if raw[:1] == b"\x12" else None
+    def rawline(u):
+        return base64.urlsafe_b64decode(u[14:] + "=" * (-len(u[14:]) % 4)).decode() if u.startswith("rawline://add/") else None
+    tab, r0 = render("u1", "android", "en", phone=True)
+    a0, w0 = wcell(r0, "awg"), wcell(r0, "wg")
+    check("[19] Android: the AWG and WG badges read '<protocol> · AmneziaVPN', a chip on each",
+          (a0.get("tag"), a0.get("chip"), w0.get("tag"), w0.get("chip")) == ("AmneziaWG · AmneziaVPN", True, "WireGuard · AmneziaVPN", True), (a0, w0))
+    rows = wsheet(tab, "awg")
+    check("[19] Android, AmneziaWG: AmneziaVPN first and Recommended, then AmneziaWG, MCRF, RawlineMobile and WINGS V, each with how it imports",
+          isinstance(rows, list) and [x[0] for x in rows] == ["AmneziaVPN Opens with one tap Recommended", "AmneziaWG Import the config file in the app",
+                                                             "MCRF by vnenapravo7-source Import the config file in the app",
+                                                             "RawlineMobile by ttrroyy Opens with one tap", "WINGS V by WINGS-N Opens with one tap"], rows)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
+    rows = wsheet(tab, "wg")
+    check("[19] …and the WireGuard card adds WireGuard after AmneziaWG", isinstance(rows, list)
+          and [x[0].split(" ")[0] for x in rows] == ["AmneziaVPN", "AmneziaWG", "WireGuard", "MCRF", "RawlineMobile", "WINGS"], rows)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
+    # a pick: RawlineMobile on the AWG card — its badge, its own download row, Start = rawline://add/ around the plain .conf
+    wsheet(tab, "awg"); pick(tab, "RawlineMobile")
+    r1 = tab.ev(READ); a1 = wcell(r1, "awg")
+    check("[19] a pick on the AWG card: 'AmneziaWG · RawlineMobile by ttrroyy', RawlineMobile's own download row, kept for every AWG card",
+          a1.get("tag") == "AmneziaWG · RawlineMobile by ttrroyy" and (a1.get("getapp") or "").startswith("Get RawlineMobile by ttrroyy")
+          and stored(tab, "awg") == "rawline" and wcell(r1, "wg").get("tag") == "WireGuard · AmneziaVPN", (a1, stored(tab, "awg")))
+    toast = tab.ev("(document.querySelector('.ap-toast') || {}).innerText || ''")
+    check("[19] …and offers RawlineMobile where it also works (the WireGuard card among them)", toast.replace("\n", " ").startswith("RawlineMobile also works for"), toast)
+    tab.ev("(() => { const t = document.querySelector('.ap-toast'); if (t) t.remove(); return 1; })()")
+    _res, _clip, _steps, navs = start_on(tab, "awg", "AmneziaWG")
+    conf_r = next((rawline(u) for u in navs if rawline(u)), None)
+    check("[19] Android: Start opens RawlineMobile with rawline://add/ around the plain .conf (AWG keys in it)",
+          bool(conf_r) and conf_r.startswith("[Interface]") and "Jc = 4" in conf_r and "Endpoint = 203.0.113.7:51820" in conf_r, navs)
+    tab.close()
+    # WINGS V on the AWG card: its own wingsv:// link — type AMNEZIAWG, backend AMNEZIAWG_TL, the whole .conf — and its note
+    tab, r2 = render("u1", "android", "en", phone=True, ls={"swgsub-app:awg:android": "wingsv"})
+    check("[19] WINGS V on the AWG card: its badge and, under the download row, the old-profile note",
+          wcell(r2, "awg").get("tag") == "AmneziaWG · WINGS V by WINGS-N" and (wnote(tab, "awg") or "").startswith("Imported this server into WINGS V before?"),
+          (wcell(r2, "awg").get("tag"), wnote(tab, "awg")))
+    check("[19] …the note is WINGS V's alone (the WireGuard card, on AmneziaVPN, has none)", wnote(tab, "wg") is None, wnote(tab, "wg"))
+    _res, _clip, _steps, navs = start_on(tab, "awg", "AmneziaWG")
+    cfg = next((wingsv(u) for u in navs if wingsv(u)), None)
+    awgm = pb(cfg[7]) if cfg and isinstance(cfg.get(7), bytes) else {}
+    check("[19] Android: Start opens WINGS V with its AmneziaWG profile link — ver 1, type 3, backend 8, the whole .conf, titled",
+          bool(cfg) and (cfg.get(1), cfg.get(2), cfg.get(5), 3 in cfg, 4 in cfg) == (1, 3, 8, False, False)
+          and awgm.get(1, b"").decode().startswith("[Interface]") and b"Jc = 4" in awgm.get(1, b"") and awgm.get(2, b"").decode().startswith("laptop"),
+          (navs, cfg and sorted(cfg)))
+    tab.close()
+    # WireGuard on the WG card: the protocol collapses into the app, and Start, with no link of the app's own, saves the .conf
+    # and shows its import steps
+    tab, r3 = render("u1", "android", "en", phone=True, ls={"swgsub-app:wg:android": "wireguard", "swgsub-app:awg:android": "wireguard"})
+    check("[19] WireGuard picked on the WG card: the badge is the app alone ('WireGuard', not 'WireGuard · WireGuard')",
+          wcell(r3, "wg").get("tag") == "WireGuard", wcell(r3, "wg"))
+    check("[19] a pick the list doesn't hold (WireGuard on an AmneziaWG card) falls back to AmneziaVPN", wcell(r3, "awg").get("tag") == "AmneziaWG · AmneziaVPN", wcell(r3, "awg"))
+    _res, _clip, steps, navs = start_on(tab, "wg", "WireGuard")
+    done = tab.ev("(document.querySelector('.ph-overlay .ph-copied') || {}).textContent || ''")
+    check("[19] Start with WireGuard: 'Config file saved' and its import steps, no scheme fired",
+          done == "Config file saved" and len(steps) == 3 and steps[0] == "1. Open WireGuard" and steps[2].endswith(".conf in Downloads, then connect")
+          and not [u for u in navs if "://" in u and not u.startswith("http")], (done, steps, navs))
+    tab.close()
+    # the OS gate: Linux lists only what it has a link for — no AmneziaWG (no Linux app), no MCRF, no WINGS V
+    tab, _r = render("u1", "linux", "en", desktop=True)
+    rows = wsheet(tab, "awg")
+    check("[19] Linux, AmneziaWG: AmneziaVPN and Rawline only", isinstance(rows, list) and [x[0] for x in rows]
+          == ["AmneziaVPN Paste the link in the app Recommended", "Rawline by ttrroyy Opens with one tap"], rows)
+    tab.close()
+    # Windows: Rawline on the WG card opens with rawline://add/ around a JSON list holding the .conf (its desktop parser)
+    tab, _r = render("u1", "windows", "en", desktop=True, ls={"swgsub-app:wg:windows": "rawline", "swgsub-hasapp-rawline": "1"})
+    _res, _clip, _steps, navs = start_on(tab, "wg", "WireGuard")
+    doc = next((rawline(u) for u in navs if rawline(u)), None)
+    try:
+        lst = json.loads(doc) if doc else None
+    except ValueError:
+        lst = None
+    check("[19] Windows: Start opens Rawline with rawline://add/ around a JSON list of the .conf",
+          isinstance(lst, list) and len(lst) == 1 and lst[0].startswith("[Interface]") and "Endpoint = 203.0.113.7:51830" in lst[0], (navs, doc and doc[:80]))
+    # the connection list names a WG / AWG connection '<protocol> · <app>' too
+    tab.ev("(() => { const b = [...document.querySelectorAll('[data-pick]')].find(x => x.offsetParent); if (b) b.click(); return !!b; })()"); time.sleep(0.6)
+    tab.ev("(() => { const r = [...document.querySelectorAll('.cp-row')].find(r => (r.querySelector('.cp-name') || {}).textContent === 'laptop');"
+           " if (r) r.click(); return !!r; })()"); time.sleep(0.4)
+    cp = tab.ev(r"""[...document.querySelectorAll('.cp-row')].map(r => r.textContent.replace(/\s+/g, ' ').trim())""")
+    check("[19] the connection list: 'AmneziaWG · AmneziaVPN', 'WireGuard · Rawline by ttrroyy'",
+          isinstance(cp, list) and any(x.startswith("AmneziaWG · AmneziaVPN") for x in cp) and any(x.startswith("WireGuard · Rawline by ttrroyy") for x in cp), cp)
+    tab.ev("localStorage.removeItem('swgsub-hasapp-rawline'); true")
     tab.close()
 finally:
     br.close()

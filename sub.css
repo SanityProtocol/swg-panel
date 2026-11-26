@@ -200,8 +200,6 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .dl-bubble-head:hover { background: var(--panel-2); }
 .dl-bubble-ver { font-size: 11px; font-weight: 700; letter-spacing: .4px; color: var(--muted); text-transform: uppercase;
   padding: 2px 10px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; flex: 0 0 auto; }
-.dl-bubble-title { font-size: 12.5px; font-weight: 800; color: var(--ink); padding: 8px 10px 8px;
-  border-bottom: 1px solid var(--line); margin-bottom: 4px; flex: 0 0 auto; }
 .dl-bubble-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .dl-bubble-item { display: flex; flex-direction: column; gap: 1px; text-decoration: none; padding: 7px 10px; border-radius: 8px; }
 .dl-bubble-item:hover { background: var(--panel-2); }
@@ -420,14 +418,6 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .dl-bubble-item.has-logo { flex-direction: row; align-items: center; gap: 10px; }
 .dl-item-logo { width: 26px; height: 26px; object-fit: contain; flex: 0 0 auto; border-radius: 6px; }
 .dl-item-col { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-/* WG/AWG two-target row: [logo + name] → downloads page  ·  [⬇] → best direct installer for this OS */
-.dl-bubble-item.wg-row { flex-direction: row; align-items: stretch; gap: 4px; padding: 0; }
-.dl-row-body { flex: 1 1 auto; display: flex; align-items: center; gap: 10px; text-decoration: none; padding: 7px 10px; border-radius: 8px; min-width: 0; }
-.dl-row-body:hover { background: var(--panel-2); }
-.dl-row-body:hover .dl-item-label { color: var(--brand); }
-.dl-row-dl { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 42px; border-radius: 8px; color: var(--muted); text-decoration: none; }
-.dl-row-dl:hover { background: var(--panel-2); color: var(--brand); }
-.dl-row-dl svg { width: 20px; height: 20px; }
 /* freeturn:// needs a VK call link the recipient adds in the app — shown here, tap to copy */
 /* VK-link notice (freeturn/samosvalishe forks) — placed by JS between the up-arrow and the box */
 .scell-vk { position: absolute; left: 0; right: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; gap: 2px; max-width: 100%; }
@@ -772,6 +762,10 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 /* the connection list reads "<type or server author> · <app>" (its port inside the kind); the card "<app> by <author>" */
 .scell-tag-kind { display: none; }
 .cp-row .scell-tag-kind { display: inline; }
+/* a WG / AWG card keeps its protocol in front of the app ("AmneziaWG · AmneziaVPN") */
+.scell-tag-kind.scell-tag-kind-on { display: inline; }
+/* what to know about the card's app before Start (WINGS V keeps an old profile of the same server) */
+.scell-appnote { font-size: 12px; line-height: 1.35; color: var(--muted); margin-top: 4px; max-width: 34em; text-align: center; }
 .cp-row .scell-tag-port { display: none; }
 /* …unless the kind dropped because the app repeats it: the port is the only place the row keeps it */
 .cp-row .scell-tag-port.scell-tag-port-on { display: inline; }

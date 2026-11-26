@@ -42,7 +42,9 @@
       apScan: "Scan the QR in the app", apPaste: "Paste the link in the app", apCli: "Runs from the command line",
       apHint: "Tap to choose another app", apAlso1: "{app} also works for 1 more connection",
       apAlsoN: "{app} also works for {n} more connections", apUse: "Use it there too",
-      getWgClient: "WireGuard clients", getAwgClient: "AmneziaWG clients",
+      apFile: "Import the config file in the app", startConf: "Start — saves the config for {app}", confSaved: "Config file saved",
+      liConf1: "1. Open *{app}*", liConf2: "2. Add a tunnel: *Import from file*", liConf3: "3. Pick *{file}* in Downloads, then connect",
+      wingsvOld: "Imported this server into WINGS V before? Delete that profile first — WINGS V keeps the old one.",
       dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}", dlPinned: "Release {ver} · matches this server",
       start: "Start", startOpen: "Start — opens {app}", startGet: "Start — installs {app} if you don't have it",
       startHow: "Open the app, or install it?", startOpenApp: "Open {app}", startHaveIt: "I already have it", startGetApp: "Get {app}", startNeedIt: "Install it",
@@ -128,7 +130,9 @@
       apScan: "Отсканируйте QR в приложении", apPaste: "Вставьте ссылку в приложение", apCli: "Запускается из командной строки",
       apHint: "Нажмите, чтобы выбрать другое приложение", apAlso1: "{app} подходит ещё для 1 подключения",
       apAlsoN: "{app} подходит ещё для {n} подключений", apUse: "Использовать и там",
-      getWgClient: "Клиенты WireGuard", getAwgClient: "Клиенты AmneziaWG",
+      apFile: "Импортируйте файл конфигурации в приложении", startConf: "Старт — сохранит конфигурацию для {app}", confSaved: "Файл конфигурации сохранён",
+      liConf1: "1. Откройте *{app}*", liConf2: "2. Добавьте туннель: *Импорт из файла*", liConf3: "3. Выберите *{file}* в «Загрузках» и подключитесь",
+      wingsvOld: "Уже импортировали этот сервер в WINGS V? Сначала удалите тот профиль — WINGS V оставляет старый.",
       dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}", dlPinned: "Версия {ver} · как у этого сервера",
       start: "Старт", startOpen: "Старт — откроет {app}", startGet: "Старт — установит {app}, если его нет",
       startHow: "Открыть приложение или установить?", startOpenApp: "Открыть {app}", startHaveIt: "Уже установлено", startGetApp: "Установить {app}", startNeedIt: "Установить",
@@ -423,7 +427,7 @@
   }
   function appListInfo(scope, sub, list, cur) {
     return { scope: scope, sub: sub, cur: cur ? cur.cid : "", def: list.length ? list[0].cid : "",
-             list: list.map(function (r) { return { cid: r.cid, name: r.productName || r.app, author: appAuthor(r), how: appHow(r) }; }) };
+             list: list.map(function (r) { return { cid: r.cid, name: r.productName || r.app, author: appAuthor(r), how: r.how || appHow(r) }; }) };
   }
   // "<app> by <author>" as one label: the badge, the roll and the list all build it here
   function appLabel(name, author) {
@@ -669,7 +673,7 @@
   }
 
   var WG_CLIENTS = {
-    amneziavpn: { name: "AmneziaVPN", autostart: true, logo: svgUri(BRAND_SVG.amnezia), page: "https://amnezia.org/en/downloads",   // "— Autostart" (the vpn:// one-tap auto-import) only applies on Android
+    amneziavpn: { name: "AmneziaVPN", oneTap: ["android"], logo: svgUri(BRAND_SVG.amnezia), page: "https://amnezia.org/en/downloads",   // the vpn:// one-tap import opens the app on Android only
       android: "https://play.google.com/store/apps/details?id=org.amnezia.vpn",
       ios: "https://apps.apple.com/app/amneziavpn/id1600529900",
       macos: "https://apps.apple.com/app/amneziavpn/id1600529900",   // Apple-Silicon Macs run the iOS app from the App Store (same id) → "just tap open"
@@ -682,11 +686,18 @@
       android: "https://play.google.com/store/apps/details?id=com.wireguard.android",
       ios: "https://apps.apple.com/app/wireguard/id1441195209", macos: "https://apps.apple.com/app/wireguard/id1451685025",
       windows: "https://download.wireguard.com/windows-client/wireguard-installer.exe", linux: "https://www.wireguard.com/install/" },   // Linux = per-distro
-    // MCRF imports a WG / AWG config too (AWG 3.1 included). Android and Windows, and no `page`: wgGetApp falls back to app[os],
-    // so the row is offered nowhere else. The direct installer (APK / exe) comes from the panel's wg_catalog (WG_APPS, its tag_re).
-    mcrf: { name: "MCRF", android: "https://github.com/vnenapravo7-source/mcrf/releases", windows: "https://github.com/vnenapravo7-source/mcrf-desktop/releases" }
+    // MCRF imports a WG / AWG config too (AWG 3.1 included). Android and Windows: an app is offered only on an OS it has a
+    // link for (wgAppList). The direct installer (APK / exe) comes from the panel's wg_catalog (WG_APPS, its tag_re).
+    mcrf: { name: "MCRF", author: "vnenapravo7-source", android: "https://github.com/vnenapravo7-source/mcrf/releases", windows: "https://github.com/vnenapravo7-source/mcrf-desktop/releases" },
+    // 1.8.12 item 24 (operator 2026-11-25). Rawline / RawlineMobile: rawline:// on every OS, its add/ link around the .conf.
+    // WINGS V: its own wingsv:// link (SWGTurn.wingsvDirect), Android; a re-import keeps an old profile of the same server.
+    rawline: { name: "Rawline", names: { android: "RawlineMobile" }, author: "ttrroyy", oneTap: ["android", "windows", "macos", "linux"],
+      android: "https://github.com/ttrroyy/RawlineMobile/releases", windows: "https://github.com/ttrroyy/Rawline/releases",
+      macos: "https://github.com/ttrroyy/Rawline/releases", linux: "https://github.com/ttrroyy/Rawline/releases" },
+    wingsv: { name: "WINGS V", author: "WINGS-N", oneTap: ["android"], android: "https://github.com/WINGS-N/WINGSV/releases" }
   };
-  var WG_ORDER = { awg: ["amneziavpn", "amneziawg", "mcrf"], wg: ["amneziavpn", "amneziawg", "wireguard", "mcrf"] };
+  // AmneziaVPN stays first, the default of every WG / AWG card (no operator choice); Rawline after MCRF (operator 2026-11-25)
+  var WG_ORDER = { awg: ["amneziavpn", "amneziawg", "mcrf", "rawline", "wingsv"], wg: ["amneziavpn", "amneziawg", "wireguard", "mcrf", "rawline", "wingsv"] };
   // Real Safari on iOS/iPadOS specifically — the ONLY browser that pops a modal "Safari cannot open the page because
   // the address is invalid" when an unregistered custom scheme (e.g. vkturnproxy://) is fired. Chrome/Firefox/Edge on
   // iOS fail silently, so they keep the auto-fire + fallback. Best-effort (Brave / SFSafariViewController can slip in).
@@ -696,25 +707,28 @@
     return ios && /Version\/\d/.test(ua) && /Safari\//.test(ua) &&
       !/CriOS|FxiOS|EdgiOS|OPiOS|OPT\/|DuckDuckGo|GSA\/|YaBrowser|FBAN|FBAV|FB_IAB|Instagram|Line\/|SnapChat|Twitter/.test(ua);
   }
-  function wgGetApp(type) {   // returns the WG/AWG client apps for the CURRENT OS → the "Get … manually" bubble (two-target rows)
-    var awg = type === "awg";
-    var order = WG_ORDER[awg ? "awg" : "wg"], os = subOs(), items = [];
-    var cat = (_lastData && _lastData.wg_catalog) || {};
-    order.forEach(function (id) {
-      var app = WG_CLIENTS[id]; if (!app) return;
-      var res = cat[id] || null, plat = (res && res.platforms && res.platforms[os]) || null;
-      var page = (res && res.page) || app.page || app[os] || "";                          // row body → the app's downloads page
-      // download icon → the best DIRECT installer for this OS (panel-resolved), else the store / page
-      var dl = (plat && (plat.url || plat.store || plat.page || plat.github)) || app[os] || page;
-      if (!dl && !page) return;                                                            // nothing offered for this OS
-      var nm = app.name + ((app.autostart && os === "android") ? " — Autostart" : "");     // Autostart (one-tap auto-import) is Android-only
-      items.push({ id: id, name: nm, logo: app.logo, page: page || dl, dl: dl, isFile: !!urlFileName(dl) });
+  // Item 24 — the WG / AWG apps this OS can use, in WG_ORDER: AmneziaVPN first, the default. Each is shaped like a turn app
+  // record (turnGetApp's build), so the badge, the list, the download row and Start read both the same way; the panel's
+  // wg_catalog adds the resolved release (its files, the direct installer) where the app has a releases page for this OS.
+  function wgAppList(type) {
+    var os = subOs(), cat = (_lastData && _lastData.wg_catalog) || {}, out = [];
+    WG_ORDER[type === "awg" ? "awg" : "wg"].forEach(function (id) {
+      var app = WG_CLIENTS[id], plat = ((cat[id] || {}).platforms || {})[os] || {};
+      if (!app || !app[os]) return;                                    // nothing for this OS (AmneziaWG on Linux, WINGS V off Android)
+      var one = (app.oneTap || []).indexOf(os) >= 0, store = plat.store || "";
+      var page = plat.page || plat.github || store || plat.url || app.page || app[os], file = plat.url || store || app[os];
+      var files = (plat.assets && plat.assets.length) ? plat.assets : urlFileName(file) ? [{ name: urlFileName(file), url: file }] : [];   // WireGuard's one installer
+      out.push({ cid: id, app: (app.names || {})[os] || app.name, author: app.author || "", platform: os, autostart: one,
+                 store: store, page: page, file: file, fileName: urlFileName(file), tag: plat.tag || "", assets: files,
+                 how: t(one ? "apOneTap" : id === "amneziavpn" ? "apPaste" : "apFile") });
     });
-    if (!items.length) return null;
-    var primary = items[0];   // Amnezia VPN → the Start button's get-app fallback
-    return { app: awg ? "AmneziaWG" : "WireGuard", platform: os,
-             file: primary.dl, fileName: "", page: primary.page,
-             headerTitle: t(awg ? "getAwgClient" : "getWgClient"), wgItems: items };
+    return out;
+  }
+  // The visitor's pick (scope wg / awg) while this OS still lists it, else the default — the same rule as turnGetApp
+  function wgGetApp(type) {
+    var lst = wgAppList(type), pk = appPick(type);
+    for (var i = 0; pk && i < lst.length; i++) if (lst[i].cid === pk) return lst[i];
+    return lst[0] || null;
   }
   var AMNEZIA_VPN = { name: "Amnezia VPN" };
   // The MYSOREZ VK TURN Proxy app un-bundled its engine ("core") in v2.0.0 — the arm64 core binary the app imports.
@@ -769,7 +783,8 @@
       if (/(^|[-_.])sources?([-_.]|$)/i.test(n)) return false;
       if (/^server[-_]/i.test(n)) return false;
       if (/^lib[a-z0-9]|\.aar$|xcframework/i.test(n)) return false;   // dev libraries/frameworks (libfreeturn-*, mobile.aar, Mobile.xcframework.zip) — not user-run clients
-      if (/^runtime-[0-9a-f]{64}\.bin$|[-_]app[-_]update\.zip$/i.test(n)) return false;   // an app's own update payload (mcrf-desktop: ~33 runtime-<sha256>.bin + mcrf-app-update.zip)
+      if (/^runtime-[0-9a-f]{64}\.bin$|[-_]app[-_]update\.zip$/i.test(n)) return false;
+      if (/^mcrf-(engine|anubis)[-_]/i.test(n)) return false;   // MCRF's engine APKs (mcrf-engine-bs-*, mcrf-anubis): the app fetches its engines itself   // an app's own update payload (mcrf-desktop: ~33 runtime-<sha256>.bin + mcrf-app-update.zip)
       return true;
     });
   }
@@ -795,13 +810,6 @@
   }
   function getAppRow(ga) {
     var wrap = el("div", "scell-getapp");
-    if (ga.wgItems) {   // WG/AWG multi-app bubble: each row = logo/name → downloads page + a download icon → direct file
-      var btnW = el("button", "scell-getapp-a scell-getapp-btn"); btnW.type = "button";
-      btnW.textContent = t("getAppManual").replace("{app}", ga.app) + " ▾";
-      btnW.onclick = function (e) { e.stopPropagation(); openDlBubble(btnW, ga, null); };
-      wrap.appendChild(btnW);
-      return wrap;
-    }
     var files = installerAssets(ga.assets);
     var want = ga.platform;   // keep only this OS's files (drop other-OS variants); OS-less items (store links) stay
     var scoped = files.filter(function (f) { var o = assetOs(urlFileName(f.url) || f.name); return !o || o === want; });
@@ -1123,36 +1131,15 @@
     if (_dlBubble && _dlBubble._anchor === anchor) { closeDlBubble(); return; }   // second click on same trigger → toggle off
     closeDlBubble(); closeNoteBubble();
     var b = el("div", "dl-bubble"); b._anchor = anchor;
-    if (ga.headerTitle) {   // multi-app bubble (WG/AWG) — a plain title, no single releases page to link
-      b.appendChild(el("div", "dl-bubble-title", ga.headerTitle));
-    } else {
-      var isGithub = /github\.com/.test(ga.page || "");
-      var head = el("a", "dl-bubble-head"); head.href = ga.page; head.target = "_blank"; head.rel = "noopener";
-      head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
-      b.appendChild(head);
-      if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
-      var dnotes = t("dlNotes") || {}, dnote = ga.note || dnotes[ga.cid + "@" + ga.platform] || dnotes[ga.cid];   // what to know before installing (MCRF on Android: 10+ and its engines; Rawline on csqtt 2.5)
-      if (dnote) b.appendChild(el("div", "dl-bubble-ver", dnote));
-    }
+    var isGithub = /github\.com/.test(ga.page || "");
+    var head = el("a", "dl-bubble-head"); head.href = ga.page; head.target = "_blank"; head.rel = "noopener";
+    head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
+    b.appendChild(head);
+    if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
+    var dnotes = t("dlNotes") || {}, dnote = ga.note || dnotes[ga.cid + "@" + ga.platform] || dnotes[ga.cid];   // what to know before installing (MCRF on Android: 10+ and its engines; Rawline on csqtt 2.5)
+    if (dnote) b.appendChild(el("div", "dl-bubble-ver", dnote));
     var list = el("div", "dl-bubble-list");
-    if (ga.wgItems) {   // WG/AWG two-target rows: [logo + name] → downloads page · [⬇] → best direct installer for this OS
-      ga.wgItems.forEach(function (f) {
-        var row = el("div", "dl-bubble-item has-logo wg-row");
-        var body = el("a", "dl-row-body"); body.href = f.page; body.target = "_blank"; body.rel = "noopener";
-        if (f.logo) { var lg = el("img", "dl-item-logo"); lg.src = f.logo; lg.alt = ""; body.appendChild(lg); }
-        var colw = el("span", "dl-item-col");
-        colw.appendChild(el("span", "dl-item-label", f.name));
-        colw.appendChild(el("span", "dl-item-file", String(f.page).replace(/^https?:\/\//, "").split(/[\/?#]/)[0]));
-        body.appendChild(colw);
-        body.addEventListener("click", function () { setTimeout(closeDlBubble, 60); });
-        row.appendChild(body);
-        var dlb = el("a", "dl-row-dl"); dlb.href = f.dl; dlb.title = t("dlShort"); dlb.setAttribute("aria-label", t("dlShort")); dlb.appendChild(iconEl("download"));
-        if (f.isFile) dlb.onclick = function (e) { e.preventDefault(); triggerDownload(f.dl); setTimeout(closeDlBubble, 60); };   // direct installer → download in place
-        else { dlb.target = "_blank"; dlb.rel = "noopener"; dlb.addEventListener("click", function () { setTimeout(closeDlBubble, 60); }); }   // store / page → new tab
-        row.appendChild(dlb);
-        list.appendChild(row);
-      });
-    } else files.forEach(function (f) {
+    files.forEach(function (f) {
       var fn = urlFileName(f.url);
       var it = el("a", "dl-bubble-item" + (f.logo ? " has-logo" : "")); it.href = f.url; it.rel = "noopener";
       if (!fn) it.target = "_blank";   // store / page → new tab; a direct file downloads in the same tab (correct name)
@@ -1381,7 +1368,7 @@
     var app = (c && c.app) || (c && c.dlAppName) || t("theApp");
     var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
-    var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("linkCopied")));
+    var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, (c && c.doneText) || t("linkCopied")));
     inner.appendChild(done);   // green "Connection link copied" ✓✓
     var head = el("div", "ph-head"); head.appendChild(el("span", "ph-title", app)); inner.appendChild(head);
     var steps = el("div", "ph-steps");
@@ -2076,10 +2063,13 @@
     var srvRow = el("div", "scell-srv");   // holds the protocol/app badge + the Primary/Backup role — the server name rides the peer-title line
     node.appendChild(srvRow);
     if (mode !== "turn") {   // WG/AWG cells get a protocol badge (like the turn app badge) + Primary/Backup when there's >1 deployment
-      var ic0 = ifaceColor(tgt.type);
-      var ib = el("span", "scell-tag", tgt.type === "awg" ? t("awg") : t("wg"));
-      ib.style.color = ic0;
+      // "AmneziaWG · AmneziaVPN": the protocol, then the card's app (item 24) — the visitor's pick, else AmneziaVPN; the
+      // protocol stays on the card here and drops where the app repeats it ("WireGuard", not "WireGuard · WireGuard")
+      var ic0 = ifaceColor(tgt.type), wproto = tgt.type === "awg" ? t("awg") : t("wg"), wga = wgGetApp(tgt.type);
+      var ib = wga ? appBadge(wproto, ic0, wga.app, wga.author, ic0) : appBadge("", "", wproto, "", ic0);
+      var ibk = ib.querySelector(".scell-tag-kind"); if (ibk) ibk.classList.add("scell-tag-kind-on");
       srvRow.appendChild(ib);
+      if (wga) wireAppChip(ib, appListInfo(tgt.type, wproto, wgAppList(tgt.type), wga));
       if (multi) {
         var rl0 = tgt.primary || "";
         var isBk0 = rl0 === "backup";
@@ -2087,10 +2077,9 @@
         if (!isBk0) role0.style.color = ic0;
         srvRow.appendChild(role0);
       }
-      // "Get … manually" → a bubble of the WG/AWG client apps for this OS (Amnezia VPN, AmneziaWG, WireGuard). Amnezia
-      // VPN leads (the only vpn:// one-tap, Android) but all are offered; the Start button's get-app falls back to it.
-      var wga = wgGetApp(tgt.type);
+      // "Get <app> manually" → the card app's own bubble, as on a turn card: its files for this OS, its store link first
       if (wga) node.appendChild(getAppRow(wga));   // under the server/app name line (in the header block)
+      if (wga && wga.cid === "wingsv") node.appendChild(el("div", "scell-appnote", t("wingsvOld")));   // its import keeps an old profile of the same server
     }
     var stage = el("div", "scell-stage");
     cell.appendChild(node); cell.appendChild(stage);
@@ -2436,16 +2425,23 @@
       else { draw(); Promise.resolve().then(art.buildAsync).then(apply).catch(function (e) { ctrl.ready = false; stage.innerHTML = ""; stage.appendChild(el("div", "cfg-fail", (e && e.message) || t("cantGen"))); if (ctrl.notify) ctrl.notify(); }); }
       }
     } else {
-      if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppName = wga.app; }   // Start-button download-fallback (WG/AWG client app)
+      var wcid = wga ? wga.cid : "";
+      if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppPage = wga.page;   // Start-button download-fallback (the card's app)
+                 ctrl.app = ctrl.dlAppName = wcid === "amneziavpn" ? AMNEZIA_VPN.name : wga.app; }   // the ask reads "Open/Get Amnezia VPN"
       if (conf) { ctrl.payload = conf; ctrl.ready = true; ctrl.hasQR = true; ctrl.ext = "conf"; ctrl.view = "qr"; }
-      // "Open in Amnezia VPN" — build the vpn:// deep link (base64url(qCompress(.conf))) async off the same config, then
-      // refresh the bar. Amnezia imports the WG/AWG .conf (AWG obfuscation included). Offered on ALL platforms now (the
-      // Start button deep-links it like a turn fork; Safari-iOS gets the same ask-on-tap + its own `vpn` installed-flag).
-      if (conf) {
-        ctrl.app = AMNEZIA_VPN.name; ctrl.dlAppName = AMNEZIA_VPN.name;   // the Start button opens/gets Amnezia VPN → the ask reads "Open/Get Amnezia VPN"
-        Promise.resolve().then(function () { return SWGTurn.amneziaVpn(conf); })
+      // Start follows the card's app (item 24). Rawline: rawline://add/ around the .conf (one tap on every OS). AmneziaVPN:
+      // the vpn:// link (base64url(qCompress(.conf))), one tap on Android, pasted elsewhere; WINGS V: its own wingsv://
+      // link — both built async, then the bar refreshes, and the third view shows the link they paste. An app with no link
+      // of its own (AmneziaWG, WireGuard, MCRF): Start saves the .conf and shows how to import it.
+      if (conf && wcid === "rawline") { ctrl.openUri = appOpenUri("rawline", conf); ctrl.noAutoFire = false; }
+      else if (conf && (wcid === "amneziavpn" || wcid === "wingsv")) {
+        ctrl.linkView = true;
+        Promise.resolve().then(function () { return wcid === "wingsv" ? SWGTurn.wingsvDirect(conf, tgt.type === "awg", [peer.title, ctrl.srvName].filter(Boolean).join(" · ")) : SWGTurn.amneziaVpn(conf); })
           .then(function (link) { ctrl.openUri = link; if (ctrl.notify) ctrl.notify(); })
           .catch(function () {});   // no deep link (no CompressionStream) → QR + download + "Get the app" remain
+      } else if (conf && wga) {
+        ctrl.confStart = true; ctrl.doneText = t("confSaved");
+        ctrl.stepList = [t("liConf1"), t("liConf2"), t("liConf3").replace("{file}", ctrl.base.replace(/\.conf$/i, "") + ".conf")];
       }
       draw();
     }
@@ -2817,7 +2813,7 @@
       // get it (download only). "app" name falls back to a generic label.
       startB.style.visibility = c.ready ? "" : "hidden";
       var appNm = c.app || c.dlAppName || t("turnApp");
-      var st = c.openUri ? t("startOpen").replace("{app}", appNm) : t("startGet").replace("{app}", appNm);
+      var st = t(c.openUri ? "startOpen" : c.confStart ? "startConf" : "startGet").replace("{app}", appNm);
       startB.title = st; startB.setAttribute("aria-label", t("start") + " · " + st);
       for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "pdot" + (i === curIdx ? " on" : "");
       if (sL) { sL.style.opacity = (curIdx <= 0) ? "0" : ""; sR.style.opacity = (curIdx >= items.length - 1) ? "0" : ""; }
@@ -2829,7 +2825,7 @@
     function cellViews(c) {
       if (!c.hasQR) return ["text"];
       if (c.vktgz && c.wgConf) return ["qr", "link", "config"];
-      return (mode !== "turn" && c.openUri) ? ["qr", "link", "text"] : ["qr", "text"];
+      return (mode !== "turn" && c.openUri && c.linkView) ? ["qr", "link", "text"] : ["qr", "text"];
     }
     function viewText(c) {   // what Download/Share act on
       if (c.view === "config" && c.wgConf) return c.wgConf;
@@ -2908,6 +2904,7 @@
         if (c.vktgz) { showVktgzChoice(c, startB); return; }   // MYSOREZ: 3-button popover (get app · get core · assemble+connect)
         if (c.cliApp && c.cmd) { var cmd = cliCommand(c); if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(function () {}); showCliHint(c); return; }   // CLI/sidecar → copy the per-OS command (matching the downloaded binary) + show the run steps
         if (c.cmd) { if (navigator.clipboard) navigator.clipboard.writeText(c.cmd).catch(function () {}); showToast(t("cmdCopied")); return; }
+        if (c.confStart) { download(c.payload, c.base, "conf"); showLinkImportHint(c); return; }   // WG / AWG app with no link → the .conf + its import steps
         startDownload(c); return;                                                          // no scheme, no command → get the app
       }
       if (c.noAutoFire) { if (navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {}); showLinkImportHint(c); return; }   // WDTT app with no URL scheme (amurcanov/qWDTT/PWDTT) → copy the link + import steps, never fire a dead scheme
