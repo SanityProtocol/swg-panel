@@ -480,11 +480,12 @@
       var d = nt.getBoundingClientRect().top - top0; if (Math.abs(d) < 1) return;
       var pg = nt.closest(".pager");   // the pager scrolls in portrait, the window on a desktop
       if (pg && pg.scrollHeight > pg.clientHeight + 1 && getComputedStyle(pg).overflowY !== "visible") pg.scrollTop += d;
-      else window.scrollTo({ top: (window.scrollY || 0) + d, behavior: "instant" });
+      else window.scrollTo(window.scrollX || 0, (window.scrollY || 0) + d);
     });
   }
   function openAppPicker(info) {
     closeAllHints();
+    if (_toastEl && _toastEl.classList.contains("ap-toast")) { try { _toastEl.remove(); } catch (_) {} _toastEl = null; clearTimeout(_toastT); }   // a stale offer would overwrite the picks made since
     var ov = el("div", "cp-overlay"), panel = el("div", "cp-panel ap-panel");
     var head = el("div", "cp-head"), title = el("div", "cp-title"), list = el("div", "cp-list");
     var x = el("button", "cp-close"); x.type = "button"; x.setAttribute("aria-label", t("close")); x.textContent = "×";
@@ -2203,7 +2204,7 @@
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
           vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [], version: cd.version }, cga && cga.enc, cd.line);   // 2.5 → the sealed link + a QR
-        // Badge "<app> by <author>" (item 24) in the csqtt FORK colour; the role chip below keeps the iface colour. Behind it,
+        // Badge: the app and its author (item 24) in the csqtt FORK colour; the role chip below keeps the iface colour. Behind it,
         // the apps of this server's fork and line for the visitor to choose from.
         var cffork = forkColor(cfk);   // the csqtt FORK colour (catalog key), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
@@ -2273,13 +2274,15 @@
           wg_port: wd.wg_port, tun_port: wd.tun_port, raw_port: wd.raw_port, workers: wWorkers,
           vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
         var wAppName = (wga && (wga.productName || wga.app)) || wart.app;
-        // Badge "<app> by <author>" (item 24), just the fork when the app name echoes it — same rule the turn cells use.
+        // Badge: the app and its author (item 24), just the fork when the app name echoes it — same rule the turn cells use.
         var wHasApp = wAppName && wAppName !== wfork;
         // Colour the app by the fork its client is NATIVE to (not the server fork) — same rule the turn cells use,
         // so PWDTT on amurcanov's server shows in its home fork's colour, not amurcanov's.
         var wAppFork = (wga && wclients[wga.cid] && wclients[wga.cid].native_fork) || wfork;
         var wAppColor = forkColor(wAppFork);
-        var wtag = wHasApp ? appBadge("WDTT", ifaceColor("wdtt"), wAppName, appAuthor(wga), wAppColor) : appBadge("", "", forkLabel(wfork), "", wfc);
+        var wport = it.dupFork ? String(wd.dtls_port || "") : "";
+        var wtag = wHasApp ? appBadge("WDTT" + (wport ? " :" + wport : ""), ifaceColor("wdtt"), wAppName, appAuthor(wga), wAppColor, wport)
+                           : appBadge("", "", forkLabel(wfork) + (wport ? " :" + wport : ""), "", wfc);
         srvRow.appendChild(wtag);
         if (wHasApp && wga) wireAppChip(wtag, appListInfo(appScope(wfork), "WDTT · " + forkLabel(wfork), turnAppList(wfork, wd.version), wga));
         var wrl = tgt.primary || "";
@@ -2553,9 +2556,14 @@
         // listen is the tiebreak so two relays of one fork keep a fixed order between polls instead of swapping.
         tps.sort(function (a, b) { return turnCellRank(a.f, isAwg) - turnCellRank(b.f, isAwg) || forkRank(a.f) - forkRank(b.f)
                  || String(a.tp.listen || "").localeCompare(String(b.tp.listen || "")); });   // client-priority, then canonical fork order
-        var nfork = {}; tps.forEach(function (x) { nfork[x.f] = (nfork[x.f] || 0) + 1; });
-        tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp, dupFork: nfork[x.f] > 1 }); });
+        tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp, f: x.f }); });
       });
+      // Two cards of this device that would read alike keep their port after the badge: two relays of one fork, on one
+      // interface or two (wg0 and awg0 behind hackdiaz: the card names the server's author, no longer WG / AWG), and two
+      // WDTT servers (the badge names the app, no longer the fork)
+      var nsame = {}, same = function (x) { return x.tp ? "t:" + x.f : x.wdtt ? "wdtt" : ""; };
+      items.forEach(function (x) { var k = same(x); if (k) nsame[k] = (nsame[k] || 0) + 1; });
+      items.forEach(function (x) { var k = same(x); x.dupFork = !!k && nsame[k] > 1; });
     } else {
       orderedTargets(peer.targets).forEach(function (tt) { if (isSelfContained(tt.type) || tt.direct === false) return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
     }

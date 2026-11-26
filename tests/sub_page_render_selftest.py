@@ -123,6 +123,8 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-pickclone  serves a sub.js whose connection list copies the app chip as a button → RED on [18]
      --perturb-pickjump   serves a sub.js whose pick rebuild leaves the tapped badge where the rebuild puts it → RED on [18]
      --perturb-stalepick  serves a sub.js that hides a card whose saved pick the list no longer holds → RED on [18]
+     --perturb-dupport    serves a sub.js whose two relays of one fork on two interfaces carry no port → RED on [18]
+     --perturb-staleoffer serves a sub.js that leaves an offer on screen when another list opens → RED on [18]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -175,9 +177,11 @@ P_CLIPHONE = "--perturb-cliphone" in sys.argv
 P_PICKCLONE = "--perturb-pickclone" in sys.argv
 P_PICKJUMP = "--perturb-pickjump" in sys.argv
 P_STALEPICK = "--perturb-stalepick" in sys.argv
+P_DUPPORT = "--perturb-dupport" in sys.argv
+P_STALEOFFER = "--perturb-staleoffer" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
-           or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK)
+           or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -398,6 +402,10 @@ if P_PICKJUMP:
     perturbed_web('var d = nt.getBoundingClientRect().top - top0; if (Math.abs(d) < 1) return;', 'return;', "the tapped badge kept in place")
 if P_STALEPICK:
     perturbed_web('      return lst[0] || null;   // a stale pick', '      return pk ? null : lst[0] || null;   // a stale pick', "a stale pick falls back")
+if P_DUPPORT:
+    perturbed_web('x.dupFork = !!k && nsame[k] > 1;', 'x.dupFork = false;', "two cards that read alike keep their port")
+if P_STALEOFFER:
+    perturbed_web('    if (_toastEl && _toastEl.classList.contains("ap-toast")) {', '    if (false) {', "a new list drops a stale offer")
 if P_CSQSTEPS:
     perturbed_web('cga.cid === "csqsocks" ? ((t("csqSocksSteps") || {})[subOs()] || null)', 'cga.cid === "csqsocks" ? null', "csq-socks's own steps")
 if P_LL25:
@@ -542,7 +550,8 @@ def seek_js(mode, badge_has):
     return r"""const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === %s);
       if (!pg) return 'no page';
       const cells = [...pg.querySelectorAll('.scell')];
-      const i = cells.findIndex(c => ((c.querySelector('.scell-tag') || {}).textContent || '').includes(%s));
+      // a relay's port (two relays of one fork on this device) is not part of what a probe names
+      const i = cells.findIndex(c => ((c.querySelector('.scell-tag') || {}).textContent || '').replace(/ :\d+ · /, ' · ').includes(%s));
       if (i < 0) return 'no cell';
       pg._seek(i, null);""" % (json.dumps(mode), json.dumps(badge_has))
 
@@ -719,7 +728,7 @@ try:
     an = turn_cells(renders[("android", "en")])
     check("[10] Android: the MYSOREZ proxy (hidden fork, still running) offers its users the MYSOREZ app",
           any((c["tag"] or "").startswith("MYSOREZ · VK TURN Proxy") for c in an), [c["tag"] for c in an])
-    hd = [c for c in an if (c["tag"] or "").startswith("hackdiaz · ")]   # the label exactly: it is a prefix of its owner, hackdiaz-dev
+    hd = [c for c in an if re.match(r"hackdiaz( :\d+)? · ", c["tag"] or "")]   # the label exactly: it is a prefix of its owner, hackdiaz-dev
     check("[10] …while hackdiaz's cells (a visible fork) do not offer that hidden app",
           hd and not [c for c in hd if "MYSOREZ" in (c["tag"] or "")], [c["tag"] for c in an])
 
@@ -1224,6 +1233,9 @@ try:
           [(c["role"], c["app"], c["chip"]) for c in fresh if c["role"] in ("CSQTT 2.1", "WDTT", "hackdiaz")]
           == [("CSQTT 2.1", "CSQTT by amurcanov", True), ("WDTT", "WDTT by amurcanov", True), ("hackdiaz", "FreeTurn by hackdiaz", True),
               ("hackdiaz", "FreeTurn by hackdiaz", True)], [(c["role"], c["app"], c["chip"]) for c in fresh])
+    hdp = sorted(re.sub(r".*:(\d+)$", r"\1", c["tag"] or "") for c in fresh if c["role"] == "hackdiaz")
+    check("[18] the two hackdiaz relays (before awg0 and before wg0) keep their ports after the badge, so their cards differ (review F2)",
+          hdp == ["56100", "56101"], [c["tag"] for c in fresh if c["role"] == "hackdiaz"])
     rows = sheet(tab, "WDTT")
     check("[18] the WDTT list: the operator's default first, chosen and Recommended, then the other apps with their authors",
           isinstance(rows, list) and rows[0] == ["WDTT by amurcanov Paste the link in the app Recommended", True]
@@ -1252,6 +1264,13 @@ try:
     pick(tab, "WDTT")
     check("[18] picking the default again clears the pick", stored(tab, "amurcanov") is None
           and [c["app"] for c in cells_now(tab) if c["role"] == "WDTT"] == ["WDTT by amurcanov"], stored(tab, "amurcanov"))
+    # an offer still on screen goes when another list opens: it was counted before the picks made since (review F3)
+    sheet(tab, "WDTT"); pick(tab, "RawlineMobile")
+    t1 = tab.ev("!!document.querySelector('.ap-toast')")
+    sheet(tab, "WDTT")
+    check("[18] opening a list drops the offer still on screen (it would write over the picks made since)",
+          t1 is True and tab.ev("!!document.querySelector('.ap-toast')") is False, t1)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
     tab.close()
     # a pick never moves a card: the turn proxies keep the operator's ranking (a friendly app picked for hackdiaz would rank it
     # after the native apps of cacggghp's proxy)
@@ -1290,7 +1309,7 @@ try:
                                 nested: document.querySelectorAll('.cp-row [role=button], .cp-row [tabindex], .cp-row .scell-tag-pick').length }))()""")
     check("[18] the connection list names a connection '<type or server author> · <app>' and holds no button in its rows",
           isinstance(cp, dict) and cp["nested"] == 0 and any(r.startswith("WDTT · " + alt) for r in cp["rows"])
-          and any(r.startswith("hackdiaz · Rawline") for r in cp["rows"]), cp)
+          and any(re.match(r"hackdiaz( :\d+)? · Rawline", r) for r in cp["rows"]), cp)
     tab.close()
     # once per device, the first chip in full view rolls through the other apps and lands back on its own; reduced motion: a hint
     tab, _r = render("u1", "android", "en", phone=True, ls={"swgsub-apphint": None})

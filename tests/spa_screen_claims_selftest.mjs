@@ -262,7 +262,7 @@ check("[5] both pages hand turn-artifacts their catalog's name (the sub page, th
       SUB.includes("  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);")
       && JS["crypto.js"].includes("if (SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);"), "");
 check("[5] the sub page's Sidecar title and its WDTT chip and zoom print the name, not the id",
-      SUB.includes('(c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"') && SUB.includes('var wsrv = el("span", null, forkLabel(wfork));')
+      SUB.includes('(c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"') && SUB.includes('appBadge("", "", forkLabel(wfork) + (wport ? " :" + wport : ""), "", wfc)')
       && SUB.includes("ctrl.zoomTail = wHasApp ? wAppName : forkLabel(wfork);"), "");
 check("[5] …and the SPA's WDTT adopt label", JS["iface.js"].includes('" · " + forkLabel(cand.wdtt.fork)'), "");
 
