@@ -30,8 +30,10 @@ PERTURB = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv e
 SPA_PLANTS = {   # (anchor in js/turn.js, what it was before q189 SPA-7)
     "wdtt": ("raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) })",
              "raw: rawWant, block: cfg.block || [], bind_ip: pin, ...egressBody(egressInit(cfg)) })"),
-    "csqtt": ("params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line } : {}),",
-              "params: params.trim(), block: cfg.block || [], bind_ip: pin, ...(lineDirty ? { line } : {}),"),
+    # csqtt's anchor stops at the line branch's opening brace: what a line change carries (the fork since the MRTT fork,
+    # c8ac7e89) is not this plant's business; CsqttManageSheet's endpoint save is the only one with pinDirty before it
+    "csqtt": ("params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? {",
+              "params: params.trim(), block: cfg.block || [], bind_ip: pin, ...(lineDirty ? {"),
 }
 FAILS = []
 def check(name, cond, detail=""):
