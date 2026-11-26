@@ -790,3 +790,107 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .ap-toast-b { flex: none; min-height: 36px; padding: 0 12px; border-radius: 9px; border: 0; cursor: pointer; font: inherit; font-weight: 700;
   color: #0b1118; background: var(--brand); }
 @media (prefers-reduced-motion: reduce) { .scell-appchip { transition: none; } }
+
+/* ══ PC / tablet layouts. body.lay-wide (≥1024 × 600: a PC, a tablet on its side) puts the devices beside ONE card;
+   body.lay-col (≥640 × 600: a tablet held upright, a narrow window) puts them above it. sub.js never sets either on a
+   phone, so every rule here is scoped to them and the phone layout stays exactly as it was. ══ */
+.wnav, .pbtn-start-lbl, .pbar-brk, .scell-side { display: none; }
+body.lay-wide, body.lay-col { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; display: block; overflow-anchor: none; }
+body:is(.lay-wide, .lay-col) #app { display: block; height: auto; min-height: 0; overflow: visible; }
+/* the header: one quiet line — the mark left, the language / theme controls right; the name moves to the list */
+body:is(.lay-wide, .lay-col) .bar { flex-direction: row; justify-content: flex-start; align-items: center; gap: 14px; text-align: left;
+  padding: 20px max(24px, calc((100vw - 1240px) / 2 + 24px)) 18px; }
+body:is(.lay-wide, .lay-col) .brand { align-self: center; min-height: 0; }
+body:is(.lay-wide, .lay-col) .brand-mark { width: 32px; }
+body:is(.lay-wide, .lay-col) .brand-name { font-size: 26px; }
+body:is(.lay-wide, .lay-col) .bar .who, body:is(.lay-wide, .lay-col) .bar .who-row { display: none; }
+body:is(.lay-wide, .lay-col) .topctl { position: absolute; top: 16px; right: max(24px, calc((100vw - 1240px) / 2 + 24px)); }
+/* the list is the navigation: no protocol tabs, no swipe hints, no Connections button */
+body:is(.lay-wide, .lay-col) #peers > .modebar, body:is(.lay-wide, .lay-col) .ppage .vhint, body:is(.lay-wide, .lay-col) .ppage .navarrow,
+body:is(.lay-wide, .lay-col) .ppage .navrow, body:is(.lay-wide, .lay-col) .pbar > .pbtn-conn, body:is(.lay-wide, .lay-col) .pswitch { display: none; }
+body:is(.lay-wide, .lay-col) .pager { display: block; flex: none; height: auto; min-height: 0; overflow: visible; scroll-snap-type: none; }
+body:is(.lay-wide, .lay-col) .ppage { display: none; }
+
+/* ── the list ── */
+body:is(.lay-wide, .lay-col) .wnav { display: block; }
+.wnav-who { font-weight: 800; font-size: 19px; color: var(--ink); padding: 0 10px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wnav-dev-t { font-size: 12.5px; font-weight: 700; color: var(--muted); padding: 14px 10px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wnav-row { border-bottom: 0; border-radius: 11px; min-height: 46px; padding: 8px 10px; }
+.wnav-col { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+.wnav-col .cp-lead { flex: none; }
+.wnav-row .scell-srv { flex-wrap: wrap; row-gap: 2px; }
+.wnav-row.on { background: color-mix(in srgb, var(--brand) 11%, transparent); }
+.wnav-row.on::before { left: 0; top: 10px; bottom: 10px; }
+.wnav-srv { font-size: 12px; font-weight: 600; color: var(--muted); padding-left: 36px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wnav-srv .scell-role { font-size: 10.5px; letter-spacing: .6px; }
+.wnav-row:focus-visible, .wnav-dev:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.wnav-dev { appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); font: inherit; font-weight: 700;
+  font-size: 14px; border-radius: 999px; padding: 7px 16px; cursor: pointer; }
+.wnav-dev.on { border-color: var(--brand); color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, var(--panel)); }
+
+/* ── the card: one connection, nothing below the fold that matters ── */
+body:is(.lay-wide, .lay-col) .ppage.cur { display: grid; height: auto; min-height: 0; max-width: none; margin: 0; overflow: visible;
+  scroll-snap-align: none; position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 22px;
+  padding: 24px 28px 26px; box-shadow: 0 12px 40px rgba(0, 0, 0, .08); }
+body:is(.lay-wide, .lay-col) .ppage.cur > .ppage-head { grid-area: head; position: static; align-items: flex-start; padding: 0 0 14px;
+  margin-bottom: 6px; border-bottom: 1px solid var(--line); }
+body:is(.lay-wide, .lay-col) .ppage.cur .ppage-title { justify-content: flex-start; font-size: 21px; max-width: 100%; }
+body:is(.lay-wide, .lay-col) .ppage.cur .srow, body:is(.lay-wide, .lay-col) .ppage.cur .scell.cur { display: contents; }
+body:is(.lay-wide, .lay-col) .ppage.cur .scell:not(.cur) { display: none; }
+body:is(.lay-wide, .lay-col) .scell.cur > .scell-node { grid-area: node; position: static; align-items: flex-start; text-align: left; margin: 0; }
+body:is(.lay-wide, .lay-col) .scell.cur .scell-srv { justify-content: flex-start; }
+body:is(.lay-wide, .lay-col) .scell.cur > .scell-vk { grid-area: vk; position: static; align-items: flex-start; margin: 0; }
+body:is(.lay-wide, .lay-col) .scell.cur > .scell-stage { grid-area: stage; flex: none; width: auto; max-width: 560px; margin: 0; align-self: start; }
+body:is(.lay-wide, .lay-col) .scell.cur .qrimg { width: clamp(220px, 36vh, 300px); }
+body.lay-wide .scell.cur .qrimg { width: clamp(240px, 40vh, 340px); }
+body:is(.lay-wide, .lay-col) .scell.cur .textwrap { width: min(560px, 100%); }
+/* the actions: Start with what it does beside it, then the rest, each named */
+body:is(.lay-wide, .lay-col) .ppage.cur > .pbar { grid-area: bar; position: static; display: flex; flex-wrap: wrap; justify-content: flex-start;
+  align-items: center; gap: 12px 10px; width: auto; max-width: none; min-height: 0; margin: 6px 0 0; padding: 18px 0 0; border-top: 1px solid var(--line); }
+body:is(.lay-wide, .lay-col) .pbar > .pbtn-start { order: -2; width: 68px; height: 68px; margin: 0 6px 0 2px; }
+body:is(.lay-wide, .lay-col) .pbar > .pbtn-start-lbl { display: block; order: -1; flex: 0 1 auto; font-weight: 700; font-size: 15.5px;
+  color: var(--ink); line-height: 1.35; }
+body:is(.lay-wide, .lay-col) .pbar > .pbar-brk { display: block; order: -1; flex: 0 0 100%; height: 0; }
+body:is(.lay-wide, .lay-col) .pbar > .pbtn.ico { width: auto; height: 42px; min-height: 42px; padding: 0 15px 0 12px; gap: 8px; border-radius: 12px; box-shadow: none; }
+body:is(.lay-wide, .lay-col) .pbar > .pbtn.ico svg { width: 20px; height: 20px; }
+body:is(.lay-wide, .lay-col) .pbar > .pbtn.ico::after { content: attr(aria-label); font-size: 13.5px; font-weight: 650; color: var(--ink-2); }
+
+/* a page with no connection on it — the networks it reaches, a blocked device — is one centred column */
+body:is(.lay-wide, .lay-col) .ppage.cur:is([data-mode="nets"], [data-mode="dead"]) { grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "node" "stage"; justify-items: center; text-align: center; }
+body:is(.lay-wide, .lay-col) .ppage.cur:is([data-mode="nets"], [data-mode="dead"]) .scell-stage { max-width: 640px; width: 100%; }
+/* PC: the list down the side, the card beside it — QR left; the app, its notes and the actions right */
+body.lay-wide #peers { display: grid; grid-template-columns: 290px minmax(0, 1fr); grid-template-areas: "use use" "nav main";
+  column-gap: 28px; align-items: start; box-sizing: border-box; width: 100%; max-width: 1240px; margin: 0 auto; padding: 0 24px 48px; }
+body.lay-wide #peers > .usage-line { grid-area: use; }
+body.lay-wide #peers > .wnav { grid-area: nav; position: sticky; top: 16px; max-height: calc(100dvh - 32px); overflow-y: auto; box-sizing: border-box;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 16px 10px 10px; }
+body.lay-wide #peers > .pager { grid-area: main; min-width: 0; }
+body.lay-wide #peers.lay-solo { grid-template-columns: minmax(0, 1fr); grid-template-areas: "use" "main"; max-width: 980px; }
+body.lay-wide .wnav-devs { display: none; }
+body.lay-wide #peers > .wnav { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+body.lay-wide .scell.cur > .scell-side { display: block; grid-area: side; min-width: 0; }
+body.lay-wide .scell-side .cfgtext { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; overflow: hidden auto; max-height: 320px;
+  font-size: 12px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+body.lay-wide .ppage.cur { grid-template-columns: auto minmax(260px, 1fr); grid-template-areas: "head head" "stage node" "stage vk" "stage bar" "stage side" "stage .";
+  grid-template-rows: auto auto auto auto auto 1fr; column-gap: 34px; row-gap: 14px; align-items: start; }
+
+/* tablet upright: the devices as tabs, the chosen one's connections under them, then the card in one column */
+body.lay-col #peers { display: block; box-sizing: border-box; width: 100%; max-width: 720px; margin: 0 auto; padding: 0 24px 48px; }
+body.lay-col .wnav { margin: 0 0 18px; }
+body.lay-col .wnav-who { text-align: center; padding-bottom: 12px; }
+body.lay-col .wnav-devs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 12px; }
+body.lay-col .wnav-dev-t { display: none; }
+body.lay-col .wnav-grp { display: none; }
+body.lay-col .wnav-grp.cur { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+body.lay-col .wnav-row { width: auto; flex: 0 1 auto; border: 1px solid var(--line); background: var(--panel); }
+body.lay-col .wnav-row.on { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); background: color-mix(in srgb, var(--brand) 10%, var(--panel)); }
+body.lay-col .wnav-row.on::before { display: none; }
+body.lay-col .ppage.cur { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "node" "vk" "stage" "bar"; row-gap: 16px; justify-items: center; }
+body.lay-col .ppage.cur > .ppage-head { justify-self: stretch; align-items: center; }
+body.lay-col .ppage.cur .ppage-title { justify-content: center; }
+body.lay-col .scell.cur > .scell-node { align-items: center; text-align: center; }
+body.lay-col .scell.cur .scell-srv { justify-content: center; }
+body.lay-col .scell.cur > .scell-vk { align-items: center; }
+body.lay-col .ppage.cur > .pbar { justify-content: center; justify-self: stretch; }
+body.lay-col .pbar > .pbtn-start-lbl { text-align: left; }

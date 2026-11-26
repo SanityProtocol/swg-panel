@@ -34,7 +34,7 @@
       netsNotCovered: "This device's settings leave it out — ask your administrator to include it.",
       netsHowTo: "Open them by address — for example 192.168.50.10 in a browser, or \\\\192.168.50.10 for shared folders on Windows.",
       netsNames: "A name from that network works only if your administrator set your device to use that network's DNS server. Automatic discovery — printers, the “Network” folder, .local names — doesn't reach across the tunnel.",
-      peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config",
+      peer: "Peer", primary: "Primary", download: "Download .conf", dlQR: "Download QR", dlLink: "Download link", dl: "Download", copyConfig: "Copy config",
       copied: "Copied", copiedClip: "Copied to clipboard", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
       enlarge: "Tap to enlarge", share: "Share",
       getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually", by: " by {author}",
@@ -123,7 +123,7 @@
       netsNotCovered: "Настройки этого устройства её не включают — попросите администратора добавить.",
       netsHowTo: "Открывайте их по адресу — например, 192.168.50.10 в браузере или \\\\192.168.50.10 для общих папок Windows.",
       netsNames: "Имя из той сети работает, только если администратор настроил ваше устройство на DNS-сервер этой сети. Автоматический поиск — принтеры, папка «Сеть», имена .local — через туннель не работает.",
-      peer: "Пир", primary: "Главный", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать",
+      peer: "Пир", primary: "Главный", download: "Скачать .conf", dlQR: "Скачать QR", dlLink: "Скачать ссылку", dl: "Скачать", copyConfig: "Скопировать",
       copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную", by: " от {author}",
@@ -855,6 +855,31 @@
   // history.back() whose scroll restore snapped the document back to wherever the entry was pushed — which
   // silently undid the picker's jump in the landscape/desktop layout, where the jump IS the document scroll.
   try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (_) {}
+  // ── A full-screen pop-up (the app and connection lists, an import hint, the enlarged QR) is MODAL: while one is open
+  //    everything else on <body> is `inert` — no Tab, no screen reader, no click reaches the page behind its dim — and
+  //    the pop-up is a dialog that takes the focus, handed back to what opened it once the last one closes. Each pop-up
+  //    appends itself to <body>, so one watcher there covers them all. An engine without `inert` keeps today's page. ──
+  var _modalSel = ".cp-overlay, .ih-overlay, .qz-overlay", _modalFrom = null;
+  function syncModal() {
+    var ovs = document.querySelectorAll(_modalSel), top = ovs[ovs.length - 1];
+    Array.prototype.forEach.call(document.body.children, function (n) {
+      if (n.tagName === "SCRIPT") return;
+      n.inert = !!top && !(n.matches && n.matches(_modalSel));
+    });
+    if (top) {
+      if (!top.hasAttribute("role")) { top.setAttribute("role", "dialog"); top.setAttribute("aria-modal", "true"); }
+      if (!top.contains(document.activeElement)) {
+        var was = document.activeElement;
+        if (!_modalFrom && was && was !== document.body) _modalFrom = was;
+        var f = top.querySelector("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])");
+        if (f) f.focus({ preventScroll: true });
+      }
+    } else if (_modalFrom) {
+      var back = _modalFrom; _modalFrom = null;
+      if (document.body.contains(back)) back.focus({ preventScroll: true });
+    }
+  }
+  try { new MutationObserver(syncModal).observe(document.body, { childList: true }); } catch (_) {}
   function armOverlayBack() {
     if (_ovArmed) return;
     try { history.pushState({ swgOv: 1 }, ""); } catch (_) { return; }
@@ -1016,6 +1041,73 @@
   // peers: [{ title, dead, entries: [{ pi, ci, srv, color, badge }] }] · cur: {pi, ci} · jump(pi, ci)
   // `extra` is the networks page, when this subscription has one: {pi, n}. It carries no config, so it is in no device's list —
   // and nothing led to it, leaving the only way there a swipe past every config on the subscription.
+  // One connection's row lead — the protocol's own mark, then a COPY of the card's badge row — for the Connections
+  // list and the PC layout's list alike, so both read exactly as the card does.
+  function pickLead(en) {
+    var lead = el("span", "cp-lead");
+    // the protocol's own brand mark leads the row, in full colour — see rowIcon()
+    var mark = rowIcon(en.mode);
+    if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
+    if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's
+      var bc = en.badge.cloneNode(true);   // button — each becomes its icon alone (the turtle, the magnet), shown, not pressable
+      Array.prototype.forEach.call(bc.querySelectorAll(".scell-tag-pick"), function (x) {   // the app chip: text here, not a button in a button
+        x.classList.remove("scell-tag-pick"); x.removeAttribute("role"); x.removeAttribute("tabindex"); x.removeAttribute("aria-label");
+      });
+      Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
+        var icon = el("span"); icon.className = x.className; icon.classList.remove("scell-mark");
+        icon.setAttribute("role", "img"); icon.setAttribute("aria-label", x.getAttribute("aria-label") || "");
+        icon.title = x.getAttribute("data-note") || x.getAttribute("aria-label") || "";   // no bubble in a row button: the note
+        while (x.firstChild) icon.appendChild(x.firstChild);
+        x.replaceWith(icon);
+      });
+      lead.appendChild(bc);
+    }
+    return lead;
+  }
+  // The PC / tablet list: every device with its connections (the Connections list, always open). `col` shows the devices as
+  // tabs and the chosen one's connections under them; `wide` shows them all down the side. go(pi, ci) shows that card.
+  function layoutNav(peers, nets, name, go) {
+    var nav = el("nav", "wnav"), rows = [], tabs = [], grps = [];
+    nav.setAttribute("aria-label", t("connections"));
+    if (name) nav.appendChild(el("div", "wnav-who", name));
+    var devs = el("div", "wnav-devs"), groups = el("div", "wnav-groups");
+    peers.forEach(function (g) {
+      var first = g.entries[0];
+      var tab = el("button", "wnav-dev"); tab.type = "button"; tab.textContent = g.title;
+      tab.onclick = function () { if (first) go(first.pi, first.ci); };
+      tab._g = g; tabs.push(tab); devs.appendChild(tab);
+      var grp = el("div", "wnav-grp"); grp._g = g; grps.push(grp);
+      grp.appendChild(el("div", "wnav-dev-t", g.title));
+      g.entries.forEach(function (en) {
+        var r = el("button", "cp-row wnav-row"); r.type = "button";
+        var ld = pickLead(en), sub = el("span", "wnav-srv");
+        var role = ld.querySelector(".scell-role.scell-role-on");   // Primary / Backup reads with the server, under the badge
+        if (role) { sub.appendChild(role); sub.appendChild(document.createTextNode(" · ")); }
+        Array.prototype.forEach.call(ld.querySelectorAll(".scell-role"), function (x) { x.remove(); });
+        if (en.srv && !g.dead) sub.appendChild(document.createTextNode(en.srv));
+        var col = el("span", "wnav-col"); col.appendChild(ld); if (sub.childNodes.length) col.appendChild(sub);
+        r.appendChild(col);
+        r.onclick = function () { go(en.pi, en.ci); };
+        r._en = en; rows.push(r); grp.appendChild(r);
+      });
+      groups.appendChild(grp);
+    });
+    if (nets) {
+      var nr = el("button", "cp-row wnav-row cp-nets"); nr.type = "button";
+      nr.appendChild(el("span", "cp-name", t("netsPick"))); nr.appendChild(el("span", "cp-nets-n", String(nets.n)));
+      nr.onclick = function () { go(nets.pi, 0); };
+      nr._en = { pi: nets.pi, ci: 0 }; rows.push(nr); groups.appendChild(nr);
+    }
+    if (peers.length > 1) nav.appendChild(devs);
+    nav.appendChild(groups);
+    nav._mark = function (pi, ci) {
+      rows.forEach(function (r) { var on = r._en.pi === pi && r._en.ci === ci; r.classList.toggle("on", on); if (on) r.setAttribute("aria-current", "true"); else r.removeAttribute("aria-current"); });
+      var mine = function (g) { return g.entries.some(function (en) { return en.pi === pi && en.ci === ci; }); };
+      tabs.forEach(function (b) { b.classList.toggle("on", mine(b._g)); });
+      grps.forEach(function (d) { d.classList.toggle("cur", mine(d._g)); });
+    };
+    return nav;
+  }
   function openConfigPicker(peers, cur, jump, extra) {
     // Raw close, not dismissHints: this is a TRANSITION between overlays, so the Back entry has to carry over —
     // disarming here would queue a history.back() that lands on the entry armOverlayBack() pushes below.
@@ -1059,25 +1151,7 @@
       } else title.appendChild(el("span", "cp-eyebrow", g.title));
       g.entries.forEach(function (en) {
         var r = row(isHere(en));
-        var lead = el("span", "cp-lead");
-        // the protocol's own brand mark leads the row, in full colour — see rowIcon()
-        var mark = rowIcon(en.mode);
-        if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
-        if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's
-          var bc = en.badge.cloneNode(true);   // button — each becomes its icon alone (the turtle, the magnet), shown, not pressable
-          Array.prototype.forEach.call(bc.querySelectorAll(".scell-tag-pick"), function (x) {   // the app chip: text here, not a button in a button
-            x.classList.remove("scell-tag-pick"); x.removeAttribute("role"); x.removeAttribute("tabindex"); x.removeAttribute("aria-label");
-          });
-          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
-            var icon = el("span"); icon.className = x.className; icon.classList.remove("scell-mark");
-            icon.setAttribute("role", "img"); icon.setAttribute("aria-label", x.getAttribute("aria-label") || "");
-            icon.title = x.getAttribute("data-note") || x.getAttribute("aria-label") || "";   // no bubble in a row button: the note
-            while (x.firstChild) icon.appendChild(x.firstChild);
-            x.replaceWith(icon);
-          });
-          lead.appendChild(bc);
-        }
-        r.appendChild(lead);
+        r.appendChild(pickLead(en));
         r.onclick = function () { go(en); };
         list.appendChild(r);
       });
@@ -1704,6 +1778,7 @@
   }
   // The signature START button face: a glowing brand orb (radial gradient) with two pairs of radiating "connect"
   // arcs and a central power glyph — reads as start / turn-on / go. Inline SVG so it themes off the CSS vars.
+  var _startN = 0;
   var START_SVG =
     '<svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">' +
     '<defs><radialGradient id="startorb" cx="50%" cy="34%" r="74%">' +
@@ -1775,7 +1850,7 @@
     if (!pres.length) return;
     // Landscape/desktop is a simple scrolling document — every config box uses ONE uniform CSS font size (no
     // per-config fit-shrinking, which made wrapping links render larger than the width-limited AWG config).
-    if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
+    if (subLayout() || (window.matchMedia && window.matchMedia("(orientation: landscape)").matches)) {   // …and so is a PC / tablet layout
       for (var q = 0; q < pres.length; q++) pres[q].style.fontSize = "";
       return;
     }
@@ -1943,10 +2018,27 @@
     }, false);
   }
   var _stickWired = false;
+  // ── PC / tablet layouts. A phone keeps its one-screen pager (and a phone on its side, the scrolling column): neither
+  //    class is ever set there, so nothing below touches it. `wide` (≥1024 × 600: a PC, a tablet on its side) puts the
+  //    devices beside the card; `col` (≥640 × 600: a tablet held upright, a narrow window) puts them above it. Either
+  //    shows ONE connection at a time — the list is the navigation, so the pages stop stacking down the window. ──
+  var _layWideMQ = window.matchMedia ? matchMedia("(min-width: 1024px) and (min-height: 600px)") : null;
+  var _layColMQ = window.matchMedia ? matchMedia("(min-width: 640px) and (min-height: 600px)") : null;
+  function subLayout() { return _layWideMQ && _layWideMQ.matches ? "wide" : _layColMQ && _layColMQ.matches ? "col" : ""; }
+  function applyLayout() {
+    var lay = subLayout();
+    document.body.classList.toggle("lay-wide", lay === "wide");
+    document.body.classList.toggle("lay-col", lay === "col");
+    return lay;
+  }
+  applyLayout();
+  [_layWideMQ, _layColMQ].forEach(function (mq) {
+    if (mq && mq.addEventListener) mq.addEventListener("change", function () { var was = document.body.className; applyLayout(); if (document.body.className !== was) reRender(); });
+  });
   function wireStickyHeader() {   // landscape/desktop only: past the fold, collapse the header into a sticky top bar + a side rail
     if (_stickWired) return; _stickWired = true;
     var update = function () {
-      var landscape = window.matchMedia && window.matchMedia("(orientation: landscape)").matches;
+      var landscape = window.matchMedia && window.matchMedia("(orientation: landscape)").matches && !subLayout();
       var y = window.scrollY || document.documentElement.scrollTop || 0;
       // Hysteresis: engage past 90px, release below 40px. Collapsing the header flips .bar to position:fixed and
       // changes document height; a single hard threshold let that height change re-cross the line and oscillate
@@ -2082,7 +2174,8 @@
       if (wga && wga.cid === "wingsv") node.appendChild(el("div", "scell-appnote", t("wingsvOld")));   // its import keeps an old profile of the same server
     }
     var stage = el("div", "scell-stage");
-    cell.appendChild(node); cell.appendChild(stage);
+    var side = el("div", "scell-side");   // PC: the QR's text beside it, to copy (empty and hidden elsewhere)
+    cell.appendChild(node); cell.appendChild(stage); cell.appendChild(side);
 
     var conf = secret && secret.k ? confFor(secret, tgt) : null;
     var ctrl = { ready: false, payload: "", ext: "conf", isLink: false, hasQR: false, cmd: null, view: "qr",
@@ -2133,9 +2226,19 @@
         ctrl._ro.observe(stage); }
       else setTimeout(doFit, 0);
     }
+    function drawSide() {   // PC: while the stage shows the QR, the text it encodes sits beside it — read, copied, no toggling
+      side.textContent = "";
+      if (subLayout() !== "wide" || !ctrl.ready || ctrl.view !== "qr" || !ctrl.hasQR || !ctrl.payload) return;
+      var cw = el("div", "cfgwrap");
+      var pre = el("pre", "cfgtext" + (ctrl.wrapCfg ? " wrap" : ""), ctrl.payload); pre.title = t("tapCopy");
+      pre.onclick = function () { ctrl.copyInto(null, ""); flashCopied(cw); };
+      cw.appendChild(pre); cw.appendChild(copyBtn("cfgcopy", function () { return ctrl.payload; }, cw));
+      side.appendChild(cw);
+    }
     function draw() {
       if (ctrl._ro) { ctrl._ro.disconnect(); ctrl._ro = null; }
       stage.innerHTML = "";
+      drawSide();
       if (!ctrl.ready) { stage.appendChild(el("div", "cfg-fail", reason || (mode === "turn" ? t("generating") : t("notReady")))); if (ctrl.notify) ctrl.notify(); return; }
       if (ctrl.view === "qr" && ctrl.hasQR) {
         var box = el("div", "qrbox");
@@ -2646,10 +2749,14 @@
     // The signature START button — deep-links into the app if installed, else downloads it (apk/exe/deb). Replaces the
     // old plain "Open in app" button: bigger, round, glowing. The utility icons stay small, centred on its centre.
     var startB = el("button", "pbtn-start"); startB.type = "button";
-    startB.innerHTML = START_SVG; startB.setAttribute("aria-label", t("start"));
+    // its gradient id is this button's own: the PC layout hides every page but one, and a url(#id) that resolves into a
+    // hidden page paints nothing — the first page's orb would be the only one left with its colour
+    startB.innerHTML = START_SVG.replace(/startorb/g, "startorb" + (++_startN)); startB.setAttribute("aria-label", t("start"));
     // START is the CENTRE slot — utilities split to its left (Config, Download) and right (Share, Connections).
     // Every slot is only visibility-toggled, never removed, so START stays centred whatever is available.
-    bar.appendChild(toggle); bar.appendChild(dlB); bar.appendChild(startB); bar.appendChild(shareB); bar.appendChild(connB);
+    var startLbl = el("span", "pbtn-start-lbl");   // PC / tablet: what Start does, beside it (a phone keeps the button alone)
+    bar.appendChild(toggle); bar.appendChild(dlB); bar.appendChild(startB); bar.appendChild(startLbl); bar.appendChild(el("span", "pbar-brk"));
+    bar.appendChild(shareB); bar.appendChild(connB);
     page.appendChild(bar);
 
     var curIdx = 0;
@@ -2676,7 +2783,7 @@
 
       // Desktop / landscape scrolls as a normal document — restore FULL in-flow layout (CSS handles the rest); the
       // up/down chevrons are hidden (CSS), and the L/R deployment buttons are centred on the content column.
-      if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
+      if (subLayout() || (window.matchMedia && window.matchMedia("(orientation: landscape)").matches)) {   // a PC / tablet layout is in-flow too
         head.style.top = ""; head.style.gap = ""; head.style.paddingTop = "";
         vUp.style.left = ""; vDown.style.left = ""; vUp.style.top = ""; vDown.style.top = "";
         Array.prototype.forEach.call(srow.children, function (c) {   // clear ALL portrait inline positioning on every cell
@@ -2811,12 +2918,18 @@
       }
       var v = (c.ready && c.payload) ? "" : "hidden";
       dlB.style.visibility = v; shareB.style.visibility = v;   // Connections is not tied to the cell's payload
+      // what Download saves follows the view (dlB.onclick): the QR's image, the .conf, or the link as text — and says so,
+      // since the PC / tablet layouts print the label
+      var dlL = (c.view === "qr" && c.qrUrl && subLayout() !== "wide") ? t("dlQR") : (c.view === "config" && c.wgConf) ? t("download")
+              : ((c.view === "link" && c.openUri) || c.ext === "txt") ? t("dlLink") : t("download");
+      dlB.title = dlL; dlB.setAttribute("aria-label", dlL);
       // START: enabled whenever the cell is ready. Title reflects what it does — open the app (has a deep-link) or
       // get it (download only). "app" name falls back to a generic label.
       startB.style.visibility = c.ready ? "" : "hidden";
       var appNm = c.app || c.dlAppName || t("turnApp");
       var st = t(c.openUri ? "startOpen" : c.confStart ? "startConf" : "startGet").replace("{app}", appNm);
       startB.title = st; startB.setAttribute("aria-label", t("start") + " · " + st);
+      startLbl.textContent = st;
       for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "pdot" + (i === curIdx ? " on" : "");
       if (sL) { sL.style.opacity = (curIdx <= 0) ? "0" : ""; sR.style.opacity = (curIdx >= items.length - 1) ? "0" : ""; }
       scheduleVH();
@@ -2836,7 +2949,8 @@
     toggle.onclick = function () { var c = cur(); if (!c.hasQR) return;
       var vs = cellViews(c), i = vs.indexOf(c.view); if (i < 0) i = 0; c.view = vs[(i + 1) % vs.length]; c.redraw(); syncBar(); };
     dlB.onclick = function () { var c = cur(); var nm = c.base;
-      if (c.view === "qr" && c.qrUrl) downloadImage(c.qrUrl, nm);
+      // the PC layout saves the text beside the QR — the .conf or the link — not a picture of it (operator, 2026-11-26)
+      if (c.view === "qr" && c.qrUrl && subLayout() !== "wide") downloadImage(c.qrUrl, nm);
       else if (c.view === "config" && c.wgConf) download(c.wgConf, nm, "conf");
       else if (c.view === "link" && c.openUri) download(c.openUri, nm, "txt");
       else download(c.payload, nm, c.ext || "conf"); };
@@ -3152,8 +3266,9 @@
       // ⚠️ A single config USED TO mean no picker at all — nothing to choose between. With a networks page there are still two
       // places to be, and it is the one nothing else leads to, so the button is offered for it as well.
       var pickOn = pickTotal > 1 || netsIdx >= 0;
-      headerSwitch(pickOn ? openPicker : null);   // one button beside the username (wide layout only)
-      if (pickOn) {
+      var pickWire = pickOn && !subLayout();   // the PC / tablet layouts list the connections instead of a picker
+      headerSwitch(pickWire ? openPicker : null);   // one button beside the username (wide layout only)
+      if (pickWire) {
         pages.forEach(function (pg) {
           Array.prototype.forEach.call(pg.querySelectorAll("[data-pick]"), function (trg) {
             if (trg.tagName === "BUTTON") { trg.hidden = false; trg.style.visibility = ""; trg.onclick = openPicker; return; }
@@ -3226,7 +3341,30 @@
       window.addEventListener("resize", onScroll, { passive: true });
       // Restore the reader's place (deployment + QR/config view + which page) after a lang/theme rebuild — BEFORE
       // the first syncGroup so nothing flashes the top config first.
-      if (keepPos && pages.length) {
+      var lay = applyLayout();
+      if (lay && pickPeers.length) {
+        var layAt = { pi: 0, ci: 0 };
+        var layShow = function (pi, ci, view) {
+          pi = Math.max(0, Math.min(pi | 0, pages.length - 1));
+          var pg = pages[pi], cells = pg ? pg.querySelectorAll(".srow > .scell") : [];
+          ci = Math.max(0, Math.min(ci | 0, Math.max(0, cells.length - 1)));
+          pages.forEach(function (p, i) { p.classList.toggle("cur", i === pi); });
+          Array.prototype.forEach.call(cells, function (c, i) { c.classList.toggle("cur", i === ci); });
+          if (pg && pg._seek) pg._seek(ci, view || null);
+          layAt = { pi: pi, ci: ci };
+          nav._mark(pi, ci);
+          syncGroup();
+        };
+        var nav = layoutNav(pickPeers, netsIdx >= 0 ? { pi: netsIdx, n: (data.networks || []).length } : null, userName,
+                            function (pi, ci) { layShow(pi, ci); if (lay === "col") window.scrollTo(0, 0); });
+        if (pickOn) wrap.insertBefore(nav, pager);   // one connection and no networks page: nothing to choose, the card alone
+        wrap.classList.toggle("lay-solo", !pickOn);
+        pager._cur = function () { return layAt.pi; };
+        jumpTo = function (pi, ci) { layShow(pi, ci); };
+        var e0 = pickPeers[0].entries[0] || { pi: 0, ci: 0 };
+        if (keepPos && pages.length) layShow(keepPos.page, keepPos.cell, keepPos.view);
+        else layShow(e0.pi, e0.ci);
+      } else if (keepPos && pages.length) {
         var kp = Math.max(0, Math.min(keepPos.page | 0, pages.length - 1));
         var kpg = pages[kp];
         if (kpg && kpg._seek) kpg._seek(keepPos.cell, keepPos.view);

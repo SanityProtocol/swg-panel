@@ -80,6 +80,9 @@ Fixture — node q-node, three deployments per device:
       keep their port only where it tells them apart (a Primary / Backup pair on one port has none), the port staying in
       the list row where the app repeats the type ("WDTT by amurcanov :56000"); an offer stays, under the list, while another
       list is only opened, and goes with the next pick
+  [20] the PC and tablet layouts (operator, 2026-11-26): a phone (and a phone on its side) keeps its own; a PC lists the
+      devices beside one card — Start named and above the fold, the QR's text beside it, Download saving that text, a row
+      showing its card — and a tablet upright puts the devices as tabs above it; every full-screen pop-up is modal
   [19] the WG / AWG cards pick their app too (item 24, card B): "<protocol> · <app>" with a chip, the protocol dropped where
       the app repeats it ("WireGuard"); the list is AmneziaVPN (Recommended) then every app this OS has a link for, Linux
       without AmneziaWG, MCRF or WINGS V; a pick names the app's own download row and drives Start — RawlineMobile
@@ -145,6 +148,15 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-wgdl       serves a sub.js whose WG / AWG download row stays AmneziaVPN's after a pick → RED on [19]
      --perturb-wgnote     serves a sub.js whose WG / AWG download bubble shows a turn card's note (MCRF's engines) → RED on [19]
      --perturb-wgzoom     serves a sub.js whose enlarged WG / AWG QR names the protocol, not the app picked → RED on [19]
+     --perturb-laywide    serves a sub.js with no PC / tablet layout (every window the phone's or the column) → RED on [20]
+     --perturb-layphone   serves a sub.js that gives a phone the tablet layout → RED on [20]
+     --perturb-navgo      serves a sub.js whose list rows show nothing → RED on [20]
+     --perturb-onecard    serves a sub.css that shows every page under the PC card → RED on [20]
+     --perturb-pcdl       serves a sub.js whose PC Download saves a picture of the QR → RED on [20]
+     --perturb-sidetext   serves a sub.js with no text beside the PC's QR → RED on [20]
+     --perturb-modal      serves a sub.js whose pop-ups leave the page behind them live → RED on [20]
+     --perturb-startorb   serves a sub.js whose Start orbs share one gradient id → RED on [20]
+     --perturb-pcgrid     serves a sub.css whose PC card is one column (Start below the fold) → RED on [20]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -209,12 +221,22 @@ P_WGCOLLAPSE = "--perturb-wgcollapse" in sys.argv
 P_WSVNOTE = "--perturb-wsvnote" in sys.argv
 P_WGDL = "--perturb-wgdl" in sys.argv
 P_WGNOTE = "--perturb-wgnote" in sys.argv
+P_LAYWIDE = "--perturb-laywide" in sys.argv
+P_LAYPHONE = "--perturb-layphone" in sys.argv
+P_NAVGO = "--perturb-navgo" in sys.argv
+P_ONECARD = "--perturb-onecard" in sys.argv
+P_PCDL = "--perturb-pcdl" in sys.argv
+P_SIDETEXT = "--perturb-sidetext" in sys.argv
+P_MODAL = "--perturb-modal" in sys.argv
+P_STARTORB = "--perturb-startorb" in sys.argv
+P_PCGRID = "--perturb-pcgrid" in sys.argv
 P_WGZOOM = "--perturb-wgzoom" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
            or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER
            or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP
-           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM)
+           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM
+           or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -471,6 +493,27 @@ if P_WGCOLLAPSE:
     perturbed_web('    if (kind && !echo) {', '    if (kind) {', "the protocol dropped where the app repeats it")
 if P_WSVNOTE:
     perturbed_web('      if (wga && wga.cid === "wingsv") node.appendChild(el("div", "scell-appnote", t("wingsvOld")));', '', "WINGS V's old-profile note")
+if P_LAYWIDE:
+    perturbed_web('function subLayout() { return _layWideMQ && _layWideMQ.matches ? "wide" : _layColMQ && _layColMQ.matches ? "col" : ""; }',
+                  'function subLayout() { return ""; }', "the PC / tablet layouts")
+if P_LAYPHONE:
+    perturbed_web('matchMedia("(min-width: 640px) and (min-height: 600px)")', 'matchMedia("(min-width: 1px)")', "a phone left out of the layouts")
+if P_NAVGO:
+    perturbed_web("        r.onclick = function () { go(en.pi, en.ci); };", "        r.onclick = function () {};", "a row of the list shows its card")
+if P_ONECARD:
+    perturbed_web("body:is(.lay-wide, .lay-col) .ppage { display: none; }", "", "one card at a time", fname="sub.css")
+if P_PCDL:
+    perturbed_web('if (c.view === "qr" && c.qrUrl && subLayout() !== "wide") downloadImage(c.qrUrl, nm);',
+                  'if (c.view === "qr" && c.qrUrl) downloadImage(c.qrUrl, nm);', "the PC's Download saves the config")
+if P_SIDETEXT:
+    perturbed_web('if (subLayout() !== "wide" || !ctrl.ready', 'if (true || !ctrl.ready', "the QR's text beside it")
+if P_MODAL:
+    perturbed_web("try { new MutationObserver(syncModal).observe(document.body, { childList: true }); } catch (_) {}", "", "modal pop-ups")
+if P_STARTORB:
+    perturbed_web('START_SVG.replace(/startorb/g, "startorb" + (++_startN))', "START_SVG", "each Start orb's own gradient")
+if P_PCGRID:
+    perturbed_web('grid-template-columns: auto minmax(260px, 1fr); grid-template-areas: "head head" "stage node" "stage vk" "stage bar" "stage side" "stage .";',
+                  'grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "node" "vk" "stage" "side" "bar" ".";', "the PC card's two columns", fname="sub.css")
 if P_WGNOTE:
     perturbed_web('                 note: (t("dlNotesWg") || {})[id + "@" + os] || "" });', '                 });', "a WG / AWG card's own download note")
 if P_WGZOOM:
@@ -564,12 +607,15 @@ READ = r"""(() => {
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
-def render(uid, os_, lang, phone=False, desktop=False, ls=None):
+DESK_COL = (1280, 560, False)   # a desktop window too short for the PC layout: the scrolling column, its Connections picker
+def render(uid, os_, lang, phone=False, desktop=False, ls=None, size=None):
     """Load `uid`'s subscription as a visitor on `os_` reading `lang`, the way the page's own selectors persist those. `phone`: a
-    390×844 touch viewport (the narrow layout); `desktop`: 1280×800 (the wide one, whose header carries the Connections button)."""
+    390×844 touch viewport (the narrow layout); `desktop`: 1280×800 (a PC: the devices listed beside one card); `size`:
+    (width, height, touch) for any other. The browser's own window (780×493) is the landscape column."""
     tab = Tab(br)
-    if phone or desktop:
+    if phone or desktop or size:
         tab.br.send("Emulation.setDeviceMetricsOverride", dict({"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True} if phone
+                    else {"width": size[0], "height": size[1], "deviceScaleFactor": 1, "mobile": size[2]} if size
                     else {"width": 1280, "height": 800, "deviceScaleFactor": 1, "mobile": False}), session=tab.s)
     tab.goto(ORIGIN + "/healthz")                       # same origin, so the page's localStorage can be seeded before it loads
     for _ in range(50):
@@ -754,7 +800,7 @@ try:
     tab.ev(TAP); time.sleep(0.3)
     nbos = tab.ev("(() => { const b=document.querySelector('.note-bubble'); return b ? getComputedStyle(b).overscrollBehaviorY : '' })()")
     check("[12] a fling past the end of the bubble's text stays in it — chained to the page, the scroll closed the bubble", nbos == "contain", nbos)
-    inner = tab.ev("(() => { const b=document.querySelector('.note-bubble'); b.style.maxHeight='30px'; b.scrollTop=20;"
+    inner = tab.ev("(() => { const b=document.querySelector('.note-bubble'); if (!b) return false; b.style.maxHeight='30px'; b.scrollTop=20;"
                    " b.dispatchEvent(new Event('scroll')); return !!document.querySelector('.note-bubble') })()"); time.sleep(0.2)
     tab.ev("document.dispatchEvent(new Event('scroll')); true"); time.sleep(0.2)
     page = tab.ev(NB)
@@ -1048,9 +1094,9 @@ try:
                 break
             time.sleep(0.3)
         return got
-    tab, _ = render("u1", "android", "en", desktop=True)
+    tab, _ = render("u1", "android", "en", size=(844, 390, True))
     dk = settled_sw(tab)
-    check("[5] control — desktop: the header's one Connections button shows", dk and dk["shown"] == ["pswitch pswitch-head"], dk)
+    check("[5] control — a phone on its side: the header's one Connections button shows", dk and dk["shown"] == ["pswitch pswitch-head"], dk)
     tab.close()
     tab, _ = render("u1", "android", "en", phone=True)
     ph = settled_sw(tab)
@@ -1360,7 +1406,7 @@ try:
     check("[18] a Primary / Backup pair on one port: two WDTT cards, no port on either (the role chip tells them apart)",
           len(ft) == 2 and not any(re.search(r":\d+", x or "") for x in ft), ft)
     tab.close()
-    tab, rg = render("u7", "android", "en", desktop=True)
+    tab, rg = render("u7", "android", "en", size=DESK_COL)
     gt = sorted((c["tag"] or "").replace(" ", "") for c in turn_cells(rg) if c["role"] == "WDTT")
     tab.ev("(() => { const b = [...document.querySelectorAll('[data-pick]')].find(x => x.offsetParent); if (b) b.click(); return !!b; })()"); time.sleep(0.6)
     gr = tab.ev(r"[...document.querySelectorAll('.cp-row')].map(r => r.innerText.replace(/\s+/g, ' ').trim())")
@@ -1383,7 +1429,7 @@ try:
           [(c["role"], c["app"]) for c in turn_cells(r2)])
     tab.close()
     # the desktop keeps the command-line client in the list; a pick there keeps the tapped badge where it was on the screen
-    tab, _r = render("u1", "linux", "en", desktop=True)
+    tab, _r = render("u1", "linux", "en", size=DESK_COL)
     rows_l = sheet(tab, "hackdiaz")
     check("[18] Linux: hackdiaz's list keeps the command-line client", isinstance(rows_l, list) and any(CLI in r[0] for r in rows_l), rows_l)
     tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true")
@@ -1552,13 +1598,13 @@ try:
           and not [u for u in navs if "://" in u and not u.startswith("http")], (done, steps, navs))
     tab.close()
     # the OS gate: Linux lists only what it has a link for — no AmneziaWG (no Linux app), no MCRF, no WINGS V
-    tab, _r = render("u1", "linux", "en", desktop=True)
+    tab, _r = render("u1", "linux", "en", size=DESK_COL)
     rows = wsheet(tab, "awg")
     check("[19] Linux, AmneziaWG: AmneziaVPN and Rawline only", isinstance(rows, list) and [x[0] for x in rows]
           == ["AmneziaVPN Paste the link in the app Recommended", "Rawline by ttrroyy Opens with one tap"], rows)
     tab.close()
     # Windows: Rawline on the WG card opens with rawline://add/ around a JSON list holding the .conf (its desktop parser)
-    tab, _r = render("u1", "windows", "en", desktop=True, ls={"swgsub-app:wg:windows": "rawline", "swgsub-hasapp-rawline": "1"})
+    tab, _r = render("u1", "windows", "en", size=DESK_COL, ls={"swgsub-app:wg:windows": "rawline", "swgsub-hasapp-rawline": "1"})
     _res, _clip, _steps, navs = start_on(tab, "wg", "WireGuard")
     doc = next((rawline(u) for u in navs if rawline(u)), None)
     try:
@@ -1575,6 +1621,83 @@ try:
     check("[19] the connection list: 'AmneziaWG · AmneziaVPN', 'WireGuard · Rawline by ttrroyy'",
           isinstance(cp, list) and any(x.startswith("AmneziaWG · AmneziaVPN") for x in cp) and any(x.startswith("WireGuard · Rawline by ttrroyy") for x in cp), cp)
     tab.ev("localStorage.removeItem('swgsub-hasapp-rawline'); true")
+    tab.close()
+
+    # [20] PC and tablet layouts (operator, 2026-11-26): a phone keeps its pager — no layout class, no list, every page in the
+    #      flow; a PC (≥1024 × 600) lists the devices and their connections beside ONE card — QR left; the app, Start with what
+    #      it does, the actions by name and the QR's text right, Start above the fold — and Download saves that text, not a
+    #      picture of the QR; a tablet held upright (≥640 × 600) puts the devices as tabs above the card; every full-screen
+    #      pop-up is modal (the page behind it inert, the focus inside, then back)
+    LAY = r"""(() => { const vis = e => !!e && getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0;
+      const txt = e => e.textContent.replace(/\s+/g, ' ').trim();
+      const pg = document.querySelector('.ppage.cur'), cell = pg && pg.querySelector('.scell.cur');
+      const st = pg && pg.querySelector('.pbtn-start'), lbl = pg && pg.querySelector('.pbtn-start-lbl'), side = cell && cell.querySelector('.scell-side .cfgtext');
+      return { cls: ['lay-wide', 'lay-col'].filter(c => document.body.classList.contains(c)), nav: !!document.querySelector('.wnav'),
+               rows: [...document.querySelectorAll('.wnav-row')].filter(vis).map(txt), on: [...document.querySelectorAll('.wnav-row.on')].map(txt),
+               tabs: [...document.querySelectorAll('.wnav-dev')].filter(vis).map(txt),
+               pages: [...document.querySelectorAll('section.ppage')].filter(vis).map(p => p.getAttribute('data-mode')),
+               stages: [...document.querySelectorAll('.scell-stage')].filter(vis).length,
+               badge: cell && cell.querySelector('.scell-tag') ? txt(cell.querySelector('.scell-tag')) : null,
+               lbl: vis(lbl) ? txt(lbl) : null, start: st ? st.title : null, startBottom: vis(st) ? Math.round(st.getBoundingClientRect().bottom) : null,
+               vh: innerHeight, side: vis(side) ? side.textContent : null, dl: pg && (pg.querySelector('.pbar .pbtn.ico:nth-child(2)') || {}).title,
+               conn: [...document.querySelectorAll('.pbtn-conn, .pswitch-head, .modebar')].filter(vis).length,
+               orbs: [...document.querySelectorAll('.pbtn-start radialGradient')].map(g => g.id) }; })()"""
+    def lay_click(tab, sel, has):   # click the visible `sel` whose text has `has`
+        ok = tab.ev("(() => { const x = [...document.querySelectorAll(%s)].find(e => e.getClientRects().length && e.textContent.replace(/\\s+/g, ' ').includes(%s));"
+                    " if (x) x.click(); return !!x; })()" % (json.dumps(sel), json.dumps(has)))
+        time.sleep(0.5)
+        return ok
+    MODAL = r"""(async () => { const chip = document.querySelector('.ppage.cur .scell.cur .scell-tag-pick') || [...document.querySelectorAll('.scell-tag-pick')].find(c => c.getClientRects().length);
+      if (!chip) return 'no chip';
+      chip.focus(); chip.click(); await new Promise(r => setTimeout(r, 300));
+      const ov = document.querySelector('.cp-overlay'), app = document.getElementById('app');
+      const open = { role: ov && ov.getAttribute('role'), modal: ov && ov.getAttribute('aria-modal'), inert: app.inert, focus: !!(ov && ov.contains(document.activeElement)) };
+      document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); await new Promise(r => setTimeout(r, 400));
+      return { open: open, closed: { gone: !document.querySelector('.cp-overlay'), inert: app.inert, back: document.activeElement === chip } }; })()"""
+    MODAL_OK = {"open": {"role": "dialog", "modal": "true", "inert": True, "focus": True}, "closed": {"gone": True, "inert": False, "back": True}}
+    # a phone: untouched — no layout class, no list, the pages in the pager's flow, Start alone
+    tab, _r = render("u1", "android", "en", phone=True)
+    lp = tab.ev(LAY)
+    check("[20] a phone keeps its layout: no layout class, no list, every page in the flow, Start without a label",
+          lp["cls"] == [] and not lp["nav"] and len(lp["pages"]) > 1 and lp["lbl"] is None and lp["side"] is None, lp)
+    check("[20] …and its app list is modal too: a dialog with the focus, the page behind inert, the focus back on close", tab.ev(MODAL) == MODAL_OK, tab.ev(MODAL))
+    tab.close()
+    # a phone on its side keeps the scrolling column
+    tab, _r = render("u1", "android", "en", size=(844, 390, True))
+    check("[20] a phone on its side keeps the scrolling column (no layout class)", tab.ev(LAY)["cls"] == [], tab.ev(LAY)["cls"])
+    tab.close()
+    # a PC: the list beside one card
+    tab, _r = render("u1", "android", "en", desktop=True)
+    tab.ev("window.__dl = []; HTMLAnchorElement.prototype.click = function () { if (this.download) window.__dl.push(this.download); }; true")
+    lw = tab.ev(LAY)
+    check("[20] PC: the devices' connections listed beside one card — one page, one card, the first row marked, no Connections button or tabs",
+          lw["cls"] == ["lay-wide"] and lw["nav"] and len(lw["rows"]) >= 4 and lw["on"] == lw["rows"][:1] and lw["pages"] == ["wg"]
+          and lw["stages"] == 1 and lw["conn"] == 0, lw)
+    check("[20] PC: Start says what it does beside it and sits above the fold; the QR's text sits beside the QR",
+          bool(lw["lbl"]) and lw["lbl"] == lw["start"] and lw["startBottom"] is not None and lw["startBottom"] <= lw["vh"]
+          and (lw["side"] or "").startswith("[Interface]"), lw)
+    tab.ev("(() => { const b = document.querySelector('.ppage.cur .pbar .pbtn.ico:nth-child(2)'); if (b) b.click(); return !!b; })()"); time.sleep(0.3)
+    dl = tab.ev("window.__dl")
+    check("[20] PC: Download saves the config beside the QR, not a picture of it — and says so",
+          isinstance(dl, list) and len(dl) == 1 and dl[0].endswith(".conf") and lw["dl"] == "Download .conf", (dl, lw["dl"]))
+    lay_click(tab, ".wnav-row", "WDTT")
+    lw2 = tab.ev(LAY)
+    check("[20] PC: a row of the list shows its card (the WDTT one) and is marked",
+          lw2["pages"] == ["turn"] and "WDTT" in (lw2["badge"] or "") and len(lw2["on"]) == 1 and "WDTT" in lw2["on"][0] and lw2["stages"] == 1, lw2)
+    check("[20] PC: every Start orb paints from a gradient of its own (a hidden page's id would leave it blank)",
+          len(lw2["orbs"]) > 1 and len(set(lw2["orbs"])) == len(lw2["orbs"]), lw2["orbs"])
+    check("[20] PC: the app list is modal — a dialog with the focus, the page behind inert, the focus back on close", tab.ev(MODAL) == MODAL_OK, tab.ev(MODAL))
+    lay_click(tab, ".wnav-row", "Available networks")
+    check("[20] PC: the networks row shows the networks page", tab.ev(LAY)["pages"] == ["nets"], tab.ev(LAY)["pages"])
+    check("[4] console clean — the PC layout", not console_errors(tab), console_errors(tab)[:3])
+    tab.close()
+    # a tablet held upright: the devices as tabs, then the card
+    tab, _r = render("u1", "android", "en", size=(820, 1180, True))
+    lc = tab.ev(LAY)
+    check("[20] tablet upright: the devices as tabs above one card", lc["cls"] == ["lay-col"] and lc["tabs"] == ["laptop", "old tablet"]
+          and lc["pages"] == ["wg"] and lc["stages"] == 1 and bool(lc["lbl"]) and lc["side"] is None, lc)
+    lay_click(tab, ".wnav-dev", "old tablet")
+    check("[20] tablet upright: a device's tab shows its page (the blocked tablet's)", tab.ev(LAY)["pages"] == ["dead"], tab.ev(LAY)["pages"])
     tab.close()
 finally:
     br.close()

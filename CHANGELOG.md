@@ -23,6 +23,13 @@ earlier releases predate the changelog — see the git history. · Русски�
   config file saved and the steps to import it. "Get <app> manually" lists that app's own downloads; MCRF's engine
   packages, which the app fetches itself, are no longer among them. WINGS V keeps an old profile of the same server on
   a new import, so its card says to delete that one first.
+- **The subscription page has its own computer and tablet layouts.** On a computer (and a tablet on its side) your
+  devices and their connections are listed down the side, and one connection is shown beside them: its QR, its app,
+  Start with what it opens, and the other actions by name, with the config or link next to the QR to copy — Download
+  there saves that file rather than a picture of the QR. A tablet held upright shows the devices as tabs above the card.
+  Phones keep their layout. Every pop-up (the app and connection lists, an import hint, the enlarged QR) now holds the
+  keyboard focus, and the page behind it can't be reached until it closes; the Download button's label says what it
+  saves (the QR, the config or the link).
 
 - **MRTT, a csqtt fork.** A csqtt server's fork can now be MRTT (ttrroyy's fork of csqtt, built by us with the panel's
   integration), chosen when it is created or switched later from amurcanov's csqtt and back: for the MRTT app (Android,
