@@ -2344,8 +2344,8 @@
       // Enlarged-QR caption (peer.title · …): a turn cell names the APP; the main-screen caption keeps the server name.
       ctrl.zoomTail = hasAppName ? appName : forkLabel(forkId);
       // Badge = "<app> by <author>" (item 24) in the app's native fork's colour; the server used leads it in the connection
-      // list. Two relays of the SAME fork on one deployment would otherwise render as two identical badges, leaving
-      // the reader to guess which is which. The port is the one thing that always separates them.
+      // list. Two relays of the SAME fork on one node would otherwise render as two identical badges, leaving the
+      // reader to guess which is which: their ports differ, so the port separates them (dupFork, peerProtoPage).
       var tport = it.dupFork ? String(tp.listen || "").split(":").pop() : "";
       var srvName = forkLabel(forkId) + (tport ? " :" + tport : "");
       var tag = hasAppName ? appBadge(srvName, fc, appName, appAuthor(ga), appColor, tport) : appBadge("", "", srvName, "", fc);
@@ -2556,8 +2556,9 @@
       });
       // Two cards of this device that would read alike keep their port after the badge — two relays of one fork, on one
       // interface or two (wg0 and awg0 behind hackdiaz: the card names the server's author, no longer WG / AWG), and two
-      // WDTT servers (the badge names the app, no longer the fork) — where the port tells them apart: a Primary / Backup
-      // pair on the same default port reads apart by its role chip, and one port on both would only add noise
+      // WDTT servers (the badge names the app, no longer the fork) — where the port tells them apart. Two on one port sit
+      // on two nodes, and the card's title line names its node ("phone · q-node"), a list row its server: one port on
+      // both would only add noise
       var nport = {}, same = function (x) { return x.tp ? "t:" + x.f : x.wdtt ? "wdtt" : ""; },
           portOf = function (x) { return x.tp ? String(x.tp.listen || "").split(":").pop() : String(x.wdtt.dtls_port || ""); };
       items.forEach(function (x) { var k = same(x); if (k) (nport[k] = nport[k] || {})[portOf(x)] = 1; });
