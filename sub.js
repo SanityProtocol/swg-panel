@@ -864,15 +864,22 @@
     var ovs = document.querySelectorAll(_modalSel), top = ovs[ovs.length - 1];
     Array.prototype.forEach.call(document.body.children, function (n) {
       if (n.tagName === "SCRIPT") return;
-      n.inert = !!top && !(n.matches && n.matches(_modalSel));
+      // a copy confirmation shown over a pop-up stays live, so it is still read out; the offer under a list does not
+      var live = n.matches && (n.matches(_modalSel) || (n.matches(".sub-toast") && !n.matches(".ap-toast")));
+      n.inert = !!top && !live;
     });
     if (top) {
-      if (!top.hasAttribute("role")) { top.setAttribute("role", "dialog"); top.setAttribute("aria-modal", "true"); }
+      if (!top.hasAttribute("role")) {
+        top.setAttribute("role", "dialog"); top.setAttribute("aria-modal", "true");
+        var nm = top.querySelector(".cp-title, .ph-title, .qz-cap");   // its own title, or the enlarged QR's caption
+        if (nm && nm.textContent.trim()) top.setAttribute("aria-label", nm.textContent.trim());
+      }
       if (!top.contains(document.activeElement)) {
         var was = document.activeElement;
         if (!_modalFrom && was && was !== document.body) _modalFrom = was;
         var f = top.querySelector("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])");
-        if (f) f.focus({ preventScroll: true });
+        if (!f) { top.tabIndex = -1; f = top; }   // the enlarged QR holds no control: the dialog itself takes the focus
+        f.focus({ preventScroll: true });
       }
     } else if (_modalFrom) {
       var back = _modalFrom; _modalFrom = null;
@@ -1103,6 +1110,7 @@
     nav._mark = function (pi, ci) {
       rows.forEach(function (r) { var on = r._en.pi === pi && r._en.ci === ci; r.classList.toggle("on", on); if (on) r.setAttribute("aria-current", "true"); else r.removeAttribute("aria-current"); });
       var mine = function (g) { return g.entries.some(function (en) { return en.pi === pi && en.ci === ci; }); };
+      if (!peers.some(mine)) return;   // the networks page: the device last shown stays open — on a tablet its row is the way back
       tabs.forEach(function (b) { b.classList.toggle("on", mine(b._g)); });
       grps.forEach(function (d) { d.classList.toggle("cur", mine(d._g)); });
     };
@@ -1641,7 +1649,7 @@
   var _toastEl = null, _toastT = 0;
   function showToast(msg) {
     if (_toastEl) { try { _toastEl.remove(); } catch (_) {} clearTimeout(_toastT); }
-    var el2 = el("div", "sub-toast", msg); document.body.appendChild(el2); _toastEl = el2;
+    var el2 = el("div", "sub-toast", msg); el2.setAttribute("role", "status"); document.body.appendChild(el2); _toastEl = el2;
     _toastT = setTimeout(function () { try { el2.remove(); } catch (_) {} if (_toastEl === el2) _toastEl = null; }, 2800);
   }
 
@@ -2922,7 +2930,7 @@
       // what Download saves follows the view (dlB.onclick): the QR's image, the .conf, or the link as text — and says so,
       // since the PC / tablet layouts print the label
       var dlL = (c.view === "qr" && c.qrUrl && subLayout() !== "wide") ? t("dlQR") : (c.view === "config" && c.wgConf) ? t("download")
-              : ((c.view === "link" && c.openUri) || c.ext === "txt") ? t("dlLink") : t("download");
+              : ((c.view === "link" && c.openUri) || c.isLink) ? t("dlLink") : c.ext === "txt" ? t("dl") : t("download");
       dlB.title = dlL; dlB.setAttribute("aria-label", dlL);
       // START: enabled whenever the cell is ready. Title reflects what it does — open the app (has a deep-link) or
       // get it (download only). "app" name falls back to a generic label.
@@ -3105,6 +3113,7 @@
   }
 
   function render(data, cryptoKey, keepPos) {
+    document.body.classList.remove("lay-nav");   // set again below only where the PC / tablet list is built
     closeNoteBubble();                                 // its marker is about to leave the DOM, and its text may change language
     _appCells = [];
     _lastData = data; _lastKey = cryptoKey;
@@ -3359,6 +3368,7 @@
         var nav = layoutNav(pickPeers, netsIdx >= 0 ? { pi: netsIdx, n: (data.networks || []).length } : null, userName,
                             function (pi, ci) { layShow(pi, ci); if (lay === "col") window.scrollTo(0, 0); });
         if (pickOn) wrap.insertBefore(nav, pager);   // one connection and no networks page: nothing to choose, the card alone
+        document.body.classList.toggle("lay-nav", pickOn);   // the list carries the name; without one the header keeps it
         wrap.classList.toggle("lay-solo", !pickOn);
         pager._cur = function () { return layAt.pi; };
         jumpTo = function (pi, ci) { layShow(pi, ci); };

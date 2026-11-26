@@ -158,6 +158,12 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-modal      serves a sub.js whose pop-ups leave the page behind them live → RED on [20]
      --perturb-startorb   serves a sub.js whose Start orbs share one gradient id → RED on [20]
      --perturb-pcgrid     serves a sub.css whose PC card is one column (Start below the fold) → RED on [20]
+     --perturb-navnets    serves a sub.js whose networks card closes the device's connections on an upright tablet → RED on [20]
+     --perturb-laynav     serves a sub.css that hides the header name though no list carries it → RED on [20]
+     --perturb-dllabel    serves a sub.js that calls any text download a link → RED on [20]
+     --perturb-dlgname    serves a sub.js whose dialogs have no name → RED on [20]
+     --perturb-zoomfocus  serves a sub.js whose enlarged QR leaves the focus behind it → RED on [20]
+     --perturb-netsrows   serves a sub.css whose networks card keeps the PC card's empty rows → RED on [20]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -231,6 +237,12 @@ P_SIDETEXT = "--perturb-sidetext" in sys.argv
 P_MODAL = "--perturb-modal" in sys.argv
 P_STARTORB = "--perturb-startorb" in sys.argv
 P_PCGRID = "--perturb-pcgrid" in sys.argv
+P_NAVNETS = "--perturb-navnets" in sys.argv
+P_LAYNAV = "--perturb-laynav" in sys.argv
+P_DLLABEL = "--perturb-dllabel" in sys.argv
+P_DLGNAME = "--perturb-dlgname" in sys.argv
+P_ZOOMFOCUS = "--perturb-zoomfocus" in sys.argv
+P_NETSROWS = "--perturb-netsrows" in sys.argv
 P_WGZOOM = "--perturb-wgzoom" in sys.argv
 P_WGSCAN = "--perturb-wgscan" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
@@ -238,7 +250,8 @@ PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPO
            or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER
            or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP
            or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM or P_WGSCAN
-           or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID)
+           or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID
+           or P_NAVNETS or P_LAYNAV or P_DLLABEL or P_DLGNAME or P_ZOOMFOCUS or P_NETSROWS)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -323,7 +336,8 @@ J("subs/serve.json", {"enabled": True, "turn_enabled": True, "turn_catalog": cat
 VK = ["https://vk.ru/call/join/AAAAbbbbCCCCddddEEEEffffGGGGhhhh1234567890", "https://vk.ru/call/join/ZZZZyyyyXXXXwwwwVVVVuuuuTTTTssss0987654321"]
 J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"},
                            "u4": {"name": "Dana", "vk_links": VK[:1]}, "u5": {"name": "Eve", "vk_links": VK[:1]},
-                           "u6": {"name": "Finn", "vk_links": VK[:1]}, "u7": {"name": "Gina", "vk_links": VK[:1]}},
+                           "u6": {"name": "Finn", "vk_links": VK[:1]}, "u7": {"name": "Gina", "vk_links": VK[:1]},
+                           "u8": {"name": "Hana"}},
                  "peers": {
                      "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt", "p2p_port": 20016,
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
@@ -351,6 +365,8 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      "p8": {"id": "p8", "user_id": "u7", "title": "phone", "wdtt_password": "pw8wdtt",
                             "targets": [{"node": "n1", "iface": "wdtt1", "type": "wdtt", "primary": "primary"},
                                         {"node": "n2", "iface": "wdtt2", "type": "wdtt", "primary": "backup"}]},
+                     # [20] one WireGuard config on a node with no networks: nothing to choose on a PC
+                     "p9": {"id": "p9", "user_id": "u8", "title": "desktop", "targets": [{"node": "n3", "iface": "wg0", "type": "wg", "ip": "10.17.0.2/32"}]},
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
                      "p4": {"id": "p4", "user_id": "u1", "title": "old tablet", "disabled": True,
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
@@ -360,7 +376,10 @@ J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7", "p2p":
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}},
                  "n2": {"name": "q-node2", "endpoint_host": "203.0.113.8",
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001},
-                                 "wdtt2": {"listen": "0.0.0.0:56010", "fork": "amurcanov", "wg_port": 56011}}}})
+                                 "wdtt2": {"listen": "0.0.0.0:56010", "fork": "amurcanov", "wg_port": 56011}}},
+                 "n3": {"name": "q-node3", "endpoint_host": "203.0.113.9"}})
+J("stats/stats-n3.json", {"interfaces": {"wg0": {"meta": {"public_key": base64.b64encode(os.urandom(32)).decode(), "listen_port": 51830,
+                                                             "endpoint": "203.0.113.9:51830", "subnet": "10.17.0.0/24"}}}})
 J("stats/stats-n2.json", {"interfaces": {}, "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"},
                                                      {"iface": "wdtt2", "fork": "amurcanov", "version": "1.2.4-3"}]})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
@@ -391,7 +410,7 @@ const all = new Uint8Array(12 + ct.length); all.set(iv); all.set(ct, 12);
 console.log(Buffer.from(all).toString('base64'));
 """
 users_sub, links = {}, {}
-for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5"), ("u5", "p6"), ("u6", "p7"), ("u7", "p8")):
+for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5"), ("u5", "p6"), ("u6", "p7"), ("u7", "p8"), ("u8", "p9")):
     key, token = os.urandom(32), secrets.token_urlsafe(24)
     sec = subprocess.run(["node", "--input-type=module", "-e", SEAL, key.hex(), json.dumps({"k": b64(32), "p": b64(32)})],
                          capture_output=True, text=True, timeout=60).stdout.strip()
@@ -448,7 +467,7 @@ if P_OVERSCROLL:
 if P_PICKSHORT:
     perturbed_web('icon.title = x.getAttribute("data-note") || ', 'icon.title = ', "the picker icon's tooltip being the whole note")
 if P_PICKMARK:
-    perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
+    perturbed_web('        x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
 if P_CSQRANK:
     perturbed_web(" || !!(clients[id] || {}).cli; };   // `cli`: csq-socks", "; };", "csq-socks ranked after the apps")
 if P_LINE25:
@@ -466,7 +485,7 @@ if P_PICKRANK:
 if P_CLIPHONE:
     perturbed_web(' && !(phone && appIsCli(r.cid))) out.push(r);', ') out.push(r);', "no command-line client in a phone's list")
 if P_PICKCLONE:
-    perturbed_web('            x.classList.remove("scell-tag-pick"); x.removeAttribute("role"); x.removeAttribute("tabindex"); x.removeAttribute("aria-label");\n',
+    perturbed_web('        x.classList.remove("scell-tag-pick"); x.removeAttribute("role"); x.removeAttribute("tabindex"); x.removeAttribute("aria-label");\n',
                   "", "the connection list's badge copy stripped of the chip's button")
 if P_PICKJUMP:
     perturbed_web('var d = nt.getBoundingClientRect().top - top0; if (Math.abs(d) < 1) return;', 'return;', "the tapped badge kept in place")
@@ -516,6 +535,19 @@ if P_STARTORB:
 if P_PCGRID:
     perturbed_web('grid-template-columns: auto minmax(260px, 1fr); grid-template-areas: "head head" "stage node" "stage vk" "stage bar" "stage side" "stage .";',
                   'grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "node" "vk" "stage" "side" "bar" ".";', "the PC card's two columns", fname="sub.css")
+if P_NAVNETS:
+    perturbed_web("      if (!peers.some(mine)) return;", "", "the networks card keeps the device's connections open")
+if P_LAYNAV:
+    perturbed_web("body.lay-nav .bar .who, body.lay-nav .bar .who-row { display: none; }",
+                  "body:is(.lay-wide, .lay-col) .bar .who, body:is(.lay-wide, .lay-col) .bar .who-row { display: none; }", "the name kept where no list shows it", fname="sub.css")
+if P_DLLABEL:
+    perturbed_web('c.ext === "txt" ? t("dl") : t("download");', 'c.ext === "txt" ? t("dlLink") : t("download");', "Download link only for a link")
+if P_DLGNAME:
+    perturbed_web('        if (nm && nm.textContent.trim()) top.setAttribute("aria-label", nm.textContent.trim());\n', "", "each dialog named")
+if P_ZOOMFOCUS:
+    perturbed_web("if (!f) { top.tabIndex = -1; f = top; }", "if (!f) return;", "a dialog with no control takes the focus")
+if P_NETSROWS:
+    perturbed_web('grid-template-rows: none; justify-items: center;', 'justify-items: center;', "the networks card's three rows", fname="sub.css")
 if P_WGNOTE:
     perturbed_web('                 note: (t("dlNotesWg") || {})[id + "@" + os] || "" });', '                 });', "a WG / AWG card's own download note")
 if P_WGSCAN:
@@ -1393,7 +1425,8 @@ try:
     t1 = tab.ev("!!document.querySelector('.ap-toast')")
     sheet(tab, "hackdiaz")
     under = tab.ev("(() => { const t = document.querySelector('.ap-toast'); if (!t) return null; const b = t.getBoundingClientRect();"
-                   " const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !t.contains(e); })()")
+                   " const was = t.inert; t.inert = false;"   # inert is not hit-tested: lifted to read the stacking alone
+                   " const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); t.inert = was; return !!e && !t.contains(e); })()")
     tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true"); time.sleep(0.4)
     t2 = tab.ev("!!document.querySelector('.ap-toast')")
     check("[18] an offer stays while another list only opens and closes, under that list while it is open (review F7)",
@@ -1664,10 +1697,11 @@ try:
       if (!chip) return 'no chip';
       chip.focus(); chip.click(); await new Promise(r => setTimeout(r, 300));
       const ov = document.querySelector('.cp-overlay'), app = document.getElementById('app');
-      const open = { role: ov && ov.getAttribute('role'), modal: ov && ov.getAttribute('aria-modal'), inert: app.inert, focus: !!(ov && ov.contains(document.activeElement)) };
+      const open = { role: ov && ov.getAttribute('role'), modal: ov && ov.getAttribute('aria-modal'), named: !!(ov && ov.getAttribute('aria-label')),
+                     inert: app.inert, focus: !!(ov && ov.contains(document.activeElement)) };
       document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); await new Promise(r => setTimeout(r, 400));
       return { open: open, closed: { gone: !document.querySelector('.cp-overlay'), inert: app.inert, back: document.activeElement === chip } }; })()"""
-    MODAL_OK = {"open": {"role": "dialog", "modal": "true", "inert": True, "focus": True}, "closed": {"gone": True, "inert": False, "back": True}}
+    MODAL_OK = {"open": {"role": "dialog", "modal": "true", "named": True, "inert": True, "focus": True}, "closed": {"gone": True, "inert": False, "back": True}}
     # a phone: untouched — no layout class, no list, the pages in the pager's flow, Start alone
     tab, _r = render("u1", "android", "en", phone=True)
     lp = tab.ev(LAY)
@@ -1693,15 +1727,31 @@ try:
     dl = tab.ev("window.__dl")
     check("[20] PC: Download saves the config beside the QR, not a picture of it — and says so",
           isinstance(dl, list) and len(dl) == 1 and dl[0].endswith(".conf") and lw["dl"] == "Download .conf", (dl, lw["dl"]))
+    zq = tab.ev(r"""(async () => { const box = document.querySelector('.ppage.cur .scell.cur .qrbox'); if (!box) return 'no qr'; box.click();
+      await new Promise(r => setTimeout(r, 300)); const ov = document.querySelector('.qz-overlay'), cap = ov && ov.querySelector('.qz-cap');
+      const r = { named: !!ov && !!cap && ov.getAttribute('aria-label') === cap.textContent, focus: !!ov && document.activeElement === ov };
+      document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); await new Promise(r => setTimeout(r, 300));
+      r.gone = !document.querySelector('.qz-overlay'); return r; })()""")
+    check("[20] PC: the enlarged QR is a dialog named by its caption that takes the focus itself (it holds no control) (review F5)",
+          zq == {"named": True, "focus": True, "gone": True}, zq)
     lay_click(tab, ".wnav-row", "WDTT")
     lw2 = tab.ev(LAY)
     check("[20] PC: a row of the list shows its card (the WDTT one) and is marked",
           lw2["pages"] == ["turn"] and "WDTT" in (lw2["badge"] or "") and len(lw2["on"]) == 1 and "WDTT" in lw2["on"][0] and lw2["stages"] == 1, lw2)
     check("[20] PC: every Start orb paints from a gradient of its own (a hidden page's id would leave it blank)",
           len(lw2["orbs"]) > 1 and len(set(lw2["orbs"])) == len(lw2["orbs"]), lw2["orbs"])
-    check("[20] PC: the app list is modal — a dialog with the focus, the page behind inert, the focus back on close", tab.ev(MODAL) == MODAL_OK, tab.ev(MODAL))
+    check("[20] PC: the app list is modal — a named dialog with the focus, the page behind inert, the focus back on close", tab.ev(MODAL) == MODAL_OK, tab.ev(MODAL))
+    who = tab.ev("[(document.querySelector('.bar .who') || {}).textContent, !!(document.querySelector('.bar .who') || {getClientRects: () => []}).getClientRects().length,"
+                 " (document.querySelector('.wnav-who') || {}).textContent]")
+    check("[20] PC: the name shows once — in the list, not the header", who == ["Anna", False, "Anna"], who)
+    lay_click(tab, ".wnav-row", "MYSOREZ")
+    lm = tab.ev(LAY)
+    check("[20] PC: a VKTGZ paste token is saved by 'Download', not 'Download link' (it is no link) (review F4)",
+          "MYSOREZ" in (lm["badge"] or "") and lm["dl"] == "Download", (lm["badge"], lm["dl"]))
     lay_click(tab, ".wnav-row", "Available networks")
     check("[20] PC: the networks row shows the networks page", tab.ev(LAY)["pages"] == ["nets"], tab.ev(LAY)["pages"])
+    nrows = tab.ev("getComputedStyle(document.querySelector('.ppage.cur')).gridTemplateRows.split(' ').length")
+    check("[20] PC: the networks card has its three rows, no empty ones under it (review F6)", nrows == 3, nrows)
     check("[4] console clean — the PC layout", not console_errors(tab), console_errors(tab)[:3])
     tab.close()
     # a tablet held upright: the devices as tabs, then the card
@@ -1711,6 +1761,24 @@ try:
           and lc["pages"] == ["wg"] and lc["stages"] == 1 and bool(lc["lbl"]) and lc["side"] is None, lc)
     lay_click(tab, ".wnav-dev", "old tablet")
     check("[20] tablet upright: a device's tab shows its page (the blocked tablet's)", tab.ev(LAY)["pages"] == ["dead"], tab.ev(LAY)["pages"])
+    tab.close()
+    # one device and a networks page on an upright tablet (no tabs): the networks card keeps the device's connections open
+    tab, _r = render("u2", "android", "en", size=(820, 1180, True))
+    lay_click(tab, ".wnav-row", "Available networks")
+    back = tab.ev(LAY)
+    ok = back["pages"] == ["nets"] and any("Available networks" not in r for r in back["rows"])
+    if ok:
+        tab.ev("(() => { const r = [...document.querySelectorAll('.wnav-row:not(.cp-nets)')].find(x => x.getClientRects().length); if (r) r.click(); return !!r; })()")
+        time.sleep(0.5)
+    check("[20] tablet upright, one device: from the networks card its connections stay in reach (review F1)",
+          ok and tab.ev(LAY)["pages"] not in (["nets"], []), (back, tab.ev(LAY)["pages"]))
+    tab.close()
+    # one config and no networks page on a PC: no list, the card alone — and the name stays in the header (review F2)
+    tab, _r = render("u8", "android", "en", desktop=True)
+    lh = tab.ev(LAY)
+    hn = tab.ev("[(document.querySelector('.bar .who') || {}).textContent, !!(document.querySelector('.bar .who') || {getClientRects: () => []}).getClientRects().length]")
+    check("[20] PC, one config: the card alone, no list, and the name in the header (review F2)",
+          lh["cls"] == ["lay-wide"] and not lh["nav"] and lh["pages"] == ["wg"] and hn == ["Hana", True], (lh, hn))
     tab.close()
 finally:
     br.close()

@@ -803,7 +803,7 @@ body:is(.lay-wide, .lay-col) .bar { flex-direction: row; justify-content: flex-s
 body:is(.lay-wide, .lay-col) .brand { align-self: center; min-height: 0; }
 body:is(.lay-wide, .lay-col) .brand-mark { width: 32px; }
 body:is(.lay-wide, .lay-col) .brand-name { font-size: 26px; }
-body:is(.lay-wide, .lay-col) .bar .who, body:is(.lay-wide, .lay-col) .bar .who-row { display: none; }
+body.lay-nav .bar .who, body.lay-nav .bar .who-row { display: none; }   /* the list carries the name (sub.js sets lay-nav with it) */
 body:is(.lay-wide, .lay-col) .topctl { position: absolute; top: 16px; right: max(24px, calc((100vw - 1240px) / 2 + 24px)); }
 /* the list is the navigation: no protocol tabs, no swipe hints, no Connections button */
 body:is(.lay-wide, .lay-col) #peers > .modebar, body:is(.lay-wide, .lay-col) .ppage .vhint, body:is(.lay-wide, .lay-col) .ppage .navarrow,
@@ -857,7 +857,7 @@ body:is(.lay-wide, .lay-col) .pbar > .pbtn.ico::after { content: attr(aria-label
 
 /* a page with no connection on it — the networks it reaches, a blocked device — is one centred column */
 body:is(.lay-wide, .lay-col) .ppage.cur:is([data-mode="nets"], [data-mode="dead"]) { grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "head" "node" "stage"; justify-items: center; text-align: center; }
+  grid-template-areas: "head" "node" "stage"; grid-template-rows: none; justify-items: center; text-align: center; }
 body:is(.lay-wide, .lay-col) .ppage.cur:is([data-mode="nets"], [data-mode="dead"]) .scell-stage { max-width: 640px; width: 100%; }
 /* PC: the list down the side, the card beside it — QR left; the app, its notes and the actions right */
 body.lay-wide #peers { display: grid; grid-template-columns: 290px minmax(0, 1fr); grid-template-areas: "use use" "nav main";
