@@ -253,7 +253,8 @@ for os_ in ("windows", "android"):
     scans[os_] = json.loads((pq.stdout.strip().splitlines() or ["null"])[-1])
 check("MCRF scans no QR on Windows (a pasted link only), on Android it does; other apps as their catalog says",
       scans == {"windows": [False, True, True], "android": [True, True, True]}, scans)
-check("…and the csqtt and WDTT cells ask it before a QR, and the app list's import line", sub.count("appScans(") == 4, sub.count("appScans("))
+check("…and the csqtt and WDTT cells ask it before a QR, the app list's import line, and the WG / AWG card's QR caption",
+      sub.count("appScans(") == 5, sub.count("appScans("))
 
 print("\n[8] the WG / AWG apps")
 for cid in ("rawline", "wingsv"):

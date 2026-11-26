@@ -148,6 +148,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-wgdl       serves a sub.js whose WG / AWG download row stays AmneziaVPN's after a pick → RED on [19]
      --perturb-wgnote     serves a sub.js whose WG / AWG download bubble shows a turn card's note (MCRF's engines) → RED on [19]
      --perturb-wgzoom     serves a sub.js whose enlarged WG / AWG QR names the protocol, not the app picked → RED on [19]
+     --perturb-wgscan     serves a sub.js whose enlarged WG / AWG QR names an app that cannot scan it (MCRF on Windows) → RED on [19]
      --perturb-laywide    serves a sub.js with no PC / tablet layout (every window the phone's or the column) → RED on [20]
      --perturb-layphone   serves a sub.js that gives a phone the tablet layout → RED on [20]
      --perturb-navgo      serves a sub.js whose list rows show nothing → RED on [20]
@@ -231,11 +232,12 @@ P_MODAL = "--perturb-modal" in sys.argv
 P_STARTORB = "--perturb-startorb" in sys.argv
 P_PCGRID = "--perturb-pcgrid" in sys.argv
 P_WGZOOM = "--perturb-wgzoom" in sys.argv
+P_WGSCAN = "--perturb-wgscan" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE or P_CSQRANK or P_CSQSTEPS or P_LL25 or P_LLFIRE or P_LL21 or P_LINE25 or P_LINEMRTT or P_MRTTBY or P_RUNFORK
            or P_PICKRANK or P_CLIPHONE or P_PICKCLONE or P_PICKJUMP or P_STALEPICK or P_DUPPORT or P_STALEOFFER
            or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP
-           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM
+           or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM or P_WGSCAN
            or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID)
 
 FAILS = []
@@ -516,8 +518,10 @@ if P_PCGRID:
                   'grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "node" "vk" "stage" "side" "bar" ".";', "the PC card's two columns", fname="sub.css")
 if P_WGNOTE:
     perturbed_web('                 note: (t("dlNotesWg") || {})[id + "@" + os] || "" });', '                 });', "a WG / AWG card's own download note")
+if P_WGSCAN:
+    perturbed_web("if (appScans(wcid)) ctrl.zoomTail = wga.app; }", "ctrl.zoomTail = wga.app; }", "the zoom caption names only an app that scans")
 if P_WGZOOM:
-    perturbed_web("                 ctrl.zoomTail = wga.app; }", "                 }", "the enlarged QR names the card's app")
+    perturbed_web("if (appScans(wcid)) ctrl.zoomTail = wga.app; }", "}", "the enlarged QR names the card's app")
 if P_WGDL:
     perturbed_web('      if (wga) node.appendChild(getAppRow(wga));   // under the server/app name line', '      if (wga) node.appendChild(getAppRow(wgAppList(tgt.type)[0]));   //',
                   "the WG / AWG download row follows the pick")
@@ -1570,6 +1574,15 @@ try:
       return [...b.querySelectorAll('.dl-bubble-ver')].map(x => x.textContent); })()""" % seek_js("awg", "AmneziaWG"))
     check("[19] MCRF's bubble on an AWG card: 'Needs Android 10 or newer.', no word of the CSQTT / WDTT engine",
           isinstance(notes, list) and "Needs Android 10 or newer." in notes and not any("11 MB" in x for x in notes), notes)
+    tab.close()
+    # …but only an app that scans it: MCRF on Windows imports a pasted link, so its AWG card's QR keeps the protocol's name
+    # (item24-b verify F7)
+    tab, _r = render("u1", "windows", "en", size=DESK_COL, ls={"swgsub-app:awg:windows": "mcrf"})
+    capw = tab.ev(r"""(() => { %s
+      const box = cells[i].querySelector('.qrbox'); if (!box) return 'no qr'; box.click();
+      const c = document.querySelector('.qz-cap'); const t = c ? c.textContent : null;
+      document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); return t; })()""" % seek_js("awg", "AmneziaWG"))
+    check("[19] Windows, MCRF on the AWG card: the enlarged QR reads 'laptop · AmneziaWG' — MCRF there cannot scan it", capw == "laptop · AmneziaWG", capw)
     tab.close()
     # WINGS V on the AWG card: its own wingsv:// link — type AMNEZIAWG, backend AMNEZIAWG_TL, the whole .conf — and its note
     tab, r2 = render("u1", "android", "en", phone=True, ls={"swgsub-app:awg:android": "wingsv"})

@@ -2181,7 +2181,8 @@
     var ctrl = { ready: false, payload: "", ext: "conf", isLink: false, hasQR: false, cmd: null, view: "qr",
                  base: fileName(tgt, mode, it.tp), redraw: null, notify: null,
                  srvName: (tgt.node_name || tgt.node || tgt.iface || "server"), srvColor: nodeColor(tgt.node, ifaceColor(tgt.type)),
-                 // enlarged-QR caption tail = the CLIENT app: WG/AWG cells name WireGuard/AmneziaWG; a turn cell overrides it with its app below.
+                 // enlarged-QR caption tail = the CLIENT app that scans it: a WG/AWG cell names its picked app where that app
+                 // scans a QR, else WireGuard/AmneziaWG (any app of the protocol reads the .conf QR); a turn cell names its app below.
                  zoomTail: (mode !== "turn" ? (tgt.type === "awg" ? "AmneziaWG" : "WireGuard") : (tgt.node_name || tgt.node || tgt.iface || "")) };
 
     ctrl.copyInto = function (btn, restore) {
@@ -2531,7 +2532,7 @@
       var wcid = wga ? wga.cid : "";
       if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppPage = wga.page;   // Start-button download-fallback (the card's app)
                  ctrl.app = ctrl.dlAppName = wcid === "amneziavpn" ? AMNEZIA_VPN.name : wga.app;   // the ask reads "Open/Get Amnezia VPN"
-                 ctrl.zoomTail = wga.app; }   // the enlarged QR names the app to scan it with, as a turn card's does
+                 if (appScans(wcid)) ctrl.zoomTail = wga.app; }   // the enlarged QR names the app that scans it, as a turn card's does
       if (conf) { ctrl.payload = conf; ctrl.ready = true; ctrl.hasQR = true; ctrl.ext = "conf"; ctrl.view = "qr"; }
       // Start follows the card's app (item 24). Rawline: rawline://add/ around the .conf (one tap on every OS). AmneziaVPN:
       // the vpn:// link (base64url(qCompress(.conf))), one tap on Android, pasted elsewhere; WINGS V: its own wingsv://
