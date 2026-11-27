@@ -2169,9 +2169,12 @@ export function confirmWdttSwitch(node, iface, from, to, params, rawOn, go, stop
       ? html`<p class="hint">${T("RAW turns off: {v1} has none. A device set to RAW connects again once its app is set back to the normal mode.", { v1: tl })}</p>` : null}` : null}
     onConfirm=${go}/>`);
 }
-const WdttForkNotices = ({ sw }) => html`
+export const WdttForkNotices = ({ sw, ro }) => html`
   ${sw.blocked ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: forkLabel(sw.want), v2: forkLabel(sw.run) })}</span></div>` : null}
-  ${sw.failed ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("wdtt|Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: forkLabel(sw.want), v2: sw.failed.why || T("it did not start"), v3: forkLabel(sw.run) })}</span></div>` : null}`;
+  ${sw.failed ? html`<div class="notice warn"><${Ic} i="warn"/><span>${ro
+    // a failover copy has no Restart and no field: it follows its primary, and retries on the next published build
+    ? T("wdtt|Switching to {v1} failed on this copy: {v2}. It stays on {v3} and tries {v1} again when a new build is published.", { v1: forkLabel(sw.want), v2: sw.failed.why || T("it did not start"), v3: forkLabel(sw.run) })
+    : T("wdtt|Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: forkLabel(sw.want), v2: sw.failed.why || T("it did not start"), v3: forkLabel(sw.run) })}</span></div>` : null}`;
 export function WdttManageSheet({ node, w: w0 }) {
   useStore();   // live status / config while open
   const iface = w0.iface;
@@ -2322,7 +2325,7 @@ export function WdttManageSheet({ node, w: w0 }) {
       <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
       <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
       ${roWhy ? null : html`<${WdttForkField} node=${node} sw=${sw} value=${forkTo} onChange=${v => setForkPick(v === sw.want ? null : v)}/>`}
-      ${forkDirty ? null : html`<${WdttForkNotices} sw=${sw}/>`}
+      ${forkDirty ? null : html`<${WdttForkNotices} sw=${sw} ro=${!!roWhy}/>`}
       <div class="row2">
         <div class="field"><label>${T("Endpoint host / IP")}</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>

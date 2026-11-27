@@ -15,7 +15,7 @@
  *  [5] the card: "switching", "switch failed" and "update node", each from the switch state
  *
  * Run: node tests/spa_wdtt_fork_switch_selftest.mjs     --perturb <failed|blocked|oneforks|refusebuild|refusenode|keepwant|
- *        users|ildarnote|flagsnote|rawnote|confirmgo|switchflag|backnoask|rawpick|cardtag|closefirst|typednote|stoppednote|keeprun>
+ *        users|ildarnote|flagsnote|rawnote|confirmgo|switchflag|backnoask|rawpick|cardtag|closefirst|typednote|stoppednote|keeprun|rocopy>
  *        plants one regression, expects RED.
  */
 import fs from "node:fs";
@@ -35,12 +35,13 @@ const PLANTS = {
   flagsnote: ["${params ? html`<p class=\"hint\">${T(\"Its extra flags", "${false ? html`<p class=\"hint\">${T(\"Its extra flags"],
   rawnote: ["  const rawGone = rawOn && !(turnForkList().find(f => f.id === to) || {}).raw;", "  const rawGone = rawOn;"],
   ildarnote: ["const WDTT_NO_RESUME = [\"ildarmaga\", \"wdttplus\"];", "const WDTT_NO_RESUME = [];"],
-  confirmgo: ["    onConfirm=${go}/>`);\n}\nconst WdttForkNotices", "    onConfirm=${() => {}}/>`);\n}\nconst WdttForkNotices"],
+  confirmgo: ["    onConfirm=${go}/>`);\n}\nexport const WdttForkNotices", "    onConfirm=${() => {}}/>`);\n}\nexport const WdttForkNotices"],
   switchflag: ["fork: forkTo, ...(forkDirty ? { fork_switch: true } : {}), title", "fork: forkTo, title"],
   backnoask: ["  const save = () => forkDirty && forkTo !== sw.run\n    ? confirmWdttSwitch(", "  const save = () => forkDirty\n    ? confirmWdttSwitch("],
   closefirst: ["() => { closeModal(); return save2(); }, !!cfg.stopped)", "save2, !!cfg.stopped)"],
   typednote: ["paramsDirty ? \"\" : (cfg.params || \"\").trim(), !!rawCur", "(cfg.params || \"\").trim(), !!rawCur"],
   stoppednote: ["    body=${stopped ? T(\"The server is stopped", "    body=${false ? T(\"The server is stopped"],
+  rocopy: ["  ${sw.failed ? html`<div class=\"notice warn\"><${Ic} i=\"warn\"/><span>${ro\n", "  ${sw.failed ? html`<div class=\"notice warn\"><${Ic} i=\"warn\"/><span>${false\n"],
   keeprun: ["  const forks = (run && !shown.some(f => f.id === sw.run) ? [...shown, run] : shown).filter(f => f.kind === \"wdtt\");", "  const forks = shown.filter(f => f.kind === \"wdtt\");"],
   rawpick: ["  const rawCapable = !!(turnForkList().find(x => x.id === forkTo) || {}).raw;", "  const rawCapable = !!(turnForkList().find(x => x.id === fork) || {}).raw;"],
   cardtag: ["    : sw.switching ? html`<${StatusTag} cls=\"tg tg-pending\" icon=\"clock\" label=${T(\"tag|switching\")} title=${T(\"Moving to {v1} on the node's next sync\", { v1: forkLabel(sw.want) })}/>`\n", ""],
@@ -160,7 +161,11 @@ check("[4] flags typed in the same save are the target's: only untouched ones ar
       sheet.includes("paramsDirty ? \"\" : (cfg.params || \"\").trim(), !!rawCur"));
 check("[4] the RAW toggle follows the picked fork", sheet.includes("const rawCapable = !!(turnForkList().find(x => x.id === forkTo) || {}).raw;"));
 check("[4] the node's notices show while nothing is picked; a failover copy gets no field",
-      sheet.includes("${forkDirty ? null : html`<${WdttForkNotices} sw=${sw}/>`}") && sheet.includes("${roWhy ? null : html`<${WdttForkField}"));
+      sheet.includes("${forkDirty ? null : html`<${WdttForkNotices} sw=${sw} ro=${!!roWhy}/>`}") && sheet.includes("${roWhy ? null : html`<${WdttForkField}"));
+const nf = ro => text(TU.WdttForkNotices({ sw: TU.wdttSwitchState("nn", "c"), ro }));
+check("[4] a failed switch: Restart or pick the old fork; on a failover copy (no Restart, no field) it says when it retries",
+      /Restart the service to try again/.test(nf(false)) && /tries SpaceNeuroX again when a new build is published/.test(nf(true))
+      && !/Restart/.test(nf(true)), [nf(false), nf(true)]);
 
 // [5]
 const tagOf = iface => { const w = Store.stats.nn.wdtt.find(x => x.iface === iface) || {};

@@ -7642,6 +7642,8 @@ export const STR = {
   "This node hasn't reported since the panel started. Try again in a few seconds.":
     "Нода ещё не присылала отчёт с запуска панели. Попробуйте через несколько секунд.",
   "Switching a WDTT server's fork": "Смена форка сервера WDTT",
+  "wdtt|Switching to {v1} failed on this copy: {v2}. It stays on {v3} and tries {v1} again when a new build is published.":
+    "Переход на {v1} на этой копии не удался: {v2}. Она остаётся на {v3} и попробует {v1} снова, когда выйдет новая сборка.",
   "wdtt|Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.": "Переход на {v1} не удался: {v2}. Сервер снова на {v3}. Перезапустите службу, чтобы попробовать ещё раз, или выберите {v3}, чтобы остаться на нём.",
   // csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md): one rule per server, sent to every user's app on connect
   "App routing": "Маршрутизация приложений",
