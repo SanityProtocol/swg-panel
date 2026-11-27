@@ -168,6 +168,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-navrebuild serves a sub.js whose rebuild on the networks card (theme, a turn of the tablet) closes the device → RED on [20]
      --perturb-dlglevel   serves a sub.js whose dialogs keep the name they opened with → RED on [20]
      --perturb-backname   serves a sub.js whose Connections back button is read as the device's name alone → RED on [20]
+     --perturb-backdir    serves a sub.js whose Connections back button names the device it leaves, not where it goes → RED on [20]
      --perturb-livepre    serves a sub.js whose status region arrives with the first toast → RED on [20]
      --perturb-liveclear  serves a sub.js whose status region empties only with its toast (an offer leaves it full) → RED on [20]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
@@ -252,6 +253,7 @@ P_NETSROWS = "--perturb-netsrows" in sys.argv
 P_NAVREBUILD = "--perturb-navrebuild" in sys.argv
 P_DLGLEVEL = "--perturb-dlglevel" in sys.argv
 P_BACKNAME = "--perturb-backname" in sys.argv
+P_BACKDIR = "--perturb-backdir" in sys.argv
 P_LIVEPRE = "--perturb-livepre" in sys.argv
 P_LIVECLEAR = "--perturb-liveclear" in sys.argv
 P_WGZOOM = "--perturb-wgzoom" in sys.argv
@@ -263,7 +265,7 @@ PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPO
            or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM or P_WGSCAN
            or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID
            or P_NAVNETS or P_LAYNAV or P_DLLABEL or P_DLGNAME or P_ZOOMFOCUS or P_NETSROWS
-           or P_NAVREBUILD or P_DLGLEVEL or P_BACKNAME or P_LIVEPRE or P_LIVECLEAR)
+           or P_NAVREBUILD or P_DLGLEVEL or P_BACKNAME or P_BACKDIR or P_LIVEPRE or P_LIVECLEAR)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -563,7 +565,9 @@ if P_DLGLEVEL:
     perturbed_web('ov.setAttribute("aria-labelledby", n.id); return n; }', 'if (!ov.hasAttribute("aria-labelledby")) ov.setAttribute("aria-labelledby", n.id); return n; }',
                   "the connections picker's name follows its level")
 if P_BACKNAME:
-    perturbed_web('        b.setAttribute("aria-label", t("back") + ": " + g.title);\n', "", "the back button says Back")
+    perturbed_web('        b.setAttribute("aria-label", t("back") + ": " + t("pickDevices"));\n', "", "the back button says Back")
+if P_BACKDIR:
+    perturbed_web('t("back") + ": " + t("pickDevices")', 't("back") + ": " + g.title', "the back button names where it goes")
 if P_LIVEPRE:
     perturbed_web("    liveRegion();                                      // in the page before the first toast, so the toast is read out\n", "",
                   "the status region in the page before the first toast")
@@ -1745,7 +1749,8 @@ try:
     d2, b2 = ax_names(tab, "dialog"), ax_names(tab, "button")
     check("[20] the Connections pop-up is named by its level: 'Your devices', then the device opened in it (verify F8)",
           d1 == ["Your devices"] and d2 == ["laptop"], (d1, d2))
-    check("[20] …and its back button says where it goes: 'Back: laptop' (verify r2 F13)", "Back: laptop" in b2, b2)
+    check("[20] …and its back button says where it goes: 'Back: Your devices', never the device it leaves (verify r2 F13, r3 F14)",
+          "Back: Your devices" in b2 and not any((n or "").startswith("Back: laptop") for n in b2), b2)
     tab.close()
     # a toast is read out from one status region, in the page before the first toast and live over a pop-up (verify F10)
     tab, _r = render("u1", "android", "en", phone=True)

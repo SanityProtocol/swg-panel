@@ -1154,13 +1154,13 @@
     }
 
     // The dialog is named by the level's own name (a device, or "Your devices"), not the whole title: the back button
-    // carries its own spoken name, "Back: <device>".
+    // carries its own spoken name, where it goes — "Back: Your devices".
     function nameBy(n) { if (!n.id) n.id = "swg-dlg-" + (++_modalN); ov.setAttribute("aria-labelledby", n.id); return n; }
     function showConnections(g, back) {
       title.textContent = ""; list.textContent = "";
       if (back) {
         var b = el("button", "cp-back"); b.type = "button";
-        b.setAttribute("aria-label", t("back") + ": " + g.title);
+        b.setAttribute("aria-label", t("back") + ": " + t("pickDevices"));
         b.appendChild(el("span", "cp-back-ar", "‹"));
         b.appendChild(nameBy(el("span", "cp-back-t", g.title)));
         b.onclick = showPeers;
