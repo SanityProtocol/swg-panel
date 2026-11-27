@@ -102,7 +102,7 @@
       volDevNever: "This device's data limit is used up\nPlease contact your administrator",
       volUsed: "{used} of {limit} GB used {when}", volResets: "resets {date}", volSlowed: "slowed to 1 Mbit/s",
       volDay: "today", volWeek: "this week", volMonth: "this month", volTotal: "in total",
-      pickDevices: "Your devices", pickOpen: "Jump to any device or connection", close: "Close", connections: "Connections",
+      pickDevices: "Your devices", back: "Back", pickOpen: "Jump to any device or connection", close: "Close", connections: "Connections",
       subExpiredSub: "This subscription has expired\nPlease contact your administrator",
       err: "Something went wrong", errServer: "Couldn’t load this subscription (server error). Please try again later.",
       errNet: "Couldn’t load this subscription. Check your connection and try again.",
@@ -188,7 +188,7 @@
       volDevNever: "Лимит трафика этого устройства исчерпан\nОбратитесь к администратору",
       volUsed: "Использовано {used} из {limit} ГБ {when}", volResets: "сброс {date}", volSlowed: "скорость снижена до 1 Мбит/с",
       volDay: "сегодня", volWeek: "за неделю", volMonth: "за месяц", volTotal: "всего",
-      pickDevices: "Ваши устройства", pickOpen: "Перейти к любому устройству или подключению", close: "Закрыть", connections: "Подключения",
+      pickDevices: "Ваши устройства", back: "Назад", pickOpen: "Перейти к любому устройству или подключению", close: "Закрыть", connections: "Подключения",
       subExpiredSub: "Срок действия этой подписки истёк\nОбратитесь к администратору",
       err: "Что-то пошло не так", errServer: "Не удалось загрузить подписку (ошибка сервера). Попробуйте позже.",
       errNet: "Не удалось загрузить подписку. Проверьте соединение и попробуйте снова.",
@@ -871,9 +871,10 @@
     if (top) {
       if (!top.hasAttribute("role")) {
         top.setAttribute("role", "dialog"); top.setAttribute("aria-modal", "true");
-        // named by its own title, or the enlarged QR's caption — by reference, so the name follows the picker into one device
+        // named by its own title, or the enlarged QR's caption — by reference, so the name follows the text (the connections
+        // picker names itself per level)
         var nm = top.querySelector(".cp-title, .ph-title, .qz-cap");
-        if (nm) { if (!nm.id) nm.id = "swg-dlg-" + (++_modalN); top.setAttribute("aria-labelledby", nm.id); }
+        if (nm && !top.hasAttribute("aria-labelledby")) { if (!nm.id) nm.id = "swg-dlg-" + (++_modalN); top.setAttribute("aria-labelledby", nm.id); }
       }
       if (!top.contains(document.activeElement)) {
         var was = document.activeElement;
@@ -1152,15 +1153,19 @@
       list.appendChild(r);
     }
 
+    // The dialog is named by the level's own name (a device, or "Your devices"), not the whole title: the back button
+    // carries its own spoken name, "Back: <device>".
+    function nameBy(n) { if (!n.id) n.id = "swg-dlg-" + (++_modalN); ov.setAttribute("aria-labelledby", n.id); return n; }
     function showConnections(g, back) {
       title.textContent = ""; list.textContent = "";
       if (back) {
         var b = el("button", "cp-back"); b.type = "button";
-        var ar = el("span", "cp-back-ar", "‹"); ar.setAttribute("aria-hidden", "true"); b.appendChild(ar);   // the dialog's name is the device's
-        b.appendChild(el("span", "cp-back-t", g.title));
+        b.setAttribute("aria-label", t("back") + ": " + g.title);
+        b.appendChild(el("span", "cp-back-ar", "‹"));
+        b.appendChild(nameBy(el("span", "cp-back-t", g.title)));
         b.onclick = showPeers;
         title.appendChild(b);
-      } else title.appendChild(el("span", "cp-eyebrow", g.title));
+      } else title.appendChild(nameBy(el("span", "cp-eyebrow", g.title)));
       g.entries.forEach(function (en) {
         var r = row(isHere(en));
         r.appendChild(pickLead(en));
@@ -1171,7 +1176,7 @@
     }
     function showPeers() {
       title.textContent = ""; list.textContent = "";
-      title.appendChild(el("span", "cp-eyebrow", t("pickDevices")));
+      title.appendChild(nameBy(el("span", "cp-eyebrow", t("pickDevices"))));
       peers.forEach(function (g) {
         var r = row(cur && g.entries.some(function (en) { return en.pi === cur.pi; }));
         r.appendChild(el("span", "cp-name", g.title));
@@ -1660,8 +1665,10 @@
     if (_toastEl) { try { _toastEl.remove(); } catch (_) {} clearTimeout(_toastT); }
     var el2 = el("div", "sub-toast", msg); document.body.appendChild(el2); _toastEl = el2;
     var lv = liveRegion(); lv.textContent = ""; clearTimeout(_liveT);
-    _liveT = setTimeout(function () { lv.textContent = msg; }, 100);   // a change, after the clear: the same text twice is read twice
-    _toastT = setTimeout(function () { try { el2.remove(); } catch (_) {} if (_toastEl === el2) { _toastEl = null; lv.textContent = ""; } }, 2800);
+    // a change, after the clear: the same text twice is read twice. The region empties on its own clock, not the toast's —
+    // an offer that replaces the toast stops the toast's.
+    _liveT = setTimeout(function () { lv.textContent = msg; _liveT = setTimeout(function () { lv.textContent = ""; }, 2800); }, 100);
+    _toastT = setTimeout(function () { try { el2.remove(); } catch (_) {} if (_toastEl === el2) _toastEl = null; }, 2800);
   }
 
   // ── base64 (both standard and url-safe, padding optional) → bytes ──

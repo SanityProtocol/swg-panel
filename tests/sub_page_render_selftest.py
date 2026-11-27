@@ -167,8 +167,9 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-netsrows   serves a sub.css whose networks card keeps the PC card's empty rows → RED on [20]
      --perturb-navrebuild serves a sub.js whose rebuild on the networks card (theme, a turn of the tablet) closes the device → RED on [20]
      --perturb-dlglevel   serves a sub.js whose dialogs keep the name they opened with → RED on [20]
-     --perturb-backarrow  serves a sub.js whose back arrow is read as part of a device's name → RED on [20]
+     --perturb-backname   serves a sub.js whose Connections back button is read as the device's name alone → RED on [20]
      --perturb-livepre    serves a sub.js whose status region arrives with the first toast → RED on [20]
+     --perturb-liveclear  serves a sub.js whose status region empties only with its toast (an offer leaves it full) → RED on [20]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -250,8 +251,9 @@ P_ZOOMFOCUS = "--perturb-zoomfocus" in sys.argv
 P_NETSROWS = "--perturb-netsrows" in sys.argv
 P_NAVREBUILD = "--perturb-navrebuild" in sys.argv
 P_DLGLEVEL = "--perturb-dlglevel" in sys.argv
-P_BACKARROW = "--perturb-backarrow" in sys.argv
+P_BACKNAME = "--perturb-backname" in sys.argv
 P_LIVEPRE = "--perturb-livepre" in sys.argv
+P_LIVECLEAR = "--perturb-liveclear" in sys.argv
 P_WGZOOM = "--perturb-wgzoom" in sys.argv
 P_WGSCAN = "--perturb-wgscan" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
@@ -261,7 +263,7 @@ PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPO
            or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM or P_WGSCAN
            or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID
            or P_NAVNETS or P_LAYNAV or P_DLLABEL or P_DLGNAME or P_ZOOMFOCUS or P_NETSROWS
-           or P_NAVREBUILD or P_DLGLEVEL or P_BACKARROW or P_LIVEPRE)
+           or P_NAVREBUILD or P_DLGLEVEL or P_BACKNAME or P_LIVEPRE or P_LIVECLEAR)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -555,14 +557,19 @@ if P_LAYNAV:
 if P_DLLABEL:
     perturbed_web('c.ext === "txt" ? t("dl") : t("download");', 'c.ext === "txt" ? t("dlLink") : t("download");', "Download link only for a link")
 if P_DLGNAME:
-    perturbed_web('        if (nm) { if (!nm.id) nm.id = "swg-dlg-" + (++_modalN); top.setAttribute("aria-labelledby", nm.id); }\n', "", "each dialog named")
+    perturbed_web('        if (nm && !top.hasAttribute("aria-labelledby")) { if (!nm.id) nm.id = "swg-dlg-" + (++_modalN); top.setAttribute("aria-labelledby", nm.id); }\n',
+                  "", "each dialog named")
 if P_DLGLEVEL:
-    perturbed_web('top.setAttribute("aria-labelledby", nm.id);', 'top.setAttribute("aria-label", nm.textContent.trim());', "a dialog's name follows its title")
-if P_BACKARROW:
-    perturbed_web(' ar.setAttribute("aria-hidden", "true");', "", "the back arrow kept out of the device's name")
+    perturbed_web('ov.setAttribute("aria-labelledby", n.id); return n; }', 'if (!ov.hasAttribute("aria-labelledby")) ov.setAttribute("aria-labelledby", n.id); return n; }',
+                  "the connections picker's name follows its level")
+if P_BACKNAME:
+    perturbed_web('        b.setAttribute("aria-label", t("back") + ": " + g.title);\n', "", "the back button says Back")
 if P_LIVEPRE:
     perturbed_web("    liveRegion();                                      // in the page before the first toast, so the toast is read out\n", "",
                   "the status region in the page before the first toast")
+if P_LIVECLEAR:
+    perturbed_web('_liveT = setTimeout(function () { lv.textContent = msg; _liveT = setTimeout(function () { lv.textContent = ""; }, 2800); }, 100);',
+                  '_liveT = setTimeout(function () { lv.textContent = msg; }, 100);', "the status region empties on its own clock")
 if P_ZOOMFOCUS:
     perturbed_web("if (!f) { top.tabIndex = -1; f = top; }", "if (!f) return;", "a dialog with no control takes the focus")
 if P_NETSROWS:
@@ -1728,16 +1735,17 @@ try:
           lp["cls"] == [] and not lp["nav"] and len(lp["pages"]) > 1 and lp["lbl"] is None and lp["side"] is None, lp)
     check("[20] …and its app list is modal too: a dialog with the focus, the page behind inert, the focus back on close", tab.ev(MODAL) == MODAL_OK, tab.ev(MODAL))
     # the Connections pop-up's name, as the accessibility tree computes it, follows the level: the devices, then the one opened (verify F8)
-    def ax_dialogs(tab):
+    def ax_names(tab, role):
         tab.br.send("Accessibility.enable", session=tab.s)
         return [(n.get("name") or {}).get("value") for n in tab.br.send("Accessibility.getFullAXTree", session=tab.s).get("nodes", [])
-                if not n.get("ignored") and (n.get("role") or {}).get("value") == "dialog"]
+                if not n.get("ignored") and (n.get("role") or {}).get("value") == role]
     lay_click(tab, ".pbtn-conn", "")
-    d1 = ax_dialogs(tab)
+    d1 = ax_names(tab, "dialog")
     lay_click(tab, ".cp-overlay .cp-row", "laptop")
-    d2 = ax_dialogs(tab)
+    d2, b2 = ax_names(tab, "dialog"), ax_names(tab, "button")
     check("[20] the Connections pop-up is named by its level: 'Your devices', then the device opened in it (verify F8)",
           d1 == ["Your devices"] and d2 == ["laptop"], (d1, d2))
+    check("[20] …and its back button says where it goes: 'Back: laptop' (verify r2 F13)", "Back: laptop" in b2, b2)
     tab.close()
     # a toast is read out from one status region, in the page before the first toast and live over a pop-up (verify F10)
     tab, _r = render("u1", "android", "en", phone=True)
@@ -1749,6 +1757,14 @@ try:
       return [r && r.textContent, r && r.inert, t && t.textContent, t && t.getAttribute('role')]; })()""")
     check("[20] a toast is read out from a status region in the page before it, live over a pop-up (verify F10)",
           lv0 == [1, ""] and lv1 == ["Connection link copied", False, "Connection link copied", None], (lv0, lv1))
+    # …and it empties on its own clock: a pick whose offer replaces that toast inside 2.8 s leaves no copy confirmation in it (verify r2 F11)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); true"); time.sleep(0.3)
+    sheet(tab, "WDTT")
+    pick(tab, "MCRF")
+    offer = tab.ev("!!document.querySelector('.ap-toast')")
+    time.sleep(2.5)
+    lv2 = tab.ev("[!!document.querySelector('.ap-toast'), (document.querySelector('.sub-live') || {}).textContent]")
+    check("[20] …and empties on its own clock, though an offer replaced its toast (verify r2 F11)", offer and lv2 == [True, ""], (offer, lv2))
     tab.close()
     # a phone on its side keeps the scrolling column
     tab, _r = render("u1", "android", "en", size=(844, 390, True))
