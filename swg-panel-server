@@ -3824,6 +3824,14 @@ def turn_run_cap(kind, rec, snap, iface):
     (_csqtt_run_line) and its record's: during a pending or failed switch the record names the line asked for, and a user
     admitted now must still have an address once the switch lands (2.1 → 2.5 is 249 → 248)."""
     rec = rec if isinstance(rec, dict) else {}
+    if kind == "wdtt":
+        # The same for a WDTT fork switch (1.8.12 item 23): the record names the fork asked for, the report the one that
+        # runs — and a switch that fails leaves the server on the one that runs, with every user admitted meanwhile.
+        run = next((str(r.get("fork") or "amurcanov") for r in ((snap or {}).get("wdtt") or [])
+                    if isinstance(r, dict) and r.get("iface") == iface), None)
+        if run and run != (rec.get("fork") or "amurcanov"):
+            caps = [c for c in (turn_cap(kind, rec), turn_cap(kind, dict(rec, fork=run))) if c is not None]
+            return min(caps) if caps else None
     if kind != "csqtt":
         return turn_cap(kind, rec)
     caps = [c for c in (turn_cap(kind, rec), turn_cap(kind, dict(rec, line=_csqtt_run_line(snap, iface, rec)))) if c is not None]
@@ -10423,13 +10431,22 @@ def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk="", rid=None):
     return out
 
 
-def _wdtt_reply(roster, nodes, node_id, fallback_vk="", rid=None):
+def _wdtt_reply(roster, nodes, node_id, fallback_vk="", rid=None, snap=None):
     """The reply["wdtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED
-    FROM THE ROSTER (never the node store — passwords are roster-owned)."""
+    FROM THE ROSTER (never the node store — passwords are roster-owned).
+
+    FORK SWITCH (1.8.12 item 23): `snap` is THIS sync's snapshot. A server the node reports is sent the record's fork
+    only if the node lists that fork in `wdtt_forks`; otherwise the fork it reports, and that fork's build. An older
+    noded sends no list, so it gets exactly the reply it got before: it would act on a new fork through the drift path,
+    with no check that it stays up and no way back. While a switch waits or has failed, `cur_ver` names the build of the
+    fork the server still runs."""
     insts = ((nodes.get(node_id) or {}).get("wdtt")) or {}
     if not insts:
         return {}
     derived = desired_wdtt_for_node(roster, nodes, node_id, fallback_vk, rid)
+    _forks = (snap or {}).get("wdtt_forks")
+    _forks = _forks if isinstance(_forks, list) else ()
+    _rows = {r["iface"]: r for r in ((snap or {}).get("wdtt") or []) if isinstance(r, dict) and r.get("iface")}
     restore = (nodes.get(node_id) or {}).get("wdtt_restore") or {}
     recreate = (nodes.get(node_id) or {}).get("wdtt_recreate") or {}
     out = {}
@@ -10445,12 +10462,19 @@ def _wdtt_reply(roster, nodes, node_id, fallback_vk="", rid=None):
         # Desired build VERSION: a rollback hold for this (node, iface) pins an older version; otherwise the fork's
         # current published build. The node swaps its shared per-fork binary to match + stamps/reports it.
         _wfork = (inst.get("fork") or "amurcanov")
+        _run = str(_rows[iface].get("fork") or "amurcanov") if iface in _rows else _wfork
+        if _run != _wfork and _wfork not in _forks:
+            merged["fork"] = _wfork = _run                  # this node can't switch it there: it keeps what it runs
         if _wfork in WDTT_BUILDS:
             # The binary is shared per fork on a node, so the version/hold is per (node, fork) — every instance of the
             # fork moves together (a per-iface hold would make two same-fork instances flap the shared binary).
             _wver = _turn_hold_get(rid or node_id, "wdtt:" + _wfork) or _wdtt_current_version(_wfork)   # B runs A's held build
             if _wver:
                 merged["ver"] = _wver
+        if _run != _wfork and _run in WDTT_BUILDS:
+            _rv = _turn_hold_get(rid or node_id, "wdtt:" + _run) or _wdtt_current_version(_run)
+            if _rv:
+                merged["cur_ver"] = _rv
         fresh = iface in recreate                         # operator chose to abandon the vaulted identity → don't hold
         if fresh:
             # "Recreate fresh" means: stop trying to take over an existing identity, mint a new one. Leaving the
@@ -34776,6 +34800,26 @@ def api(method, path, qs, body, deps):
                 if not no_ctrl(v):
                     return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 inst[k] = v
+        # FORK SWITCH (1.8.12 item 23): an existing server's fork moves ONLY on the switch path (`fork_switch`). Every save
+        # of an older SPA sends `fork` — the one the server RUNS, read from its report — and taken as a change, a title
+        # edit while a switch waits would switch it back. A switch keeps the users, links and apps (one wire for every
+        # WDTT fork); its extra flags are the old binary's and go, and RAW goes with a target that has none. The node
+        # checks the target stays up and puts the server back by itself if not. A failover copy never gets here
+        # (failover_ro_refusal): it follows its primary's fork (FO_WDTT_FOLLOW).
+        _fsw = ""
+        if _existing is not None:
+            _ofork = _existing.get("fork") or "amurcanov"
+            inst["fork"] = _ofork
+            _to = (body.get("fork") or "").strip()
+            if body.get("fork_switch") and _to and _to != _ofork:
+                _tl = (TURN_SERVERS.get(_to) or {}).get("label") or _to
+                if _to not in WDTT_BUILDS:
+                    return 400, {"ok": False, **perr("No published build for {v1} yet, so a node has nothing to install. Pick another fork.", v1=_tl), "code": "bad_request"}
+                if _to not in ((((deps.get("node_snaps") or {}).get(nid) or {}).get("wdtt_forks")) or []):
+                    return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \"update node to …\")", v1=_tl), "code": "node_too_old"}
+                inst["fork"], inst["params"], _fsw = _to, "", _ofork + " → " + _to
+                if not (TURN_SERVERS.get(_to) or {}).get("raw"):
+                    body = {**body, "raw": False}        # the RAW step below then drops raw_port / raw_iface / raw_addr
         if "bind_ip" in body:                            # Listen on: an address of the box, or "" = Auto (the node decides)
             if not bind_ip_ok(body.get("bind_ip")):
                 return 400, {"ok": False, "error": "Listen on must be an IPv4 address of this node, or Auto", "code": "bad_request"}
@@ -34924,6 +34968,8 @@ def api(method, path, qs, body, deps):
         nodes[nid].setdefault("wdtt", {})[iface] = inst
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Set WDTT instance", iface)
+        if _fsw:
+            ev_append(roster_path, "node", nid, "Switch WDTT fork", iface + ": " + _fsw)
         if _raw_moved:
             ev_append(roster_path, "node", nid, "Moved RAW-IP", "%s → %s" % (_raw_moved, iface))
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "raw_moved": _raw_moved,
@@ -39465,7 +39511,7 @@ class Handler(BaseHTTPRequestHandler):
         # config generator puts in the link. Read live from deps (kept current on every settings save), not
         # captured at boot, so changing the fallback takes effect on the next sync rather than the next restart.
         _fb_vk = str(((Handler.deps.get("panel_settings") or {}) if Handler.deps else {}).get("vk_link") or "")
-        _wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)
+        _wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid, snap)
         _csqtt_des = _csqtt_reply(roster, nodes, nid, _fb_vk, snap, _rid)
         # Take over a wg/awg server running in ANOTHER container (Amnezia). One-shot, like the adoption
         # markers above: the node stops that container and stands the same server up natively, then reports

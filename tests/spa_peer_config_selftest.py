@@ -262,6 +262,7 @@ try:
                     back[t["type"]].setdefault(t["iface"], {})[pw] = {"ip": ip, "online": False, "rx_speed": 0, "tx_speed": 0}
         return {"hostname": "m-node", "generated_at": now, "noded_version": VERSION, "kind": "baremetal", "interfaces": ifs,
                 "turn_proxies": [], "node_ips": ["203.0.113.9"], "node_ifaces": ["eth0"], "lans": [], "csqtt_lines": ["2.1", "2.5"],
+                "wdtt_forks": ["amurcanov", "ildarmaga", "qwdtt", "wdttplus", "xxcipherx"],   # 1.8.12 item 23: it can switch a fork
                 "csqtt": [{"iface": "csqtt25", "fork": "csqtt", "line": "2.5", "port": 53478, "passwords": back["csqtt"].get("csqtt25", {})}],
                 "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "port": 53479, "passwords": back["wdtt"].get("wdtt1", {})}],
                 "health": {"cpu_pct": 12, "mem_used": 1 << 30, "mem_total": 4 << 30, "disk_used": 10 << 30, "disk_total": 40 << 30, "ncpu": 2, "uptime": 99999}}
@@ -688,7 +689,8 @@ try:
 
     print("\n[13] Peer targets' Deploy is one call, whole or nothing")
     with guard("[13]"):
-        must(call("POST", "/api/wdtt/set", {"node": NID, "iface": "wdtt1", "listen": "0.0.0.0:53479", "wg_addr": "10.10.0.1/30", "fork": "qwdtt"}),
+        must(call("POST", "/api/wdtt/set", {"node": NID, "iface": "wdtt1", "listen": "0.0.0.0:53479", "wg_addr": "10.10.0.1/30", "fork": "qwdtt",
+                                            "fork_switch": True}),   # a fork moves only on the switch path (1.8.12 item 23)
              "wdtt1 down to a pool of 1 (held by [2]'s peer)")
         uid, pid = new_peer("mover", ["awg1"])
         reload()

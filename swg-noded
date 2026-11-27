@@ -21057,6 +21057,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
     snap["csqtt_lines"] = list(CSQTT_KNOWN_LINES)    # the csqtt lines this noded can run — the panel sends no other line here (docs/CSQTT-LINES-PLAN.md G1)
+    snap["wdtt_forks"] = sorted(WDTT_FORK_OWNER)     # the WDTT forks this noded can switch a server to — the panel asks for no other (item 23)
     snap["csqtt_ar_pw"] = 1                          # desired.json carries a password's own App routing (an exception) — the panel's card reads it
     # ⚠️ An instance WE hold that the panel does not claim. Nothing will ever start it: the node only runs
     # what the panel desires, and removals are explicit — so it sits installed, stopped and ownerless, while
@@ -25046,7 +25047,8 @@ def _wdtt_write_ver(fork, ver):
         os.replace(tmp, p)
 
 def _wdtt_fork_ifaces(fork, want):   # every desired iface running THIS fork (a version swap restarts them all — shared binary)
-    return [i for i, inst in (want or {}).items() if _wdtt_fork(inst) == fork]
+    # RUNNING, by its `server` link: a server whose fork switch waits (item 23) is asked for another fork than it runs
+    return [i for i, inst in (want or {}).items() if (_wdtt_running_fork(i) or _wdtt_fork(inst)) == fork]
 
 def _wdtt_update_binary(inst, ver, ifaces):
     """Swap the shared per-fork binary to a different published VERSION (same fork → same password-store format, so
@@ -25615,6 +25617,214 @@ def _wdtt_reset_devices(iface, fork):
     else:
         host_sh("ip link del " + shlex.quote(iface) + " 2>/dev/null || true")   # gone → server recreates it fresh on restart
 
+# ── FORK SWITCH (1.8.12 item 23, docs/RELEASE-1.8.12-PLAN.md "Switching a WDTT server's fork") ──────────────────────
+# Every WDTT fork speaks one wire, reads the same wg-keys.dat and keys a user's device "pw:<password>" (-fixed-config),
+# so a switch keeps the interface, the identity, the links and the apps. The four JSON forks share passwords.json, which
+# stays; ildarmaga keeps the same rows in panel.db, so a switch to or from it carries them (_wdtt_store_carry) — else a
+# device online at the switch would hold keys its new server never had. The running fork is the one the `server` link
+# points into; the record's `fork` follows it, and moves only once a switch is verified. csqtt's line switch is the model.
+_WDTT_STORE_FILES = ("passwords.json", "passwords.json.previous", "panel.db", "panel.db-wal", "panel.db-shm")
+
+def _wdtt_running_fork(iface):
+    """The fork this server's `server` link points into (WDTT_BIN_DIR/<fork>/<arch>/wdtt-server), or "" when it has none."""
+    try:
+        rel = os.path.relpath(os.readlink(_wdtt_dir(iface) + "/server"), WDTT_BIN_DIR)
+    except (OSError, ValueError):
+        return ""
+    f = rel.split("/", 1)[0]
+    return f if f in WDTT_FORK_OWNER else ""
+
+def _wdtt_cut_path(iface): return _wdtt_dir(iface) + "/.switching"
+def _wdtt_cut_mark(iface, frm):
+    with open(_wdtt_cut_path(iface), "w") as f: f.write(frm)
+def _wdtt_cut_clear(iface):
+    with contextlib.suppress(FileNotFoundError): os.remove(_wdtt_cut_path(iface))
+def _wdtt_cut_fork(iface):
+    """The fork a switch was leaving when noded died mid-way (its marker is still there), or ""."""
+    try:
+        with open(_wdtt_cut_path(iface)) as f:
+            k = f.read().strip()
+    except OSError:
+        return ""
+    return k if k in WDTT_FORK_OWNER else ""
+
+def _wdtt_stop_one(iface):
+    if NODE_KIND == "docker":
+        _wdtt_docker_stop(iface)
+    else:
+        host_sh("systemctl stop " + shlex.quote(_wdtt_svc(iface)) + " >/dev/null 2>&1")
+def _wdtt_start_one(inst, enable=True):
+    if NODE_KIND == "docker":
+        return _wdtt_docker_start(inst)
+    svc = _wdtt_svc(inst["iface"])                # enable=False: a run that must not outlive a reboot (a stopped server's)
+    host_sh((sc_enable_now(svc) if enable else "systemctl start " + shlex.quote(svc)) + " >/dev/null 2>&1")
+    return ""
+def _wdtt_main_pid(iface):
+    if NODE_KIND == "docker":
+        return _wdtt_docker_pid(iface) or 0
+    out = (host_sh("systemctl show -p MainPID --value " + shlex.quote(_wdtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip()
+    return int(out) if out.isdigit() else 0
+def _wdtt_verify_stable(iface):
+    """Up, and STILL the same process 5 s later with its interface — _csqtt_verify_stable's rule: a Type=simple unit
+    reads "active" the instant it is exec'd, so a build that dies a second later passes _wdtt_verify, and the fallback,
+    which exists for exactly that build, would never fire."""
+    err = "" if NODE_KIND == "docker" else _wdtt_verify(_wdtt_svc(iface))   # docker: _wdtt_docker_start waited 1.5 s already
+    if err:
+        return err
+    pid = _wdtt_main_pid(iface)
+    time.sleep(5)
+    if not pid or _wdtt_main_pid(iface) != pid:
+        return "the server exited within seconds of starting — " + (log_no_detail() or "check `swg-logs turn " + iface + "`")
+    if not os.path.isdir("/sys/class/net/" + iface):
+        return "the server is running but never brought up its interface " + iface
+    return ""
+
+def _wdtt_put_fork(inst, fork):
+    """Point this server at `fork`: its `server` link (atomic repoint), its wdtt.env and, bare-metal, its unit — all as
+    `fork` runs them (its flag tail; `-dns` only if its binary takes it). Docker renders the argv at start. Raises."""
+    iface = inst["iface"]; cfgdir = _wdtt_dir(iface); it = dict(inst, fork=fork)
+    _csqtt_relink(cfgdir + "/server", _wdtt_bin_shared(fork))
+    text = _wdtt_env_text(it)                                 # render FIRST: opening for write empties the file
+    with open(cfgdir + "/wdtt.env.tmp", "w") as f: f.write(text)
+    os.replace(cfgdir + "/wdtt.env.tmp", cfgdir + "/wdtt.env")
+    if NODE_KIND != "docker":
+        with open(_wdtt_unit_path(iface), "w") as f: f.write(_wdtt_unit_text(iface, cfgdir + "/server", cfgdir, fork))
+        host_sh("systemctl daemon-reload >/dev/null 2>&1")
+
+def _wdtt_paneldb_ready(dbp):
+    import sqlite3
+    try:
+        c = sqlite3.connect("file:" + dbp + "?mode=ro", uri=True, timeout=1)
+        try:
+            return bool(c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wdtt_devices'").fetchone())
+        finally:
+            c.close()
+    except Exception:
+        return False
+
+def _wdtt_store_carry(inst, frm, to):
+    """Carry the device rows ("pw:<password>" → ip + WireGuard keys) into the store `to` reads; the server is stopped and
+    already points at `to`. The JSON forks read one passwords.json, which stays — only completed with the top-level keys
+    wdttplus refuses to start without (main_password, passwords, devices: qwdtt saves no main_password; its value comes
+    from -password at every start, so an empty one is all the file needs). '' or why not."""
+    iface = inst["iface"]; cfgdir = _wdtt_dir(iface); js = cfgdir + "/passwords.json"; dbp = cfgdir + "/panel.db"
+    if frm != "ildarmaga" and to != "ildarmaga":
+        with contextlib.suppress(FileNotFoundError):
+            with open(js) as f: d = json.load(f)
+            if isinstance(d, dict) and not all(k in d for k in ("main_password", "passwords", "devices")):
+                d = {"main_password": "", "passwords": {}, "devices": {}, **d}
+                fd = os.open(js + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f: json.dump(d, f)
+                os.replace(js + ".tmp", js)
+        return ""
+    if frm == to:
+        return ""
+    import sqlite3
+    if frm == "ildarmaga":
+        rows = []
+        if os.path.exists(dbp):
+            c = sqlite3.connect(dbp, timeout=2)
+            try: rows = c.execute("SELECT device_id, ip, priv_key, pub_key FROM wdtt_devices").fetchall()
+            finally: c.close()
+    else:
+        devs = {}
+        with contextlib.suppress(FileNotFoundError):
+            with open(js) as f: devs = (json.load(f) or {}).get("devices") or {}
+        rows = [(k, str(d.get("ip") or ""), str(d.get("priv_key") or ""), str(d.get("pub_key") or ""))
+                for k, d in devs.items() if isinstance(d, dict)]
+    for n in _WDTT_STORE_FILES:              # the store the other fork wrote goes (its copy is in the .bak): a stale one never returns
+        with contextlib.suppress(FileNotFoundError): os.remove(cfgdir + "/" + n)
+    if frm == "ildarmaga":                   # → JSON: the passwords themselves arrive from desired.json at start
+        fd = os.open(js + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"main_password": "", "passwords": {},
+                       "devices": {r[0]: {"device_id": r[0], "ip": r[1], "priv_key": r[2], "pub_key": r[3]} for r in rows}}, f)
+        os.replace(js + ".tmp", js)
+        return ""
+    if not rows:
+        return ""                            # nothing to carry: ildarmaga makes its store on its first real start
+    # → ildarmaga: only ildarmaga itself writes its schema (ensurePanelDB, for a missing file), so it starts once to make
+    # it — on a port no client knows, RAW off: on its real address, an app starting in those seconds would be handed a new
+    # "pw:" device that the rows below then overwrite, keeping keys this server no longer has.
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as s:
+        s.bind(("127.0.0.1", 0)); seed_port = s.getsockname()[1]
+    seed = {k: v for k, v in inst.items() if k not in ("raw_port", "raw_iface", "raw_addr", "bind_ip")}
+    seed.update(fork=to, listen="127.0.0.1:%d" % seed_port)
+    _wdtt_put_fork(seed, to)
+    err = _wdtt_start_one(seed, enable=False)   # never enables: a server the operator stopped stays off at the next boot
+    until = time.monotonic() + 5
+    while not err and not _wdtt_paneldb_ready(dbp) and time.monotonic() < until:
+        time.sleep(0.25)
+    _wdtt_stop_one(iface)
+    _wdtt_put_fork(inst, to)                 # its real address and RAW back
+    if err or not _wdtt_paneldb_ready(dbp):
+        return err or "ildarmaga did not create its store within 5 s of its first start"
+    c = sqlite3.connect(dbp, timeout=2)
+    try:
+        c.executemany("INSERT OR REPLACE INTO wdtt_devices (device_id, ip, priv_key, pub_key) VALUES (?,?,?,?)", rows)
+        c.commit()
+    finally:
+        c.close()
+    return ""
+
+def _wdtt_back_to(inst, frm):
+    """Put the server back on `frm` with the store it had: the copy its switch took. '' on success."""
+    iface = inst["iface"]
+    _wdtt_stop_one(iface)
+    _csqtt_store_restore(_wdtt_dir(iface), "wdtt", _WDTT_STORE_FILES)
+    _wdtt_put_fork(inst, frm)
+    _wdtt_cut_clear(iface)
+    if inst.get("stopped"):
+        return ""
+    return _wdtt_start_one(dict(inst, fork=frm)) or ("" if NODE_KIND == "docker" else _wdtt_verify(_wdtt_svc(iface)))
+
+def _wdtt_switch_fork(inst, frm, to, ver, siblings=()):
+    """Move one server from fork `frm` to `to` (_csqtt_switch_line's shape). (err, memo): ("", False) switched;
+    (err, False) nothing changed (a fetch that may work next sync); (err, True) `to` would not run, the server is back
+    on `frm` with `frm`'s store, and this (fork, build) is not retried on the node's own.
+    ORDER: stop, copy the store, mark, repoint + the target's files, carry, start, check. A crash after the mark leaves the
+    marker, and the next pass rolls the switch back (_wdtt_back_to); it is never resumed.
+    `siblings` = the servers already running `to`: when its slot must change build, they move onto it too."""
+    iface = inst["iface"]
+    if not ver:
+        return ("the panel named no " + to + " build to run", False)
+    tgt = _wdtt_bin_shared(to)
+    if not os.path.exists(tgt) or _wdtt_installed_ver(to) != ver:
+        others = [i for i in siblings if i != iface]
+        if others and os.path.exists(tgt):
+            e = _wdtt_update_binary(dict(inst, fork=to, iface=others[0]), ver, others)
+        else:
+            e = _wdtt_fetch_bin(to, inst, tgt, ver=ver)
+            if not e and os.path.exists(tgt):
+                _wdtt_write_ver(to, ver)
+        if e or not os.path.exists(tgt):
+            return (e or "WDTT " + to + " binary missing after a reportedly successful fetch", False)
+        with contextlib.suppress(Exception): os.chmod(tgt, 0o755)
+    _wdtt_stop_one(iface)
+    try:
+        _csqtt_store_copy(_wdtt_dir(iface), "wdtt", _WDTT_STORE_FILES)
+    except Exception as e:
+        # Nothing moved (the link is still on `frm`): start it there, never "restore" a partial copy. Memoed — a full disk
+        # would otherwise stop and start it every sync; the operator's Restart retries once it is fixed.
+        _wdtt_start_one(inst) if not inst.get("stopped") else None
+        return ("couldn't copy its store before switching (" + str(e)[:120] + ")", True)
+    try:
+        _wdtt_cut_mark(iface, frm)
+        _wdtt_put_fork(inst, to)
+        err = _wdtt_store_carry(inst, frm, to)
+    except Exception as e:
+        err = "couldn't move its store over (" + str(e)[:120] + ")"
+    if not err and inst.get("stopped"):
+        _wdtt_cut_clear(iface)
+        return ("", False)                    # deliberately down: it starts on `to` when it is started
+    err = err or _wdtt_start_one(dict(inst, fork=to)) or _wdtt_verify_stable(iface)
+    if not err:
+        _wdtt_cut_clear(iface)
+        return ("", False)
+    log(LOG_WARNING, "wdtt %s: fork %s (%s) would not run — back on %s: %s", iface, to, ver, frm, err)
+    werr = _wdtt_back_to(inst, frm)
+    return (err + ("" if not werr else " — and back on " + frm + " it did not come up either: " + werr), True)
+
 def _wdtt_desired_changed(iface, passwords):
     """True if the panel's desired password set differs from what's on disk (so we only rewrite+SIGHUP on change)."""
     try:
@@ -25894,6 +26104,7 @@ def reconcile_wdtt(want, remove=None):
         if not (have.get(iface) or {}).get("panel_managed"):
             continue                                          # never acknowledged by the panel → not ours to delete
         _wdtt_remove(iface); have.pop(iface, None); res["changed"] += 1
+    _sw_pass = [False]                     # one fork switch per pass: each holds the pass for its ≥ 5 s check (item 23)
     for iface, req in want.items():
         try:
             inst = dict(req or {}); inst["iface"] = iface
@@ -25993,7 +26204,27 @@ def reconcile_wdtt(want, remove=None):
             if not pw:
                 pw = _gen_wdtt_password()
             inst["password"] = pw; inst.pop("await_restore", None)
+            # FORK (item 23). `_cur` = the fork that RUNS: a crash-cut switch's (its marker), else its `server` link's, else
+            # the record's. `_wfork` = the asked one AS SENT: _wdtt_fork() reads a fork this node does not know as amurcanov,
+            # which would switch the server to amurcanov. The record keeps `_cur` until a switch is verified, so the drift
+            # checks, Docker's argv, the version updates and the supervision all read what runs (the latent hot-swap: the
+            # record used to take the asked fork at once, and the next sync's drift path swapped it unchecked).
+            _cutf = _wdtt_cut_fork(iface)
+            _wfork = (inst.get("fork") or "amurcanov").strip()
+            _cur = _cutf or _wdtt_running_fork(iface) or (_wdtt_fork(prev) if prev else _wfork)
+            _ff = prev.get("fork_failed") or {}
+            if (_wfork != _cur and _ff.get("fork") == _wfork and _ff.get("ver") == (inst.get("ver") or "").strip()
+                    and inst.get("restart") == prev.get("restart")):
+                inst["fork_failed"] = _ff    # would not run here: waits for a new build, the operator's Restart, or a pick back
+            _switched = False                # this pass switched or rolled it back — it restarted it already
             if not _wdtt_present(iface):
+                if _cutf:                    # cut, and its unit or link gone too (a NixOS reboot lost /run): its store back, then
+                    _wdtt_stop_one(iface)    # re-install the fork it was leaving (a process can outlive its deleted binary)
+                    _csqtt_store_restore(_wdtt_dir(iface), "wdtt", _WDTT_STORE_FILES)
+                _ifk = _cutf or (_cur if inst.get("fork_failed") else _wfork)   # nothing runs: install the asked one
+                if _ifk != _wfork:
+                    inst["fork"] = _ifk
+                    inst["ver"] = (inst.get("cur_ver") or "").strip() or _wdtt_installed_ver(_ifk)
                 # Never over a server we don't run: ours would fight it for the port and the name. Asked of the process
                 # table, not the interface — a restarted foreign server can be running with its interface already pulled.
                 _fw = _foreign_on(lambda: _wdtt_foreign_pid(iface))   # docker freshness: see _foreign_on
@@ -26013,11 +26244,51 @@ def reconcile_wdtt(want, remove=None):
                 err = _wdtt_install(inst)
                 if err:
                     res["errors"].append(iface + ": " + err); continue
+                if _cutf:
+                    _wdtt_cut_clear(iface)
                 res["changed"] += 1
             else:
-                _want_ver = (inst.get("ver") or "").strip()   # panel-published build version → swap the shared binary if it moved
+                if (inst.get("fork") or "amurcanov") != _cur:
+                    inst["fork"] = _cur      # what runs — the asked fork only once a switch is verified
+                _want_ver = (inst.get("ver") or "").strip()
+                if _cutf:
+                    # Never resumed: what ran after the cut was never checked, and the store it may have half-moved is not
+                    # what `_cutf` starts on. A still-asked switch runs again, whole, on a later pass.
+                    _sw_pass[0] = _switched = True
+                    err = _wdtt_back_to(inst, _cutf)
+                    log(LOG_WARNING, "wdtt %s: a switch away from %s was cut by a restart — rolled back", iface, _cutf)
+                    if err:
+                        res["errors"].append(iface + ": rolled back to " + _cutf + ", but: " + err)
+                elif _wfork != _cur and _wfork not in WDTT_FORK_OWNER:
+                    res["errors"].append(iface + ": this node doesn't know the WDTT fork '" + _wfork[:24] + "' — update the node "
+                                         "(its page offers \"update node to …\"), then the server switches on the next sync. "
+                                         "Known here: " + ", ".join(sorted(WDTT_FORK_OWNER)) + ".")
+                elif _wfork != _cur and not inst.get("fork_failed") and (
+                        _sw_pass[0] or time.monotonic() < _CSQTT_FETCH_LATER.get(("wdtt:" + _wfork, _want_ver), 0)):
+                    pass                     # one switch per pass; a build whose fetch failed waits CSQTT_FETCH_RETRY_S (NR-4)
+                elif _wfork != _cur and not inst.get("fork_failed"):
+                    err, _memo = _wdtt_switch_fork(inst, _cur, _wfork, _want_ver, _wdtt_fork_ifaces(_wfork, want))
+                    # The pass budget is spent only by a RESTART (switched, or put back); a failed fetch restarted nothing.
+                    _sw_pass[0] = _switched = (not err) or _memo
+                    if err and not _memo:
+                        _CSQTT_FETCH_LATER[("wdtt:" + _wfork, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S
+                    if not err:
+                        inst["fork"] = _wfork; inst.pop("fork_failed", None)
+                        log(LOG_INFO, "wdtt %s: switched %s → %s (%s)", iface, _cur, _wfork, _want_ver)
+                        res["changed"] += 1
+                    else:
+                        if _memo:
+                            inst["fork_failed"] = {"fork": _wfork, "ver": _want_ver, "why": err[:200]}
+                        # no `continue`: it still runs `_cur`, and its passwords and settings keep converging there
+                        res["errors"].append(iface + ": couldn't switch to " + _wfork + ": " + err)
+                if (inst.get("fork") or "amurcanov") != _wfork:
+                    # the build the panel names for what RUNS while a switch waits or failed — so it still gets its own
+                    # fork's updates and rollbacks, and any fetch below fills the running fork's slot
+                    inst["ver"] = _want_ver = (inst.get("cur_ver") or "").strip()
                 _fk = _wdtt_fork(inst); _inst_ver = _wdtt_installed_ver(_fk)
-                if _want_ver and not _inst_ver and os.path.exists(_wdtt_bin_shared(_fk)):
+                if _switched:
+                    pass                     # the switch (or its rollback) already restarted it onto what it runs now
+                elif _want_ver and not _inst_ver and os.path.exists(_wdtt_bin_shared(_fk)):
                     _wdtt_write_ver(_fk, _want_ver)           # first sync after upgrade: the running (unversioned) binary IS the current build → just stamp it, no re-fetch/restart
                 elif _want_ver and _want_ver != _inst_ver and time.monotonic() >= _CSQTT_FETCH_LATER.get(("wdtt:" + _fk, _want_ver), 0):
                     err = _wdtt_update_binary(inst, _want_ver, _wdtt_fork_ifaces(_fk, want))
@@ -26029,7 +26300,7 @@ def reconcile_wdtt(want, remove=None):
                 # a store-based OS needs, the restart backoff) otherwise never reaches an instance that already
                 # exists, and a broken one crash-loops for ever because `present` is all reconcile looks at.
                 # Rendered-text comparison, so it fires once per real change and not on every 5s sync.
-                _drifted = _wdtt_unit_drifted(iface, inst, prev)
+                _drifted = not _switched and _wdtt_unit_drifted(iface, inst, prev)
                 if _drifted and inst.get("stopped"):
                     # deliberately down: the file gets the fix, the server stays stopped (see _wdtt_write_unit)
                     _e = _wdtt_write_unit(iface, inst)
@@ -26037,7 +26308,7 @@ def reconcile_wdtt(want, remove=None):
                         res["errors"].append(iface + ": " + _e)
                     else:
                         res["changed"] += 1
-                elif (_drifted or _wdtt_params_changed(prev, inst)   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
+                elif not _switched and (_drifted or _wdtt_params_changed(prev, inst)   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
                       or (not inst.get("stopped") and _wdtt_env_drifted(iface, inst, prev))   # a stopped one takes it at its next start
                       or (not inst.get("stopped") and bind_heal_due("wdtt:" + iface, _wdtt_dir(iface) + "/wdtt.env", inst.get("listen") or ""))):
                     # subnet MOVED → drop stale device-IP bindings first. Requires a previous subnet to have moved
@@ -26057,7 +26328,7 @@ def reconcile_wdtt(want, remove=None):
                     res["changed"] += 1
             if bool(inst.get("stopped")) != bool(prev.get("stopped")):
                 _wdtt_apply_stopped(iface, bool(inst.get("stopped")), inst); res["changed"] += 1
-            if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped"):
+            if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped") and not _switched:
                 if NODE_KIND == "docker":
                     _wdtt_docker_start(inst)
                 else:
@@ -26310,6 +26581,7 @@ def wdtt_snapshot():
                     "bind_ip": inst.get("bind_ip", ""),   # the operator's Listen on, so a panel mirroring this record keeps it
                     "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
                     "server_pub": srvpub, "stopped": bool(inst.get("stopped")), "fork": inst.get("fork", "amurcanov"),
+                    **({"fork_failed": inst["fork_failed"]} if inst.get("fork_failed") else {}),   # a switch put back (item 23)
                     "raw_port": (inst.get("raw_port") or "") if _rawon else "",   # RAW listener (empty = off)
                     "raw_iface": _rawinfo[1] if _rawon else "", "raw_addr": _rawinfo[2] if _rawon else "",
                     "version": _wdtt_installed_ver(inst.get("fork", "amurcanov")),   # installed build version (version board + rollback)
@@ -26890,22 +27162,22 @@ def _csqtt_verify(iface):
 # it: the panel owns every password and desired.json re-creates them on whichever line runs.
 _CSQTT_STORE_FILES = ("csqtt.db", "csqtt.db-wal", "csqtt.db-shm", "passwords.json", "passwords.json.imported")
 def _csqtt_store_bak(cfgdir, line): return cfgdir + "/.store-" + line + ".bak"
-def _csqtt_store_copy(cfgdir, line):
+def _csqtt_store_copy(cfgdir, line, files=_CSQTT_STORE_FILES):
     """The store as `line` leaves it → its .bak dir (replacing the older copy). Run with the server STOPPED: a WAL
-    store copied under a live writer is not a store."""
+    store copied under a live writer is not a store. `files`: WDTT's fork switch passes its own store's names."""
     bak = _csqtt_store_bak(cfgdir, line)
     shutil.rmtree(bak, ignore_errors=True); os.makedirs(bak, exist_ok=True)
-    for n in _CSQTT_STORE_FILES:
+    for n in files:
         if os.path.exists(cfgdir + "/" + n):
             shutil.copy2(cfgdir + "/" + n, bak + "/" + n)
-def _csqtt_store_restore(cfgdir, line):
+def _csqtt_store_restore(cfgdir, line, files=_CSQTT_STORE_FILES):
     """Put `line`'s copy back — the files the other line wrote go first, so its -wal can never replay onto it."""
     bak = _csqtt_store_bak(cfgdir, line)
     if not os.path.isdir(bak):
         return
-    for n in _CSQTT_STORE_FILES:
+    for n in files:
         with contextlib.suppress(FileNotFoundError): os.remove(cfgdir + "/" + n)
-    for n in _CSQTT_STORE_FILES:
+    for n in files:
         if os.path.exists(bak + "/" + n):
             shutil.copy2(bak + "/" + n, cfgdir + "/" + n)
 def _csqtt_relink(binp, target):   # atomic repoint: a crash leaves the old link or the new one, never none

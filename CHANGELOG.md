@@ -101,6 +101,15 @@ earlier releases predate the changelog — see the git history. · Русски�
   for a panel whose inbound traffic is limited or paid for. A node older than the panel sends it uncompressed, and a
   node whose compressed uploads are refused on the way (a proxy that rewrites them) falls back to uncompressed by itself.
 
+- **A WDTT server can change its fork after it is created.** The WDTT-proxy sheet has a Server fork field: amurcanov,
+  ildarmaga, Ivan4537 (WDTT-Plus) and SpaceNeuroX (qWDTT). Every WDTT fork speaks the same protocol, so a switch keeps
+  the server's users, passwords, links, address and key — nobody re-imports anything. Before it runs, the sheet says how
+  many users the server has and what a device connected at that moment will see: on amurcanov and qWDTT it carries on by
+  itself within about half a minute; ildarmaga and WDTT-Plus need the VPN turned off and on once, as after any restart of
+  theirs. It also names the extra flags, and RAW mode, that go with the old fork. The node checks that the new fork
+  stays up and goes back to the old one by itself if it does not, and the card says why. A node is updated first; until
+  then the field says so. A fork changed by a direct API call is no longer applied to a running server unchecked.
+
 ### Changed
 
 - **Every device gets its incoming torrent port on a big fleet too.** A device's port was unique across the whole fleet,

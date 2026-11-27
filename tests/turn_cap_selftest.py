@@ -24,7 +24,7 @@
       record's line and the running one (F9); [5] a dead link's uncounted holders spread over the pool by their own count,
       the counted ones pick by the load alone (F3); the gate's own requests skip any proxy (F15)
   [6] (scale-k6b F30) a save that makes a running pool smaller than its users is refused (409 turn_shrink, nothing written):
-      /api/wdtt/set moving an unknown fork's 301 users to amurcanov's 249; a title edit of a full server, a pool that grows
+      /api/wdtt/set switching an unknown fork's 301 users to amurcanov's 249 (a fork switch, item 23); a title edit of a full server, a pool that grows
       and a pool that still holds everyone go through; csqtt 2.1 → 2.5 with 249 users refused, with 248 not; a server already
       over its pool from before K6 is never refused an edit that does not shrink it
 
@@ -192,8 +192,15 @@ def run_checks(src):
             ok(code == 200, "[2] a server with room takes one", (code, r))
 
             print("[6] a save that shrinks a pool")
+            # 1.8.12 item 23: a WDTT server's fork moves only on the switch path (`fork_switch`), on a node that lists the
+            # fork — node-a reports the WDTT forks it can switch to (and nothing else, so no other count moves)
+            _tok = req("/api/nodes/rotate", {"id": "n1"})[1]["data"]["token"]
+            NOPROXY.open(urllib.request.Request("http://127.0.0.1:%d/api/node/sync" % port, data=json.dumps({"snapshot": {
+                "hostname": "node-a", "generated_at": int(time.time()), "noded_version": "t", "interfaces": {},
+                "wdtt_forks": ["amurcanov", "ildarmaga", "qwdtt", "wdttplus", "xxcipherx"]}}).encode(),
+                headers={"Content-Type": "application/json", "Authorization": "Bearer " + _tok}), timeout=30).read()
             nb, ub = open(nodes_p, "rb").read(), open(users_p, "rb").read()
-            code, r = req("/api/wdtt/set", {"node": "n1", "iface": "wdtt9", "fork": "amurcanov"})
+            code, r = req("/api/wdtt/set", {"node": "n1", "iface": "wdtt9", "fork": "amurcanov", "fork_switch": True})
             ok(code == 409 and r.get("code") == "turn_shrink" and "wdtt9 on node-a is too small — users: 301, addresses: 249. Move 52 of them" in (r.get("error") or ""),
                "[6] /api/wdtt/set: an unknown fork's 301 users onto amurcanov's 249 → refused, naming how many to move", (code, r))
             ok(open(nodes_p, "rb").read() == nb and open(users_p, "rb").read() == ub, "[6] nothing written by the refusal")

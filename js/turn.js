@@ -2019,12 +2019,16 @@ export function WdttCard({ node, w, reorder }) {
   const _wopTag = opTag(node + "|" + w.iface);
   const deleting = !!Store.ifaceGone[node + "|" + w.iface];   // the SAME server is shown twice (interface card + here) — both must say it is going
   const adopting = (nrec.wdtt_adopting || []).includes(w.iface);   // take-over in flight — same reason as the interface card
+  const sw = wdttSwitchState(node, w.iface);   // a fork switch the node has not made yet, or put back (item 23)
   const tag = deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
     : adopting ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("The node applies the take-over on its next sync")}/>`
     : converting ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
     : _wopTag ? _wopTag
     : restoring ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label="restoring…" title=${T("Restoring the vaulted server identity")}/>`
     : awaiting ? html`<${StatusTag} cls="tg-busy del" icon="shield" label=${T("Restore")} title=${T("A vaulted identity exists — restore it to bring this server back with its original key")}/>`
+    : sw.switching ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label=${T("tag|switching")} title=${T("Moving to {v1} on the node's next sync", { v1: forkLabel(sw.want) })}/>`
+    : sw.failed ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|switch failed")} title=${T("Switch to {v1} failed", { v1: forkLabel(sw.want) })} msg=${sw.failed.why || ""}/>`
+    : sw.blocked ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|update node")} title=${T("This node can't run {v1} — update the node", { v1: forkLabel(sw.want) })}/>`
     : active ? null   // healthy → no persistent tag (matches normal turn/interface cards; reuse the standard status vocabulary)
     // STOPPED BY THE OPERATOR is not a stage of starting. Without this branch the card fell through to
     // "starting" and sat there for good — beside its own Start button, which only appears when it is stopped.
@@ -2122,6 +2126,49 @@ function TurnDnsField({ node, fork, rep, dns, params }) {
     <input class=${dns.err ? "bad" : ""} value=${dns.val} disabled=${unsupported} onInput=${e => dns.set(e.target.value)} placeholder=${dflt || "1.1.1.1"} autocomplete="off"/>
     <div class=${"hint" + (dns.err ? " err" : "")}>${dns.err || hint}</div></div>`;
 }
+// ── WDTT FORK SWITCH (1.8.12 item 23) — a server moves to another author's WDTT and keeps its users, links and apps: every
+//    WDTT fork speaks one wire. The node checks the target stays up and puts the server back by itself if not; a node
+//    lists the forks it can switch to (snap.wdtt_forks), and the panel asks an older one for none.
+// The switch as the node reports it (csqttSwitchState's shape): `want` = the record's fork, `run` = the one it runs,
+// `failed` = why the node put it back, `blocked` = asked for a fork this node can't run (it never moves until updated).
+export function wdttSwitchState(node, iface) {
+  const cfg = (((Store.nodes || []).find(n => n.id === node) || {}).wdtt_cfg || {})[iface] || {};
+  const w = ((Store.stats[node] || {}).wdtt || []).filter(Boolean).find(x => x.iface === iface) || {};
+  const want = cfg.fork || "amurcanov", run = w.fork || want;
+  const failed = w.fork_failed && w.fork_failed.fork === want ? w.fork_failed : null;
+  const moving = want !== run && !failed && !!w.iface;
+  const blocked = moving && !((Store.stats[node] || {}).wdtt_forks || []).includes(want);
+  return { want, run, failed, blocked, switching: moving && !blocked };
+}
+export function WdttForkField({ node, sw, value, onChange }) {
+  const forks = enabledTurnForks(sw.want).filter(f => f.kind === "wdtt");
+  if (forks.length < 2) return null;
+  const can = (Store.stats[node] || {}).wdtt_forks || [];
+  const opts = forkOpts(forks, f => f.id === sw.want || f.id === sw.run ? "" : !(f.wdtt_versions || []).length ? T("no build published yet")
+    : !can.includes(f.id) ? T("Update this node to run {v1}.", { v1: forkLabel(f.id) }) : "");
+  return html`<div class="field"><label>${T("Server fork")}</label>
+    <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Server fork")}/>
+    <div class="hint">${T("Users keep their passwords, links and apps: every WDTT fork speaks the same protocol.")}</div></div>`;
+}
+// The forks that resume no connection that ran before ANY restart of their own — a switch, an update, a reboot: a device
+// online then reconnects once (VPN off and on) and gets its same address and key back. Measured 2026-11-27 on the published
+// ildarmaga 1.5.0-4 and wdttplus 20-1 with the qWDTT client; amurcanov 1.2.4-3 and qwdtt 1.4.4-2 resume one in about 16 s.
+const WDTT_NO_RESUME = ["ildarmaga", "wdttplus"];
+// Ask before a switch: who is affected and what they must do (works-without-user-action) — the extra flags and RAW it drops.
+export function confirmWdttSwitch(node, iface, from, to, params, rawOn, go) {
+  const n = ghostPeers(node, iface).length, fl = forkLabel(from), tl = forkLabel(to);
+  const rawGone = rawOn && !(turnForkList().find(f => f.id === to) || {}).raw;
+  pushModal(html`<${ConfirmSheet} title=${T("Switch to {v1}?", { v1: tl })} confirmLabel=${T("Switch to {v1}", { v1: tl })} warn=${true}
+    body=${!n ? T("The server restarts on {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: tl, v2: fl })
+      : WDTT_NO_RESUME.includes(to) ? T("The server restarts on {v1}. Its {v2} keep their passwords, links and apps, but a device online now must turn the VPN off and on once: {v1} does not resume a connection that was running before it restarted. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: tl, v2: plural(n, "user"), v3: fl })
+      : T("The server restarts on {v1}. Its {v2} keep their passwords, links and apps: a device online now loses the connection for up to half a minute and carries on by itself. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: tl, v2: plural(n, "user"), v3: fl })}
+    note=${params || rawGone ? html`${params ? html`<p class="hint">${T("Its extra flags ({v1}) are removed: they are {v2}'s.", { v1: params, v2: fl })}</p>` : null}${rawGone
+      ? html`<p class="hint">${T("RAW turns off: {v1} has none. A device set to RAW connects again once its app is set back to the normal mode.", { v1: tl })}</p>` : null}` : null}
+    onConfirm=${go}/>`);
+}
+const WdttForkNotices = ({ sw }) => html`
+  ${sw.blocked ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: forkLabel(sw.want), v2: forkLabel(sw.run) })}</span></div>` : null}
+  ${sw.failed ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("wdtt|Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: forkLabel(sw.want), v2: sw.failed.why || T("it did not start"), v3: forkLabel(sw.run) })}</span></div>` : null}`;
 export function WdttManageSheet({ node, w: w0 }) {
   useStore();   // live status / config while open
   const iface = w0.iface;
@@ -2135,6 +2182,9 @@ export function WdttManageSheet({ node, w: w0 }) {
   const cfg = (nrec.wdtt_cfg || {})[iface] || {};
   const fork = w.fork || cfg.fork || "amurcanov";
   const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+  const sw = wdttSwitchState(node, iface);
+  const [forkPick, setForkPick] = useState(null);   // only a pick that differs from the record is held (useCsqttPick's rule)
+  const forkTo = forkPick || sw.want, forkDirty = forkTo !== sw.want;
   const [title, setTitle] = useState(shownTitle("w|" + node + "|" + iface, (cfg.title || "").trim()));   // optional cosmetic label; honour a just-saved optimistic title
   const [params, setParams] = useState((cfg.params || "").trim());   // extra ExecStart flags (advanced)
   const [srvOpen, setSrvOpen] = useState(false);
@@ -2169,7 +2219,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   // On/off only: the port is fixed at RAW_PORT because the app dials that one number and nothing else
   // (TunnelService resolves it from a single app-wide preference and REPLACES the link's port with it), so a
   // custom port would only ever reach users who hand-edit app settings. Same reason it is one per node.
-  const rawCapable = !!(turnForkList().find(x => x.id === fork) || {}).raw;
+  const rawCapable = !!(turnForkList().find(x => x.id === forkTo) || {}).raw;   // the fork it will run once saved
   const rawCur = String(cfg.raw_port || w.raw_port || "");
   const [rawOn, setRawOn] = useState(!!rawCur);
   const rawHolder = rawOwnerOn(node, iface);          // instance already offering RAW on THIS listen address
@@ -2191,7 +2241,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const rawWant = !!(rawOn && rawCapable);
   const rawDirty = rawWant !== !!rawCur;
   const pinDirty = pin !== pinCur;   // a new bind, same links: no re-issue to confirm
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty || pinDirty;
+  const anyDirty = forkDirty || endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty || pinDirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
   const wperr = (port.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and the internal WG port must differ.")
@@ -2205,7 +2255,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     // "Listen on" only when the pick changed, as TurnManageSheet does: the field is seeded from the node's report too, which
     // trails a save — resent with every params save, a stale report re-pinned a saved Auto (q189 SPA-7). Sent before the sheet
     // closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept.
-    const r = await sheetSend(() => api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) }),
+    const r = await sheetSend(() => api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork: forkTo, ...(forkDirty ? { fork_switch: true } : {}), title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) }),
       errMsg(setMsg), setBusy);
     if (!r.ok) return;
     Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
@@ -2214,7 +2264,9 @@ export function WdttManageSheet({ node, w: w0 }) {
     if (mv) toast(T("RAW-IP moved from {v1} to {v2} — one raw listener per address.", { v1: mv, v2: iface }), "ok", 5000);
     Store.poll();
   };
-  const save = async () => {
+  // A fork switch asks first (who is affected, what goes); going back to the fork that already runs restarts nothing.
+  const save = () => forkDirty && forkTo !== sw.run ? confirmWdttSwitch(node, iface, sw.run, forkTo, (cfg.params || "").trim(), !!rawCur, save2) : save2();
+  const save2 = async () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
     if (endpointDirty) {   // endpoint / DTLS port is baked into every user's link → confirm the re-issue
       pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
@@ -2228,7 +2280,7 @@ export function WdttManageSheet({ node, w: w0 }) {
         body=${Trich("*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.", { holder: rawHolder })} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty || rawDirty || wgDirty || pinDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener / Listen on → the node rewrites the unit + restarts
+    if (forkDirty || paramsDirty || rawDirty || wgDirty || pinDirty) { doSave(); return; }   // fork / extra ExecStart flags / RAW listener / Listen on → the node rewrites the unit + restarts
     // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title), sent before the sheet closes (SPA-3)
     const r = await sheetSend(() => api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) }),
       errMsg(setMsg), setBusy);
@@ -2262,6 +2314,8 @@ export function WdttManageSheet({ node, w: w0 }) {
       <${IfaceThroughput} node=${node} iface=${iface}/>
       <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
       <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
+      ${roWhy ? null : html`<${WdttForkField} node=${node} sw=${sw} value=${forkTo} onChange=${v => setForkPick(v === sw.want ? null : v)}/>`}
+      ${forkDirty ? null : html`<${WdttForkNotices} sw=${sw}/>`}
       <div class="row2">
         <div class="field"><label>${T("Endpoint host / IP")}</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
@@ -2425,7 +2479,7 @@ export function EditWdttSheet({ node, iface }) {
     <div class="row2">
       <div class="field"><label>${T("WDTT server")}</label>
         <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${forkLabel}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
-        <div class="hint">${T("Fork is set at create. Endpoint & listen port are edited from the WDTT-proxy modal.")}</div></div>
+        <div class="hint">${T("Fork, endpoint and listen port are edited from the WDTT-proxy modal.")}</div></div>
       <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>

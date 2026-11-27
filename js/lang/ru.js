@@ -2484,8 +2484,8 @@ export const STR = {
   "Installing / starting on the node": "Устанавливаем / запускаем на ноде",
   "Connected to this WDTT server": "Подключены к этому серверу WDTT",
   "WDTT fork": "Форк WDTT",
-  "Fork is set at create. Endpoint & listen port are edited from the WDTT-proxy modal.":
-    "Форк задаётся при создании. Эндпоинт и порт прослушивания правятся в окне WDTT-прокси.",
+  "Fork, endpoint and listen port are edited from the WDTT-proxy modal.":
+    "Форк, эндпоинт и порт прослушивания правятся в окне WDTT-прокси.",
   "Change the endpoint or port?": "Изменить эндпоинт или порт?",
   "Change the internal WG port?": "Изменить внутренний порт WG?",
   "Apply change": "Применить",
@@ -7631,6 +7631,13 @@ export const STR = {
   "Switch to {v1} failed": "Переход на {v1} не удался",
   "Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.": "Переход на {v1} не удался: {v2}. Сервер снова на {v3}. Перезапустите службу, чтобы попробовать ещё раз, или выберите {v3}, чтобы остаться на ней.",
   "it did not start": "он не запустился",
+  // WDTT fork switch (1.8.12 item 23): every WDTT fork speaks one wire, so users keep their links and apps
+  "Users keep their passwords, links and apps: every WDTT fork speaks the same protocol.": "Пользователи сохранят пароли, ссылки и приложения: все форки WDTT говорят на одном протоколе.",
+  "The server restarts on {v1}. Its {v2} keep their passwords, links and apps: a device online now loses the connection for up to half a minute and carries on by itself. If {v1} won't start, the node puts the server back on {v3} by itself.": "Сервер перезапустится на {v1}. Его пользователи ({v2}) сохранят пароли, ссылки и приложения: устройство, подключённое сейчас, потеряет связь до полуминуты и продолжит само. Если {v1} не запустится, нода сама вернёт сервер на {v3}.",
+  "The server restarts on {v1}. Its {v2} keep their passwords, links and apps, but a device online now must turn the VPN off and on once: {v1} does not resume a connection that was running before it restarted. If {v1} won't start, the node puts the server back on {v3} by itself.": "Сервер перезапустится на {v1}. Его пользователи ({v2}) сохранят пароли, ссылки и приложения, но на устройстве, подключённом сейчас, нужно один раз выключить и включить VPN: {v1} не возобновляет соединение, начатое до его перезапуска. Если {v1} не запустится, нода сама вернёт сервер на {v3}.",
+  "Its extra flags ({v1}) are removed: they are {v2}'s.": "Его дополнительные флаги ({v1}) удаляются: это флаги {v2}.",
+  "RAW turns off: {v1} has none. A device set to RAW connects again once its app is set back to the normal mode.": "RAW выключится: у {v1} его нет. Устройство в режиме RAW снова подключится, когда в его приложении вернут обычный режим.",
+  "wdtt|Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.": "Переход на {v1} не удался: {v2}. Сервер снова на {v3}. Перезапустите службу, чтобы попробовать ещё раз, или выберите {v3}, чтобы остаться на нём.",
   // csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md): one rule per server, sent to every user's app on connect
   "App routing": "Маршрутизация приложений",
   "Apps": "Приложения",
