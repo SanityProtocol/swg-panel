@@ -82,7 +82,8 @@ Fixture — node q-node, three deployments per device:
       list is only opened, and goes with the next pick
   [20] the PC and tablet layouts (operator, 2026-11-26): a phone (and a phone on its side) keeps its own; a PC lists the
       devices beside one card — Start named and above the fold, the QR's text beside it, Download saving that text, a row
-      showing its card — and a tablet upright puts the devices as tabs above it; every full-screen pop-up is modal
+      showing its card — and a tablet upright puts the devices as tabs above it; every full-screen pop-up is modal and
+      named by its title as it changes; a toast is read out from a status region already in the page
   [19] the WG / AWG cards pick their app too (item 24, card B): "<protocol> · <app>" with a chip, the protocol dropped where
       the app repeats it ("WireGuard"); the list is AmneziaVPN (Recommended) then every app this OS has a link for, Linux
       without AmneziaWG, MCRF or WINGS V; a pick names the app's own download row and drives Start — RawlineMobile
@@ -164,6 +165,10 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-dlgname    serves a sub.js whose dialogs have no name → RED on [20]
      --perturb-zoomfocus  serves a sub.js whose enlarged QR leaves the focus behind it → RED on [20]
      --perturb-netsrows   serves a sub.css whose networks card keeps the PC card's empty rows → RED on [20]
+     --perturb-navrebuild serves a sub.js whose rebuild on the networks card (theme, a turn of the tablet) closes the device → RED on [20]
+     --perturb-dlglevel   serves a sub.js whose dialogs keep the name they opened with → RED on [20]
+     --perturb-backarrow  serves a sub.js whose back arrow is read as part of a device's name → RED on [20]
+     --perturb-livepre    serves a sub.js whose status region arrives with the first toast → RED on [20]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -243,6 +248,10 @@ P_DLLABEL = "--perturb-dllabel" in sys.argv
 P_DLGNAME = "--perturb-dlgname" in sys.argv
 P_ZOOMFOCUS = "--perturb-zoomfocus" in sys.argv
 P_NETSROWS = "--perturb-netsrows" in sys.argv
+P_NAVREBUILD = "--perturb-navrebuild" in sys.argv
+P_DLGLEVEL = "--perturb-dlglevel" in sys.argv
+P_BACKARROW = "--perturb-backarrow" in sys.argv
+P_LIVEPRE = "--perturb-livepre" in sys.argv
 P_WGZOOM = "--perturb-wgzoom" in sys.argv
 P_WGSCAN = "--perturb-wgscan" in sys.argv
 PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPORT or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_OVERSCROLL or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
@@ -251,7 +260,8 @@ PERTURB = (P_VOLLINE or P_VOLDAY or P_VOLDEV or P_P2PALL or P_P2PPORT or P_SUBPO
            or P_SAMEPORT or P_ECHOPORT or P_OFFEROPEN or P_OFFERTOP
            or P_WGSTART or P_WGLIST or P_WGCOLLAPSE or P_WSVNOTE or P_WGDL or P_WGNOTE or P_WGZOOM or P_WGSCAN
            or P_LAYWIDE or P_LAYPHONE or P_NAVGO or P_ONECARD or P_PCDL or P_SIDETEXT or P_MODAL or P_STARTORB or P_PCGRID
-           or P_NAVNETS or P_LAYNAV or P_DLLABEL or P_DLGNAME or P_ZOOMFOCUS or P_NETSROWS)
+           or P_NAVNETS or P_LAYNAV or P_DLLABEL or P_DLGNAME or P_ZOOMFOCUS or P_NETSROWS
+           or P_NAVREBUILD or P_DLGLEVEL or P_BACKARROW or P_LIVEPRE)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -536,14 +546,23 @@ if P_PCGRID:
     perturbed_web('grid-template-columns: auto minmax(260px, 1fr); grid-template-areas: "head head" "stage node" "stage vk" "stage bar" "stage side" "stage .";',
                   'grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "node" "vk" "stage" "side" "bar" ".";', "the PC card's two columns", fname="sub.css")
 if P_NAVNETS:
-    perturbed_web("      if (!peers.some(mine)) return;", "", "the networks card keeps the device's connections open")
+    perturbed_web('      if (at < 0) at = Math.min(_layDev, peers.length - 1); else _layDev = at;', "      if (at >= 0) _layDev = at;", "the networks card keeps the device's connections open")
+if P_NAVREBUILD:
+    perturbed_web('      if (at < 0) at = Math.min(_layDev, peers.length - 1); else _layDev = at;', "      if (at < 0) return;", "a rebuild on the networks card keeps the device open")
 if P_LAYNAV:
     perturbed_web("body.lay-nav .bar .who, body.lay-nav .bar .who-row { display: none; }",
                   "body:is(.lay-wide, .lay-col) .bar .who, body:is(.lay-wide, .lay-col) .bar .who-row { display: none; }", "the name kept where no list shows it", fname="sub.css")
 if P_DLLABEL:
     perturbed_web('c.ext === "txt" ? t("dl") : t("download");', 'c.ext === "txt" ? t("dlLink") : t("download");', "Download link only for a link")
 if P_DLGNAME:
-    perturbed_web('        if (nm && nm.textContent.trim()) top.setAttribute("aria-label", nm.textContent.trim());\n', "", "each dialog named")
+    perturbed_web('        if (nm) { if (!nm.id) nm.id = "swg-dlg-" + (++_modalN); top.setAttribute("aria-labelledby", nm.id); }\n', "", "each dialog named")
+if P_DLGLEVEL:
+    perturbed_web('top.setAttribute("aria-labelledby", nm.id);', 'top.setAttribute("aria-label", nm.textContent.trim());', "a dialog's name follows its title")
+if P_BACKARROW:
+    perturbed_web(' ar.setAttribute("aria-hidden", "true");', "", "the back arrow kept out of the device's name")
+if P_LIVEPRE:
+    perturbed_web("    liveRegion();                                      // in the page before the first toast, so the toast is read out\n", "",
+                  "the status region in the page before the first toast")
 if P_ZOOMFOCUS:
     perturbed_web("if (!f) { top.tabIndex = -1; f = top; }", "if (!f) return;", "a dialog with no control takes the focus")
 if P_NETSROWS:
@@ -1697,7 +1716,7 @@ try:
       if (!chip) return 'no chip';
       chip.focus(); chip.click(); await new Promise(r => setTimeout(r, 300));
       const ov = document.querySelector('.cp-overlay'), app = document.getElementById('app');
-      const open = { role: ov && ov.getAttribute('role'), modal: ov && ov.getAttribute('aria-modal'), named: !!(ov && ov.getAttribute('aria-label')),
+      const open = { role: ov && ov.getAttribute('role'), modal: ov && ov.getAttribute('aria-modal'), named: !!(ov && (ov.getAttribute('aria-label') || (document.getElementById(ov.getAttribute('aria-labelledby') || '') || {}).textContent)),
                      inert: app.inert, focus: !!(ov && ov.contains(document.activeElement)) };
       document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); await new Promise(r => setTimeout(r, 400));
       return { open: open, closed: { gone: !document.querySelector('.cp-overlay'), inert: app.inert, back: document.activeElement === chip } }; })()"""
@@ -1708,6 +1727,28 @@ try:
     check("[20] a phone keeps its layout: no layout class, no list, every page in the flow, Start without a label",
           lp["cls"] == [] and not lp["nav"] and len(lp["pages"]) > 1 and lp["lbl"] is None and lp["side"] is None, lp)
     check("[20] …and its app list is modal too: a dialog with the focus, the page behind inert, the focus back on close", tab.ev(MODAL) == MODAL_OK, tab.ev(MODAL))
+    # the Connections pop-up's name, as the accessibility tree computes it, follows the level: the devices, then the one opened (verify F8)
+    def ax_dialogs(tab):
+        tab.br.send("Accessibility.enable", session=tab.s)
+        return [(n.get("name") or {}).get("value") for n in tab.br.send("Accessibility.getFullAXTree", session=tab.s).get("nodes", [])
+                if not n.get("ignored") and (n.get("role") or {}).get("value") == "dialog"]
+    lay_click(tab, ".pbtn-conn", "")
+    d1 = ax_dialogs(tab)
+    lay_click(tab, ".cp-overlay .cp-row", "laptop")
+    d2 = ax_dialogs(tab)
+    check("[20] the Connections pop-up is named by its level: 'Your devices', then the device opened in it (verify F8)",
+          d1 == ["Your devices"] and d2 == ["laptop"], (d1, d2))
+    tab.close()
+    # a toast is read out from one status region, in the page before the first toast and live over a pop-up (verify F10)
+    tab, _r = render("u1", "android", "en", phone=True)
+    lv0 = tab.ev("(() => { const r = document.querySelectorAll('.sub-live[role=status]'); return [r.length, r.length ? r[0].textContent : null]; })()")
+    start_on(tab, "turn", "WDTT")
+    lv1 = tab.ev(r"""(async () => { const a = [...document.querySelectorAll('.ph-overlay .ph-dl')].find(x => x.textContent === 'Copy the link again');
+      if (!a) return 'no copy row'; a.click(); await new Promise(r => setTimeout(r, 400));
+      const r = document.querySelector('.sub-live'), t = document.querySelector('.sub-toast');
+      return [r && r.textContent, r && r.inert, t && t.textContent, t && t.getAttribute('role')]; })()""")
+    check("[20] a toast is read out from a status region in the page before it, live over a pop-up (verify F10)",
+          lv0 == [1, ""] and lv1 == ["Connection link copied", False, "Connection link copied", None], (lv0, lv1))
     tab.close()
     # a phone on its side keeps the scrolling column
     tab, _r = render("u1", "android", "en", size=(844, 390, True))
@@ -1729,7 +1770,7 @@ try:
           isinstance(dl, list) and len(dl) == 1 and dl[0].endswith(".conf") and lw["dl"] == "Download .conf", (dl, lw["dl"]))
     zq = tab.ev(r"""(async () => { const box = document.querySelector('.ppage.cur .scell.cur .qrbox'); if (!box) return 'no qr'; box.click();
       await new Promise(r => setTimeout(r, 300)); const ov = document.querySelector('.qz-overlay'), cap = ov && ov.querySelector('.qz-cap');
-      const r = { named: !!ov && !!cap && ov.getAttribute('aria-label') === cap.textContent, focus: !!ov && document.activeElement === ov };
+      const r = { named: !!ov && !!cap && (ov.getAttribute('aria-label') === cap.textContent || (!!cap.id && ov.getAttribute('aria-labelledby') === cap.id)), focus: !!ov && document.activeElement === ov };
       document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); await new Promise(r => setTimeout(r, 300));
       r.gone = !document.querySelector('.qz-overlay'); return r; })()""")
     check("[20] PC: the enlarged QR is a dialog named by its caption that takes the focus itself (it holds no control) (review F5)",
@@ -1772,6 +1813,21 @@ try:
         time.sleep(0.5)
     check("[20] tablet upright, one device: from the networks card its connections stay in reach (review F1)",
           ok and tab.ev(LAY)["pages"] not in (["nets"], []), (back, tab.ev(LAY)["pages"]))
+    # …and after a rebuild that lands there: the theme changed on the networks card, or the tablet turned upright on it (verify F7)
+    lay_click(tab, ".wnav-row", "Available networks")
+    tab.ev("document.getElementById('theme-btn').click(); true"); time.sleep(1.0)
+    rb7 = tab.ev(LAY)
+    tab.ev("localStorage.removeItem('swgsub-theme'); true")
+    check("[20] tablet upright, one device: the theme changed on the networks card keeps its connections in reach (verify F7)",
+          rb7["pages"] == ["nets"] and any("Available networks" not in r for r in rb7["rows"]), rb7)
+    tab.close()
+    tab, _r = render("u2", "android", "en", size=(1180, 820, True))   # the tablet on its side: the PC layout
+    lay_click(tab, ".wnav-row", "Available networks")
+    tab.br.send("Emulation.setDeviceMetricsOverride", {"width": 820, "height": 1180, "deviceScaleFactor": 1, "mobile": True}, session=tab.s)
+    time.sleep(1.0)
+    rt7 = tab.ev(LAY)
+    check("[20] …and so does turning the tablet upright on the networks card (verify F7)",
+          rt7["cls"] == ["lay-col"] and rt7["pages"] == ["nets"] and any("Available networks" not in r for r in rt7["rows"]), rt7)
     tab.close()
     # one config and no networks page on a PC: no list, the card alone — and the name stays in the header (review F2)
     tab, _r = render("u8", "android", "en", desktop=True)

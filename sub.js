@@ -859,20 +859,21 @@
   //    everything else on <body> is `inert` — no Tab, no screen reader, no click reaches the page behind its dim — and
   //    the pop-up is a dialog that takes the focus, handed back to what opened it once the last one closes. Each pop-up
   //    appends itself to <body>, so one watcher there covers them all. An engine without `inert` keeps today's page. ──
-  var _modalSel = ".cp-overlay, .ih-overlay, .qz-overlay", _modalFrom = null;
+  var _modalSel = ".cp-overlay, .ih-overlay, .qz-overlay", _modalFrom = null, _modalN = 0;
   function syncModal() {
     var ovs = document.querySelectorAll(_modalSel), top = ovs[ovs.length - 1];
     Array.prototype.forEach.call(document.body.children, function (n) {
       if (n.tagName === "SCRIPT") return;
-      // a copy confirmation shown over a pop-up stays live, so it is still read out; the offer under a list does not
-      var live = n.matches && (n.matches(_modalSel) || (n.matches(".sub-toast") && !n.matches(".ap-toast")));
+      // the status region stays live, so a copy confirmation shown over a pop-up is still read out
+      var live = n.matches && (n.matches(_modalSel) || n.matches(".sub-live"));
       n.inert = !!top && !live;
     });
     if (top) {
       if (!top.hasAttribute("role")) {
         top.setAttribute("role", "dialog"); top.setAttribute("aria-modal", "true");
-        var nm = top.querySelector(".cp-title, .ph-title, .qz-cap");   // its own title, or the enlarged QR's caption
-        if (nm && nm.textContent.trim()) top.setAttribute("aria-label", nm.textContent.trim());
+        // named by its own title, or the enlarged QR's caption — by reference, so the name follows the picker into one device
+        var nm = top.querySelector(".cp-title, .ph-title, .qz-cap");
+        if (nm) { if (!nm.id) nm.id = "swg-dlg-" + (++_modalN); top.setAttribute("aria-labelledby", nm.id); }
       }
       if (!top.contains(document.activeElement)) {
         var was = document.activeElement;
@@ -1073,6 +1074,7 @@
   }
   // The PC / tablet list: every device with its connections (the Connections list, always open). `col` shows the devices as
   // tabs and the chosen one's connections under them; `wide` shows them all down the side. go(pi, ci) shows that card.
+  var _layDev = 0;   // the device the list last showed, kept across a rebuild (language, theme, a turn of the tablet)
   function layoutNav(peers, nets, name, go) {
     var nav = el("nav", "wnav"), rows = [], tabs = [], grps = [];
     nav.setAttribute("aria-label", t("connections"));
@@ -1110,9 +1112,11 @@
     nav._mark = function (pi, ci) {
       rows.forEach(function (r) { var on = r._en.pi === pi && r._en.ci === ci; r.classList.toggle("on", on); if (on) r.setAttribute("aria-current", "true"); else r.removeAttribute("aria-current"); });
       var mine = function (g) { return g.entries.some(function (en) { return en.pi === pi && en.ci === ci; }); };
-      if (!peers.some(mine)) return;   // the networks page: the device last shown stays open — on a tablet its row is the way back
-      tabs.forEach(function (b) { b.classList.toggle("on", mine(b._g)); });
-      grps.forEach(function (d) { d.classList.toggle("cur", mine(d._g)); });
+      var at = -1; peers.forEach(function (g, i) { if (at < 0 && mine(g)) at = i; });
+      // the networks page: the device last shown stays open — on a tablet its row is the way back, after a rebuild too
+      if (at < 0) at = Math.min(_layDev, peers.length - 1); else _layDev = at;
+      tabs.forEach(function (b, i) { b.classList.toggle("on", i === at); });
+      grps.forEach(function (d, i) { d.classList.toggle("cur", i === at); });
     };
     return nav;
   }
@@ -1152,7 +1156,7 @@
       title.textContent = ""; list.textContent = "";
       if (back) {
         var b = el("button", "cp-back"); b.type = "button";
-        b.appendChild(el("span", "cp-back-ar", "‹"));
+        var ar = el("span", "cp-back-ar", "‹"); ar.setAttribute("aria-hidden", "true"); b.appendChild(ar);   // the dialog's name is the device's
         b.appendChild(el("span", "cp-back-t", g.title));
         b.onclick = showPeers;
         title.appendChild(b);
@@ -1645,12 +1649,19 @@
     armOverlayBack();
   }
 
-  // brief centred toast (e.g. "link copied")
-  var _toastEl = null, _toastT = 0;
+  // brief centred toast (e.g. "link copied"). A screen reader hears it from one status region kept in the page from the
+  // first render on: not every reader announces a region that arrives with its text already in it.
+  var _toastEl = null, _toastT = 0, _liveEl = null, _liveT = 0;
+  function liveRegion() {
+    if (!_liveEl) { _liveEl = el("div", "sub-live"); _liveEl.setAttribute("role", "status"); document.body.appendChild(_liveEl); }
+    return _liveEl;
+  }
   function showToast(msg) {
     if (_toastEl) { try { _toastEl.remove(); } catch (_) {} clearTimeout(_toastT); }
-    var el2 = el("div", "sub-toast", msg); el2.setAttribute("role", "status"); document.body.appendChild(el2); _toastEl = el2;
-    _toastT = setTimeout(function () { try { el2.remove(); } catch (_) {} if (_toastEl === el2) _toastEl = null; }, 2800);
+    var el2 = el("div", "sub-toast", msg); document.body.appendChild(el2); _toastEl = el2;
+    var lv = liveRegion(); lv.textContent = ""; clearTimeout(_liveT);
+    _liveT = setTimeout(function () { lv.textContent = msg; }, 100);   // a change, after the clear: the same text twice is read twice
+    _toastT = setTimeout(function () { try { el2.remove(); } catch (_) {} if (_toastEl === el2) { _toastEl = null; lv.textContent = ""; } }, 2800);
   }
 
   // ── base64 (both standard and url-safe, padding optional) → bytes ──
@@ -3114,6 +3125,7 @@
 
   function render(data, cryptoKey, keepPos) {
     document.body.classList.remove("lay-nav");   // set again below only where the PC / tablet list is built
+    liveRegion();                                      // in the page before the first toast, so the toast is read out
     closeNoteBubble();                                 // its marker is about to leave the DOM, and its text may change language
     _appCells = [];
     _lastData = data; _lastKey = cryptoKey;
