@@ -1343,6 +1343,7 @@ export const STR = {
   "Prometheus scrape config": "Конфиг сбора для Prometheus",
   "None — plain HTTP (behind a reverse proxy / Cloudflare)": "Нет — обычный HTTP (за обратным прокси / Cloudflare)",
   "Let's Encrypt (HTTP-01 — needs port 80 reachable)": "Let's Encrypt (HTTP-01 — нужен доступный порт 80)",
+  "Let's Encrypt for this IP (needs port 80 reachable)": "Let's Encrypt для этого IP (нужен доступный порт 80)",
   "Let's Encrypt via Cloudflare DNS (no port 80; needs a token)": "Let's Encrypt через DNS Cloudflare (без порта 80; нужен токен)",
   "Cloudflare Origin certificate (15y — only valid behind Cloudflare)": "Сертификат Cloudflare Origin (15 лет — работает только за Cloudflare)",
   "Self-signed": "Самоподписанный",

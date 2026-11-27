@@ -727,8 +727,14 @@ export const TLS_MODE_OPTS = () => (_tls_mode_opts || (_tls_mode_opts = [
   // names no paths — hence one label that reads true for both.
   { value: "skip", label: T("Existing certificate files (issued and renewed outside the panel)") }]));
 
+// `letsencrypt-ip` — a certificate for the panel's bare IP. Only an installer issues one (the root helper cannot, so it
+// is never an offered choice), but a panel can HAVE one — and then the Type field and the subscription card showed "—",
+// as if the panel did not know its own certificate. Listed while it is the saved type, and only then.
+const TLS_MODE_IP = () => ({ value: "letsencrypt-ip", label: T("Let's Encrypt for this IP (needs port 80 reachable)") });
+export const tlsModeOpts = saved => (saved === "letsencrypt-ip"
+  ? [TLS_MODE_OPTS()[0], TLS_MODE_IP(), ...TLS_MODE_OPTS().slice(1)] : TLS_MODE_OPTS());
 export const tlsModeLabel = (mode) =>
-  ((TLS_MODE_OPTS().find(o => o.value === (mode || "")) || {}).label || "—");
+  ((tlsModeOpts(mode).find(o => o.value === (mode || "")) || {}).label || "—");
 
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
 // A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
@@ -1644,7 +1650,7 @@ export function AccessTLSCard({ onChange }) {
       }
       return (w || other || done || held) ? html`${done}${w}${held}${other}` : null;
     })()}
-    <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS()}/></div>
+    <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${tlsModeOpts(orig.mode)}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>${T("Account email")}</label><input type="text" placeholder=${T("admin@example.com")} value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
     ${mode === "cloudflare" ? html`<div class="field"><label>${T("Cloudflare API token")}</label><input type="password" placeholder=${hasCfTok ? T("•••••••• (set — leave blank to keep)") : T("Zone:DNS:Edit token")} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
       <div class="hint">${T("Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter \"-\" to clear.")}</div></div>` : null}

@@ -5507,16 +5507,32 @@ def _infer_tls_mode(deps):
     then STICKS: the installers' healing pass is deliberately fill-if-empty, so it can never correct a non-empty
     wrong one, and Settings → Access reads "self-signed" for the rest of the box's life while install.conf says
     letsencrypt. Only when the cert can't settle it (self-signed placeholder mid-issuance, or unreadable) do we
-    fall back to what the config can drive: a CF DNS token → cloudflare; an ACME email → letsencrypt."""
+    fall back to what the config can drive: a CF DNS token → cloudflare; in a container, the TLS it was started
+    with; an ACME email → letsencrypt."""
     tls = ((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}
     if TLS_CERT and os.path.exists(TLS_CERT) and not _cert_selfsigned(TLS_CERT):
         if _cert_is_cf_origin(TLS_CERT):
             return "cf15"                                  # Cloudflare Origin CA — only `cf15` produces one
+        # ⚠️ A CERTIFICATE BY IP SAYS SO ITSELF. A bare-metal panel's first start is plain HTTP — its certificate does
+        # not exist yet — so the boot reconcile clears the type the installer seeded, and this is where it is read back
+        # once the certificate is there. With no test here a panel by IP came back as "letsencrypt" (alb-onyx,
+        # 2026-11-27: install.conf said letsencrypt-ip, the settings letsencrypt). Before the token test: a
+        # certificate from the Cloudflare DNS-01 path always carries a DNS name.
+        if _cert_ip_only(TLS_CERT):
+            return "letsencrypt-ip"
         # a public CA issued it: `cloudflare` is Let's Encrypt via the CF DNS-01 challenge, so the stored token
         # is what tells the two LE paths apart — the issuer alone can't.
         return "cloudflare" if str(tls.get("cf_token") or "").strip() else "letsencrypt"
     if str(tls.get("cf_token") or "").strip():
         return "cloudflare"
+    # A CONTAINER KNOWS WHAT IT WAS STARTED WITH: its `TLS` (compose passes the .env's). A panel brought up by hand with
+    # compose has no installer to seed its settings, so with the placeholder on the socket this read "selfsigned" —
+    # and was later healed to "letsencrypt" off the certificate, for one by IP too. Bare-metal has no such record
+    # the panel may read: install.conf is root's alone (it holds the Cloudflare tokens).
+    if IN_DOCKER:
+        _given = (os.environ.get("TLS") or "").strip()
+        if _given in TLS_MODES and _given not in ("", "skip"):
+            return _given
     if str(tls.get("email") or "").strip():
         return "letsencrypt"
     return "selfsigned"
@@ -40904,6 +40920,18 @@ def _cert_selfsigned(cert_path):
     try:
         info = ssl._ssl._test_decode_cert(cert_path)
         return dict(x[0] for x in info.get("issuer", ())) == dict(x[0] for x in info.get("subject", ()))
+    except Exception:
+        return False
+
+
+def _cert_ip_only(cert_path):
+    """True if the cert at cert_path names addresses and no DNS name — what Let's Encrypt's IP profile issues
+    (`letsencrypt-ip`: no DNS SAN, an empty subject). The issuer cannot tell it from a certificate by name."""
+    if not cert_path or not os.path.exists(cert_path):
+        return False
+    try:
+        kinds = {typ for typ, _val in ssl._ssl._test_decode_cert(cert_path).get("subjectAltName", ())}
+        return "IP Address" in kinds and "DNS" not in kinds
     except Exception:
         return False
 
