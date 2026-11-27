@@ -1733,6 +1733,25 @@ guard_second_panel(){
   esac
 }
 
+# acme_email_take [saved] — the ACME account address is OPTIONAL and never asked (1.8.12 item 26; the operator, 2026-11-27:
+# "No email … remove from installers as well if it is not mandatory"). A Let's Encrypt account needs no contact, and Let's
+# Encrypt has sent no expiry mail since 2025-06-04; the question was the one thing that insisted on it, and with no terminal
+# and no value an unattended run with a Let's Encrypt mode died there. An address that is GIVEN (ACME_EMAIL=, the Docker
+# installer's -email) is registered as before, and a re-install keeps the one it had (`saved`). One that is not an address
+# is said and dropped — never a question, never fatal. "An address" is swg-netctl's _ACME_EMAIL_RE, not the looser test the
+# question had: the value goes unquoted into `sh -s email=…` here and is word-split by get.acme.sh, and one the panel's
+# own issuance would later refuse must not be stored.
+acme_email_take(){
+  ACME_EMAIL="${ACME_EMAIL:-${1:-}}"
+  [ -n "$ACME_EMAIL" ] || return 0
+  local re="^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\$"   # the WHOLE value (a line-wise grep would pass a second line)
+  if [[ "$ACME_EMAIL" =~ $re ]]; then
+    sub "ACME account email: $ACME_EMAIL — optional; registered with the Let's Encrypt account"
+  else
+    warn "ignoring ACME_EMAIL='$ACME_EMAIL' — not an email address (the certificate needs none)"; ACME_EMAIL=""
+  fi
+  return 0; }
+
 # seed_access_settings <panel-settings.json path> — merge this run's Access & TLS answers into the panel's own
 # settings file. panel-settings.json lives in the STATE dir, which an uninstall KEEPS by default, so a fresh
 # install onto a kept state dir would otherwise show the PREVIOUS install's address/TLS in Settings → Access (or

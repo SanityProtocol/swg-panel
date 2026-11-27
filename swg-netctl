@@ -402,8 +402,8 @@ _ACME_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]
 
 
 def _acme_manual(email):
-    return ("install it by hand as root and retry: apt-get install -y cron curl, then curl -fsSL %s | sh -s email=%s"
-            % (ACME_GET_URL, email))
+    return ("install it by hand as root and retry: apt-get install -y cron curl, then curl -fsSL %s | sh%s"
+            % (ACME_GET_URL, " -s email=" + email if email else ""))
 
 
 def _last_line(out):
@@ -441,9 +441,11 @@ def _acme_prereqs(email, deadline):
 
 
 def _acme_install(email):
-    """Install acme.sh into ACME_HOME, as install-host.sh's ensure_acme does on a box without it. Returns its path."""
-    if not _ACME_EMAIL_RE.match(email or ""):
-        raise Reject("the ACME account email %r is not a plain email address — set one in Access & TLS" % (email,))
+    """Install acme.sh into ACME_HOME, as install-host.sh's ensure_acme does on a box without it. Returns its path.
+    `email` is the stored account address or "" — it is optional (1.8.12 item 26): with none, acme.sh is installed with
+    none, never with a made-up admin@<panel address>."""
+    if email and not _ACME_EMAIL_RE.match(email):
+        raise Reject("the ACME account email %r is not a plain email address — correct or clear it in Access & TLS" % (email,))
     log(LOG_NOTICE, "acme.sh is not installed — installing it from %s for this certificate" % ACME_GET_URL)
     started = time.monotonic()
     deadline = started + ACME_INSTALL_BUDGET
@@ -466,7 +468,7 @@ def _acme_install(email):
         if rc and not DRYRUN:
             raise Reject("acme.sh is not installed, and its installer could not be downloaded from %s (curl rc %d: %s) — "
                          "does this box reach GitHub? %s" % (ACME_GET_URL, rc, _last_line(out), _acme_manual(email)))
-        rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=_left(deadline, 180))
+        rc, out = run(["sh", script] + (["email=" + email] if email else []), env=env, cwd=tmp, timeout=_left(deadline, 180))
     finally:
         if not DRYRUN:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -864,7 +866,7 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
         log(LOG_NOTICE, "left %s out of the certificate order for %s — Let's Encrypt's default profile refuses IP "
             "addresses" % (", ".join(d for d in domains if d not in names), ",".join(names)))
         domains = names
-    acme = _locate_acme() or _acme_install(creds["email"] or "admin@" + domains[0])
+    acme = _locate_acme() or _acme_install(creds["email"])
     env = dict(os.environ)
     # ⚠️ ANOTHER PROGRAM'S ENTRY IS ASKED ABOUT FIRST — before anything is cleared or issued. `--issue` saves OUR
     # challenge method (`--standalone`, or our DNS hook) into the entry whenever its certificate is due, over whatever

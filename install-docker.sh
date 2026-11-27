@@ -203,7 +203,6 @@ v_freeport(){ v_port "$1" && port_free "$1"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then
 # the next host-free port. turn = TP_LISTEN record; wg/awg = ListenPort across persisted confs + this session's spec.
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
-v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
 # 0 iff $1 is a public, routable IPv4 literal (excludes RFC1918 / loopback / link-local / CGNAT) — gates letsencrypt-ip
 ip_public(){ case "$1" in *[!0-9.]*|*.*.*.*.*|*..*) return 1;; *.*.*.*) ;; *) return 1;; esac
@@ -755,7 +754,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"    "Keep the existing $(b "${EXIST_TLS:-cert}") certificate — it already covers $(b "$PANEL_DOMAIN"), no re-issue (recommended for a re-install)"; }
     if [ "$_url_is_domain" = yes ]; then
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
-      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token"
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"        "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"                "OK for testing"
     elif [ "$_ip_public" = yes ]; then
@@ -810,15 +809,15 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     fi;;
   esac
   case "$TLS" in
-    letsencrypt) ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com"
+    letsencrypt) acme_email_take   # never asked (item 26, lib/common.sh); a kept .env's address is already in ACME_EMAIL
                  sub "letsencrypt validates over HTTP-01 — the installer publishes host port $(b 80) to the panel container for you (compose override, written below)";;
     letsencrypt-ip) warn "letsencrypt-ip issues a $(b 'short-lived (~6 day)') cert for the IP $(b "$PANEL_DOMAIN") — the container renews it every 12h; if renewal is down ~6 days the cert expires."
                  sub "Host port $(b 80) is published for you (compose override, written below); the IP must be reachable directly (grey-cloud / no proxy)."
-                 ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+                 acme_email_take;;
     # ask_SECRET for a token: ask_valid shows its default, and a saved token IS the default — on screen, and with no
     # terminal in the "(no terminal — default taken)" line of the install log (install-host.sh, same note)
     cloudflare)  ask_secret "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "${CF_TOKEN_SAVED:-}" CF_TOKEN v_cftoken "paste a scoped API token (40 chars)"
-                 ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+                 acme_email_take;;
     cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy (orange cloud)."
                  if ! v_cfport "$PANEL_PORT"; then
                    warn "port $(col "$C_YEL" "$PANEL_PORT") is NOT one Cloudflare's proxy forwards (only 443, 2053, 2083, 2087, 2096, 8443) —"

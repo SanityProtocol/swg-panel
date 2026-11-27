@@ -12,7 +12,7 @@
       and, as 3.1.4's _precheck does, installs nothing where there is no crontab. Checked: cron (and curl) from apt FIRST,
       then the fetch, the installer, acme.sh's renewal entry, the version floor, and only then the order; the installer
       runs with HOME=/root and LE_WORKING_DIR=<the store>, in a fresh temp dir that is gone afterwards; the Access email,
-      else admin@<domain>; a bad email refused before anything is fetched; offline → the clear Reject naming the manual
+      and NONE when there is none (1.8.12 item 26: never a made-up admin@<domain>); a bad email refused before anything is fetched; offline → the clear Reject naming the manual
       commands, no installer, no order; an installer that installs nothing → the same; an old acme.sh → --upgrade; an
       acme.sh already there → no install at all; no apt-get → the Reject; a dry run → the argv logged, nothing run, no dir
   [2] swg-netctl `_issue_acme`: an IP literal beside a name is left out of the order; IPs alone are left for the CA
@@ -36,14 +36,17 @@ SRC = {k: open(p, encoding="utf-8").read() for k, p in PATHS.items()}
 
 # (name, file key, anchor, replacement, the check that must go red)
 PLANTS = [
-    ("install", "NETCTL", '    acme = _locate_acme() or _acme_install(creds["email"] or "admin@" + domains[0])',
+    ("install", "NETCTL", '    acme = _locate_acme() or _acme_install(creds["email"])',
      "    acme = find_acme()", "[1] no acme.sh: installed, then the certificate ordered"),
+    ("noemail", "NETCTL", '    acme = _locate_acme() or _acme_install(creds["email"])',
+     '    acme = _locate_acme() or _acme_install(creds["email"] or "admin@" + domains[0])',
+     "[1] no Access / install.conf email: the installer gets none (never a made-up admin@<domain>)"),
     ("cron-first", "NETCTL", "    missing = [pkg for pkg, binary in want if not shutil.which(binary)]\n    if not missing:",
      "    missing = []\n    if not missing:", "[1] the steps in order: cron + curl from apt, the fetch, the installer, the renewal entry, the floor, the order"),
     ("home", "NETCTL", "    env = dict(os.environ, HOME=pwd.getpwuid(0).pw_dir, LE_WORKING_DIR=ACME_HOME)",
      "    env = dict(os.environ)", "[1] the installer runs with HOME=/root and LE_WORKING_DIR=<the store>"),
-    ("cwd", "NETCTL", 'rc, out = run(["sh", script, "email=" + email], env=env, cwd=tmp, timeout=_left(deadline, 180))',
-     'rc, out = run(["sh", script, "email=" + email], env=env, timeout=_left(deadline, 180))',
+    ("cwd", "NETCTL", 'rc, out = run(["sh", script] + (["email=" + email] if email else []), env=env, cwd=tmp, timeout=_left(deadline, 180))',
+     'rc, out = run(["sh", script] + (["email=" + email] if email else []), env=env, timeout=_left(deadline, 180))',
      "[1] …in a fresh temp dir (installOnline unpacks into its cwd), gone afterwards"),
     ("cleanup", "NETCTL", "        if not DRYRUN:\n            shutil.rmtree(tmp, ignore_errors=True)", "        pass",
      "[1] …in a fresh temp dir (installOnline unpacks into its cwd), gone afterwards"),
@@ -54,7 +57,7 @@ PLANTS = [
     ("offline", "NETCTL", "        if rc and not DRYRUN:\n            raise Reject(\"acme.sh is not installed, and its installer could not be downloaded",
      "        if False:\n            raise Reject(\"acme.sh is not installed, and its installer could not be downloaded",
      "[1] offline: the clear Reject (curl's error, the manual commands), no installer, no order"),
-    ("email", "NETCTL", '    if not _ACME_EMAIL_RE.match(email or ""):', "    if False:",
+    ("email", "NETCTL", '    if email and not _ACME_EMAIL_RE.match(email):', "    if False:",
      "[1] an email with a space or '=' is refused before anything is fetched (get.acme.sh word-splits it)"),
     ("nothing", "NETCTL", '    acme = _locate_acme() or ("/root/.acme.sh/acme.sh" if DRYRUN else None)',
      '    acme = _locate_acme() or "/root/.acme.sh/acme.sh"',
@@ -277,8 +280,10 @@ check("[1] the journal says acme.sh was installed", "acme.sh installed at " + os
 
 box, store, tmp = sandbox(cron=True)
 err, calls, _ = issue(["new.example.com"], email="")
-check("[1] no Access / install.conf email: admin@<domain>, as the installer", not err
-      and idx(calls, r"^installer email=admin@new\.example\.com ") >= 0, (err, calls))
+_inst0 = calls[idx(calls, r"^installer ")] if idx(calls, r"^installer ") >= 0 else ""
+check("[1] no Access / install.conf email: the installer gets none (never a made-up admin@<domain>)", not err
+      and bool(re.match(r"^installer\s+HOME=", _inst0)) and "email=" not in _inst0 and "admin@" not in " ".join(calls)
+      and idx(calls, r"--register-account") < 0 and idx(calls, r"^acme .*--issue .*-d new\.example\.com") >= 0, (err, calls))
 check("[1] cron and curl already there: no apt-get, no systemctl", idx(calls, r"^(apt-get|systemctl) ") < 0, calls)
 
 for bad in ("ops @example.com", "ops=x@example.com", "*@example.com"):
@@ -432,8 +437,8 @@ print("\n[5] the same steps as install-host.sh's ensure_acme")
 H, C, NS = SRC["HOST"], SRC["COMMON"], SRC["NETCTL"]
 ea = H[H.index("\nensure_acme(){"):]
 ea = ea[:ea.index("\n# A REUSED cert")]
-i_cron, i_get = ea.find("\n  ensure_acme_cron   # cron FIRST"), ea.find('curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}')
-check("[5] install-host.sh still installs cron before get.acme.sh, with the same URL and admin@<domain> fallback",
+i_cron, i_get = ea.find("\n  ensure_acme_cron   # cron FIRST"), ea.find('curl -fsSL https://get.acme.sh | sh${ACME_EMAIL:+ -s email=$ACME_EMAIL}')
+check("[5] install-host.sh still installs cron before get.acme.sh, with the same URL and an email only when one was given",
       0 <= i_cron < i_get and N.ACME_GET_URL == "https://get.acme.sh", (i_cron, i_get))
 mm = re.search(r"^ACME_MIN=(\d+)\.(\d+)\.(\d+)$", H, re.M)
 check("[5] the same version floor as install-host.sh's ACME_MIN", bool(mm) and tuple(map(int, mm.groups())) == N.ACME_MIN,

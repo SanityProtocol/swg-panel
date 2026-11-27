@@ -226,7 +226,6 @@ panel_probe_url(){
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_user(){    case "$1" in ""|*:*|*" "*) return 1;; esac; [ "${#1}" -le 40 ]; }
-v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
 # 0 iff $1 is a public, routable IPv4 literal — excludes RFC1918 / loopback / link-local / CGNAT.
 # Let's Encrypt only issues IP certs for public IPs, so this gates the letsencrypt-ip TLS option.
@@ -1008,7 +1007,7 @@ while :; do
   [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"       "Keep the existing $(b "${TLS_SAVED:-cert}") certificate — it already covers $(b "$PANEL_DOMAIN"), no re-issue (recommended for a re-install)"; }
   if [ "$_url_is_domain" = yes ]; then
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le_lbl"                           "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
-    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"               "OK for testing"
   elif [ "$_ip_public" = yes ]; then
@@ -1040,15 +1039,15 @@ while :; do
   break
 done
 case "$TLS_MODE" in
-  letsencrypt) ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+  letsencrypt) acme_email_take "${EMAIL_SAVED:-}";;   # never asked (item 26, lib/common.sh)
   letsencrypt-ip) warn "letsencrypt-ip issues a $(b 'short-lived (~6 day)') cert for $(b "$PANEL_DOMAIN") — acme.sh renews it daily; if renewal is down for ~6 days the cert expires."
                warn "Needs host port $(col "$C_YEL" ':80') reachable for HTTP-01 and the IP hit directly (grey-cloud / no proxy)."
-               ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+               acme_email_take "${EMAIL_SAVED:-}";;
   # ⚠️ ask_SECRET, never ask_valid: the saved token is this prompt's DEFAULT, and ask_valid shows a default — on the
   # screen in its [brackets], and with no terminal in the "(no terminal — default taken)" line, i.e. in the install log.
   # ask_secret reads with echo off and offers a saved value as [keep current]. Enter still keeps it, re-validated.
   cloudflare)  ask_secret "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "${CF_TOKEN_SAVED:-}" CF_TOKEN  v_cftoken "paste a scoped API token (40 chars)"   # saved value is the DEFAULT — Enter keeps it, and it is re-validated
-               ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+               acme_email_take "${EMAIL_SAVED:-}";;
   cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy."
                warn "$PANEL_DOMAIN must be on Cloudflare with the orange cloud ON; a direct hit to the origin shows an untrusted cert."
                if [ -n "$URL_PORT" ] && ! v_cfport "$URL_PORT"; then
@@ -1897,7 +1896,9 @@ ensure_acme(){
     return 0
   fi
   ensure_acme_cron   # cron FIRST: acme.sh's installer refuses to install without crontab, and registers its renewal only where it is
-  info "Installing acme.sh"; run sh -c "curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}"
+  # …with the account address only when one was given: a made-up admin@<panel address> (admin@203.0.113.77 on an IP) used
+  # to be written into acme.sh's account settings and presented at the first registration (item 26)
+  info "Installing acme.sh"; run sh -c "curl -fsSL https://get.acme.sh | sh${ACME_EMAIL:+ -s email=$ACME_EMAIL}"
   find_acme && { ensure_acme_cron "$ACME" "$ACME_HOME"; return 0; }; $DRYRUN && { ACME=/root/.acme.sh/acme.sh; return 0; }
   die "acme.sh not found after install — install it manually or use TLS=selfsigned/skip"; }
 # A REUSED cert still needs its RENEWER. TLS_MODE carries the real mode forward, so the panel renews — and any
