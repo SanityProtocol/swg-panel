@@ -368,7 +368,7 @@ PLANTS = {   # (file, anchor, replacement)
     'r3-v6wild': ("panel", ' and h in ("", "0.0.0.0", "*"):', ':'),
     'r2-nolisten': ("panel", '        if not p:\n            return\n        if _fp_bind_host(bov["listen"]):', '        if _fp_bind_host(bov["listen"]):'),
     'upd-b': ("panel", '''        if kind != "turn" and nid in _fob:''', '''        if False:'''),
-    'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)'),
+    'srv-reply-rid': ("panel", '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, _rid, snap)', '_wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk, None, snap)'),
 }
 
 TMP = tempfile.mkdtemp(prefix="swg-failover-")

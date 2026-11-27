@@ -1637,6 +1637,12 @@ def _csqtt_run_line(snap, iface, rec):
     pending or failed switch the record names the line ASKED for, and a hold set by it would land on the wrong binary.
     Raw — it can be a line this panel does not offer."""
     return str((_csqtt_row(snap, iface) or {}).get("line") or (rec or {}).get("line") or CSQTT_DEFAULT_LINE)
+WDTT_FORK_OWN = ("params", "raw_port", "raw_iface", "raw_addr")   # a WDTT fork's own: its flags and RAW (a switch changes them)
+def _wdtt_run_fork(snap, iface, rec):
+    """The WDTT fork a server RUNS — its node's report (the `server` link), else its record (_csqtt_run_line's rule):
+    during a pending or failed fork switch the record names the fork ASKED for."""
+    row = next((r for r in ((snap or {}).get("wdtt") or []) if isinstance(r, dict) and r.get("iface") == iface), None)
+    return str((row or {}).get("fork") or (rec or {}).get("fork") or "amurcanov")
 def _csqtt_hold_svc(line):                    # turn-holds key: 2.1 keeps the one it always had
     return "fork:csqtt" if line == CSQTT_DEFAULT_LINE else "fork:csqtt@" + line
 def _csqtt_current_version(line=CSQTT_DEFAULT_LINE):
@@ -10454,6 +10460,7 @@ def _wdtt_reply(roster, nodes, node_id, fallback_vk="", rid=None, snap=None):
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None)   # the owner password is node-owned — never ship it
         merged.pop("reach", None)      # device access is the panel's to plan (`dev_reach`) — a copy here is one nobody reads (§10.8 Round 9)
+        merged.pop("switch_from", None)   # the door's memory of what a switch left (a pick back restores it) — not the node's
         merged.pop("key_blob", None)   # the escrow blob lives in the store (dict(inst) copied it) — ship it ONLY as the HOLD signal below, so a fresh-recreate can actually suppress it
         merged["passwords"] = derived.get(iface) or {}   # authoritative: roster-derived, overriding any stale node-store copy
         if not merged.get("raw_port"):   # RAW off → ship nothing at all, so an old field can't half-enable it
@@ -34806,18 +34813,46 @@ def api(method, path, qs, body, deps):
         # WDTT fork); its extra flags are the old binary's and go, and RAW goes with a target that has none. The node
         # checks the target stays up and puts the server back by itself if not. A failover copy never gets here
         # (failover_ro_refusal): it follows its primary's fork (FO_WDTT_FOLLOW).
+        # The flags and RAW the switched-from fork ran with are kept in `switch_from`: a pick back to the fork the node still
+        # runs (a switch that waits or failed) gets them again, as the node itself kept them. A value typed in the same
+        # save is the operator's and stands.
         _fsw = ""
         if _existing is not None:
             _ofork = _existing.get("fork") or "amurcanov"
             inst["fork"] = _ofork
             _to = (body.get("fork") or "").strip()
-            if body.get("fork_switch") and _to and _to != _ofork:
+            _wsnap = (deps.get("node_snaps") or {}).get(nid)
+            _run = _wdtt_run_fork(_wsnap, iface, _existing)
+            _pch = "params" in body and (body.get("params") or "").strip() != (_existing.get("params") or "").strip()
+            _rch = "raw" in body and bool(body.get("raw")) != bool(_existing.get("raw_port"))
+            if body.get("fork_switch") and _to and _to != _ofork and _to == _run:
+                # back to what runs: nothing is installed or moved, so no build or node check
+                _sf = _existing.get("switch_from") or {}
+                inst["fork"], _fsw = _to, _ofork + " → " + _to
+                if _sf.get("fork") == _to:
+                    for _k in WDTT_FORK_OWN:
+                        if (_k == "params" and _pch) or (_k != "params" and _rch):
+                            continue
+                        if _k in _sf: inst[_k] = _sf[_k]
+                        else: inst.pop(_k, None)
+                    if not _rch:
+                        body = {k: v for k, v in body.items() if k not in ("raw", "raw_port")}   # the restored RAW stands
+                inst.pop("switch_from", None)
+            elif body.get("fork_switch") and _to and _to != _ofork:
                 _tl = (TURN_SERVERS.get(_to) or {}).get("label") or _to
                 if _to not in WDTT_BUILDS:
                     return 400, {"ok": False, **perr("No published build for {v1} yet, so a node has nothing to install. Pick another fork.", v1=_tl), "code": "bad_request"}
-                if _to not in ((((deps.get("node_snaps") or {}).get(nid) or {}).get("wdtt_forks")) or []):
+                if not _wsnap:
+                    return 409, {"ok": False, **perr("This node hasn't reported since the panel started. Try again in a few seconds."), "code": "node_offline"}
+                if _to not in ((_wsnap.get("wdtt_forks")) or []):
                     return 400, {"ok": False, **perr("this node can't run {v1} yet — update the node first (its page offers \"update node to …\")", v1=_tl), "code": "node_too_old"}
-                inst["fork"], inst["params"], _fsw = _to, "", _ofork + " → " + _to
+                _sf = _existing.get("switch_from") or {}
+                if _ofork == _run or _sf.get("fork") != _run:
+                    _sf = {"fork": _run, **{k: _existing[k] for k in WDTT_FORK_OWN if k in _existing}}
+                inst["switch_from"] = _sf
+                inst["fork"], _fsw = _to, _ofork + " → " + _to
+                if not _pch:
+                    inst["params"] = ""                  # the old binary's flags; new ones typed for the target stand
                 if not (TURN_SERVERS.get(_to) or {}).get("raw"):
                     body = {**body, "raw": False}        # the RAW step below then drops raw_port / raw_iface / raw_addr
         if "bind_ip" in body:                            # Listen on: an address of the box, or "" = Auto (the node decides)
@@ -34969,7 +35004,7 @@ def api(method, path, qs, body, deps):
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Set WDTT instance", iface)
         if _fsw:
-            ev_append(roster_path, "node", nid, "Switch WDTT fork", iface + ": " + _fsw)
+            ev_append(roster_path, "node", nid, "Switching a WDTT server's fork", iface, _fsw)
         if _raw_moved:
             ev_append(roster_path, "node", nid, "Moved RAW-IP", "%s → %s" % (_raw_moved, iface))
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "raw_moved": _raw_moved,
@@ -35854,7 +35889,8 @@ def api(method, path, qs, body, deps):
         nid = (qs.get("node") or [""])[0]; iface = (qs.get("iface") or [""])[0].strip()
         fork = (qs.get("fork") or [""])[0].strip()
         if not fork or fork not in WDTT_BUILDS:
-            fork = ((nodes.get(nid) or {}).get("wdtt") or {}).get(iface, {}).get("fork") or ""
+            _vi = ((nodes.get(nid) or {}).get("wdtt") or {}).get(iface)
+            fork = _wdtt_run_fork((deps.get("node_snaps") or {}).get(nid), iface, _vi) if _vi else ""
         if fork not in WDTT_BUILDS:
             return 400, {"ok": False, "error": "unknown WDTT fork", "code": "bad_request"}
         held = _turn_hold_get(nid, "wdtt:" + fork) if nid else ""   # per (node, fork): the binary is shared across the fork's ifaces
@@ -35871,7 +35907,7 @@ def api(method, path, qs, body, deps):
         inst = ((nodes[nid].get("wdtt")) or {}).get(iface)
         if not inst:
             return 404, {"ok": False, "error": "unknown WDTT instance", "code": "not_found"}
-        fork = inst.get("fork") or "amurcanov"
+        fork = _wdtt_run_fork((deps.get("node_snaps") or {}).get(nid), iface, inst)   # the board lists what RUNS
         if ver:                                              # ROLLBACK / pin to a specific published build (per node+fork — shared binary)
             if not _wdtt_tag_for(fork, ver):
                 return 400, {"ok": False, "error": "that version isn't a published build for this fork", "code": "bad_request"}

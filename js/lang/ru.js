@@ -7637,6 +7637,11 @@ export const STR = {
   "The server restarts on {v1}. Its {v2} keep their passwords, links and apps, but a device online now must turn the VPN off and on once: {v1} does not resume a connection that was running before it restarted. If {v1} won't start, the node puts the server back on {v3} by itself.": "Сервер перезапустится на {v1}. Его пользователи ({v2}) сохранят пароли, ссылки и приложения, но на устройстве, подключённом сейчас, нужно один раз выключить и включить VPN: {v1} не возобновляет соединение, начатое до его перезапуска. Если {v1} не запустится, нода сама вернёт сервер на {v3}.",
   "Its extra flags ({v1}) are removed: they are {v2}'s.": "Его дополнительные флаги ({v1}) удаляются: это флаги {v2}.",
   "RAW turns off: {v1} has none. A device set to RAW connects again once its app is set back to the normal mode.": "RAW выключится: у {v1} его нет. Устройство в режиме RAW снова подключится, когда в его приложении вернут обычный режим.",
+  "The server is stopped: it moves to {v1} now and starts on {v1} when you start it. Nothing checks {v1} before then.":
+    "Сервер остановлен: он переходит на {v1} сейчас и запустится на {v1}, когда вы его включите. До этого {v1} никто не проверяет.",
+  "This node hasn't reported since the panel started. Try again in a few seconds.":
+    "Нода ещё не присылала отчёт с запуска панели. Попробуйте через несколько секунд.",
+  "Switching a WDTT server's fork": "Смена форка сервера WDTT",
   "wdtt|Switching to {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.": "Переход на {v1} не удался: {v2}. Сервер снова на {v3}. Перезапустите службу, чтобы попробовать ещё раз, или выберите {v3}, чтобы остаться на нём.",
   // csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md): one rule per server, sent to every user's app on connect
   "App routing": "Маршрутизация приложений",

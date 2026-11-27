@@ -15,7 +15,8 @@
  *  [5] the card: "switching", "switch failed" and "update node", each from the switch state
  *
  * Run: node tests/spa_wdtt_fork_switch_selftest.mjs     --perturb <failed|blocked|oneforks|refusebuild|refusenode|keepwant|
- *        users|ildarnote|flagsnote|rawnote|confirmgo|switchflag|backnoask|rawpick|cardtag> plants one regression, expects RED.
+ *        users|ildarnote|flagsnote|rawnote|confirmgo|switchflag|backnoask|rawpick|cardtag|closefirst|typednote|stoppednote|keeprun>
+ *        plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -36,7 +37,11 @@ const PLANTS = {
   ildarnote: ["const WDTT_NO_RESUME = [\"ildarmaga\", \"wdttplus\"];", "const WDTT_NO_RESUME = [];"],
   confirmgo: ["    onConfirm=${go}/>`);\n}\nconst WdttForkNotices", "    onConfirm=${() => {}}/>`);\n}\nconst WdttForkNotices"],
   switchflag: ["fork: forkTo, ...(forkDirty ? { fork_switch: true } : {}), title", "fork: forkTo, title"],
-  backnoask: ["  const save = () => forkDirty && forkTo !== sw.run ? confirmWdttSwitch(", "  const save = () => forkDirty ? confirmWdttSwitch("],
+  backnoask: ["  const save = () => forkDirty && forkTo !== sw.run\n    ? confirmWdttSwitch(", "  const save = () => forkDirty\n    ? confirmWdttSwitch("],
+  closefirst: ["() => { closeModal(); return save2(); }, !!cfg.stopped)", "save2, !!cfg.stopped)"],
+  typednote: ["paramsDirty ? \"\" : (cfg.params || \"\").trim(), !!rawCur", "(cfg.params || \"\").trim(), !!rawCur"],
+  stoppednote: ["    body=${stopped ? T(\"The server is stopped", "    body=${false ? T(\"The server is stopped"],
+  keeprun: ["  const forks = (run && !shown.some(f => f.id === sw.run) ? [...shown, run] : shown).filter(f => f.kind === \"wdtt\");", "  const forks = shown.filter(f => f.kind === \"wdtt\");"],
   rawpick: ["  const rawCapable = !!(turnForkList().find(x => x.id === forkTo) || {}).raw;", "  const rawCapable = !!(turnForkList().find(x => x.id === fork) || {}).raw;"],
   cardtag: ["    : sw.switching ? html`<${StatusTag} cls=\"tg tg-pending\" icon=\"clock\" label=${T(\"tag|switching\")} title=${T(\"Moving to {v1} on the node's next sync\", { v1: forkLabel(sw.want) })}/>`\n", ""],
 };
@@ -105,15 +110,19 @@ const dx = dropdown(fieldOf("nn", "x", "xxcipherx")) || { options: [] };
 const xo = dx.options.find(o => o.value === "xxcipherx") || {};
 check("[2] a server on the hidden fork: shown as its value, not refused, and it may leave it", !!dx.options.length && xo.value === "xxcipherx" && !xo.disabled
       && dx.options.some(o => o.value === "qwdtt" && !o.disabled), dx.options);
+Store.nodes[0].wdtt_cfg.y = { fork: "qwdtt" }; Store.stats.nn.wdtt.push({ iface: "y", fork: "xxcipherx", fork_failed: { fork: "qwdtt", ver: "1.4.4-2", why: "x" } });
+const dy = dropdown(fieldOf("nn", "y", "qwdtt")) || { options: [] };
+check("[2] after a failed switch away from the hidden fork, the fork it runs is still a choice (\"pick it to stay there\")",
+      dy.options.some(o => o.value === "xxcipherx" && !o.disabled), dy.options);
 Store.panelSettings = { enabled_turn_forks: ["amurcanov", "csqtt"] };
 check("[2] one WDTT fork on offer: no field", fieldOf("nn", "a", "amurcanov") === null);
 Store.panelSettings = { enabled_turn_forks: ["amurcanov", "ildarmaga", "wdttplus", "qwdtt", "csqtt"] };
 
 // [3]
 let top = null; UI.setModalRenderer(st => { top = st[st.length - 1] || null; });
-const ask = (from, to, params, rawOn, users) => { UI.clearModalStack(); top = null; let went = 0;
+const ask = (from, to, params, rawOn, users, stopped) => { UI.clearModalStack(); top = null; let went = 0;
   Store.recon = Object.assign(Store.recon || {}, { peers: Array.from({ length: users }, (_, i) => ({ id: "p" + i, targets: [{ node: "nn", iface: "a" }] })) });
-  TU.confirmWdttSwitch("nn", "a", from, to, params, rawOn, () => went++);
+  TU.confirmWdttSwitch("nn", "a", from, to, params, rawOn, () => went++, stopped);
   const p = (top && top.props) || {}; const r = { title: p.title, body: String(p.body || ""), note: text(p.note) };
   if (p.onConfirm) p.onConfirm(); return { ...r, went }; };
 const a3 = ask("amurcanov", "qwdtt", "", false, 3);
@@ -128,6 +137,9 @@ check("[3] …and to wdttplus the same", /must turn the VPN off and on once/.tes
 check("[3] …and that the node puts it back by itself", /puts the server back on amurcanov by itself/.test(a3.body), a3.body);
 check("[3] confirming saves", a3.went === 1, a3);
 check("[3] no flags, no RAW: no note", !a3.note.trim(), a3.note);
+const a3s = ask("amurcanov", "qwdtt", "", false, 3, true);
+check("[3] a stopped server: it moves now and starts on the target when started — no promise of a check it never gets",
+      /The server is stopped/.test(a3s.body) && !/puts the server back/.test(a3s.body), a3s.body);
 const a4 = ask("amurcanov", "ildarmaga", "-x 1", false, 0);
 check("[3] the extra flags that go are named", /extra flags \(-x 1\) are removed/.test(a4.note), a4.note);
 const a5 = ask("qwdtt", "amurcanov", "", true, 2);
@@ -141,7 +153,11 @@ check("[4] a pick sends the fork with fork_switch", sheet.includes("fork: forkTo
 check("[4] only a pick that differs from the record is held", sheet.includes("onChange=${v => setForkPick(v === sw.want ? null : v)}")
       && sheet.includes("const forkTo = forkPick || sw.want, forkDirty = forkTo !== sw.want;"));
 check("[4] a switch away from what runs asks first; back to what runs asks nothing",
-      sheet.includes("const save = () => forkDirty && forkTo !== sw.run ? confirmWdttSwitch(node, iface, sw.run, forkTo, (cfg.params || \"\").trim(), !!rawCur, save2) : save2();"));
+      sheet.includes("  const save = () => forkDirty && forkTo !== sw.run\n    ? confirmWdttSwitch(node, iface, sw.run, forkTo,") && sheet.includes("\n    : save2();"));
+check("[4] the confirm closes before the save goes on (a second question or a refusal lands on the sheet, not under a spinning confirm)",
+      sheet.includes("() => { closeModal(); return save2(); }, !!cfg.stopped)"));
+check("[4] flags typed in the same save are the target's: only untouched ones are named as going",
+      sheet.includes("paramsDirty ? \"\" : (cfg.params || \"\").trim(), !!rawCur"));
 check("[4] the RAW toggle follows the picked fork", sheet.includes("const rawCapable = !!(turnForkList().find(x => x.id === forkTo) || {}).raw;"));
 check("[4] the node's notices show while nothing is picked; a failover copy gets no field",
       sheet.includes("${forkDirty ? null : html`<${WdttForkNotices} sw=${sw}/>`}") && sheet.includes("${roWhy ? null : html`<${WdttForkField}"));

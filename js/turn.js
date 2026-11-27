@@ -2141,7 +2141,9 @@ export function wdttSwitchState(node, iface) {
   return { want, run, failed, blocked, switching: moving && !blocked };
 }
 export function WdttForkField({ node, sw, value, onChange }) {
-  const forks = enabledTurnForks(sw.want).filter(f => f.kind === "wdtt");
+  // the fork it runs stays a choice even when hidden or turned off: "pick it to stay there" after a failed switch
+  const shown = enabledTurnForks(sw.want), run = turnForkList().find(f => f.id === sw.run);
+  const forks = (run && !shown.some(f => f.id === sw.run) ? [...shown, run] : shown).filter(f => f.kind === "wdtt");
   if (forks.length < 2) return null;
   const can = (Store.stats[node] || {}).wdtt_forks || [];
   const opts = forkOpts(forks, f => f.id === sw.want || f.id === sw.run ? "" : !(f.wdtt_versions || []).length ? T("no build published yet")
@@ -2155,11 +2157,12 @@ export function WdttForkField({ node, sw, value, onChange }) {
 // ildarmaga 1.5.0-4 and wdttplus 20-1 with the qWDTT client; amurcanov 1.2.4-3 and qwdtt 1.4.4-2 resume one in about 16 s.
 const WDTT_NO_RESUME = ["ildarmaga", "wdttplus"];
 // Ask before a switch: who is affected and what they must do (works-without-user-action) — the extra flags and RAW it drops.
-export function confirmWdttSwitch(node, iface, from, to, params, rawOn, go) {
+export function confirmWdttSwitch(node, iface, from, to, params, rawOn, go, stopped) {
   const n = ghostPeers(node, iface).length, fl = forkLabel(from), tl = forkLabel(to);
   const rawGone = rawOn && !(turnForkList().find(f => f.id === to) || {}).raw;
   pushModal(html`<${ConfirmSheet} title=${T("Switch to {v1}?", { v1: tl })} confirmLabel=${T("Switch to {v1}", { v1: tl })} warn=${true}
-    body=${!n ? T("The server restarts on {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: tl, v2: fl })
+    body=${stopped ? T("The server is stopped: it moves to {v1} now and starts on {v1} when you start it. Nothing checks {v1} before then.", { v1: tl })
+      : !n ? T("The server restarts on {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: tl, v2: fl })
       : WDTT_NO_RESUME.includes(to) ? T("The server restarts on {v1}. Its {v2} keep their passwords, links and apps, but a device online now must turn the VPN off and on once: {v1} does not resume a connection that was running before it restarted. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: tl, v2: plural(n, "user"), v3: fl })
       : T("The server restarts on {v1}. Its {v2} keep their passwords, links and apps: a device online now loses the connection for up to half a minute and carries on by itself. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: tl, v2: plural(n, "user"), v3: fl })}
     note=${params || rawGone ? html`${params ? html`<p class="hint">${T("Its extra flags ({v1}) are removed: they are {v2}'s.", { v1: params, v2: fl })}</p>` : null}${rawGone
@@ -2265,7 +2268,11 @@ export function WdttManageSheet({ node, w: w0 }) {
     Store.poll();
   };
   // A fork switch asks first (who is affected, what goes); going back to the fork that already runs restarts nothing.
-  const save = () => forkDirty && forkTo !== sw.run ? confirmWdttSwitch(node, iface, sw.run, forkTo, (cfg.params || "").trim(), !!rawCur, save2) : save2();
+  // The confirm closes before save2 runs: a second question (the endpoint, RAW) or a refusal then lands on this sheet, not
+  // under a confirm left spinning. Flags typed in this save are for the target and stay, so only untouched ones are named.
+  const save = () => forkDirty && forkTo !== sw.run
+    ? confirmWdttSwitch(node, iface, sw.run, forkTo, paramsDirty ? "" : (cfg.params || "").trim(), !!rawCur, () => { closeModal(); return save2(); }, !!cfg.stopped)
+    : save2();
   const save2 = async () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
     if (endpointDirty) {   // endpoint / DTLS port is baked into every user's link → confirm the re-issue
@@ -2422,7 +2429,7 @@ export function EditWdttSheet({ node, iface }) {
   const emode = nrec.routing_mode || "kernel";   // for smart-rule validation (kernel = IP-only)
   // Take-over in flight: saving here would push a config at a server the node is still replacing.
   const adopting = (nrec.wdtt_adopting || []).includes(iface);
-  const fork = cfg.fork || w.fork || "amurcanov";   // create-time choice — read-only here (no live binary/store swap)
+  const fork = wdttSwitchState(node, iface).run;   // what RUNS (a switch that waits or failed: the record names the asked one); switched from the WDTT-proxy sheet
   const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
   const [wgPort, setWgPort] = useState(String(cfg.wg_port || "56001"));   // endpoint + listen port are edited from the WDTT-proxy modal now
   const _dtls = oldListen.includes(":") ? oldListen.slice(oldListen.lastIndexOf(":") + 1) : "";
