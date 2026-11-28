@@ -6181,6 +6181,12 @@ def validate_access(incoming, current):
         host = _url_host(ep["url"])
         if ep["url"] and mode in CA_DOMAIN_MODES and _is_ip(host):
             errors.append("%s: %s needs a domain URL, not an IP address." % (name, mode))
+        if mode == "cf15" and ep["port"] not in CF_HTTPS_PORTS:
+            errors.append("%s: port %d can't be reached behind Cloudflare — a cf15 origin cert is only valid there. Use one of: %s."
+                          % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
+        elif mode == "cloudflare" and ep["port"] not in CF_HTTPS_PORTS:
+            warnings.append("%s: if this panel is behind Cloudflare, port %d won't be reachable (CF connects to %s)."
+                            % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
     # ⚠️ A PANEL BY IP THAT MOVES TO A NAME TAKES ITS SUBSCRIPTION PAGE ALONG. `letsencrypt-ip` has no rule above, and
     # the type is NOT switched here: it stays as saved until the move is CONFIRMED (_tls_type_follow_address), so a
     # move that fails, is cancelled or times out has nothing to put back (review F5 — a switch at the save left such
@@ -6192,12 +6198,6 @@ def validate_access(incoming, current):
     if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph) and _sh and _is_ip(_sh):
         errors.append("Subscription: the panel is moving to a domain, so the subscription address must be a domain too "
                       "— a Let's Encrypt certificate for a name cannot cover an IP address.")
-        if mode == "cf15" and ep["port"] not in CF_HTTPS_PORTS:
-            errors.append("%s: port %d can't be reached behind Cloudflare — a cf15 origin cert is only valid there. Use one of: %s."
-                          % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
-        elif mode == "cloudflare" and ep["port"] not in CF_HTTPS_PORTS:
-            warnings.append("%s: if this panel is behind Cloudflare, port %d won't be reachable (CF connects to %s)."
-                            % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
 
     # direct TLS (this service terminates its own TLS, reached DIRECTLY) can't listen on loopback — it wouldn't be
     # reachable from outside (Cloudflare/clients get a 521). Guard the panel here (always served); the SPA also blocks

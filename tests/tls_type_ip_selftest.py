@@ -23,7 +23,9 @@ started by hand with compose has no installer to seed anything: with the placeho
       and letsencrypt over any other certificate, stays
   [6] a save keeps the type (review F5: a switch at the save left a failed or cancelled move on its IP under
       letsencrypt); a panel by IP that moves to a name must take a subscription address on the IP along, said in
-      words about the move (F6); a subscription page alone on a name passes
+      words about the move (F6); a subscription page alone on a name passes; and the rules the new one stands beside
+      are what they were — the Cloudflare port checks, which the new rule's first placement cut out of their loop
+      with nothing going red (review F7)
   [7] the type follows the address the panel is CONFIRMED on (_tls_type_follow_address): letsencrypt-ip on a name →
       letsencrypt; letsencrypt on an address with Let's Encrypt's certificate by IP → letsencrypt-ip; at a confirm
       the type is changed, and saved, before the two writes that record it
@@ -72,6 +74,13 @@ PLANTS = [
     ("sub-rule", SUBRULE, "    if False:\n", "[6] a subscription address left on the IP is refused, in words about the move"),
     ("sub-wide", SUBRULE, '    if mode == "letsencrypt-ip" and _sh and _is_ip(_sh):\n',
      "[6] …and nothing else is: both on names, no subscription address, the page alone on a name, both on the IP"),
+    ("cf-port", '        if mode == "cf15" and ep["port"] not in CF_HTTPS_PORTS:\n', "        if False:\n",
+     "[6] the rules beside the new one stand: cf15 on a port Cloudflare does not reach is refused, for the panel and for the page"),
+    ("cf-port-one", '        if mode == "cf15" and ep["port"] not in CF_HTTPS_PORTS:\n',
+     '        if mode == "cf15" and name == "Panel" and ep["port"] not in CF_HTTPS_PORTS:\n',
+     "[6] the rules beside the new one stand: cf15 on a port Cloudflare does not reach is refused, for the panel and for the page"),
+    ("cf-warn", '        elif mode == "cloudflare" and ep["port"] not in CF_HTTPS_PORTS:\n', "        elif False:\n",
+     "[6] …and cloudflare on such a port is warned about, not refused"),
     ("to-name", TO_NAME, "    if False:\n", "[7] letsencrypt-ip on a name becomes letsencrypt"),
     ("to-ip", TO_IP, "    elif False:\n", "[7] letsencrypt on an address, over Let's Encrypt's certificate by IP, becomes letsencrypt-ip"),
     ("to-ip-any", TO_IP, '    elif was == "letsencrypt" and host and _is_ip(host):\n',
@@ -294,6 +303,28 @@ check("[6] …and nothing else is: both on names, no subscription address, the p
 mode, errs = save("letsencrypt", NAME_URL, to(IP_URL))
 check("[6] letsencrypt with an address is refused, as before",
       mode == "letsencrypt" and errs == ["Panel: letsencrypt needs a domain URL, not an IP address."], (mode, errs))
+
+
+def save_cf(mode, port, **held):
+    """A save under a Cloudflare type on `port`: (errors, warnings) that name Cloudflare's ports."""
+    cur = {"panel": {"url": NAME_URL, "host": "0.0.0.0", "port": 443}, "sub": {"url": "", "host": "0.0.0.0", "port": 8444},
+           "tls": dict({"mode": mode, "email": ""}, **held)}
+    M.IN_DOCKER = False
+    _clean, errs, warns = M.validate_access(to("https://panel.example.org:%d" % port, port), cur)
+    return [e for e in errs if "Cloudflare" in e], [w for w in warns if "Cloudflare" in w]
+
+
+errs, warns = save_cf("cf15", 9999, cf_origin_token="x" * 40)
+check("[6] the rules beside the new one stand: cf15 on a port Cloudflare does not reach is refused, for the panel and for the page",
+      len(errs) == 2 and errs[0].startswith("Panel: port 9999 can't be reached behind Cloudflare")
+      and errs[1].startswith("Subscription: port 8444 can't be reached behind Cloudflare") and not warns, (errs, warns))
+errs, warns = save_cf("cloudflare", 9999, cf_token="x" * 40)
+check("[6] …and cloudflare on such a port is warned about, not refused",
+      not errs and len(warns) == 2 and warns[0].startswith("Panel: if this panel is behind Cloudflare, port 9999 won't be reachable"), (errs, warns))
+errs, warns = save_cf("cf15", 8443, cf_origin_token="x" * 40)
+check("[6] …a port Cloudflare reaches is not named (the page's 8444 alone is), and the other types hear nothing of it",
+      len(errs) == 1 and errs[0].startswith("Subscription: port 8444") and not warns
+      and [save_cf("letsencrypt", 9999), save_cf("letsencrypt-ip", 9999), save_cf("selfsigned", 9999)] == [([], [])] * 3, (errs, warns))
 RU = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
 check("[6] the new sentence has its Russian", ('  "%s": "Подписки: ' % SUB_MOVES) in RU)
 
