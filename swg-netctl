@@ -982,12 +982,10 @@ def do_issue_cert(service, domain, reload="reload"):
     creds = _load_access_tls()
     mode = creds["mode"] or "letsencrypt"
     # ⚠️ A NAME UNDER `letsencrypt-ip` IS ORDERED AS `letsencrypt`: the same CA, the same HTTP-01 challenge. A panel by
-    # IP keeps that type until its move to a domain is CONFIRMED (the panel changes it then, never at the save — a
-    # move that fails must have nothing to put back), and its subscription page may sit on a name of its own. Both
-    # ask for a certificate by NAME while the stored type still says "by IP", and the refusal below answered them
-    # too: the move stopped at the apply. The container's entrypoint has always ordered a name in this type. Only an
-    # ADDRESS has no path here — the installer issues that one. (An address beside a name is left out of the order
-    # by _issue_acme itself.)
+    # IP keeps that type until its move to a domain is CONFIRMED (never at the save: a move that fails must have
+    # nothing to put back), and its subscription page may sit on a name of its own. The refusal below answered both,
+    # and the move stopped at the apply; the container's entrypoint has always ordered a name in this type. Only an
+    # ADDRESS has no path here — the installer issues it. (_issue_acme itself leaves an address out beside a name.)
     if mode == "letsencrypt-ip" and any(not _ip_norm(d) for d in domains):
         mode = "letsencrypt"
     if not DRYRUN:

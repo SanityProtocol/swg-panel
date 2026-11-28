@@ -5570,13 +5570,11 @@ def _infer_tls_mode(deps):
     # compose has no installer to seed its settings, so with the placeholder on the socket this read "selfsigned" —
     # and was later healed to "letsencrypt" off the certificate, for one by IP too. Bare-metal has no such record
     # the panel may read: install.conf is root's alone (it holds the Cloudflare tokens).
-    # ⚠️ ONLY THE TYPES THAT NEED NOTHING BUT THE CONTAINER. The two Cloudflare types need their token in the SETTINGS:
-    # a save without it is refused, and the helper reads it from there for every later certificate. A container
-    # started by hand has it in .env at most — and one started without it is where the entrypoint fell back to this
-    # very placeholder — so those read as they did (review F3). A Let's Encrypt order that FAILED leaves the same
-    # placeholder and still reads Let's Encrypt: an installer-made container says so in that state (its seed is kept),
-    # the entrypoint orders again in that type at every start, and an Access change writes the stored type back into
-    # .env — "selfsigned" there would replace the operator's choice.
+    # ⚠️ ONLY THE TYPES THAT NEED NOTHING BUT THE CONTAINER. The two Cloudflare types need their token in the SETTINGS
+    # (a save without it is refused; the helper reads it there), and a container started without one is where the
+    # entrypoint fell back to this placeholder: those read as they did (review F3). A Let's Encrypt order that FAILED
+    # still reads Let's Encrypt — as an installer-made container does in that state, and an Access change writes the
+    # stored type back into .env, where "selfsigned" would replace the operator's choice.
     if IN_DOCKER:
         _given = (os.environ.get("TLS") or "").strip()
         if _given in ("letsencrypt", "letsencrypt-ip", "selfsigned"):
@@ -5666,9 +5664,8 @@ def _reconcile_saved_ahead(deps, blessed_url):
                 # reconcile and must not print its message — a wrong line in the log is what makes a fault like
                 # this take an hour to trace back.
                 tls["mode"] = _real; ps.setdefault("access", {})["tls"] = tls; healed = _real
-        # …and the two Let's Encrypt types follow the address the panel is on (_tls_type_follow_address): a panel by
-        # IP installed before 1.8.12 says `letsencrypt` over a certificate by IP, and could save nothing on the Access
-        # card. Its own message, like the two above.
+        # …and the two Let's Encrypt types follow the address the panel is on (_tls_type_follow_address): a panel by IP
+        # installed before 1.8.12 says `letsencrypt` and could save nothing on the Access card. Its own message too.
         followed = _tls_type_follow_address(deps)
         # DIRECT TLS: the host port and the url's port are ONE socket, so the url owns the port. Runs LAST, after
         # the url/base/mode reconciles above settle, and reads the ADVERTISED url from _compute_public_url — never
@@ -6187,13 +6184,11 @@ def validate_access(incoming, current):
         elif mode == "cloudflare" and ep["port"] not in CF_HTTPS_PORTS:
             warnings.append("%s: if this panel is behind Cloudflare, port %d won't be reachable (CF connects to %s)."
                             % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
-    # ⚠️ A PANEL BY IP THAT MOVES TO A NAME TAKES ITS SUBSCRIPTION PAGE ALONG. `letsencrypt-ip` has no rule above, and
-    # the type is NOT switched here: it stays as saved until the move is CONFIRMED (_tls_type_follow_address), so a
-    # move that fails, is cancelled or times out has nothing to put back (review F5 — a switch at the save left such
-    # a panel on its IP under `letsencrypt`, every Access save refused). Once confirmed the type IS `letsencrypt`,
-    # under which a subscription address by IP is refused at every later save — so it is said now, in words about
-    # what the operator did (F6: the rule above would answer with a type they never chose). The other way round is
-    # fine: a subscription page on a name of its own under a panel by IP (the helper orders a name in this type).
+    # ⚠️ A PANEL BY IP THAT MOVES TO A NAME TAKES ITS SUBSCRIPTION PAGE ALONG. The type is NOT switched here: it stays
+    # as saved until the move is CONFIRMED (_tls_type_follow_address), so a move that fails, is cancelled or times out
+    # has nothing to put back (review F5). Once confirmed it IS `letsencrypt`, which refuses a subscription address by
+    # IP at every later save — so it is said now, in words about the move (F6). The other way round is fine: a page
+    # on a name of its own under a panel by IP (the helper orders a name in this type).
     _ph, _sh = _url_host(panel["url"]), _url_host(sub["url"])
     if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph) and _sh and _is_ip(_sh):
         errors.append("Subscription: the panel is moving to a domain, so the subscription address must be a domain too "
