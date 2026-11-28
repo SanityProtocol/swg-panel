@@ -735,10 +735,6 @@ export const tlsModeOpts = saved => (saved === "letsencrypt-ip"
   ? [TLS_MODE_OPTS()[0], TLS_MODE_IP(), ...TLS_MODE_OPTS().slice(1)] : TLS_MODE_OPTS());
 export const tlsModeLabel = (mode) =>
   ((tlsModeOpts(mode).find(o => o.value === (mode || "")) || {}).label || "—");
-// The type a save ended with. The panel may store another one than the form sent — a panel by IP that moves to a name
-// is saved as Let's Encrypt by name (validate_access: the type follows the address) — and the form follows what was
-// SAVED, so the Type field never goes on showing, or sending, a type the panel no longer has.
-export const savedTlsMode = (echoTls, sent) => (echoTls && typeof echoTls.mode === "string" ? echoTls.mode : sent);
 
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
 // A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
@@ -1196,14 +1192,12 @@ export function AccessTLSCard({ onChange }) {
     if (!r || r.ok === false) { setBusy(false); return setMsg({ ok: false, t: (r && (srvText(r) || (r.errors || []).join("; "))) || T("Save failed.") }); }
     const rtls = ((r.data || {}).access || {}).tls || {};        // redacted echo → refresh the "(set)" markers
     setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token); setCfTok(""); setCfOrig("");
-    const savedMode = savedTlsMode(rtls, mode);                  // …and the type as the panel saved it
-    if (savedMode !== mode) setMode(savedMode);
     // remember the address that was live before this apply — if the new one doesn't confirm, we re-save this so the
     // panel's canonical url (advertised to nodes) rolls back with the bind/cert the server already reverts.
     if (needPanel) rollbackRef.current = { url: orig.pUrl, host: orig.pHost || "0.0.0.0", port: +orig.pPort || 443 };
     setConfirmUrl(""); setDockerFlip(""); setDockerArm(0); setDockerFlipPort(0);
     setOrig({ pUrl: npUrl, pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
-      sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode: savedMode, email: email.trim(),
+      sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim(),
       cert_path: certPath.trim(), key_path: keyPath.trim(),
       sub_cert_path: subCertPath.trim(), sub_key_path: subKeyPath.trim() });
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start

@@ -5465,11 +5465,51 @@ def _restore_blessed_mode(deps):
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
 
 
+def _tls_type_follow_address(deps):
+    """The two Let's Encrypt HTTP-01 types are one CA and one challenge, told apart by what the panel's address is:
+    `letsencrypt-ip` for an address, `letsencrypt` for a name. Keep the stored type in step with the address the
+    panel is CONFIRMED on. Called where a change is committed (_confirm_panel_url) and at start
+    (_reconcile_saved_ahead) — never at a save: a save that switched it left a failed, cancelled or timed-out move
+    on its IP under `letsencrypt`, where every Access save is refused (review F5).
+      · `letsencrypt-ip` on a NAME → `letsencrypt`: a move from the IP to a domain, confirmed.
+      · `letsencrypt` on an ADDRESS whose certificate Let's Encrypt issued for addresses only → `letsencrypt-ip`: a
+        panel by IP installed before 1.8.12 (its type was read off the certificate as `letsencrypt`), which could
+        save nothing on the Access card while its address was an IP (the operator, 2026-11-28). The certificate is
+        the evidence: an address under `letsencrypt` with any other certificate is a change that did not finish,
+        and is left alone.
+    Changes the settings in memory and returns (was, now), else None; the caller saves."""
+    ps = deps.get("panel_settings") or {}
+    tls = (ps.get("access") or {}).get("tls") or {}
+    was = str(tls.get("mode") or "")
+    host = _url_host(_compute_public_url(deps))
+    now = was
+    if was == "letsencrypt-ip" and host and not _is_ip(host):
+        now = "letsencrypt"
+    elif was == "letsencrypt" and host and _is_ip(host) and _cert_ip_only(TLS_CERT) and _cert_is_letsencrypt(TLS_CERT):
+        now = "letsencrypt-ip"
+    if now == was:
+        return None
+    tls["mode"] = now
+    ps.setdefault("access", {})["tls"] = tls
+    deps["panel_settings"] = ps
+    return was, now
+
+
 def _confirm_panel_url(deps):
     """Adopt the current settings' public URL as the CONFIRMED dial address nodes are told (see _CONFIRMED_URL).
     Called when a change is genuinely committed: on apply-confirm and a pure public-URL edit. Persists the blessed
     baseline. (Boot uses _seed_confirmed_url_at_boot instead — it trusts the blessed file, not raw settings.)"""
     globals()["_CONFIRMED_URL"] = _compute_public_url(deps)
+    # the TLS type follows the address just confirmed — BEFORE the two writes below, which record the type. Never
+    # fatal: this is the commit of an address change, and nothing here may stop it.
+    _followed = None
+    with contextlib.suppress(Exception):
+        _followed = _tls_type_follow_address(deps)
+    if _followed:
+        with contextlib.suppress(Exception):
+            save_critical(deps.get("panel_settings_path") or "", json.dumps(deps.get("panel_settings") or {}, indent=2) + "\n")
+        log(LOG_INFO, "access: the panel's confirmed address is %s — the TLS type '%s' is '%s' now",
+            _url_host(_CONFIRMED_URL), _followed[0], _followed[1])
     _write_bless(deps)
     _persist_install_conf(deps)
 
@@ -5557,6 +5597,7 @@ def _reconcile_saved_ahead(deps, blessed_url):
         pnl = (ps.get("access") or {}).get("panel") or {}
         changed = False
         healed = ""      # the self-signed→real-CA TLS heal below — saved with the rest, but its own message
+        followed = None  # the Let's Encrypt type put in step with the address — (was, now): its own message too
         rolled = None    # the TLS type put back to what the socket serves — (was, now): its own message too (N4)
         # access.panel.port/host mean "where this panel is reached ON THIS HOST": the process bind on bare-metal,
         # the PUBLISHED port on docker. Only bare-metal's live socket IS that value, so only there is it ground
@@ -5625,6 +5666,10 @@ def _reconcile_saved_ahead(deps, blessed_url):
                 # reconcile and must not print its message — a wrong line in the log is what makes a fault like
                 # this take an hour to trace back.
                 tls["mode"] = _real; ps.setdefault("access", {})["tls"] = tls; healed = _real
+        # …and the two Let's Encrypt types follow the address the panel is on (_tls_type_follow_address): a panel by
+        # IP installed before 1.8.12 says `letsencrypt` over a certificate by IP, and could save nothing on the Access
+        # card. Its own message, like the two above.
+        followed = _tls_type_follow_address(deps)
         # DIRECT TLS: the host port and the url's port are ONE socket, so the url owns the port. Runs LAST, after
         # the url/base/mode reconciles above settle, and reads the ADVERTISED url from _compute_public_url — never
         # the raw saved one. For a portless url that folds the CURRENT stored port back in, so an origin on :8443
@@ -5637,7 +5682,7 @@ def _reconcile_saved_ahead(deps, blessed_url):
                     _dp = _pu.port or (443 if (_pu.scheme or "https") == "https" else 80)
                     if int(pnl.get("port") or 0) != int(_dp):
                         pnl["port"] = int(_dp); changed = True
-        if changed or healed or rolled:
+        if changed or healed or rolled or followed:
             ps.setdefault("access", {})["panel"] = pnl
             deps["panel_settings"] = ps
             save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
@@ -5648,6 +5693,9 @@ def _reconcile_saved_ahead(deps, blessed_url):
             if healed:
                 log(LOG_INFO, "access: boot heal — TLS type said self-signed, but the live certificate was issued by a real "
                       "CA; corrected to '%s'" % healed)
+            if followed:
+                log(LOG_INFO, "access: boot heal — the TLS type said '%s', but this panel is reached by %s; it is '%s' now",
+                    followed[0], "a name" if followed[1] == "letsencrypt" else "IP, on a Let's Encrypt certificate for that address", followed[1])
             if changed:
                 log(LOG_INFO, "access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address")
 
@@ -6078,16 +6126,6 @@ def validate_access(incoming, current):
     mode = (str((tin["mode"] if "mode" in tin else tcur.get("mode")) or "")).strip()
     if mode not in TLS_MODES:
         mode = ""
-    # ⚠️ A CERTIFICATE "FOR THIS IP" NAMES NO DOMAIN — THE TYPE FOLLOWS THE ADDRESS. `letsencrypt-ip` is what an
-    # install by IP holds (read back off its certificate since 1.8.12), and the Type list offers it only while it is
-    # the saved type: a panel that moves from its IP to a name arrives here still carrying it. The same CA and the
-    # same challenge (HTTP-01, port 80) by name are `letsencrypt`. Left as it was the save passed and the apply failed
-    # in the root helper, which issues nothing in this type (swg-netctl do_issue_cert) — the move a panel by IP made
-    # without a hitch while its type was misread as `letsencrypt` (review F2). The panel's address only: a
-    # subscription page on a name of its own does not change what the panel's certificate is.
-    _ph = _url_host(panel["url"])
-    if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph):
-        mode = "letsencrypt"
     email = (str((tin["email"] if "email" in tin else tcur.get("email")) or "")).strip()[:200]
     # secrets: an empty incoming value KEEPS the stored one (the browser never receives them, so a blank
     # field means "unchanged", not "clear"). A literal "-" clears it.
@@ -6143,6 +6181,17 @@ def validate_access(incoming, current):
         host = _url_host(ep["url"])
         if ep["url"] and mode in CA_DOMAIN_MODES and _is_ip(host):
             errors.append("%s: %s needs a domain URL, not an IP address." % (name, mode))
+    # ⚠️ A PANEL BY IP THAT MOVES TO A NAME TAKES ITS SUBSCRIPTION PAGE ALONG. `letsencrypt-ip` has no rule above, and
+    # the type is NOT switched here: it stays as saved until the move is CONFIRMED (_tls_type_follow_address), so a
+    # move that fails, is cancelled or times out has nothing to put back (review F5 — a switch at the save left such
+    # a panel on its IP under `letsencrypt`, every Access save refused). Once confirmed the type IS `letsencrypt`,
+    # under which a subscription address by IP is refused at every later save — so it is said now, in words about
+    # what the operator did (F6: the rule above would answer with a type they never chose). The other way round is
+    # fine: a subscription page on a name of its own under a panel by IP (the helper orders a name in this type).
+    _ph, _sh = _url_host(panel["url"]), _url_host(sub["url"])
+    if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph) and _sh and _is_ip(_sh):
+        errors.append("Subscription: the panel is moving to a domain, so the subscription address must be a domain too "
+                      "— a Let's Encrypt certificate for a name cannot cover an IP address.")
         if mode == "cf15" and ep["port"] not in CF_HTTPS_PORTS:
             errors.append("%s: port %d can't be reached behind Cloudflare — a cf15 origin cert is only valid there. Use one of: %s."
                           % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))

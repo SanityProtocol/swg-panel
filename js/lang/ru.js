@@ -7366,6 +7366,7 @@ export const STR = {
   "Manual Captcha": "Ручная капча",
   "Panel and subscription are on the same host and port but different paths — two separate servers can't share host:port. Use a different subdomain or a different port.": "Панель и подписка на одном хосте и порту, но с разными путями — два отдельных сервера не могут делить host:port. Возьмите другой поддомен или другой порт.",
   "Panel and subscription can't share the same address and port (%s:%d).": "Панель и подписка не могут делить один адрес и порт (%s:%d).",
+  "Subscription: the panel is moving to a domain, so the subscription address must be a domain too — a Let's Encrypt certificate for a name cannot cover an IP address.": "Подписки: панель переходит на домен, поэтому адрес подписок тоже должен быть доменом — сертификат Let's Encrypt на имя не покрывает IP-адрес.",
   "Panel: with direct TLS (mode “%s”) the panel is reached directly, so it can't listen on %s (loopback) — it wouldn't be reachable from outside (Cloudflare/clients get 521). Use 0.0.0.0 or a public IP. Loopback is only valid behind a reverse proxy (TLS mode “None”).": "Панель: при прямом TLS (режим «%s») к панели обращаются напрямую, поэтому она не может слушать %s (loopback) — снаружи её будет не достать (Cloudflare и клиенты получат 521). Возьмите 0.0.0.0 или публичный IP. Loopback имеет смысл только за обратным прокси (режим TLS «Нет»).",
   "Received transferred node": "Принята перенесённая нода",
   "Reinstalling csqtt": "Переустановка csqtt",

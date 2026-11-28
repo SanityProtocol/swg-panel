@@ -15,7 +15,11 @@
       and NONE when there is none (1.8.12 item 26: never a made-up admin@<domain>); a bad email refused before anything is fetched; offline → the clear Reject naming the manual
       commands, no installer, no order; an installer that installs nothing → the same; an old acme.sh → --upgrade; an
       acme.sh already there → no install at all; no apt-get → the Reject; a dry run → the argv logged, nothing run, no dir
-  [2] swg-netctl `_issue_acme`: an IP literal beside a name is left out of the order; IPs alone are left for the CA
+  [2] swg-netctl `_issue_acme`: an IP literal beside a name is left out of the order; IPs alone are left for the CA.
+      `do_issue_cert` under the type `letsencrypt-ip`: a NAME is ordered as `letsencrypt` — a panel by IP keeps that
+      type until its move to a domain is confirmed, and its subscription page may sit on a name of its own; the
+      helper refused both ("not yet implemented"), so the move stopped at the apply (card item26-acme-email, review
+      F2/F5). An address alone is still refused: the installer issues that one
   [3] swg-panel-server `_apply_panel_cert_only`: under a CA mode an old IP (v4, v6, bracketed) is left out and the change is
       armed new-only; an old DNS name is kept; self-signed is unchanged; `_place_cert` waits ≥ 300 s
   [4] the "not found" message names each place once (under root `~` is /root)
@@ -64,6 +68,10 @@ PLANTS = [
      "[1] an installer that installs nothing (get.acme.sh exits 0 anyway): the Reject, no order"),
     ("dry", "NETCTL", '    tmp = os.path.join(tempfile.gettempdir(), "swg-acme-XXXXXX") if DRYRUN else tempfile.mkdtemp(prefix="swg-acme-")',
      '    tmp = tempfile.mkdtemp(prefix="swg-acme-")', "[1] a dry run: every step's argv logged, nothing run, no temp dir made"),
+    ("ip-name", "NETCTL", '    if mode == "letsencrypt-ip" and any(not _ip_norm(d) for d in domains):\n        mode = "letsencrypt"\n', "",
+     "[2] letsencrypt-ip: a name is ordered as letsencrypt, for the panel and for the subscription page"),
+    ("ip-name-all", "NETCTL", '    if mode == "letsencrypt-ip" and any(not _ip_norm(d) for d in domains):\n', '    if mode == "letsencrypt-ip":\n',
+     "[2] letsencrypt-ip: an address alone is still refused"),
     ("ip-netctl", "NETCTL", "    if names and len(names) < len(domains):", "    if False:",
      "[2] an IP literal beside a name is left out of the order"),
     ("ip-panel", "PANEL", '        if old_domain and _mode in REAL_CA_MODES and _is_ip(old_domain.strip("[]")):',
@@ -369,6 +377,33 @@ box, store, tmp = sandbox(cron=True, acme=True)
 err, calls, _ = issue(["203.0.113.7"])
 o = calls[idx(calls, r"--issue")] if idx(calls, r"--issue") >= 0 else ""
 check("[2] an order of IPs alone is left for the CA to answer", "-d 203.0.113.7" in o, (err, calls))
+
+
+def issue_cert(stored, service, domain):
+    """Drive do_issue_cert as shipped under the stored TLS type; returns (Reject message or "", what _issue_acme was asked)."""
+    asked = []
+    real = N._load_access_tls, N._issue_acme, N._fix_cert_perms
+    N._load_access_tls = lambda: {"mode": stored, "email": "", "cf_token": "", "cf_account": "", "cf_origin_token": ""}
+    N._issue_acme = lambda svc, svc_name, domains, mode, creds, reloadcmd=True: asked.append((svc_name, list(domains), mode))
+    N._fix_cert_perms = lambda svc: None
+    try:
+        N.do_issue_cert(service, domain, "noreload")
+        return "", asked
+    except N.Reject as e:
+        return str(e), asked
+    finally:
+        N._load_access_tls, N._issue_acme, N._fix_cert_perms = real
+
+
+got = [issue_cert("letsencrypt-ip", "panel", "new.example.com"), issue_cert("letsencrypt-ip", "sub", "sub.example.com"),
+       issue_cert("letsencrypt-ip", "panel", "new.example.com,203.0.113.7")]
+check("[2] letsencrypt-ip: a name is ordered as letsencrypt, for the panel and for the subscription page",
+      got == [("", [("panel", ["new.example.com"], "letsencrypt")]), ("", [("sub", ["sub.example.com"], "letsencrypt")]),
+              ("", [("panel", ["new.example.com", "203.0.113.7"], "letsencrypt")])], got)
+err, asked = issue_cert("letsencrypt-ip", "panel", "203.0.113.9")
+check("[2] letsencrypt-ip: an address alone is still refused", "not yet implemented for TLS mode 'letsencrypt-ip'" in err and not asked, (err, asked))
+got = [issue_cert("letsencrypt", "panel", "new.example.com"), issue_cert("cloudflare", "panel", "new.example.com")]
+check("[2] the other acme types are ordered as they are", [g[1][0][2] for g in got if g[1]] == ["letsencrypt", "cloudflare"], got)
 
 # ── [3] the panel: an old IP never joins a CA's order ────────────────────────────────────────────────────────────────
 print("\n[3] swg-panel-server: a same-port move from the IP orders the domain alone")

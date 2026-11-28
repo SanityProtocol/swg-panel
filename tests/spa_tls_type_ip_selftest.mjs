@@ -7,13 +7,10 @@
  * It is listed while it is the panel's SAVED type and only then: the root helper cannot issue a certificate for an
  * address, so it must never be an offered choice.
  *
- * The form follows the type the panel SAVED (review F2): a panel by IP that moves to a name is saved as Let's Encrypt
- * by name, and the Type field must not go on showing — and sending — "for this IP".
- *
  * Imports js/screen-settings.js as shipped (spa_env) and reads js/lang/ru.js.
  *
  * Run: node tests/spa_tls_type_ip_selftest.mjs
- *      --perturb   the list without the entry again and a form that keeps the type it sent, and expects red.
+ *      --perturb   the list without the entry again, and expects red.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -21,10 +18,9 @@ import { spa, check, done, ROOT } from "./spa_env.mjs";
 
 const PERTURB = process.argv.includes("--perturb");
 const S = await spa("screen-settings.js");
-let { tlsModeOpts, tlsModeLabel, savedTlsMode } = S;
+let { tlsModeOpts, tlsModeLabel } = S;
 const { TLS_MODE_OPTS } = S;
-if (PERTURB) { tlsModeOpts = () => TLS_MODE_OPTS(); tlsModeLabel = m => ((TLS_MODE_OPTS().find(o => o.value === (m || "")) || {}).label || "—");
-               savedTlsMode = (_echo, sent) => sent; }
+if (PERTURB) { tlsModeOpts = () => TLS_MODE_OPTS(); tlsModeLabel = m => ((TLS_MODE_OPTS().find(o => o.value === (m || "")) || {}).label || "—"); }
 
 const EN = "Let's Encrypt for this IP (needs port 80 reachable)";
 const vals = l => l.map(o => o.value);
@@ -52,15 +48,5 @@ check("the Access card's Type list is built from the saved type", src.includes("
 const ru = fs.readFileSync(path.join(ROOT, "js", "lang", "ru.js"), "utf8");
 const m = ru.match(new RegExp('^\\s*"' + EN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '":\\s*"([^"]+)",?\\s*$', "m"));
 check("js/lang/ru.js has it, with the IP and the port named", !!m && /IP/.test(m[1]) && /80/.test(m[1]) && /[а-я]/.test(m[1]), m && m[1]);
-
-console.log("\n[the form follows the type the panel saved]");
-check("a panel by IP saved as Let's Encrypt by name: the form takes the saved type",
-      typeof savedTlsMode === "function" && savedTlsMode({ mode: "letsencrypt" }, "letsencrypt-ip") === "letsencrypt");
-check("…a reverse proxy's empty type is a type too, and an answer without one keeps what was sent",
-      savedTlsMode({ mode: "" }, "letsencrypt") === "" && savedTlsMode({}, "selfsigned") === "selfsigned"
-      && savedTlsMode(undefined, "cf15") === "cf15", [savedTlsMode({ mode: "" }, "letsencrypt"), savedTlsMode({}, "selfsigned")]);
-check("the save sets the Type field and the baseline from it",
-      /const savedMode = savedTlsMode\(rtls, mode\);[^\n]*\n\s*if \(savedMode !== mode\) setMode\(savedMode\);/.test(src)
-      && /sPort: String\(_sPortN\(\)\), mode: savedMode, email: email\.trim\(\),/.test(src));
 
 done(PERTURB);

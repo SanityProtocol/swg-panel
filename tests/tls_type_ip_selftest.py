@@ -18,10 +18,16 @@ started by hand with compose has no installer to seed anything: with the placeho
       anything unknown read as before; bare-metal reads no such record
   [4] the sequence alb-onyx walked, through _reconcile_saved_ahead as shipped: the seeded type, a plain-HTTP start that
       clears it, an HTTPS start on a certificate by IP → letsencrypt-ip (by name → letsencrypt)
-  [5] a stored type is never rewritten: a panel that already says letsencrypt over a certificate by IP keeps it
-  [6] the type follows the address (validate_access, review F2): a panel by IP that moves to a name is saved as
-      letsencrypt — the root helper issues nothing in letsencrypt-ip, so the move failed at the apply; one that stays
-      by IP keeps its type; nothing is mapped the other way
+  [5] a panel by IP installed before 1.8.12 (it says letsencrypt over Let's Encrypt's certificate by IP) is healed at
+      start, and said — it could save nothing on the Access card (the operator, 2026-11-28); any other stored type,
+      and letsencrypt over any other certificate, stays
+  [6] a save keeps the type (review F5: a switch at the save left a failed or cancelled move on its IP under
+      letsencrypt); a panel by IP that moves to a name must take a subscription address on the IP along, said in
+      words about the move (F6); a subscription page alone on a name passes
+  [7] the type follows the address the panel is CONFIRMED on (_tls_type_follow_address): letsencrypt-ip on a name →
+      letsencrypt; letsencrypt on an address with Let's Encrypt's certificate by IP → letsencrypt-ip; at a confirm
+      the type is changed, and saved, before the two writes that record it
+      (the root helper ordering a name under letsencrypt-ip: tests/acme_on_demand_selftest.py [2])
 
 Certificates are made here with openssl (test CAs named as Let's Encrypt, its staging CA, another CA and Cloudflare's
 Origin CA; leaves by IP, by name, by both; a self-signed placeholder).
@@ -39,7 +45,11 @@ SRC = open(PANEL, encoding="utf-8").read()
 # (name, anchor, replacement, the check that must go red)
 IP_LINES = '        if _cert_ip_only(TLS_CERT) and _cert_is_letsencrypt(TLS_CERT):\n            return "letsencrypt-ip"\n'
 GIVEN = '        if _given in ("letsencrypt", "letsencrypt-ip", "selfsigned"):\n'
-FOLLOW = '    if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph):\n        mode = "letsencrypt"\n'
+SUBRULE = '    if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph) and _sh and _is_ip(_sh):\n'
+EMAIL = '    email = (str((tin["email"] if "email" in tin else tcur.get("email")) or "")).strip()[:200]\n'
+TO_NAME = '    if was == "letsencrypt-ip" and host and not _is_ip(host):\n'
+TO_IP = '    elif was == "letsencrypt" and host and _is_ip(host) and _cert_ip_only(TLS_CERT) and _cert_is_letsencrypt(TLS_CERT):\n'
+AT_CONFIRM = '    _followed = None\n    with contextlib.suppress(Exception):\n        _followed = _tls_type_follow_address(deps)\n'
 PLANTS = [
     ("ip", IP_LINES, "", "[2] Let's Encrypt's certificate by IP reads letsencrypt-ip"),
     ("ip-token", IP_LINES, IP_LINES.replace("(TLS_CERT):", '(TLS_CERT) and not str(tls.get("cf_token") or "").strip():'),
@@ -57,10 +67,23 @@ PLANTS = [
     ("none", GIVEN, "        if _given:\n", "[3] `none` and an unknown value read as before"),
     ("cf-env", GIVEN, '        if _given in TLS_MODES and _given not in ("", "skip"):\n',
      "[3] a container started with a Cloudflare type reads as before: its token is the settings' to hold"),
-    ("follow", FOLLOW, "", "[6] a panel by IP that moves to a name is saved as letsencrypt"),
-    ("follow-all", FOLLOW, FOLLOW.replace(" and not _is_ip(_ph)", ""), "[6] a panel that stays by IP keeps its type"),
-    ("follow-sub", FOLLOW, FOLLOW.replace("    if mode", '    _ph = _ph if _ph and not _is_ip(_ph) else _url_host(sub["url"])\n    if mode'),
-     "[6] a subscription page on a name of its own does not change the panel's type"),
+    ("save-switch", EMAIL, '    if mode == "letsencrypt-ip" and not _is_ip(_url_host(panel["url"]) or "0.0.0.0"):\n        mode = "letsencrypt"\n' + EMAIL,
+     "[6] a panel by IP that moves to a name: the save keeps its type, and nothing is refused"),
+    ("sub-rule", SUBRULE, "    if False:\n", "[6] a subscription address left on the IP is refused, in words about the move"),
+    ("sub-wide", SUBRULE, '    if mode == "letsencrypt-ip" and _sh and _is_ip(_sh):\n',
+     "[6] …and nothing else is: both on names, no subscription address, the page alone on a name, both on the IP"),
+    ("to-name", TO_NAME, "    if False:\n", "[7] letsencrypt-ip on a name becomes letsencrypt"),
+    ("to-ip", TO_IP, "    elif False:\n", "[7] letsencrypt on an address, over Let's Encrypt's certificate by IP, becomes letsencrypt-ip"),
+    ("to-ip-any", TO_IP, '    elif was == "letsencrypt" and host and _is_ip(host):\n',
+     "[7] …over any other certificate it is a change that did not finish, and is left alone"),
+    ("confirm", AT_CONFIRM, "    _followed = None\n", "[7] a confirmed move to a name changes the type, and saves it, before the type is recorded"),
+    ("confirm-late", AT_CONFIRM, "    _write_bless(deps)\n" + AT_CONFIRM,
+     "[7] a confirmed move to a name changes the type, and saves it, before the type is recorded"),
+    ("confirm-fatal", AT_CONFIRM, "    _followed = _tls_type_follow_address(deps)\n",
+     "[7] a fault while the type is put in step never stops the confirm"),
+    ("boot", "        followed = _tls_type_follow_address(deps)\n", "        pass\n",
+     "[5] a panel by IP installed before 1.8.12 is healed at start"),
+    ("boot-mute", "            if followed:\n", "            if False:\n", "[5] …and the log says what was changed, and why"),
 ]
 
 if "--perturb" in sys.argv:
@@ -218,14 +241,27 @@ s3, _ = start(start(seeded("letsencrypt", "panel.example.org"), "")[0], BY_NAME)
 check("[4] …and letsencrypt for a panel by name, as before", s3["access"]["tls"]["mode"] == "letsencrypt", s3["access"]["tls"])
 
 # ── [5] ──────────────────────────────────────────────────────────────────────────────────────────────────────
-print("\n[5] a stored type stays")
+print("\n[5] a panel by IP installed before 1.8.12")
 s4, out4 = start(seeded("letsencrypt", "203.0.113.77"), BY_IP)
-check("[5] a panel that already says letsencrypt over a certificate by IP keeps it, and nothing is said",
-      s4["access"]["tls"]["mode"] == "letsencrypt" and "TLS type" not in out4, (s4["access"]["tls"], out4))
+check("[5] a panel by IP installed before 1.8.12 is healed at start", s4["access"]["tls"]["mode"] == "letsencrypt-ip", s4["access"]["tls"])
+check("[5] …and the log says what was changed, and why",
+      "the TLS type said 'letsencrypt', but this panel is reached by IP, on a Let's Encrypt certificate for that address; "
+      "it is 'letsencrypt-ip' now" in out4, out4)
+got = [start(seeded("letsencrypt", "203.0.113.77"), c) for c in (BY_IP_OTHER, PLACEHOLDER)] \
+    + [start(seeded("letsencrypt", "panel.example.org"), BY_NAME), start(seeded("letsencrypt-ip", "203.0.113.77"), BY_IP),
+       start(seeded("cloudflare", "203.0.113.77"), BY_IP)]
+check("[5] letsencrypt over any other certificate, a panel by name, and every other stored type stay, and nothing is said",
+      [g[0]["access"]["tls"]["mode"] for g in got] == ["letsencrypt", "letsencrypt", "letsencrypt", "letsencrypt-ip", "cloudflare"]
+      and not any("TLS type" in g[1] for g in got), [(g[0]["access"]["tls"]["mode"], g[1]) for g in got])
+s5, out5 = start(seeded("letsencrypt-ip", "panel.example.org"), BY_NAME)
+check("[5] the other way at start too: letsencrypt-ip left on a panel by name reads letsencrypt",
+      s5["access"]["tls"]["mode"] == "letsencrypt" and "reached by a name; it is 'letsencrypt' now" in out5, (s5["access"]["tls"], out5))
 
 # ── [6] ──────────────────────────────────────────────────────────────────────────────────────────────────────
-print("\n[6] the type follows the address")
+print("\n[6] a save keeps the type; the subscription page moves with the panel")
 IP_URL, NAME_URL = "https://203.0.113.77", "https://panel.example.org"
+SUB_MOVES = ("Subscription: the panel is moving to a domain, so the subscription address must be a domain too — a Let's "
+             "Encrypt certificate for a name cannot cover an IP address.")
 
 
 def save(cur_mode, cur_url, inc, docker=False, sub_url=""):
@@ -244,23 +280,90 @@ def to(url, port=443, **more):
 got = [save("letsencrypt-ip", IP_URL, to(NAME_URL)), save("letsencrypt-ip", IP_URL, to(NAME_URL), docker=True),
        save("letsencrypt-ip", IP_URL, to(NAME_URL, tls={"mode": "letsencrypt-ip"})),      # as the screen sends it
        save("letsencrypt-ip", IP_URL, to("https://panel.example.org:8443/swg", 8443))]
-check("[6] a panel by IP that moves to a name is saved as letsencrypt", got == [("letsencrypt", [])] * 4, got)
-check("[6] …and the certificate by IP does not cover that name, so the apply orders one — in a type the helper issues",
-      M._cert_needs_issue(BY_IP, "panel.example.org", "letsencrypt") is True)
-got = [save("letsencrypt-ip", IP_URL, to("https://203.0.113.77:8443", 8443)), save("letsencrypt-ip", IP_URL, to("https://203.0.113.78")),
-       save("letsencrypt-ip", IP_URL, to("https://[2001:db8::7]")), save("letsencrypt-ip", IP_URL, {"sub": {"port": 8445}}),
-       save("letsencrypt-ip", "", {"sub": {"port": 8445}})]
-check("[6] a panel that stays by IP keeps its type", got == [("letsencrypt-ip", [])] * 5, got)
-got = save("letsencrypt-ip", IP_URL, {"sub": {"url": "https://sub.example.org:8444", "host": "0.0.0.0", "port": 8444}})
-check("[6] a subscription page on a name of its own does not change the panel's type", got == ("letsencrypt-ip", []), got)
+check("[6] a panel by IP that moves to a name: the save keeps its type, and nothing is refused", got == [("letsencrypt-ip", [])] * 4, got)
+check("[6] …the certificate by IP does not cover that name, so the apply asks for one",
+      M._cert_needs_issue(BY_IP, "panel.example.org", "letsencrypt-ip") is True)
+got = [save("letsencrypt-ip", IP_URL, to(NAME_URL), sub_url="https://203.0.113.77:8444"),
+       save("letsencrypt-ip", IP_URL, to(NAME_URL), sub_url="https://203.0.113.77:8444", docker=True)]
+check("[6] a subscription address left on the IP is refused, in words about the move", got == [("letsencrypt-ip", [SUB_MOVES])] * 2, got)
+got = [save("letsencrypt-ip", IP_URL, to(NAME_URL), sub_url="https://sub.example.org:8444"), save("letsencrypt-ip", IP_URL, to(NAME_URL)),
+       save("letsencrypt-ip", IP_URL, {"sub": {"url": "https://sub.example.org:8444", "host": "0.0.0.0", "port": 8444}}),
+       save("letsencrypt-ip", IP_URL, to("https://203.0.113.77:8443", 8443), sub_url="https://203.0.113.77:8444")]
+check("[6] …and nothing else is: both on names, no subscription address, the page alone on a name, both on the IP",
+      got == [("letsencrypt-ip", [])] * 4, got)
 mode, errs = save("letsencrypt", NAME_URL, to(IP_URL))
-check("[6] nothing is mapped the other way: letsencrypt with an address is refused, as before",
+check("[6] letsencrypt with an address is refused, as before",
       mode == "letsencrypt" and errs == ["Panel: letsencrypt needs a domain URL, not an IP address."], (mode, errs))
-got = [save(m, IP_URL, to(NAME_URL))[0] for m in ("selfsigned", "letsencrypt", "", "skip")]
-check("[6] every other type is saved as sent", got == ["selfsigned", "letsencrypt", "", "skip"], got)
-mode, errs = save("letsencrypt-ip", IP_URL, to(NAME_URL), sub_url="https://203.0.113.77:8444")
-check("[6] a subscription page left on the address is then refused as for any letsencrypt panel",
-      mode == "letsencrypt" and errs == ["Subscription: letsencrypt needs a domain URL, not an IP address."], (mode, errs))
+RU = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
+check("[6] the new sentence has its Russian", ('  "%s": "Подписки: ' % SUB_MOVES) in RU)
+
+# ── [7] ──────────────────────────────────────────────────────────────────────────────────────────────────────
+print("\n[7] the type follows the address the panel is confirmed on")
+
+
+def follow(mode, url, cert):
+    M.TLS_CERT = cert; M.IN_DOCKER = False
+    deps = {"panel_settings": {"access": {"panel": {"url": url, "host": "0.0.0.0", "port": 443}, "tls": {"mode": mode}}}}
+    return M._tls_type_follow_address(deps), deps["panel_settings"]["access"]["tls"]["mode"]
+
+
+got = [follow("letsencrypt-ip", NAME_URL, BY_NAME), follow("letsencrypt-ip", NAME_URL, BY_IP)]
+check("[7] letsencrypt-ip on a name becomes letsencrypt", got == [(("letsencrypt-ip", "letsencrypt"), "letsencrypt")] * 2, got)
+got = follow("letsencrypt", IP_URL, BY_IP)
+check("[7] letsencrypt on an address, over Let's Encrypt's certificate by IP, becomes letsencrypt-ip",
+      got == (("letsencrypt", "letsencrypt-ip"), "letsencrypt-ip"), got)
+got = [follow("letsencrypt", IP_URL, c) for c in (PLACEHOLDER, BY_IP_OTHER, BY_NAME, os.path.join(SB, "nope.pem"), "")]
+check("[7] …over any other certificate it is a change that did not finish, and is left alone", got == [(None, "letsencrypt")] * 5, got)
+got = [follow("letsencrypt-ip", IP_URL, BY_IP), follow("letsencrypt", NAME_URL, BY_NAME), follow("selfsigned", IP_URL, BY_IP),
+       follow("cloudflare", IP_URL, BY_IP), follow("cf15", NAME_URL, BY_IP), follow("", NAME_URL, ""), follow("letsencrypt-ip", "", BY_IP)]
+check("[7] every other pairing is left as it is", all(g[0] is None for g in got), got)
+
+
+def confirm(mode, url, cert):
+    t = tempfile.mkdtemp(prefix="confirm-", dir=SB)
+    deps = {"panel_settings": {"access": {"panel": {"url": url, "host": "0.0.0.0", "port": 443}, "tls": {"mode": mode}}},
+            "panel_settings_path": os.path.join(t, "panel-settings.json"), "nodes_path": os.path.join(t, "nodes.json")}
+    M.TLS_CERT = cert; M.IN_DOCKER = False
+    seen = []
+
+    def on_disk():
+        f = deps["panel_settings_path"]
+        return json.load(open(f))["access"]["tls"]["mode"] if os.path.exists(f) else None
+    real = M._write_bless, M._persist_install_conf
+    M._write_bless = lambda d: seen.append(("bless", d["panel_settings"]["access"]["tls"]["mode"], on_disk()))
+    M._persist_install_conf = lambda d: seen.append(("install.conf", d["panel_settings"]["access"]["tls"]["mode"], on_disk()))
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            M._confirm_panel_url(deps)
+    finally:
+        M._write_bless, M._persist_install_conf = real
+    return seen, buf.getvalue()
+
+
+seen, said = confirm("letsencrypt-ip", NAME_URL, BY_NAME)
+check("[7] a confirmed move to a name changes the type, and saves it, before the type is recorded",
+      seen == [("bless", "letsencrypt", "letsencrypt"), ("install.conf", "letsencrypt", "letsencrypt")]
+      and "the TLS type 'letsencrypt-ip' is 'letsencrypt' now" in said, (seen, said))
+_real_follow = M._tls_type_follow_address
+
+
+def _boom(deps):
+    raise RuntimeError("settings unreadable")
+
+
+M._tls_type_follow_address = _boom
+try:
+    seen, said = confirm("letsencrypt-ip", NAME_URL, BY_NAME)
+    ok = seen == [("bless", "letsencrypt-ip", None), ("install.conf", "letsencrypt-ip", None)]
+except RuntimeError as e:
+    ok, seen = False, "the confirm died: %s" % e
+finally:
+    M._tls_type_follow_address = _real_follow
+check("[7] a fault while the type is put in step never stops the confirm", ok, seen)
+seen, said = confirm("letsencrypt-ip", "https://203.0.113.77:8443", BY_IP)
+check("[7] a confirmed change that stays on the IP leaves the type, writes no settings and says nothing",
+      seen == [("bless", "letsencrypt-ip", None), ("install.conf", "letsencrypt-ip", None)] and "TLS type" not in said, (seen, said))
 
 print("\n" + ("ALL PASS" if not FAILS else "FAILED: %d\n  " % len(FAILS) + "\n  ".join(FAILS)))
 sys.exit(1 if FAILS else 0)
