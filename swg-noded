@@ -24705,9 +24705,10 @@ def _wdtt_serve_adopted(inst):
 
 
 def _wdtt_listen_bind(inst, cfgdir):
-    """The -listen a server binds. Loopback is bound as written: it is only ever the seed start's (_wdtt_store_carry), and
-    turn_bind knows only the box's own addresses, so it would bind every address instead."""
-    if str(inst["listen"]).startswith("127.0.0.1:"):
+    """The -listen a server binds. The seed start's (_wdtt_store_carry) is bound as written, on loopback: turn_bind knows
+    only the box's own addresses, so it would bind every address instead. Flagged, never read off the address: a server
+    configured on 127.0.0.1 keeps turn_bind's rule, as before."""
+    if inst.get("_seed"):
         return inst["listen"]
     return turn_bind(inst["listen"], pin=inst.get("bind_ip"), prev=_env_listen(cfgdir + "/wdtt.env"))
 
@@ -25758,7 +25759,7 @@ def _wdtt_store_carry(inst, frm, to):
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as s:
         s.bind(("127.0.0.1", 0)); seed_port = s.getsockname()[1]
     seed = {k: v for k, v in inst.items() if k not in ("raw_port", "raw_iface", "raw_addr", "bind_ip")}
-    seed.update(fork=to, listen="127.0.0.1:%d" % seed_port)
+    seed.update(fork=to, listen="127.0.0.1:%d" % seed_port, _seed=True)
     envp = cfgdir + "/wdtt.env"
     with open(envp) as f: env0 = f.read()   # `to` on its real address, as _wdtt_put_fork rendered it from `frm`'s bind
     _wdtt_put_fork(seed, to)
@@ -26246,13 +26247,16 @@ def reconcile_wdtt(want, remove=None):
                 _CSQTT_FETCH_LATER.pop(("wdtt:" + _wfork, (inst.get("ver") or "").strip()), None)   # Restart retries a fetch now
             _asked = {}
             if _wfork != _cur and prev:
-                # What RUNS keeps its own extra flags and RAW until a switch is verified. The panel's record already names
-                # the target's (the door clears the flags, and RAW for a target without it): rendered for `_cur`, a waiting
-                # pass would restart it without them, and a failed switch would put it back stripped.
+                # What RUNS keeps its own extra flags until a switch is verified: the door already cleared them for the
+                # target, and rendered for `_cur` a waiting pass would restart it without them, and a failed switch would
+                # put it back stripped. RAW follows the record at once — off when the door turned it off (a target without
+                # RAW), so this node and the panel's RAW bookkeeping (holders, subnets) never disagree — but is never
+                # turned ON for a fork that ran without it: it may have none (amurcanov exits on -listen-raw).
                 _asked = {k: inst.get(k) for k in _WDTT_FORK_OWN}
-                for k in _WDTT_FORK_OWN:
-                    if prev.get(k) is None: inst.pop(k, None)
-                    else: inst[k] = prev[k]
+                if prev.get("params") is None: inst.pop("params", None)
+                else: inst["params"] = prev["params"]
+                if not prev.get("raw_port"):
+                    for k in _WDTT_FORK_OWN[1:]: inst.pop(k, None)
             _switched = False                # this pass switched or rolled it back — it restarted it already
             if not _wdtt_present(iface):
                 if _cutf:                    # cut, and its unit or link gone too (a NixOS reboot lost /run): its store back, then

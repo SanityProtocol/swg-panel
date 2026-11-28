@@ -54,22 +54,25 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANTS = {   # name: (file, section, anchor, replacement)
     "unitfork": ("n", "[1]", "        with open(_wdtt_unit_path(iface), \"w\") as f: f.write(_wdtt_unit_text(iface, cfgdir + \"/server\", cfgdir, fork))\n        host_sh(\"systemctl daemon-reload >/dev/null 2>&1\")\n\ndef _wdtt_paneldb_ready",
                  "        with open(_wdtt_unit_path(iface), \"w\") as f: f.write(_wdtt_unit_text(iface, cfgdir + \"/server\", cfgdir, _wdtt_fork(inst)))\n        host_sh(\"systemctl daemon-reload >/dev/null 2>&1\")\n\ndef _wdtt_paneldb_ready"),
-    "keepenv": ("n", "[1]", "    with open(cfgdir + \"/wdtt.env.tmp\", \"w\") as f: f.write(text)\n    os.replace(cfgdir + \"/wdtt.env.tmp\", cfgdir + \"/wdtt.env\")\n", ""),
+    "keepenv": ("n", ("[1]", "[3]"), "    with open(cfgdir + \"/wdtt.env.tmp\", \"w\") as f: f.write(text)\n    os.replace(cfgdir + \"/wdtt.env.tmp\", cfgdir + \"/wdtt.env\")\n", ""),
     "keepkeys": ("n", ("[1]", "[2]"), "_WDTT_STORE_FILES = (\"passwords.json\", \"passwords.json.previous\",", "_WDTT_STORE_FILES = (\"wg-keys.dat\", \"passwords.json\", \"passwords.json.previous\","),
     "copy": ("n", ("[1]", "[3]"), "        _csqtt_store_copy(_wdtt_dir(iface), \"wdtt\", _WDTT_STORE_FILES)\n    except Exception as e:", "        pass\n    except Exception as e:"),
     "carry-in": ("n", "[2]", "        c.executemany(\"INSERT OR REPLACE INTO wdtt_devices (device_id, ip, priv_key, pub_key) VALUES (?,?,?,?)\", rows)\n", ""),
     "carry-out": ("n", "[2]", "            json.dump({\"main_password\": \"\", \"passwords\": {},\n                       \"devices\": {r[0]: {\"device_id\": r[0], \"ip\": r[1], \"priv_key\": r[2], \"pub_key\": r[3]} for r in rows}}, f)",
                   "            json.dump({\"main_password\": \"\", \"passwords\": {},\n                       \"devices\": {}}, f)"),
     "mainpw": ("n", "[1]", "            if isinstance(d, dict) and not all(k in d for k in (\"main_password\", \"passwords\", \"devices\")):", "            if False:"),
-    "seedaddr": ("n", "[2]", "    seed.update(fork=to, listen=\"127.0.0.1:%d\" % seed_port)", "    seed.update(fork=to)"),
+    "seedaddr": ("n", "[2]", "    seed.update(fork=to, listen=\"127.0.0.1:%d\" % seed_port, _seed=True)", "    seed.update(fork=to)"),
     "stable": ("n", "[3]", "    err = err or _wdtt_start_one(dict(inst, fork=to)) or _wdtt_verify_stable(iface)", "    err = err or _wdtt_start_one(dict(inst, fork=to))"),
     "revert": ("n", ("[3]", "[4]", "[5]"), "    werr = _wdtt_back_to(back, frm)\n    return (err", "    werr = \"\"\n    return (err"),
     "backrec": ("n", "[3]", "    werr = _wdtt_back_to(back, frm)\n    return (err", "    werr = _wdtt_back_to(inst, frm)\n    return (err"),
     "keepown": ("n", ("[3]", "[5]"), "            if _wfork != _cur and prev:\n                # What RUNS keeps", "            if False:\n                # What RUNS keeps"),
+    "rawkeep": ("n", ("[3]", "[5]"), "                if prev.get(\"params\") is None: inst.pop(\"params\", None)\n                else: inst[\"params\"] = prev[\"params\"]\n",
+                "                for k in _WDTT_FORK_OWN:\n                    if prev.get(k) is None: inst.pop(k, None)\n                    else: inst[k] = prev[k]\n"),
+    "rawon": ("n", "[3]", "                if not prev.get(\"raw_port\"):\n                    for k in _WDTT_FORK_OWN[1:]: inst.pop(k, None)", "                if False:\n                    for k in _WDTT_FORK_OWN[1:]: inst.pop(k, None)"),
     "memmemo": ("n", "[3]", "            _ff = prev.get(\"fork_failed\") or _WDTT_SWITCH_MEMO.get(iface) or {}", "            _ff = prev.get(\"fork_failed\") or {}"),
     "restartfetch": ("n", "[5]", "                _CSQTT_FETCH_LATER.pop((\"wdtt:\" + _wfork, (inst.get(\"ver\") or \"\").strip()), None)   # Restart", "                pass   # Restart"),
     "reinstallcur": ("n", "[5]", "                _ifk = _cutf or (_cur if _cur in WDTT_FORK_OWNER else _wfork)", "                _ifk = _cutf or _wfork"),
-    "seedbind": ("n", "[2]", "    if str(inst[\"listen\"]).startswith(\"127.0.0.1:\"):", "    if False:"),
+    "seedbind": ("n", "[2]", "    if inst.get(\"_seed\"):\n        return inst[\"listen\"]", "    if False:\n        return inst[\"listen\"]"),
     "seedraw": ("n", "[2]", "    seed = {k: v for k, v in inst.items() if k not in (\"raw_port\", \"raw_iface\", \"raw_addr\", \"bind_ip\")}", "    seed = {k: v for k, v in inst.items() if k not in (\"bind_ip\",)}"),
     "seedenv": ("n", "[2]", "    with open(envp + \".tmp\", \"w\") as f: f.write(env0)", "    with open(envp + \".tmp\", \"w\") as f: f.write(_wdtt_env_text(seed))"),
     "memo": ("n", "[3]", "                inst[\"fork_failed\"] = _ff    # would not run here", "                pass    # would not run here"),
@@ -273,9 +276,11 @@ try:
     envi = open(N._wdtt_dir("lo") + "/wdtt.env").read()
     check("…its wdtt.env is the real one again, not the seed's (its own address, RAW on)",
           "SWG_LISTEN=0.0.0.0:56000\n" in envi and "-listen-raw" in envi, envi)
-    se = N._wdtt_env_text(dict(a, fork="ildarmaga", listen="127.0.0.1:41234"))
-    check("a loopback listen (the seed's) is bound as written — turn_bind would make it every address",
-          "SWG_LISTEN=127.0.0.1:41234\n" in se and N._wdtt_listen_bind({"listen": "127.0.0.1:41234"}, "/x") == "127.0.0.1:41234", se)
+    se = N._wdtt_env_text(dict(a, fork="ildarmaga", listen="127.0.0.1:41234", _seed=True))
+    check("the seed's loopback listen is bound as written — turn_bind would make it every address",
+          "SWG_LISTEN=127.0.0.1:41234\n" in se, se)
+    check("…while a server configured on 127.0.0.1 keeps turn_bind's rule (flagged, never read off the address)",
+          N._wdtt_listen_bind({"listen": "127.0.0.1:41234"}, "/nonexistent") == N.turn_bind("127.0.0.1:41234", pin=None, prev=None))
     check("every device row is in panel.db", dbrows("lo") == DEVS, dbrows("lo"))
     check("the JSON store is gone (its copy is in the .bak)", not os.path.exists(N._wdtt_dir("lo") + "/passwords.json"))
     seed = [s for s in STARTS if s[0] == "lo" and s[1] == "ildarmaga"]
@@ -327,9 +332,11 @@ try:
     wq = want_of(q, fork="wdttplus", ver="9.9-dies", params="", cur_ver=N._wdtt_installed_ver("qwdtt"))
     for k in RAW0: wq.pop(k)                                  # the door's record: the flags cleared, RAW dropped
     N.reconcile_wdtt({"lo": wq})
-    check("a failed switch puts it back as it ran: its flags and RAW (the record already names the target's)",
-          N._wdtt_running_fork("lo") == "qwdtt" and open(N._wdtt_dir("lo") + "/wdtt.env").read() == envq
-          and rec("lo").get("params") == "-old-flag" and rec("lo").get("raw_port") == 56003, (rec("lo"), open(N._wdtt_dir("lo") + "/wdtt.env").read()))
+    envb = open(N._wdtt_dir("lo") + "/wdtt.env").read()
+    check("a failed switch puts it back with its own flags (the record already names the target's cleared ones), and "
+          "with RAW off, as the record turned it off at the switch",
+          N._wdtt_running_fork("lo") == "qwdtt" and "SWG_PARAMS=-old-flag\n" in envb and "-listen-raw" in envq
+          and "SWG_RAWFLAGS=\n" in envb and rec("lo").get("params") == "-old-flag" and not rec("lo").get("raw_port"), (rec("lo"), envb))
     n0, p0 = len(STARTS), pid("lo")
     N.reconcile_wdtt({"lo": wq})
     check("…and the next pass restarts nothing (no reconfigure onto the target's cleared flags)", len(STARTS) == n0 and pid("lo") == p0, STARTS[n0:])
@@ -338,6 +345,19 @@ try:
     check("…nor when the record lost its memo: the node remembers it", len(STARTS) == n0 and pid("lo") == p0, STARTS[n0:])
     BUILD["wdttplus"] = GOOD; N._WDTT_SWITCH_MEMO.clear()
     shutil.rmtree(os.path.dirname(N._wdtt_bin_shared("wdttplus")), ignore_errors=True)
+    stop_all()
+    a = lay("lo", "amurcanov"); save(a)                       # asked qwdtt WITH RAW (one save); qwdtt dies
+    vq0 = N._wdtt_installed_ver("qwdtt")
+    shutil.rmtree(os.path.dirname(N._wdtt_bin_shared("qwdtt")), ignore_errors=True)
+    BUILD["qwdtt"] = DIES
+    N.reconcile_wdtt({"lo": want_of(a, fork="qwdtt", ver="9.9-dies2", cur_ver=N._wdtt_installed_ver("amurcanov"), **RAW0)})
+    enva = open(N._wdtt_dir("lo") + "/wdtt.env").read()
+    check("…and a fork that ran without RAW is never put back with it (amurcanov exits on -listen-raw)",
+          N._wdtt_running_fork("lo") == "amurcanov" and "SWG_RAWFLAGS=\n" in enva and bool(pid("lo"))
+          and not any(x[3] for x in STARTS if x[0] == "lo" and x[1] == "amurcanov"), enva)
+    BUILD["qwdtt"] = GOOD; N._WDTT_SWITCH_MEMO.clear()
+    shutil.rmtree(os.path.dirname(N._wdtt_bin_shared("qwdtt")), ignore_errors=True)
+    fake_fetch("qwdtt", {}, N._wdtt_bin_shared("qwdtt")); N._wdtt_write_ver("qwdtt", vq0)   # qwdtt's slot as [3] left it
     stop_all()
     a = lay("lo", "amurcanov"); save(dict(a, fork_failed={"fork": "qwdtt", "ver": "x", "why": "y"}))
     N.reconcile_wdtt({"lo": want_of(a)})
@@ -373,6 +393,16 @@ try:
     check("the operator's Restart retries a waiting fetch at once (the switch runs)", N._wdtt_running_fork("lo") == "qwdtt"
           and rec("lo").get("fork") == "qwdtt" and rec("lo").get("params") == "", (N._wdtt_running_fork("lo"), rec("lo").get("params")))
     N._CSQTT_FETCH_LATER.pop(("wdtt:qwdtt", "9.9-wait"), None)
+    stop_all()
+    q = lay("lo", "qwdtt", **RAW0); save(q); STARTS.clear()
+    N._CSQTT_FETCH_LATER[("wdtt:amurcanov", "9.9-wait")] = time.monotonic() + 600
+    wq = want_of(q, fork="amurcanov", ver="9.9-wait", cur_ver=N._wdtt_installed_ver("qwdtt"))
+    for k in RAW0: wq.pop(k)
+    N.reconcile_wdtt({"lo": wq})
+    check("a waiting switch to a fork without RAW turns RAW off at once on the one that runs (the panel's RAW checks "
+          "read the record, so the node must agree with it)", N._wdtt_running_fork("lo") == "qwdtt" and not rec("lo").get("raw_port")
+          and [x[3] for x in STARTS if x[0] == "lo"] == [False], (STARTS, rec("lo").get("raw_port")))
+    N._CSQTT_FETCH_LATER.pop(("wdtt:amurcanov", "9.9-wait"), None)
     stop_all()
     a = lay("lo", "amurcanov"); save(a); stop_all()
     INST = []; _pr, _in = N._wdtt_present, N._wdtt_install
@@ -502,8 +532,9 @@ try:
           and not any(k in w2r for k in ("raw_port", "raw_iface", "raw_addr")), (code, r, w2r))
     code, r = req("/api/wdtt/set", {"node": "nnew", "iface": "wdtt2", "fork": "qwdtt", "fork_switch": True, "raw": False})
     w2r = nodes()["nnew"]["wdtt"]["wdtt2"]
-    check("…back to qwdtt while the node still runs it: RAW comes back as it was", code == 200 and w2r.get("fork") == "qwdtt"
-          and w2r.get("raw_port") == 56003 and w2r.get("raw_iface") and "switch_from" not in w2r, (code, r, w2r))
+    check("…back to qwdtt while the node still runs it: RAW stays as saved (off: the switch turned it off on the node too), "
+          "and the door forgets the switch", code == 200 and w2r.get("fork") == "qwdtt" and not w2r.get("raw_port")
+          and "switch_from" not in w2r, (code, r, w2r))
     code, r = req("/api/wdtt/set", {"node": "nnew", "iface": "wdtt2", "fork": "amurcanov", "fork_switch": True})
     RUN["nnew"]["wdtt2"] = "amurcanov"; sync("nnew")          # this time the node switched it
     code, r = req("/api/wdtt/set", {"node": "nnew", "iface": "wdtt2", "fork": "qwdtt", "fork_switch": True})

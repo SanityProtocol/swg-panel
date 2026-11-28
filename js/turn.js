@@ -2432,8 +2432,10 @@ export function EditWdttSheet({ node, iface }) {
   const emode = nrec.routing_mode || "kernel";   // for smart-rule validation (kernel = IP-only)
   // Take-over in flight: saving here would push a config at a server the node is still replacing.
   const adopting = (nrec.wdtt_adopting || []).includes(iface);
-  const fork = wdttSwitchState(node, iface).run;   // what RUNS (a switch that waits or failed: the record names the asked one); switched from the WDTT-proxy sheet
-  const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+  // `fork` = the record's, which the panel saves DNS against (and the save carries); the label names what RUNS — during
+  // a switch that waits or failed the two differ. Switched from the WDTT-proxy sheet.
+  const fork = cfg.fork || w.fork || "amurcanov", runFork = wdttSwitchState(node, iface).run;
+  const forkLabel = (turnForkList().find(x => x.id === runFork) || {}).label || runFork;
   const [wgPort, setWgPort] = useState(String(cfg.wg_port || "56001"));   // endpoint + listen port are edited from the WDTT-proxy modal now
   const _dtls = oldListen.includes(":") ? oldListen.slice(oldListen.lastIndexOf(":") + 1) : "";
   const wgperr = portErrMsg(node, wgPort, [cfg.wg_port, w.wg_port, _dtls]);   // live collision check (this instance's own WG + DTLS ports don't count)

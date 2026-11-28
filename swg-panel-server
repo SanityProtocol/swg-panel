@@ -1637,7 +1637,7 @@ def _csqtt_run_line(snap, iface, rec):
     pending or failed switch the record names the line ASKED for, and a hold set by it would land on the wrong binary.
     Raw — it can be a line this panel does not offer."""
     return str((_csqtt_row(snap, iface) or {}).get("line") or (rec or {}).get("line") or CSQTT_DEFAULT_LINE)
-WDTT_FORK_OWN = ("params", "raw_port", "raw_iface", "raw_addr")   # a WDTT fork's own: its flags and RAW (a switch changes them)
+WDTT_FORK_OWN = ("params",)   # what a WDTT fork switch clears and a pick back restores: the old binary's extra flags
 def _wdtt_run_fork(snap, iface, rec):
     """The WDTT fork a server RUNS — its node's report (the `server` link), else its record (_csqtt_run_line's rule):
     during a pending or failed fork switch the record names the fork ASKED for."""
@@ -34813,9 +34813,10 @@ def api(method, path, qs, body, deps):
         # WDTT fork); its extra flags are the old binary's and go, and RAW goes with a target that has none. The node
         # checks the target stays up and puts the server back by itself if not. A failover copy never gets here
         # (failover_ro_refusal): it follows its primary's fork (FO_WDTT_FOLLOW).
-        # The flags and RAW the switched-from fork ran with are kept in `switch_from`: a pick back to the fork the node still
-        # runs (a switch that waits or failed) gets them again, as the node itself kept them. A value typed in the same
-        # save is the operator's and stands.
+        # The flags the switched-from fork ran with are kept in `switch_from`: a pick back to the fork the node still runs (a
+        # switch that waits or failed) gets them again, as the node itself kept them. A value typed in the same save is the
+        # operator's and stands. RAW is not kept: turned off with a switch to a fork without it, it goes off on the node at
+        # once too, so the RAW checks below (holders, port, subnet) always see what runs; a pick back leaves it as saved.
         _fsw = ""
         if _existing is not None:
             _ofork = _existing.get("fork") or "amurcanov"
@@ -34824,19 +34825,14 @@ def api(method, path, qs, body, deps):
             _wsnap = (deps.get("node_snaps") or {}).get(nid)
             _run = _wdtt_run_fork(_wsnap, iface, _existing)
             _pch = "params" in body and (body.get("params") or "").strip() != (_existing.get("params") or "").strip()
-            _rch = "raw" in body and bool(body.get("raw")) != bool(_existing.get("raw_port"))
             if body.get("fork_switch") and _to and _to != _ofork and _to == _run:
                 # back to what runs: nothing is installed or moved, so no build or node check
                 _sf = _existing.get("switch_from") or {}
                 inst["fork"], _fsw = _to, _ofork + " → " + _to
-                if _sf.get("fork") == _to:
+                if _sf.get("fork") == _to and not _pch:
                     for _k in WDTT_FORK_OWN:
-                        if (_k == "params" and _pch) or (_k != "params" and _rch):
-                            continue
                         if _k in _sf: inst[_k] = _sf[_k]
                         else: inst.pop(_k, None)
-                    if not _rch:
-                        body = {k: v for k, v in body.items() if k not in ("raw", "raw_port")}   # the restored RAW stands
                 inst.pop("switch_from", None)
             elif body.get("fork_switch") and _to and _to != _ofork:
                 _tl = (TURN_SERVERS.get(_to) or {}).get("label") or _to
