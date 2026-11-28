@@ -13,7 +13,9 @@ Encrypt mode died at it. Two things leaned on the address and move with it.
   [3] each installer's own block after the TLS choice, lifted out AS SHIPPED and run with no terminal and no address:
       it asks nothing and does not stop (the old line died here: "no valid value … and no interactive input")
   [4] acme.sh is installed with the address only when there is one: never the made-up admin@<panel address>
-      (admin@203.0.113.77 on an IP) that used to go into its account settings
+      (admin@203.0.113.77 on an IP) that used to go into its account settings — nor update.sh's admin@localhost: its
+      heal (ensure_acme_client, the lines lifted AS SHIPPED) hands on install.conf's address only when it is one
+      (review F1; an install.conf written before this item may hold whatever the old loose test let through)
   [5] the TLS type never came from the address: lib/common.sh's seed_access_settings writes the mode the installer chose
       into the panel's settings before its first start, and the panel's boot reconcile (swg-panel-server
       _reconcile_saved_ahead, run as shipped) keeps it wherever that start already serves HTTPS — a container, whose
@@ -33,7 +35,7 @@ import atexit, os, re, shutil, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SRCS = {"HOST": "install-host.sh", "DOCKER": "install-docker.sh", "COMMON": "lib/common.sh", "PANEL": "swg-panel-server",
-        "ENVEX": ".env.example"}
+        "ENVEX": ".env.example", "UPDATE": "update.sh"}
 PATHS = {k: os.environ.get("SWG_AEO_" + k) or os.path.join(ROOT, v) for k, v in SRCS.items()}
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PATHS.items()}
 
@@ -48,6 +50,12 @@ PLANTS = [
      "[1] install-host.sh: the TLS menu no longer says the Cloudflare mode needs an email"),
     ("fake", "HOST", 'sh${ACME_EMAIL:+ -s email=$ACME_EMAIL}"', 'sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}"',
      "[4] no address: acme.sh is installed with none"),
+    ("fake-update", "UPDATE", 'sh${ACME_EMAIL:+ -s email=$ACME_EMAIL}" >/dev/null', 'sh -s email=${ACME_EMAIL:-admin@localhost}" >/dev/null',
+     "[4] update.sh's heal, no address in install.conf: acme.sh is installed with none"),
+    ("heal-raw", "UPDATE", '  local ACME_EMAIL=""; acme_email_take "$(sed', '  local ACME_EMAIL; ACME_EMAIL="$(sed',
+     "[4] update.sh's heal: a kept value that is not an address is dropped, and said"),
+    ("heal-leak", "UPDATE", '  local ACME_EMAIL=""; acme_email_take "$(sed', '  acme_email_take "$(sed',
+     "[4] update.sh's heal reads install.conf's address and leaves the run's own alone"),
     ("saved", "COMMON", '  ACME_EMAIL="${ACME_EMAIL:-${1:-}}"', '  ACME_EMAIL="${ACME_EMAIL:-}"',
      "[2] a re-install keeps the address it had"),
     ("keep-bad", "COMMON", '(the certificate needs none)"; ACME_EMAIL=""', '(the certificate needs none)"',
@@ -91,7 +99,7 @@ def check(name, ok, detail=""):
 
 SB = tempfile.mkdtemp(prefix="aeo-")
 atexit.register(shutil.rmtree, SB, True)
-H, D, C, P = SRC["HOST"], SRC["DOCKER"], SRC["COMMON"], SRC["PANEL"]
+H, D, C, P, U = SRC["HOST"], SRC["DOCKER"], SRC["COMMON"], SRC["PANEL"], SRC["UPDATE"]
 
 
 def fn(src, name):
@@ -188,6 +196,36 @@ check("[4] no address: acme.sh is installed with none", bool(line) and rc0 == 0
       and out0.strip() == "curl -fsSL https://get.acme.sh | sh" and "admin@$PANEL_DOMAIN" not in H, (line, out0))
 check("[4] an address: handed to acme.sh's installer as before", rc1 == 0
       and out1.strip() == "curl -fsSL https://get.acme.sh | sh -s email=ops@example.org", out1)
+# update.sh's heal: from the line that reads install.conf's address to the one that installs acme.sh, as shipped
+_g = U.index('sh -c "curl -fsSL https://get.acme.sh')
+_a = U.rindex("\n", 0, U.rindex("s/^ACME_EMAIL=//p", 0, _g)) + 1
+HEAL = U[_a:U.index("\n", _g) + 1]
+
+
+def heal(conf_line):
+    t = tempfile.mkdtemp(prefix="heal-", dir=SB)
+    with open(os.path.join(t, "install.conf"), "w") as f:
+        f.write("TLS_MODE=letsencrypt\n" + (conf_line + "\n" if conf_line is not None else ""))
+    rc, out = bash('set -euo pipefail\nsub(){ echo "SUB $*"; }\nwarn(){ echo "WARN $*" >&2; }\ninfo(){ :; }\n'
+                   'sh(){ printf \'%s\\n\' "$2" >> "$LOG"; }\n' + fn(C, "acme_email_take")                 # what would be run
+                   + 'heal(){\n  local conf="$T/install.conf" mode=letsencrypt\n' + HEAL + '}\n'
+                   'ACME_EMAIL=run@example.org\nheal\necho "OUTER=[$ACME_EMAIL]"\n', T=t, LOG=os.path.join(t, "ran"))
+    ran = open(os.path.join(t, "ran")).read() if os.path.exists(os.path.join(t, "ran")) else ""
+    return rc, out, ran
+
+
+BARE = "curl -fsSL https://get.acme.sh | sh\n"
+got = [heal("ACME_EMAIL="), heal(None)]
+check("[4] update.sh's heal, no address in install.conf: acme.sh is installed with none",
+      all(rc == 0 and ran == BARE and "WARN" not in out for rc, out, ran in got) and "admin@localhost" not in U, got)
+rc, out, ran = heal("ACME_EMAIL=ops@example.org")
+check("[4] update.sh's heal, an address in install.conf: handed to acme.sh's installer",
+      rc == 0 and ran == "curl -fsSL https://get.acme.sh | sh -s email=ops@example.org\n", (rc, out, ran))
+check("[4] update.sh's heal reads install.conf's address and leaves the run's own alone",
+      "OUTER=[run@example.org]" in out and "run@example.org" not in ran, (out, ran))
+got = [heal("ACME_EMAIL=" + v) for v in ("ops @example.org", "a@b.c;touch PWNED", "a@b.c$(id)", "admin@localhost", "*@example.org")]
+check("[4] update.sh's heal: a kept value that is not an address is dropped, and said",
+      all(rc == 0 and ran == BARE and "WARN ignoring ACME_EMAIL=" in out for rc, out, ran in got), got)
 
 # ── [5] where the TLS type comes from ────────────────────────────────────────────────────────────────────────
 print("\n[5] the seed, then the panel's first start")

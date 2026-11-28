@@ -1484,9 +1484,13 @@ ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-me
       return 0
     fi
   done
-  local email; email="$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | sed -n 1p)"
+  # …with the account address only when install.conf holds one, and only one that IS an address — judged by the
+  # installers' own acme_email_take (lib/common.sh), which says a value it drops. Since item 26 a Let's Encrypt
+  # install may have none, and the "admin" at "localhost" this line made up in its place was the last made-up address
+  # any install of acme.sh was given (review F1). The value goes unquoted into `sh -c`: the other reason it is judged.
+  local ACME_EMAIL=""; acme_email_take "$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | sed -n 1p)"
   info "Installing acme.sh (TLS mode $mode needs it; renewals and address changes were failing without it)"
-  sh -c "curl -fsSL https://get.acme.sh | sh -s email=${email:-admin@localhost}" >/dev/null 2>&1 || true
+  sh -c "curl -fsSL https://get.acme.sh | sh${ACME_EMAIL:+ -s email=$ACME_EMAIL}" >/dev/null 2>&1 || true
   [ -x /root/.acme.sh/acme.sh ] && { DID_UPDATE=yes; note "acme.sh: installed (TLS mode $mode needs it)"; ok "acme.sh installed"; } \
     || warn "couldn't install acme.sh — renewals and address changes will keep failing until it is"
   return 0; }

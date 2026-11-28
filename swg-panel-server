@@ -5507,8 +5507,8 @@ def _infer_tls_mode(deps):
     then STICKS: the installers' healing pass is deliberately fill-if-empty, so it can never correct a non-empty
     wrong one, and Settings → Access reads "self-signed" for the rest of the box's life while install.conf says
     letsencrypt. Only when the cert can't settle it (self-signed placeholder mid-issuance, or unreadable) do we
-    fall back to what the config can drive: a CF DNS token → cloudflare; in a container, the TLS it was started
-    with; an ACME email → letsencrypt."""
+    fall back to what the config can drive: a CF DNS token → cloudflare; in a container, the Let's Encrypt or
+    self-signed type it was started with; an ACME email → letsencrypt."""
     tls = ((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}
     if TLS_CERT and os.path.exists(TLS_CERT) and not _cert_selfsigned(TLS_CERT):
         if _cert_is_cf_origin(TLS_CERT):
@@ -5517,8 +5517,9 @@ def _infer_tls_mode(deps):
         # not exist yet — so the boot reconcile clears the type the installer seeded, and this is where it is read back
         # once the certificate is there. With no test here a panel by IP came back as "letsencrypt" (alb-onyx,
         # 2026-11-27: install.conf said letsencrypt-ip, the settings letsencrypt). Before the token test: a
-        # certificate from the Cloudflare DNS-01 path always carries a DNS name.
-        if _cert_ip_only(TLS_CERT):
+        # certificate from the Cloudflare DNS-01 path always carries a DNS name. Let's Encrypt's own only: another
+        # CA's certificate by IP (the operator's, on a panel whose type was lost) reads as it did before this test.
+        if _cert_ip_only(TLS_CERT) and _cert_is_letsencrypt(TLS_CERT):
             return "letsencrypt-ip"
         # a public CA issued it: `cloudflare` is Let's Encrypt via the CF DNS-01 challenge, so the stored token
         # is what tells the two LE paths apart — the issuer alone can't.
@@ -5529,9 +5530,16 @@ def _infer_tls_mode(deps):
     # compose has no installer to seed its settings, so with the placeholder on the socket this read "selfsigned" —
     # and was later healed to "letsencrypt" off the certificate, for one by IP too. Bare-metal has no such record
     # the panel may read: install.conf is root's alone (it holds the Cloudflare tokens).
+    # ⚠️ ONLY THE TYPES THAT NEED NOTHING BUT THE CONTAINER. The two Cloudflare types need their token in the SETTINGS:
+    # a save without it is refused, and the helper reads it from there for every later certificate. A container
+    # started by hand has it in .env at most — and one started without it is where the entrypoint fell back to this
+    # very placeholder — so those read as they did (review F3). A Let's Encrypt order that FAILED leaves the same
+    # placeholder and still reads Let's Encrypt: an installer-made container says so in that state (its seed is kept),
+    # the entrypoint orders again in that type at every start, and an Access change writes the stored type back into
+    # .env — "selfsigned" there would replace the operator's choice.
     if IN_DOCKER:
         _given = (os.environ.get("TLS") or "").strip()
-        if _given in TLS_MODES and _given not in ("", "skip"):
+        if _given in ("letsencrypt", "letsencrypt-ip", "selfsigned"):
             return _given
     if str(tls.get("email") or "").strip():
         return "letsencrypt"
@@ -6070,6 +6078,16 @@ def validate_access(incoming, current):
     mode = (str((tin["mode"] if "mode" in tin else tcur.get("mode")) or "")).strip()
     if mode not in TLS_MODES:
         mode = ""
+    # ⚠️ A CERTIFICATE "FOR THIS IP" NAMES NO DOMAIN — THE TYPE FOLLOWS THE ADDRESS. `letsencrypt-ip` is what an
+    # install by IP holds (read back off its certificate since 1.8.12), and the Type list offers it only while it is
+    # the saved type: a panel that moves from its IP to a name arrives here still carrying it. The same CA and the
+    # same challenge (HTTP-01, port 80) by name are `letsencrypt`. Left as it was the save passed and the apply failed
+    # in the root helper, which issues nothing in this type (swg-netctl do_issue_cert) — the move a panel by IP made
+    # without a hitch while its type was misread as `letsencrypt` (review F2). The panel's address only: a
+    # subscription page on a name of its own does not change what the panel's certificate is.
+    _ph = _url_host(panel["url"])
+    if mode == "letsencrypt-ip" and _ph and not _is_ip(_ph):
+        mode = "letsencrypt"
     email = (str((tin["email"] if "email" in tin else tcur.get("email")) or "")).strip()[:200]
     # secrets: an empty incoming value KEEPS the stored one (the browser never receives them, so a blank
     # field means "unchanged", not "clear"). A literal "-" clears it.
@@ -40932,6 +40950,19 @@ def _cert_ip_only(cert_path):
     try:
         kinds = {typ for typ, _val in ssl._ssl._test_decode_cert(cert_path).get("subjectAltName", ())}
         return "IP Address" in kinds and "DNS" not in kinds
+    except Exception:
+        return False
+
+
+def _cert_is_letsencrypt(cert_path):
+    """True if Let's Encrypt issued the cert at cert_path: its issuer's organisation says so ("Let's Encrypt"; the
+    staging CA's reads "(STAGING) Let's Encrypt"). What tells a certificate by IP of ours from one an operator
+    brought from another CA."""
+    if not cert_path or not os.path.exists(cert_path):
+        return False
+    try:
+        iss = dict(x[0] for x in ssl._ssl._test_decode_cert(cert_path).get("issuer", ()))
+        return "let's encrypt" in str(iss.get("organizationName", "")).lower()
     except Exception:
         return False
 
